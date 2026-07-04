@@ -374,7 +374,8 @@ impl<T: Real> Simulation<T> {
                     ((s0 + two * sneg) / (T::one() - un), un, ut)
                 }
                 ZouHe::Pressure(rho_bc) => {
-                    let un = (s0 + two * sneg) / rho_bc - T::one();
+                    // From the closure rho (1 - u.n) = S0 + 2 S-.
+                    let un = T::one() - (s0 + two * sneg) / rho_bc;
                     (rho_bc, un, T::zero())
                 }
             };

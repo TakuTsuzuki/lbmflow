@@ -1,0 +1,188 @@
+//! Validation T6: conservation laws and equilibrium moment identities.
+
+use lbm_core::lattice::{CS2, CX, CY, Q, W};
+use lbm_core::prelude::*;
+use std::f64::consts::PI;
+
+fn smooth_init_f64(n: usize) -> impl Fn(usize, usize) -> (f64, f64, f64) {
+    let k = 2.0 * PI / n as f64;
+    move |x, y| {
+        let (xf, yf) = (k * x as f64, k * y as f64);
+        (
+            1.0 + 0.01 * (xf + 2.0 * yf).cos(),
+            0.03 * yf.sin(),
+            0.03 * (2.0 * xf).sin(),
+        )
+    }
+}
+
+fn smooth_init_f32(n: usize) -> impl Fn(usize, usize) -> (f32, f32, f32) {
+    let k = 2.0 * std::f32::consts::PI / n as f32;
+    move |x, y| {
+        let (xf, yf) = (k * x as f32, k * y as f32);
+        (
+            1.0 + 0.01 * (xf + 2.0 * yf).cos(),
+            0.03 * yf.sin(),
+            0.03 * (2.0 * xf).sin(),
+        )
+    }
+}
+
+#[test]
+fn t6_periodic_box_conserves_mass_for_10000_steps() {
+    let n = 48;
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: n,
+        ny: n,
+        nu: 0.02,
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.init_with(smooth_init_f64(n));
+    let m0 = sim.total_mass();
+    sim.run(10_000);
+    let drift = ((sim.total_mass() - m0) / m0).abs();
+    assert!(drift <= 1.0e-11, "T6 periodic mass drift = {drift:e}");
+}
+
+#[test]
+fn t6_bounce_back_box_conserves_mass_for_10000_steps() {
+    let n = 40;
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: n,
+        ny: n,
+        nu: 0.05,
+        edges: Edges {
+            left: EdgeBC::BounceBack,
+            right: EdgeBC::BounceBack,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.init_with(smooth_init_f64(n));
+    let m0 = sim.total_mass();
+    sim.run(10_000);
+    let drift = ((sim.total_mass() - m0) / m0).abs();
+    assert!(drift <= 1.0e-11, "T6 BB mass drift = {drift:e}");
+}
+
+#[test]
+fn t6_periodic_uniform_force_adds_exact_momentum() {
+    let n = 32;
+    let force = [1.0e-6, -2.0e-6];
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: n,
+        ny: n,
+        nu: 0.05,
+        force,
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    let p0 = sim.total_momentum();
+    let steps = 10_000usize;
+    sim.run(steps);
+    let p1 = sim.total_momentum();
+    let nf = sim.fluid_cell_count() as f64;
+    for axis in 0..2 {
+        let gained = p1[axis] - p0[axis];
+        let expect = steps as f64 * nf * force[axis];
+        let rel = ((gained - expect) / expect).abs();
+        assert!(
+            rel <= 1.0e-10,
+            "T6 force momentum axis = {axis}, rel = {rel:e}, gained = {gained:e}, expected = {expect:e}"
+        );
+    }
+}
+
+#[test]
+fn t6_feq_moments_match_density_momentum_and_pressure_tensor() {
+    let cases = [
+        (0.7, 0.0, 0.0),
+        (1.0, 0.08, -0.04),
+        (1.3, -0.06, 0.07),
+        (0.9, 0.1, 0.0),
+    ];
+    for (rho, ux, uy) in cases {
+        let mut f = [0.0f64; Q];
+        for q in 0..Q {
+            let cu = CX[q] as f64 * ux + CY[q] as f64 * uy;
+            f[q] = W[q] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * (ux * ux + uy * uy));
+        }
+        let m0: f64 = f.iter().sum();
+        let mx: f64 = (0..Q).map(|q| f[q] * CX[q] as f64).sum();
+        let my: f64 = (0..Q).map(|q| f[q] * CY[q] as f64).sum();
+        let mxx: f64 = (0..Q).map(|q| f[q] * (CX[q] * CX[q]) as f64).sum();
+        let mxy: f64 = (0..Q).map(|q| f[q] * (CX[q] * CY[q]) as f64).sum();
+        let myy: f64 = (0..Q).map(|q| f[q] * (CY[q] * CY[q]) as f64).sum();
+        assert!(
+            (m0 - rho).abs() <= 1.0e-14,
+            "T6 feq rho err = {:e}, rho = {rho:e}",
+            (m0 - rho).abs()
+        );
+        assert!(
+            (mx - rho * ux).abs() <= 1.0e-14,
+            "T6 feq mx err = {:e}, mx = {mx:e}, expected = {:e}",
+            (mx - rho * ux).abs(),
+            rho * ux
+        );
+        assert!(
+            (my - rho * uy).abs() <= 1.0e-14,
+            "T6 feq my err = {:e}, my = {my:e}, expected = {:e}",
+            (my - rho * uy).abs(),
+            rho * uy
+        );
+        assert!(
+            (mxx - rho * (CS2 + ux * ux)).abs() <= 1.0e-14,
+            "T6 feq mxx err = {:e}, mxx = {mxx:e}",
+            (mxx - rho * (CS2 + ux * ux)).abs()
+        );
+        assert!(
+            (mxy - rho * ux * uy).abs() <= 1.0e-14,
+            "T6 feq mxy err = {:e}, mxy = {mxy:e}",
+            (mxy - rho * ux * uy).abs()
+        );
+        assert!(
+            (myy - rho * (CS2 + uy * uy)).abs() <= 1.0e-14,
+            "T6 feq myy err = {:e}, myy = {myy:e}",
+            (myy - rho * (CS2 + uy * uy)).abs()
+        );
+    }
+}
+
+#[test]
+fn t6_f32_mass_and_momentum_hold_with_relaxed_tolerance() {
+    let n = 32;
+    let force = [1.0e-6f32, 2.0e-6f32];
+    let mut sim: Simulation<f32> = SimConfig {
+        nx: n,
+        ny: n,
+        nu: 0.05,
+        force,
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.init_with(smooth_init_f32(n));
+    let m0 = sim.total_mass();
+    let p0 = sim.total_momentum();
+    let steps = 2000usize;
+    sim.run(steps);
+    let drift = ((sim.total_mass() - m0) / m0).abs();
+    assert!(drift <= 1.0e-4, "T6 f32 mass drift = {drift:e}");
+    let p1 = sim.total_momentum();
+    let nf = sim.fluid_cell_count() as f32;
+    for axis in 0..2 {
+        let gained = p1[axis] - p0[axis];
+        let expect = steps as f32 * nf * force[axis];
+        let rel = ((gained - expect) / expect).abs();
+        assert!(
+            rel <= 1.0e-4,
+            "T6 f32 force momentum axis = {axis}, rel = {rel:e}, gained = {gained:e}, expected = {expect:e}"
+        );
+    }
+}

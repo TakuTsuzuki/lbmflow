@@ -1,0 +1,253 @@
+//! Validation T2/T3: forced Poiseuille and moving-wall Couette channels.
+
+mod common;
+
+use common::run_to_steady;
+use lbm_core::prelude::*;
+
+fn linf_rel(actual: &[f64], reference: &[f64]) -> f64 {
+    let den = reference.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    actual
+        .iter()
+        .zip(reference)
+        .map(|(a, r)| (a - r).abs())
+        .fold(0.0f64, f64::max)
+        / den
+}
+
+fn poiseuille_horizontal(ny: usize, collision: Collision) -> (Simulation<f64>, Vec<f64>) {
+    let nu = 0.1;
+    let g = 1.0e-6;
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: 4,
+        ny,
+        nu,
+        collision,
+        edges: Edges {
+            left: EdgeBC::Periodic,
+            right: EdgeBC::Periodic,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        force: [g, 0.0],
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    assert!(
+        run_to_steady(&mut sim, 500, 1.0e-11, 200_000),
+        "T2 horizontal steady = false, time = {}",
+        sim.time()
+    );
+    let h = (ny - 2) as f64;
+    let exact = (1..=(ny - 2))
+        .map(|j| {
+            let yw = j as f64 - 0.5;
+            g / (2.0 * nu) * yw * (h - yw)
+        })
+        .collect();
+    (sim, exact)
+}
+
+fn poiseuille_vertical(nx: usize) -> (Simulation<f64>, Vec<f64>) {
+    let nu = 0.1;
+    let g = 1.0e-6;
+    let mut sim: Simulation<f64> = SimConfig {
+        nx,
+        ny: 4,
+        nu,
+        collision: Collision::default(),
+        edges: Edges {
+            left: EdgeBC::BounceBack,
+            right: EdgeBC::BounceBack,
+            bottom: EdgeBC::Periodic,
+            top: EdgeBC::Periodic,
+        },
+        force: [0.0, g],
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    assert!(
+        run_to_steady(&mut sim, 500, 1.0e-11, 200_000),
+        "T2 vertical steady = false, time = {}",
+        sim.time()
+    );
+    let h = (nx - 2) as f64;
+    let exact = (1..=(nx - 2))
+        .map(|i| {
+            let xw = i as f64 - 0.5;
+            g / (2.0 * nu) * xw * (h - xw)
+        })
+        .collect();
+    (sim, exact)
+}
+
+#[test]
+fn t2_trt_magic_poiseuille_is_exact_and_symmetric() {
+    let (sim, exact) = poiseuille_horizontal(10, Collision::default());
+    let got: Vec<f64> = (1..=(sim.ny() - 2)).map(|y| sim.ux(0, y)).collect();
+    let err = linf_rel(&got, &exact);
+    assert!(err <= 1.0e-10, "T2 TRT Linf_rel = {err:e}, got = {got:?}");
+    let umax = exact.iter().copied().fold(0.0f64, f64::max);
+    let h = got.len();
+    for j in 0..h / 2 {
+        let d = (got[j] - got[h - 1 - j]).abs();
+        assert!(
+            d <= 1.0e-13,
+            "T2 symmetry row = {j}, diff = {d:e}, umax = {umax:e}, got = {got:?}"
+        );
+    }
+}
+
+#[test]
+fn t2_bgk_poiseuille_converges_second_order() {
+    let (s8, a8) = poiseuille_horizontal(10, Collision::Bgk);
+    let (s16, a16) = poiseuille_horizontal(18, Collision::Bgk);
+    let got8: Vec<f64> = (1..=(s8.ny() - 2)).map(|y| s8.ux(0, y)).collect();
+    let got16: Vec<f64> = (1..=(s16.ny() - 2)).map(|y| s16.ux(0, y)).collect();
+    let e8 = linf_rel(&got8, &a8);
+    let e16 = linf_rel(&got16, &a16);
+    let order = (e8 / e16).log2();
+    assert!(
+        order >= 1.7,
+        "T2 BGK order = {order:e}, e8 = {e8:e}, e16 = {e16:e}"
+    );
+}
+
+#[test]
+fn t2_poiseuille_rotated_90deg_matches_horizontal_profile() {
+    let (sim, exact) = poiseuille_vertical(10);
+    let got: Vec<f64> = (1..=(sim.nx() - 2)).map(|x| sim.uy(x, 0)).collect();
+    let err = linf_rel(&got, &exact);
+    assert!(
+        err <= 1.0e-10,
+        "T2 rotated TRT Linf_rel = {err:e}, got = {got:?}, exact = {exact:?}"
+    );
+}
+
+fn couette_sim(
+    edges: Edges<f64>,
+    nx: usize,
+    ny: usize,
+    tau: f64,
+    collision: Collision,
+) -> Simulation<f64> {
+    let mut sim: Simulation<f64> = SimConfig {
+        nx,
+        ny,
+        nu: (tau - 0.5) / 3.0,
+        collision,
+        edges,
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    assert!(
+        run_to_steady(&mut sim, 500, 1.0e-11, 200_000),
+        "T3 steady = false, tau = {tau:e}, collision = {collision:?}, time = {}",
+        sim.time()
+    );
+    sim
+}
+
+#[test]
+fn t3_top_wall_couette_exact_for_bgk_and_trt_all_taus() {
+    let u = 0.1;
+    for tau in [0.6, 1.0, 1.4] {
+        for collision in [Collision::Bgk, Collision::default()] {
+            let sim = couette_sim(
+                Edges {
+                    left: EdgeBC::Periodic,
+                    right: EdgeBC::Periodic,
+                    bottom: EdgeBC::BounceBack,
+                    top: EdgeBC::MovingWall { u: [u, 0.0] },
+                },
+                4,
+                10,
+                tau,
+                collision,
+            );
+            let h = (sim.ny() - 2) as f64;
+            let mut err = 0.0f64;
+            for j in 1..=(sim.ny() - 2) {
+                let expect = u * (j as f64 - 0.5) / h;
+                err = err.max((sim.ux(0, j) - expect).abs() / u);
+            }
+            assert!(
+                err <= 1.0e-10,
+                "T3 top Couette err = {err:e}, tau = {tau:e}, collision = {collision:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn t3_bottom_wall_driven_couette_exact() {
+    let u = 0.1;
+    let sim = couette_sim(
+        Edges {
+            left: EdgeBC::Periodic,
+            right: EdgeBC::Periodic,
+            bottom: EdgeBC::MovingWall { u: [u, 0.0] },
+            top: EdgeBC::BounceBack,
+        },
+        4,
+        10,
+        1.0,
+        Collision::default(),
+    );
+    let h = (sim.ny() - 2) as f64;
+    let mut err = 0.0f64;
+    for j in 1..=(sim.ny() - 2) {
+        let expect = u * (h - (j as f64 - 0.5)) / h;
+        err = err.max((sim.ux(0, j) - expect).abs() / u);
+    }
+    assert!(err <= 1.0e-10, "T3 bottom Couette err = {err:e}");
+}
+
+#[test]
+fn t3_vertical_couette_exact() {
+    let u = 0.1;
+    let sim = couette_sim(
+        Edges {
+            left: EdgeBC::BounceBack,
+            right: EdgeBC::MovingWall { u: [0.0, u] },
+            bottom: EdgeBC::Periodic,
+            top: EdgeBC::Periodic,
+        },
+        10,
+        4,
+        1.0,
+        Collision::default(),
+    );
+    let h = (sim.nx() - 2) as f64;
+    let mut err = 0.0f64;
+    for i in 1..=(sim.nx() - 2) {
+        let expect = u * (i as f64 - 0.5) / h;
+        err = err.max((sim.uy(i, 0) - expect).abs() / u);
+    }
+    assert!(err <= 1.0e-10, "T3 vertical Couette err = {err:e}");
+}
+
+#[test]
+fn t3_moving_wall_conserves_mass_for_10000_steps() {
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: 32,
+        ny: 16,
+        nu: 0.05,
+        edges: Edges {
+            left: EdgeBC::Periodic,
+            right: EdgeBC::Periodic,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::MovingWall { u: [0.1, 0.0] },
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    let m0 = sim.total_mass();
+    sim.run(10_000);
+    let drift = ((sim.total_mass() - m0) / m0).abs();
+    assert!(drift <= 1.0e-12, "T3 moving wall mass drift = {drift:e}");
+}
