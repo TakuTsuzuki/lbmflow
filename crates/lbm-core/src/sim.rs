@@ -130,21 +130,34 @@ impl<T: Real> Simulation<T> {
     }
 
     /// Realise wall-type edges as one-cell solid rims.
+    ///
+    /// Where two rims share a corner cell, the faster wall's velocity wins,
+    /// so the result does not depend on the order edges are applied and the
+    /// whole setup stays exactly equivariant under rotations/mirrors (a
+    /// lid-driven cavity gives identical flows for all four lid
+    /// orientations). Equal speeds keep the first-applied edge
+    /// (bottom, top, left, right order) — only relevant when two moving
+    /// walls of identical speed meet at a corner.
     fn build_rims(&mut self) {
         let (nx, ny) = (self.nx, self.ny);
+        let mut best_speed = vec![-1.0f64; nx * ny];
         let mut rim = |cells: Box<dyn Iterator<Item = usize>>, bc: EdgeBC<T>| {
             let u = match bc {
                 EdgeBC::MovingWall { u } => u,
                 _ => [T::zero(); 2],
             };
+            let speed = u[0].as_f64().powi(2) + u[1].as_f64().powi(2);
             if bc.is_wall() {
                 for i in cells {
                     self.solid[i] = true;
-                    self.wall_u[i] = u;
+                    if speed > best_speed[i] {
+                        best_speed[i] = speed;
+                        self.wall_u[i] = u;
+                    }
                 }
             }
         };
-        rim(Box::new((0..nx).map(move |x| x)), self.edges.bottom);
+        rim(Box::new(0..nx), self.edges.bottom);
         rim(
             Box::new((0..nx).map(move |x| (ny - 1) * nx + x)),
             self.edges.top,

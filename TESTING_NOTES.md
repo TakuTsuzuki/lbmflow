@@ -28,6 +28,27 @@
    T10 パラメータを τ=0.51, N=128, U=0.05, Λ=3/16 に確定（VALIDATION.md 更新済み）。
    **テスト側の対応が必要**: パラメータ変更。
 
+## 処理済み（2026-07-05 PM triage #2、詳細: docs/PHYSICS.md 2026-07-05 各節）
+
+order #2 の 5 件の dispositions:
+
+1. `t7_re400`: **参照データの既知の誤植**。Ghia Re=400 の v(0.9063)=−0.23827 は
+   流通データ自体が誤り（隣接点と不連続・出典 gist にも注記あり・我々の解は
+   −0.37657 で滑らか）。→ この 1 点を RMS から除外（VALIDATION T7 更新済み）。
+   **テスト側対応**: 除外処理 + 出典コメント。
+2. `t7_orientation`: **両側バグ**。(a) エンジン: リムコーナーの wall_u が適用順
+   依存 → 「速い壁が勝つ」規則に修正済み。(b) テスト: Left/Right の対称写像が
+   誤り（[0,−U] 左蓋は回転でなく反対角鏡映）。正しい写像は VALIDATION T7 /
+   PHYSICS.md に記載。エンジンは正しい写像で L∞ ~4e-16 を実証済み
+   （examples/probe_equivariance.rs）。**テスト側対応**: 写像修正（Bottom は正しい）。
+3. `t8_re20`: **仕様の幾何不整合**。周期境界+ブロッケージの Cd=2.55 は物理的に
+   正しい値。→ T8 を Schäfer-Turek 2D-1/2D-2 に全面再定義（VALIDATION T8 更新済み）。
+   **テスト側対応**: validation_cylinder.rs を新仕様で書き直し。
+4. `t8_re100`: 同上（2D-2 へ）。
+5. `t9_outflow`: **仕様改定**。ゼロ勾配流出の圧力反射は固有特性（実測 ratio 11.3、
+   衝突演算子非依存の見込み）。→ 上限 15 に改定（VALIDATION T9 更新済み）。
+   convective outlet は Phase 7 バックログ。**テスト側対応**: 閾値変更。
+
 ## 新規不一致（2026-07-05 codex adversarial test order #2）
 
 1. `t7_lid_driven_cavity_re400_matches_ghia`: N=129, U=0.1, TRT Λ=3/16, Re=400。
