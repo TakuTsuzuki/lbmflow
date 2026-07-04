@@ -3,6 +3,7 @@
 //! エージェント向け設計原則: 自己記述（`lbm schema` / `lbm presets`）、
 //! 構造化エラー（JSON）、決定論。
 
+mod mcp;
 mod render;
 mod runner;
 
@@ -47,6 +48,8 @@ enum Command {
     },
     /// シナリオ JSON の書式説明を出力する（エージェントの自己発見用）
     Schema,
+    /// MCP サーバーとして stdio で待ち受ける（AI エージェント連携）
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -147,6 +150,9 @@ fn main() -> Result<()> {
         },
         Command::Schema => {
             println!("{}", SCHEMA_DOC);
+        }
+        Command::Mcp => {
+            mcp::serve()?;
         }
     }
     Ok(())
