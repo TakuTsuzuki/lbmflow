@@ -70,7 +70,7 @@ GUI モードと、エージェントから操作できる Agent モードの両
 | 0 | 基盤: git / workspace / PLAN / VALIDATION / CLAUDE.md | 文書コミット済み |
 | 1 | lbm-core 縦切り（D2Q9, BGK/TRT, Guo力, BB/移動壁/周期/Zou-He/Outflow, 力測定）+ スモークテスト | TGV 収束次数≈2、Poiseuille(TRT)厳密、Couette 厳密、保存則テスト green |
 | 2 | **codex に VALIDATION.md の敵対的テストスイートを実装させる** → 全通過までエンジン修正。キャビティ(Ghia)・円柱(Cd/St) ベンチ含む | `cargo test --release` 全 green |
-| 3 | 精度×速度: f32 検証、MLUPS ベンチ、スレッドスケーリング、モード選択ガイド | トレードオフ実測表が docs に載る |
+| 3 | 精度×速度: f32 検証、MLUPS ベンチ、スレッドスケーリング、モード選択ガイド、**偏差格納方式**（f−w を保持して f32 の有効精度を引き上げる。BB は線形なので偏差空間で不変、Zou-He は定数項の折込みが必要、ρ = 1+Σdev） | トレードオフ実測表が docs に載る。f32 の T6 誤差が改善 |
 | 4 | 混相流: Shan-Chen（単成分多相 + 二成分）+ codex 検証（Laplace 則、接触角、Rayleigh-Taylor） | 混相テスト全 green |
 | 5 | GUI: wasm-pack + Vite + TS。プリセット駆動、障害物ペイント、リアルタイム可視化、日本語 UI | プリセット 5 種がワンクリックで動く |
 | 6 | Agent モード: lbm-cli（JSON シナリオ→構造化出力）+ MCP サーバー | エージェントがシナリオ実行→結果取得できる |
