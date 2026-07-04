@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e14'/%3E%3Cpath d='M5 12c4-5 8 5 12 0s8 5 10 0' stroke='%2335b8ff' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M5 21c4-5 8 5 12 0s8 5 10 0' stroke='%237c5cff' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+    <title>LBMFlow — 流体シミュレータ</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <h1>LBMFlow</h1>
+          <span class="brand-sub">格子ボルツマン流体シミュレータ</span>
+        </div>
+        <div class="header-controls">
+          <label class="preset-label" for="preset-select">プリセット</label>
+          <select id="preset-select" title="実験のシナリオを選びます"></select>
+          <div class="run-controls">
+            <button id="btn-run" class="btn btn-primary" title="シミュレーションを実行 / 停止（Space）">
+              <span id="btn-run-icon">▶</span><span id="btn-run-label">実行</span>
+            </button>
+            <button id="btn-reset" class="btn" title="初期状態に戻します">↺ リセット</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="app-main">
+        <section class="canvas-area">
+          <div id="canvas-wrap" class="canvas-wrap">
+            <canvas id="sim-canvas"></canvas>
+          </div>
+          <p id="preset-desc" class="preset-desc"></p>
+        </section>
+
+        <aside class="side-panel">
+          <section class="panel-section">
+            <h2>可視化</h2>
+            <div class="field-row">
+              <label for="vis-mode">表示する量</label>
+              <select id="vis-mode" title="どの物理量を色で表示するか選びます">
+                <option value="speed">速さ |u|</option>
+                <option value="vorticity">渦度（回転の強さ）</option>
+                <option value="density">密度 ρ</option>
+              </select>
+            </div>
+            <div class="colorbar-row">
+              <canvas id="colorbar" width="256" height="12"></canvas>
+              <div class="colorbar-labels">
+                <span id="colorbar-min">0</span>
+                <span id="colorbar-max">1</span>
+              </div>
+            </div>
+            <p class="hint" id="vis-hint">流れの速いところほど明るく表示されます。</p>
+          </section>
+
+          <section class="panel-section">
+            <h2>障害物ペイント</h2>
+            <div class="field-row">
+              <label>ブラシ</label>
+              <div class="segmented" role="group" aria-label="ブラシモード">
+                <button id="brush-draw" class="seg-btn active" title="ドラッグで障害物を描きます">✏ 描く</button>
+                <button id="brush-erase" class="seg-btn" title="ドラッグで障害物を消します">◌ 消す</button>
+              </div>
+            </div>
+            <div class="field-row">
+              <label for="brush-size">サイズ <span class="value-badge" id="brush-size-value">4</span></label>
+              <input type="range" id="brush-size" min="1" max="16" step="1" value="4"
+                     title="ブラシの半径（セル数）" />
+            </div>
+            <button id="btn-clear-solids" class="btn btn-small" title="描いた障害物をすべて消します">障害物をすべて消去</button>
+            <p class="hint">キャンバスを直接ドラッグして、流れの中に壁や物体を置けます。</p>
+          </section>
+
+          <section class="panel-section">
+            <h2>パラメータ</h2>
+            <div class="field-row">
+              <label for="nu-slider">粘性 ν <span class="value-badge" id="nu-value">0.010</span></label>
+              <input type="range" id="nu-slider" min="0" max="100" step="1" value="50"
+                     title="流体のネバネバさ。小さいほど渦が生まれやすく、大きいほど流れがすぐ落ち着きます" />
+            </div>
+            <div class="field-row">
+              <label for="res-select">解像度</label>
+              <select id="res-select" title="計算格子の細かさ。高いほど精細ですが計算は重くなります">
+                <option value="0.75">低（高速・粗い）</option>
+                <option value="1" selected>標準</option>
+                <option value="1.5">高（精細・低速）</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <label for="spf-slider">ステップ/フレーム <span class="value-badge" id="spf-value">5</span></label>
+              <input type="range" id="spf-slider" min="1" max="30" step="1" value="5"
+                     title="1回の描画あたり何ステップ計算するか。大きいほど時間が速く進みます" />
+            </div>
+            <details class="advanced">
+              <summary>上級設定</summary>
+              <div class="field-row">
+                <label for="collision-select">衝突演算子</label>
+                <select id="collision-select" title="LBMの衝突モデル。TRTは高粘性・低粘性でも安定で高精度です">
+                  <option value="trt" selected>TRT — 高精度（推奨）</option>
+                  <option value="bgk">BGK — シンプル</option>
+                </select>
+              </div>
+              <p class="hint">パラメータの変更はシミュレーションをリセットします（描いた障害物は保持）。</p>
+            </details>
+          </section>
+        </aside>
+      </main>
+
+      <footer class="status-bar">
+        <span class="status-item">ステップ: <strong id="status-step">0</strong></span>
+        <span class="status-item"><strong id="status-sps">—</strong> steps/s</span>
+        <span class="status-item">格子: <strong id="status-grid">—</strong></span>
+        <span class="status-item status-mode">表示: <strong id="status-mode">速さ |u|</strong></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

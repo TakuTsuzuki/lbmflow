@@ -16,7 +16,9 @@ cargo test --release -- --include-ignored # 重いベンチ含むフル検証
 
 - Fable が PM。実装は Claude サブエージェント / codex に委任。
   **検証テストは codex が仕様（VALIDATION.md）から敵対的に作成**し、実装と分離する。
-- codex 実行例: `codex exec --sandbox workspace-write -C <repo> "<task>"`（モデル gpt-5.5）
+- codex 実行例: `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
+  （モデル gpt-5.5。**`< /dev/null` 必須** — stdin が pipe だと EOF 待ちで永久にスタックする。
+  進捗は `~/.codex/sessions/<date>/rollout-*.jsonl` の更新で確認できる）
 - コード・識別子・コミットメッセージは英語、ドキュメント・ユーザー向け文言は日本語。
 - 物理仕様を変更したら docs/PHYSICS.md に理由と実験結果を記録する。
 - フェーズ完了ごとに git commit。テストが red のままコミットしない（WIP は例外、メッセージに明記）。
