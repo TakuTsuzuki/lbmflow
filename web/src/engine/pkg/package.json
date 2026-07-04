@@ -1,0 +1,17 @@
+{
+  "name": "lbm-wasm",
+  "type": "module",
+  "description": "wasm-bindgen bridge exposing lbm-core to the browser GUI",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "files": [
+    "lbm_wasm_bg.wasm",
+    "lbm_wasm.js",
+    "lbm_wasm.d.ts"
+  ],
+  "main": "lbm_wasm.js",
+  "types": "lbm_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -4,11 +4,22 @@ import { MockEngine } from "./mock.ts";
 /**
  * エンジンの生成をここに集約する。
  *
- * WASM エンジンが完成したら、この関数の中身を
- * `return new WasmEngine(...)` に差し替えるだけで UI 全体が切り替わる。
- * （非同期ロードが必要になる場合は `Promise<Engine>` を返す形に変え、
- * main.ts の起動シーケンスで await する。）
+ * 既定では Rust 製 WASM エンジン（本物の LBM）をロードし、失敗した場合や
+ * `?engine=mock` クエリ付きのときはモックにフォールバックする。
  */
-export function createEngine(): Engine {
-  return new MockEngine();
+export async function createEngine(): Promise<Engine> {
+  const params = new URLSearchParams(location.search);
+  if (params.get("engine") === "mock") {
+    console.info("LBMFlow: モックエンジンを使用します (?engine=mock)");
+    return new MockEngine();
+  }
+  try {
+    const { WasmEngine } = await import("./wasm.ts");
+    const engine = await WasmEngine.create();
+    console.info("LBMFlow: WASM エンジン (lbm-core) を使用します");
+    return engine;
+  } catch (err) {
+    console.warn("LBMFlow: WASM エンジンのロードに失敗、モックへフォールバック:", err);
+    return new MockEngine();
+  }
 }

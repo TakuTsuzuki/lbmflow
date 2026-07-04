@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/lbm-core"]
+# lbm-wasm builds standalone (wasm-pack, no rayon); excluded so native
+# `cargo test` never depends on the wasm toolchain.
+exclude = ["crates/lbm-wasm"]
 
 [workspace.package]
 edition = "2021"

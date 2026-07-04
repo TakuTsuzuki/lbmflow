@@ -51,7 +51,7 @@ const statusMode = $<HTMLElement>("status-mode");
 
 // ------------------------------------------------------------- 状態
 
-const engine = createEngine();
+const engine = await createEngine();
 const renderer = new FieldRenderer(canvas);
 
 let currentPreset: Preset = PRESETS[0]!;
