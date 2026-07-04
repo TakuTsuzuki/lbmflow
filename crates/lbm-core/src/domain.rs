@@ -58,6 +58,43 @@ impl<T: Real> EdgeBC<T> {
     }
 }
 
+/// Identifies one edge of the rectangular domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Edge {
+    /// `x = 0` column.
+    Left,
+    /// `x = nx - 1` column.
+    Right,
+    /// `y = 0` row.
+    Bottom,
+    /// `y = ny - 1` row.
+    Top,
+}
+
+impl Edge {
+    /// All four edges.
+    pub const ALL: [Edge; 4] = [Edge::Left, Edge::Right, Edge::Bottom, Edge::Top];
+
+    /// Inward-pointing unit normal.
+    pub(crate) fn n_in(self) -> (i32, i32) {
+        match self {
+            Edge::Left => (1, 0),
+            Edge::Right => (-1, 0),
+            Edge::Bottom => (0, 1),
+            Edge::Top => (0, -1),
+        }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Edge::Left => 0,
+            Edge::Right => 1,
+            Edge::Bottom => 2,
+            Edge::Top => 3,
+        }
+    }
+}
+
 /// Boundary conditions for the four domain edges.
 ///
 /// `left` is the `x = 0` column, `right` is `x = nx-1`, `bottom` is `y = 0`,

@@ -7,7 +7,7 @@
 //! - Macroscopic fields stored in `rho/ux/uy` always describe the *current*
 //!   post-step state; velocities include the Guo half-force correction.
 
-use crate::domain::{Collision, EdgeBC, Edges, SimConfig};
+use crate::domain::{Collision, Edge, EdgeBC, Edges, SimConfig, MAX_SPEED};
 use crate::lattice::{dir_index, CX, CY, OPP, PAIRS, Q, W};
 use crate::real::Real;
 
@@ -36,28 +36,6 @@ struct Geom {
     ny: usize,
     per_x: bool,
     per_y: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Side {
-    Left,
-    Right,
-    Bottom,
-    Top,
-}
-
-impl Side {
-    const ALL: [Side; 4] = [Side::Left, Side::Right, Side::Bottom, Side::Top];
-
-    /// Inward-pointing unit normal.
-    fn n_in(self) -> (i32, i32) {
-        match self {
-            Side::Left => (1, 0),
-            Side::Right => (-1, 0),
-            Side::Bottom => (0, 1),
-            Side::Top => (0, -1),
-        }
-    }
 }
 
 enum ZouHe<T: Real> {
@@ -89,6 +67,9 @@ pub struct Simulation<T: Real> {
     force: [T; 2],
     probe: Option<Vec<bool>>,
     probed_force: [T; 2],
+    /// Per-edge inlet velocity profiles, indexed by [`Edge::index`]; overrides
+    /// the uniform `VelocityInlet` velocity when set.
+    inlet_profiles: [Option<Vec<[T; 2]>>; 4],
     time: u64,
     use_parallel: bool,
 }
@@ -139,6 +120,7 @@ impl<T: Real> Simulation<T> {
             force: cfg.force,
             probe: None,
             probed_force: [T::zero(); 2],
+            inlet_profiles: [None, None, None, None],
             time: 0,
             use_parallel: cfg!(feature = "parallel") && n >= PARALLEL_MIN_CELLS,
         };
@@ -304,30 +286,32 @@ impl<T: Real> Simulation<T> {
     // Open-edge boundary conditions (Zou–He, outflow)
     // ------------------------------------------------------------------
 
-    fn edge_bc(&self, side: Side) -> EdgeBC<T> {
-        match side {
-            Side::Left => self.edges.left,
-            Side::Right => self.edges.right,
-            Side::Bottom => self.edges.bottom,
-            Side::Top => self.edges.top,
+    fn edge_bc(&self, edge: Edge) -> EdgeBC<T> {
+        match edge {
+            Edge::Left => self.edges.left,
+            Edge::Right => self.edges.right,
+            Edge::Bottom => self.edges.bottom,
+            Edge::Top => self.edges.top,
         }
     }
 
-    fn side_cells(&self, side: Side) -> Vec<(usize, usize)> {
-        match side {
-            Side::Left => (0..self.ny).map(|y| (0, y)).collect(),
-            Side::Right => (0..self.ny).map(|y| (self.nx - 1, y)).collect(),
-            Side::Bottom => (0..self.nx).map(|x| (x, 0)).collect(),
-            Side::Top => (0..self.nx).map(|x| (x, self.ny - 1)).collect(),
+    /// Cells on an edge, ordered by the along-edge coordinate (`y` for
+    /// left/right, `x` for bottom/top).
+    fn side_cells(&self, edge: Edge) -> Vec<(usize, usize)> {
+        match edge {
+            Edge::Left => (0..self.ny).map(|y| (0, y)).collect(),
+            Edge::Right => (0..self.ny).map(|y| (self.nx - 1, y)).collect(),
+            Edge::Bottom => (0..self.nx).map(|x| (x, 0)).collect(),
+            Edge::Top => (0..self.nx).map(|x| (x, self.ny - 1)).collect(),
         }
     }
 
     fn apply_open_edges(&mut self) {
-        for side in Side::ALL {
-            match self.edge_bc(side) {
-                EdgeBC::VelocityInlet { u } => self.zou_he(side, ZouHe::Velocity(u)),
-                EdgeBC::PressureOutlet { rho } => self.zou_he(side, ZouHe::Pressure(rho)),
-                EdgeBC::Outflow => self.outflow(side),
+        for edge in Edge::ALL {
+            match self.edge_bc(edge) {
+                EdgeBC::VelocityInlet { u } => self.zou_he(edge, ZouHe::Velocity(u)),
+                EdgeBC::PressureOutlet { rho } => self.zou_he(edge, ZouHe::Pressure(rho)),
+                EdgeBC::Outflow => self.outflow(edge),
                 _ => {}
             }
         }
@@ -346,8 +330,8 @@ impl<T: Real> Simulation<T> {
     /// f_n     = f_-n     + (2/3) rho (u.n)
     /// f_{n±t} = f_{-n∓t} + (1/6) rho (u.n) ± [ (1/2) rho (u.t) - (1/2) T ]
     /// ```
-    fn zou_he(&mut self, side: Side, kind: ZouHe<T>) {
-        let (nxi, nyi) = side.n_in();
+    fn zou_he(&mut self, edge: Edge, kind: ZouHe<T>) {
+        let (nxi, nyi) = edge.n_in();
         let (tx, ty) = (-nyi, nxi);
         let q_n = dir_index(nxi, nyi);
         let q_d1 = dir_index(nxi + tx, nyi + ty);
@@ -358,7 +342,8 @@ impl<T: Real> Simulation<T> {
         let (nxr, nyr) = (T::r(nxi as f64), T::r(nyi as f64));
         let (txr, tyr) = (T::r(tx as f64), T::r(ty as f64));
         let nx = self.nx;
-        for (x, y) in self.side_cells(side) {
+        let profile = self.inlet_profiles[edge.index()].take();
+        for (coord, (x, y)) in self.side_cells(edge).into_iter().enumerate() {
             let i = y * nx + x;
             if self.solid[i] {
                 continue;
@@ -369,6 +354,7 @@ impl<T: Real> Simulation<T> {
             let sneg = f[o + OPP[q_n]] + f[o + OPP[q_d1]] + f[o + OPP[q_d2]];
             let (r, un, ut) = match kind {
                 ZouHe::Velocity(u) => {
+                    let u = profile.as_ref().map_or(u, |p| p[coord]);
                     let un = u[0] * nxr + u[1] * nyr;
                     let ut = u[0] * txr + u[1] * tyr;
                     ((s0 + two * sneg) / (T::one() - un), un, ut)
@@ -384,12 +370,13 @@ impl<T: Real> Simulation<T> {
             f[o + q_d1] = f[o + OPP[q_d1]] + c16 * r * un + tcorr;
             f[o + q_d2] = f[o + OPP[q_d2]] + c16 * r * un - tcorr;
         }
+        self.inlet_profiles[edge.index()] = profile;
     }
 
     /// Zero-gradient outflow: copy the unknown populations from the cell one
     /// step inward along the face normal.
-    fn outflow(&mut self, side: Side) {
-        let (nxi, nyi) = side.n_in();
+    fn outflow(&mut self, edge: Edge) {
+        let (nxi, nyi) = edge.n_in();
         let (tx, ty) = (-nyi, nxi);
         let unknowns = [
             dir_index(nxi, nyi),
@@ -397,7 +384,7 @@ impl<T: Real> Simulation<T> {
             dir_index(nxi - tx, nyi - ty),
         ];
         let nx = self.nx;
-        for (x, y) in self.side_cells(side) {
+        for (x, y) in self.side_cells(edge) {
             let i = y * nx + x;
             let j = ((y as i32 + nyi) as usize) * nx + (x as i32 + nxi) as usize;
             if self.solid[i] || self.solid[j] {
@@ -531,6 +518,33 @@ impl<T: Real> Simulation<T> {
         self.update_moments();
     }
 
+    /// Prescribe a per-node velocity profile for a `VelocityInlet` edge,
+    /// overriding its uniform velocity. `profile(c)` receives the along-edge
+    /// coordinate (`y` for left/right edges, `x` for bottom/top) and returns
+    /// `[ux, uy]`.
+    ///
+    /// Panics if the edge is not `VelocityInlet` or any speed exceeds
+    /// [`MAX_SPEED`].
+    pub fn set_inlet_profile(&mut self, edge: Edge, profile: impl Fn(usize) -> [T; 2]) {
+        assert!(
+            matches!(self.edge_bc(edge), EdgeBC::VelocityInlet { .. }),
+            "set_inlet_profile: {edge:?} is not a VelocityInlet edge"
+        );
+        let len = match edge {
+            Edge::Left | Edge::Right => self.ny,
+            Edge::Bottom | Edge::Top => self.nx,
+        };
+        let values: Vec<[T; 2]> = (0..len).map(&profile).collect();
+        for (c, u) in values.iter().enumerate() {
+            let s = (u[0].as_f64().powi(2) + u[1].as_f64().powi(2)).sqrt();
+            assert!(
+                s <= MAX_SPEED,
+                "inlet profile speed {s} at coordinate {c} exceeds the low-Mach limit {MAX_SPEED}"
+            );
+        }
+        self.inlet_profiles[edge.index()] = Some(values);
+    }
+
     /// Select the set of solid cells whose momentum-exchange force is
     /// accumulated each step (e.g. an obstacle for drag/lift measurement).
     pub fn set_force_probe(&mut self, pred: impl Fn(usize, usize) -> bool) {
@@ -615,40 +629,44 @@ impl<T: Real> Simulation<T> {
     }
 
     /// Total mass over fluid cells, computed directly from the populations.
+    /// Accumulated in `f64` regardless of `T` so the diagnostic itself does
+    /// not drown in summation round-off on `f32` grids.
     pub fn total_mass(&self) -> T {
-        let mut m = T::zero();
+        let mut m = 0.0f64;
         for i in 0..self.nx * self.ny {
             if self.solid[i] {
                 continue;
             }
             for q in 0..Q {
-                m = m + self.f[i * Q + q];
+                m += self.f[i * Q + q].as_f64();
             }
         }
-        m
+        T::r(m)
     }
 
     /// Total momentum `[sum rho ux, sum rho uy]` over fluid cells (physical,
-    /// includes the half-force correction).
+    /// includes the half-force correction). Accumulated in `f64` like
+    /// [`Simulation::total_mass`].
     pub fn total_momentum(&self) -> [T; 2] {
-        let half = T::r(0.5);
-        let mut px = T::zero();
-        let mut py = T::zero();
+        let mut px = 0.0f64;
+        let mut py = 0.0f64;
+        let (fx, fy) = (self.force[0].as_f64(), self.force[1].as_f64());
         for i in 0..self.nx * self.ny {
             if self.solid[i] {
                 continue;
             }
             let o = i * Q;
-            let mut mx = T::zero();
-            let mut my = T::zero();
+            let mut mx = 0.0f64;
+            let mut my = 0.0f64;
             for q in 0..Q {
-                mx = mx + T::r(CX[q] as f64) * self.f[o + q];
-                my = my + T::r(CY[q] as f64) * self.f[o + q];
+                let fq = self.f[o + q].as_f64();
+                mx += CX[q] as f64 * fq;
+                my += CY[q] as f64 * fq;
             }
-            px = px + mx + half * self.force[0];
-            py = py + my + half * self.force[1];
+            px += mx + 0.5 * fx;
+            py += my + 0.5 * fy;
         }
-        [px, py]
+        [T::r(px), T::r(py)]
     }
 }
 

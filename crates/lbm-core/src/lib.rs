@@ -43,7 +43,7 @@ pub mod sim;
 
 /// Convenient glob import: `use lbm_core::prelude::*;`.
 pub mod prelude {
-    pub use crate::domain::{Collision, ConfigError, EdgeBC, Edges, SimConfig, MAX_SPEED};
+    pub use crate::domain::{Collision, ConfigError, Edge, EdgeBC, Edges, SimConfig, MAX_SPEED};
     pub use crate::real::Real;
     pub use crate::sim::Simulation;
 }

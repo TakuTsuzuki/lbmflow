@@ -26,13 +26,18 @@ fn tgv_init(n: usize, nu: f64, mode: TgvMode) -> (Simulation<f64>, usize, f64, f
     .build()
     .unwrap();
     sim.init_with(|x, y| {
-        let (xf, yf) = (k * x as f64, k * y as f64);
+        let (sx, sy, rotate_vec) = match mode {
+            TgvMode::Base => (x, y, false),
+            TgvMode::Rot90 => (y, (n - x) % n, true),
+        };
+        let (xf, yf) = (k * sx as f64, k * sy as f64);
         let rho = 1.0 - 3.0 * u0 * u0 / 4.0 * ((2.0 * xf).cos() + (2.0 * yf).cos());
         let ux = -u0 * xf.cos() * yf.sin();
         let uy = u0 * xf.sin() * yf.cos();
-        match mode {
-            TgvMode::Base => (rho, ux, uy),
-            TgvMode::Rot90 => (rho, -uy, ux),
+        if rotate_vec {
+            (rho, -uy, ux)
+        } else {
+            (rho, ux, uy)
         }
     });
     let t_star = (1.0 / (2.0 * nu * k * k)).round() as usize;
@@ -127,8 +132,10 @@ fn t1_tgv_rotated_initial_field_stays_rotationally_symmetric() {
     let mut linf = 0.0f64;
     for y in 0..n {
         for x in 0..n {
-            linf = linf.max((rot.ux(x, y) + base.uy(x, y)).abs());
-            linf = linf.max((rot.uy(x, y) - base.ux(x, y)).abs());
+            let sx = y;
+            let sy = (n - x) % n;
+            linf = linf.max((rot.ux(x, y) + base.uy(sx, sy)).abs());
+            linf = linf.max((rot.uy(x, y) - base.ux(sx, sy)).abs());
         }
     }
     assert!(linf <= 1.0e-12, "T1 90deg rotation L_inf = {linf:e}");
