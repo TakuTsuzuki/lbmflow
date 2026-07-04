@@ -91,6 +91,10 @@ GUI モードと、エージェントから操作できる Agent モードの両
   Zou-He, Outflow, 力測定, f32/f64, rayon+小格子シリアルフォールバック）実装。
   スモークテスト 21 件 green: TGV 2次収束（1.91/1.98）、Poiseuille TRT 厳密
   (<1e-10)、Couette 厳密、保存則 ~1e-13。実験知見 4 件を PHYSICS.md に記録。
+- 2026-07-05: **Phase 4a 実装完了**（検証は codex #4 待ち）。セル別力場 API +
+  Shan-Chen SCMP。実測: 密度比 15.8、圧力平衡 8.5e-6、疑似速度 1.3e-3、
+  Laplace R²=0.9999。**スコープ再編**: MCMP+RT（Phase 4b）は初回レビュー後へ。
+  GUI（Phase 5）/ Agent モード（Phase 6）を先行し 3 モード統一を先に完成させる。
 - 2026-07-05: **Phase 3 完了**。偏差格納方式（f−w）導入で f32 が検証グレードに
   （運動量誤差 4800 倍改善・TGV で f64 同等）。MLUPS 実測: 峰 381（f32/1024²/18T）、
   シングル 35、TRT は BGK と同速。PERFORMANCE.md にトレードオフガイド。

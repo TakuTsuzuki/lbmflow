@@ -38,6 +38,7 @@
 
 pub mod domain;
 pub mod lattice;
+pub mod multiphase;
 pub mod real;
 pub mod sim;
 

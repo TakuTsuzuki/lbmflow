@@ -70,6 +70,9 @@ pub struct Simulation<T: Real> {
     /// Per-edge inlet velocity profiles, indexed by [`Edge::index`]; overrides
     /// the uniform `VelocityInlet` velocity when set.
     inlet_profiles: [Option<Vec<[T; 2]>>; 4],
+    /// Optional per-cell body force, added to the uniform `force` (used by
+    /// multiphase models; rewritten every step by the caller).
+    force_field: Option<Vec<[T; 2]>>,
     time: u64,
     use_parallel: bool,
 }
@@ -120,6 +123,7 @@ impl<T: Real> Simulation<T> {
             probe: None,
             probed_force: [T::zero(); 2],
             inlet_profiles: [None, None, None, None],
+            force_field: None,
             time: 0,
             use_parallel: cfg!(feature = "parallel") && n >= PARALLEL_MIN_CELLS,
         };
@@ -225,9 +229,18 @@ impl<T: Real> Simulation<T> {
         let p = self.params();
         let nx = self.nx;
         let (rho, ux, uy, solid) = (&self.rho, &self.ux, &self.uy, &self.solid);
+        let ff = self.force_field.as_deref();
         let body = |(y, frow): (usize, &mut [T])| {
             let r = y * nx..(y + 1) * nx;
-            collide_row(frow, &rho[r.clone()], &ux[r.clone()], &uy[r.clone()], &solid[r], &p);
+            collide_row(
+                frow,
+                &rho[r.clone()],
+                &ux[r.clone()],
+                &uy[r.clone()],
+                &solid[r.clone()],
+                ff.map(|f| &f[r]),
+                &p,
+            );
         };
         #[cfg(feature = "parallel")]
         if self.use_parallel {
@@ -266,6 +279,7 @@ impl<T: Real> Simulation<T> {
         let p = self.params();
         let nx = self.nx;
         let (f, solid) = (&self.f, &self.solid);
+        let ff = self.force_field.as_deref();
         let body = |(y, ((rrow, uxrow), uyrow)): (usize, ((&mut [T], &mut [T]), &mut [T]))| {
             moments_row(
                 &f[y * nx * Q..(y + 1) * nx * Q],
@@ -273,6 +287,7 @@ impl<T: Real> Simulation<T> {
                 uxrow,
                 uyrow,
                 &solid[y * nx..(y + 1) * nx],
+                ff.map(|f| &f[y * nx..(y + 1) * nx]),
                 &p,
             );
         };
@@ -561,6 +576,20 @@ impl<T: Real> Simulation<T> {
         self.inlet_profiles[edge.index()] = Some(values);
     }
 
+    /// Mutable access to the per-cell force field (`[fx, fy]` per cell,
+    /// indexed `y*nx + x`), allocating it zero-filled on first use. The field
+    /// is *added* to the uniform `force` and is intended to be rewritten each
+    /// step by multiphase models (see `multiphase::ShanChen::update_force`).
+    pub fn force_field_mut(&mut self) -> &mut [[T; 2]] {
+        let n = self.nx * self.ny;
+        self.force_field.get_or_insert_with(|| vec![[T::zero(); 2]; n])
+    }
+
+    /// Remove the per-cell force field (reverts to the uniform force only).
+    pub fn clear_force_field(&mut self) {
+        self.force_field = None;
+    }
+
     /// Select the set of solid cells whose momentum-exchange force is
     /// accumulated each step (e.g. an obstacle for drag/lift measurement).
     pub fn set_force_probe(&mut self, pred: impl Fn(usize, usize) -> bool) {
@@ -626,6 +655,18 @@ impl<T: Real> Simulation<T> {
     pub fn is_solid(&self, x: usize, y: usize) -> bool {
         self.solid[self.idx(x, y)]
     }
+    /// Solid mask, indexed `[y*nx + x]`.
+    pub fn solid_field(&self) -> &[bool] {
+        &self.solid
+    }
+    /// Whether the x axis wraps periodically.
+    pub fn is_periodic_x(&self) -> bool {
+        self.edges.left.is_periodic()
+    }
+    /// Whether the y axis wraps periodically.
+    pub fn is_periodic_y(&self) -> bool {
+        self.edges.bottom.is_periodic()
+    }
     /// Density field, indexed `[y*nx + x]`.
     pub fn rho_field(&self) -> &[T] {
         &self.rho
@@ -669,7 +710,8 @@ impl<T: Real> Simulation<T> {
     pub fn total_momentum(&self) -> [T; 2] {
         let mut px = 0.0f64;
         let mut py = 0.0f64;
-        let (fx, fy) = (self.force[0].as_f64(), self.force[1].as_f64());
+        let (ufx, ufy) = (self.force[0].as_f64(), self.force[1].as_f64());
+        let ff = self.force_field.as_deref();
         for i in 0..self.nx * self.ny {
             if self.solid[i] {
                 continue;
@@ -682,6 +724,10 @@ impl<T: Real> Simulation<T> {
                 mx += CX[q] as f64 * fq;
                 my += CY[q] as f64 * fq;
             }
+            let (fx, fy) = match ff {
+                Some(field) => (ufx + field[i][0].as_f64(), ufy + field[i][1].as_f64()),
+                None => (ufx, ufy),
+            };
             px += mx + 0.5 * fx;
             py += my + 0.5 * fy;
         }
@@ -708,12 +754,14 @@ fn equilibrium<T: Real>(p: &Params<T>, r: T, vx: T, vy: T) -> [T; Q] {
 }
 
 /// TRT collision (BGK when `omega_m == omega_p`) with Guo forcing, one row.
+/// `ff` optionally supplies a per-cell force added to the uniform one.
 fn collide_row<T: Real>(
     f: &mut [T],
     rho: &[T],
     ux: &[T],
     uy: &[T],
     solid: &[bool],
+    ff: Option<&[[T; 2]]>,
     p: &Params<T>,
 ) {
     let three = T::r(3.0);
@@ -721,15 +769,19 @@ fn collide_row<T: Real>(
     let f15 = T::r(1.5);
     let nine = T::r(9.0);
     let half = T::r(0.5);
-    let force_on = p.fx != T::zero() || p.fy != T::zero();
+    let force_on = p.fx != T::zero() || p.fy != T::zero() || ff.is_some();
     for x in 0..rho.len() {
         if solid[x] {
             continue;
         }
         let o = x * Q;
         let (r, vx, vy) = (rho[x], ux[x], uy[x]);
+        let (fx, fy) = match ff {
+            Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
+            None => (p.fx, p.fy),
+        };
         let usq = vx * vx + vy * vy;
-        let uf = vx * p.fx + vy * p.fy;
+        let uf = vx * fx + vy * fy;
         let drho = r - T::one();
         let mut feq = [T::zero(); Q]; // deviation form: feq_q - w_q
         let mut src = [T::zero(); Q];
@@ -737,7 +789,7 @@ fn collide_row<T: Real>(
             let cu = p.cxr[q] * vx + p.cyr[q] * vy;
             feq[q] = p.wr[q] * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
             if force_on {
-                let cf = p.cxr[q] * p.fx + p.cyr[q] * p.fy;
+                let cf = p.cxr[q] * fx + p.cyr[q] * fy;
                 src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);
             }
         }
@@ -837,6 +889,7 @@ fn moments_row<T: Real>(
     ux: &mut [T],
     uy: &mut [T],
     solid: &[bool],
+    ff: Option<&[[T; 2]]>,
     p: &Params<T>,
 ) {
     let half = T::r(0.5);
@@ -856,11 +909,15 @@ fn moments_row<T: Real>(
             mx = mx + p.cxr[q] * fq;
             my = my + p.cyr[q] * fq;
         }
+        let (fx, fy) = match ff {
+            Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
+            None => (p.fx, p.fy),
+        };
         let r = T::one() + dr;
         rho[x] = r;
         let inv = T::one() / r;
-        ux[x] = (mx + half * p.fx) * inv;
-        uy[x] = (my + half * p.fy) * inv;
+        ux[x] = (mx + half * fx) * inv;
+        uy[x] = (my + half * fy) * inv;
     }
 }
 
