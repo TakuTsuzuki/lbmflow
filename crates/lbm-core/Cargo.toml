@@ -1,0 +1,17 @@
+[package]
+name = "lbm-core"
+description = "Lattice Boltzmann method core engine (D2Q9)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+num-traits = "0.2"
+rayon = { version = "1.10", optional = true }
+
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
+[dev-dependencies]
+approx = "0.5"
