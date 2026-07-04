@@ -1,0 +1,159 @@
+//! Validation T9: zero-gradient outflow robustness for a cylinder wake.
+
+use lbm_core::lattice::CS2;
+use lbm_core::prelude::*;
+
+#[derive(Clone, Copy, Debug)]
+struct OutflowCase {
+    nx: usize,
+    ny: usize,
+    d: f64,
+    cx: f64,
+    cy: f64,
+    u: f64,
+    re: f64,
+    steps: usize,
+}
+
+fn build_case(case: OutflowCase) -> Simulation<f64> {
+    let nu = case.u * case.d / case.re;
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: case.nx,
+        ny: case.ny,
+        nu,
+        collision: Collision::Trt { magic: 3.0 / 16.0 },
+        edges: Edges {
+            left: EdgeBC::VelocityInlet { u: [case.u, 0.0] },
+            right: EdgeBC::Outflow,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.set_inlet_profile(Edge::Left, |y| {
+        if y == 0 || y == case.ny - 1 {
+            [0.0, 0.0]
+        } else {
+            [case.u, 0.0]
+        }
+    });
+    let r = 0.5 * case.d;
+    let is_cylinder = |x: usize, y: usize| {
+        let dx = x as f64 - case.cx;
+        let dy = y as f64 - case.cy;
+        dx * dx + dy * dy <= r * r
+    };
+    sim.set_solid_region(is_cylinder);
+    sim.init_with(|x, y| {
+        if is_cylinder(x, y) || x == 0 || x == case.nx - 1 || y == 0 || y == case.ny - 1 {
+            (1.0, 0.0, 0.0)
+        } else {
+            (1.0, case.u, 0.0)
+        }
+    });
+    sim
+}
+
+fn assert_finite(sim: &Simulation<f64>, label: &str) {
+    for y in 0..sim.ny() {
+        for x in 0..sim.nx() {
+            let rho = sim.rho(x, y);
+            let ux = sim.ux(x, y);
+            let uy = sim.uy(x, y);
+            assert!(
+                rho.is_finite() && ux.is_finite() && uy.is_finite(),
+                "T9 {label}: non-finite at ({x},{y}), rho = {rho:e}, ux = {ux:e}, uy = {uy:e}, time = {}",
+                sim.time()
+            );
+        }
+    }
+}
+
+fn backflow_fraction(sim: &Simulation<f64>) -> (f64, f64, f64) {
+    let x_in = 1;
+    let x_out = sim.nx() - 2;
+    let mut inflow = 0.0;
+    let mut backflow = 0.0;
+    for y in 1..=(sim.ny() - 2) {
+        inflow += (sim.rho(x_in, y) * sim.ux(x_in, y)).max(0.0);
+        backflow += (-sim.rho(x_out, y) * sim.ux(x_out, y)).max(0.0);
+    }
+    (backflow / inflow, backflow, inflow)
+}
+
+fn pressure_rms_ratio(sim: &Simulation<f64>) -> (f64, f64, f64) {
+    let near_start = sim.nx() * 9 / 10;
+    let mid_start = sim.nx() * 45 / 100;
+    let mid_end = sim.nx() * 55 / 100;
+    let near = pressure_rms(sim, near_start, sim.nx() - 2);
+    let mid = pressure_rms(sim, mid_start, mid_end);
+    (near / mid, near, mid)
+}
+
+fn pressure_rms(sim: &Simulation<f64>, x0: usize, x1: usize) -> f64 {
+    let mut vals = Vec::new();
+    for x in x0..=x1 {
+        for y in 1..=(sim.ny() - 2) {
+            if !sim.is_solid(x, y) {
+                vals.push(CS2 * sim.rho(x, y));
+            }
+        }
+    }
+    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+    (vals.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / vals.len() as f64).sqrt()
+}
+
+#[test]
+fn t9_outflow_cylinder_wake_smoke_stays_finite_with_limited_backflow() {
+    let case = OutflowCase {
+        nx: 260,
+        ny: 88,
+        d: 16.0,
+        cx: 64.0,
+        cy: 44.0,
+        u: 0.05,
+        re: 100.0,
+        steps: 20_000,
+    };
+    let mut sim = build_case(case);
+    sim.run(case.steps);
+    assert_finite(&sim, "smoke");
+    let (frac, backflow, inflow) = backflow_fraction(&sim);
+    assert!(
+        frac <= 0.05,
+        "T9 smoke backflow fraction = {frac:e}, backflow = {backflow:e}, inflow = {inflow:e}, steps = {}",
+        case.steps
+    );
+}
+
+#[test]
+#[ignore]
+fn t9_outflow_cylinder_wake_long_run_stays_sane() {
+    let case = OutflowCase {
+        nx: 440,
+        ny: 160,
+        d: 20.0,
+        cx: 110.0,
+        cy: 81.0,
+        u: 0.05,
+        re: 100.0,
+        steps: 100_000,
+    };
+    let mut sim = build_case(case);
+    sim.run(case.steps);
+    assert_finite(&sim, "long");
+    let (frac, backflow, inflow) = backflow_fraction(&sim);
+    assert!(
+        frac <= 0.05,
+        "T9 long backflow fraction = {frac:e}, backflow = {backflow:e}, inflow = {inflow:e}, steps = {}",
+        case.steps
+    );
+    let (ratio, near, mid) = pressure_rms_ratio(&sim);
+    assert!(
+        ratio <= 3.0,
+        "T9 pressure RMS ratio = {ratio:e}, near = {near:e}, mid = {mid:e}, steps = {}",
+        case.steps
+    );
+}

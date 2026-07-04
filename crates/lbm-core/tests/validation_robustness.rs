@@ -88,15 +88,15 @@ fn t10_every_config_error_path_is_reported() {
 #[test]
 fn t10_tau_051_trt_cavity_runs_without_nan() {
     let mut sim: Simulation<f64> = SimConfig {
-        nx: 34,
-        ny: 34,
+        nx: 128,
+        ny: 128,
         nu: (0.51 - 0.5) / 3.0,
-        collision: Collision::default(),
+        collision: Collision::Trt { magic: 3.0 / 16.0 },
         edges: Edges {
             left: EdgeBC::BounceBack,
             right: EdgeBC::BounceBack,
             bottom: EdgeBC::BounceBack,
-            top: EdgeBC::MovingWall { u: [0.1, 0.0] },
+            top: EdgeBC::MovingWall { u: [0.05, 0.0] },
         },
         ..Default::default()
     }

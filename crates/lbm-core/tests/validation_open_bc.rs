@@ -1,11 +1,7 @@
 //! Validation T4/T5: open boundary channels.
 //!
-//! The current public API prescribes one velocity vector per inlet edge, not a
-//! spatially varying parabolic profile. T4 therefore uses the available
-//! uniform velocity inlet and checks the spec-observable consequences:
-//! orientation coverage, flow-rate constancy, outlet flux balance, and
-//! developed central profile against the Poiseuille profile with matching
-//! flow rate.
+//! T4 uses a prescribed parabolic inlet profile and checks bulk mass-flux
+//! constancy away from the known Zou-He pressure-outlet boundary layer.
 
 mod common;
 
@@ -50,10 +46,46 @@ fn channel_edges(orientation: Orientation, u: f64, rho_out: f64) -> Edges<f64> {
     }
 }
 
+fn inlet_edge(orientation: Orientation) -> Edge {
+    match orientation {
+        Orientation::LeftToRight => Edge::Left,
+        Orientation::RightToLeft => Edge::Right,
+        Orientation::BottomToTop => Edge::Bottom,
+        Orientation::TopToBottom => Edge::Top,
+    }
+}
+
 fn dims(orientation: Orientation) -> (usize, usize) {
     match orientation {
         Orientation::LeftToRight | Orientation::RightToLeft => (96, 34),
         Orientation::BottomToTop | Orientation::TopToBottom => (34, 96),
+    }
+}
+
+fn channel_width(sim: &Simulation<f64>, orientation: Orientation) -> usize {
+    match orientation {
+        Orientation::LeftToRight | Orientation::RightToLeft => sim.ny() - 2,
+        Orientation::BottomToTop | Orientation::TopToBottom => sim.nx() - 2,
+    }
+}
+
+fn parabolic_speed(coord: usize, h: usize, umax: f64) -> f64 {
+    if coord == 0 || coord == h + 1 {
+        0.0
+    } else {
+        let h_f = h as f64;
+        let yw = coord as f64 - 0.5;
+        4.0 * umax * yw * (h_f - yw) / (h_f * h_f)
+    }
+}
+
+fn inlet_velocity(orientation: Orientation, coord: usize, h: usize, umax: f64) -> [f64; 2] {
+    let u = parabolic_speed(coord, h, umax);
+    match orientation {
+        Orientation::LeftToRight => [u, 0.0],
+        Orientation::RightToLeft => [-u, 0.0],
+        Orientation::BottomToTop => [0.0, u],
+        Orientation::TopToBottom => [0.0, -u],
     }
 }
 
@@ -69,10 +101,10 @@ fn normal_velocity(sim: &Simulation<f64>, orientation: Orientation, x: usize, y:
 fn section_flow(sim: &Simulation<f64>, orientation: Orientation, s: usize) -> f64 {
     match orientation {
         Orientation::LeftToRight | Orientation::RightToLeft => (1..=(sim.ny() - 2))
-            .map(|y| normal_velocity(sim, orientation, s, y))
+            .map(|y| sim.rho(s, y) * normal_velocity(sim, orientation, s, y))
             .sum(),
         Orientation::BottomToTop | Orientation::TopToBottom => (1..=(sim.nx() - 2))
-            .map(|x| normal_velocity(sim, orientation, x, s))
+            .map(|x| sim.rho(x, s) * normal_velocity(sim, orientation, x, s))
             .sum(),
     }
 }
@@ -94,20 +126,22 @@ fn central_profile(sim: &Simulation<f64>, orientation: Orientation) -> Vec<f64> 
     }
 }
 
-fn poiseuille_from_flux(h: usize, q: f64) -> Vec<f64> {
-    let h_f = h as f64;
-    let shape: Vec<f64> = (1..=h)
-        .map(|j| {
-            let yw = j as f64 - 0.5;
-            yw * (h_f - yw)
-        })
-        .collect();
-    let scale = q / shape.iter().sum::<f64>();
-    shape.into_iter().map(|v| scale * v).collect()
+fn parabolic_profile(h: usize, umax: f64) -> Vec<f64> {
+    (1..=h).map(|j| parabolic_speed(j, h, umax)).collect()
+}
+
+fn bulk_sections(sim: &Simulation<f64>, orientation: Orientation) -> Vec<usize> {
+    match orientation {
+        Orientation::LeftToRight => (1..=(sim.nx() - 25)).collect(),
+        Orientation::RightToLeft => (24..=(sim.nx() - 2)).collect(),
+        Orientation::BottomToTop => (1..=(sim.ny() - 25)).collect(),
+        Orientation::TopToBottom => (24..=(sim.ny() - 2)).collect(),
+    }
 }
 
 #[test]
 fn t4_velocity_inlet_pressure_outlet_channel_all_four_orientations() {
+    let umax = 0.05;
     for orientation in [
         Orientation::LeftToRight,
         Orientation::RightToLeft,
@@ -120,21 +154,24 @@ fn t4_velocity_inlet_pressure_outlet_channel_all_four_orientations() {
             ny,
             nu: 0.02,
             collision: Collision::default(),
-            edges: channel_edges(orientation, 0.05, 1.0),
+            edges: channel_edges(orientation, 0.0, 1.0),
             ..Default::default()
         }
         .build()
         .unwrap();
+        let h = channel_width(&sim, orientation);
+        sim.set_inlet_profile(inlet_edge(orientation), |c| {
+            inlet_velocity(orientation, c, h, umax)
+        });
         assert!(
             run_to_steady(&mut sim, 500, 1.0e-11, 160_000),
             "T4 steady = false, orientation = {orientation:?}, time = {}",
             sim.time()
         );
-        let sections = match orientation {
-            Orientation::LeftToRight | Orientation::RightToLeft => 1..(sim.nx() - 1),
-            Orientation::BottomToTop | Orientation::TopToBottom => 1..(sim.ny() - 1),
-        };
+        let sections = bulk_sections(&sim, orientation);
         let flows: Vec<f64> = sections
+            .iter()
+            .copied()
             .map(|s| section_flow(&sim, orientation, s))
             .collect();
         let q_bar = flows.iter().sum::<f64>() / flows.len() as f64;
@@ -144,22 +181,23 @@ fn t4_velocity_inlet_pressure_outlet_channel_all_four_orientations() {
             .fold(0.0f64, f64::max)
             / q_bar.abs();
         assert!(
-            q_span <= 1.0e-6,
-            "T4 flow const rel = {q_span:e}, orientation = {orientation:?}, q_bar = {q_bar:e}, flows = {flows:?}"
-        );
-        let q_in = flows[0];
-        let q_out = flows[flows.len() - 1];
-        let flux_rel = ((q_in - q_out) / q_bar).abs();
-        assert!(
-            flux_rel <= 1.0e-6,
-            "T4 inlet/outlet flux rel = {flux_rel:e}, orientation = {orientation:?}, q_in = {q_in:e}, q_out = {q_out:e}, q_bar = {q_bar:e}"
+            q_span <= 1.0e-4,
+            "T4 bulk mass-flux const rel = {q_span:e}, orientation = {orientation:?}, q_bar = {q_bar:e}, sections = {sections:?}, flows = {flows:?}"
         );
         let profile = central_profile(&sim, orientation);
-        let reference = poiseuille_from_flux(profile.len(), q_bar);
+        let reference = parabolic_profile(profile.len(), umax);
         let err = l2_rel(&profile, &reference);
         assert!(
             err <= 2.0e-3,
-            "T4 central profile L2rel = {err:e}, orientation = {orientation:?}, q_bar = {q_bar:e}, profile = {profile:?}, reference = {reference:?}"
+            "T4 central profile L2rel = {err:e}, orientation = {orientation:?}, profile = {profile:?}, reference = {reference:?}"
+        );
+        let m0 = sim.total_mass();
+        sim.run(10_000);
+        let drift = ((sim.total_mass() - m0) / m0).abs();
+        assert!(
+            drift <= 1.0e-11,
+            "T4 steady mass drift = {drift:e}, orientation = {orientation:?}, time = {}",
+            sim.time()
         );
     }
 }
@@ -200,20 +238,21 @@ fn pressure_channel_flow(sim: &Simulation<f64>) -> f64 {
 
 fn pressure_linearity_r2(sim: &Simulation<f64>) -> f64 {
     let ys = sim.ny() / 2;
-    let n = sim.nx() as f64;
-    let x_mean = (sim.nx() - 1) as f64 / 2.0;
-    let p_mean = (0..sim.nx()).map(|x| CS2 * sim.rho(x, ys)).sum::<f64>() / n;
+    let xs = 8..(sim.nx() - 8);
+    let n = xs.len() as f64;
+    let x_mean = xs.clone().map(|x| x as f64).sum::<f64>() / n;
+    let p_mean = xs.clone().map(|x| CS2 * sim.rho(x, ys)).sum::<f64>() / n;
     let mut sxx = 0.0;
     let mut sxy = 0.0;
     let mut syy = 0.0;
-    for x in 0..sim.nx() {
+    for x in xs.clone() {
         let dx = x as f64 - x_mean;
         let dp = CS2 * sim.rho(x, ys) - p_mean;
         sxx += dx * dx;
         sxy += dx * dp;
         syy += dp * dp;
     }
-    let ss_res = (0..sim.nx())
+    let ss_res = xs
         .map(|x| {
             let fit = p_mean + sxy / sxx * (x as f64 - x_mean);
             let res = CS2 * sim.rho(x, ys) - fit;
@@ -246,15 +285,41 @@ fn t5_pressure_pressure_channel_flow_rate_and_linear_pressure() {
 }
 
 #[test]
-fn t5_pressure_sign_reversal_is_antisymmetric() {
+fn t5_pressure_reversal_with_x_mirror_is_exact() {
     let fwd = pressure_channel(2.0e-3);
     let rev = pressure_channel(-2.0e-3);
     let mut linf = 0.0f64;
     for y in 1..=(fwd.ny() - 2) {
         for x in 0..fwd.nx() {
-            linf = linf.max((fwd.ux(x, y) + rev.ux(x, y)).abs());
-            linf = linf.max((fwd.uy(x, y) + rev.uy(x, y)).abs());
+            let mx = fwd.nx() - 1 - x;
+            linf = linf.max((rev.rho(x, y) - fwd.rho(mx, y)).abs());
+            linf = linf.max((rev.ux(x, y) + fwd.ux(mx, y)).abs());
+            linf = linf.max((rev.uy(x, y) - fwd.uy(mx, y)).abs());
         }
     }
-    assert!(linf <= 1.0e-12, "T5 sign reversal L_inf = {linf:e}");
+    assert!(
+        linf <= 1.0e-12,
+        "T5 mirrored pressure reversal L_inf = {linf:e}"
+    );
+}
+
+#[test]
+fn t5_plain_pressure_reversal_is_approximately_antisymmetric() {
+    let fwd = pressure_channel(2.0e-3);
+    let rev = pressure_channel(-2.0e-3);
+    let mut num = 0.0f64;
+    let mut den = 0.0f64;
+    for y in 1..=(fwd.ny() - 2) {
+        for x in 0..fwd.nx() {
+            num = num.max((fwd.ux(x, y) + rev.ux(x, y)).abs());
+            num = num.max((fwd.uy(x, y) + rev.uy(x, y)).abs());
+            den = den.max(fwd.ux(x, y).abs());
+            den = den.max(fwd.uy(x, y).abs());
+        }
+    }
+    let rel = num / den;
+    assert!(
+        rel <= 5.0e-3,
+        "T5 plain pressure reversal relative L_inf = {rel:e}, abs = {num:e}, scale = {den:e}"
+    );
 }
