@@ -97,12 +97,11 @@ impl<T: Real> Simulation<T> {
                 1.0 / (magic / lam_p + 0.5)
             }
         };
-        let mut f = vec![T::zero(); n * Q];
-        for i in 0..n {
-            for q in 0..Q {
-                f[i * Q + q] = T::r(W[q]);
-            }
-        }
+        // Deviation storage: `f` holds f_q - w_q, so the quiescent state
+        // (rho = 1, u = 0) is exactly all-zero. All arithmetic then acts on
+        // small fluctuations, which lifts the effective precision of f32
+        // runs by orders of magnitude (docs/PHYSICS.md).
+        let f = vec![T::zero(); n * Q];
         let mut sim = Self {
             nx: cfg.nx,
             ny: cfg.ny,
@@ -363,18 +362,22 @@ impl<T: Real> Simulation<T> {
             }
             let o = i * Q;
             let f = &mut self.f;
+            // Deviation storage: the physical S0 + 2 S- equals the deviation
+            // sums plus sum(w) over those directions, which is exactly 1 for
+            // any straight edge (3 edge-parallel + 2x3 outgoing weights).
             let s0 = f[o] + f[o + q_t] + f[o + q_mt];
             let sneg = f[o + OPP[q_n]] + f[o + OPP[q_d1]] + f[o + OPP[q_d2]];
+            let closure = s0 + two * sneg + T::one();
             let (r, un, ut) = match kind {
                 ZouHe::Velocity(u) => {
                     let u = profile.as_ref().map_or(u, |p| p[coord]);
                     let un = u[0] * nxr + u[1] * nyr;
                     let ut = u[0] * txr + u[1] * tyr;
-                    ((s0 + two * sneg) / (T::one() - un), un, ut)
+                    (closure / (T::one() - un), un, ut)
                 }
                 ZouHe::Pressure(rho_bc) => {
                     // From the closure rho (1 - u.n) = S0 + 2 S-.
-                    let un = T::one() - (s0 + two * sneg) / rho_bc;
+                    let un = T::one() - closure / rho_bc;
                     (rho_bc, un, T::zero())
                 }
             };
@@ -645,16 +648,19 @@ impl<T: Real> Simulation<T> {
     /// Accumulated in `f64` regardless of `T` so the diagnostic itself does
     /// not drown in summation round-off on `f32` grids.
     pub fn total_mass(&self) -> T {
+        // Deviation storage: physical mass = fluid_cell_count + sum(f_dev).
         let mut m = 0.0f64;
+        let mut fluid = 0usize;
         for i in 0..self.nx * self.ny {
             if self.solid[i] {
                 continue;
             }
+            fluid += 1;
             for q in 0..Q {
                 m += self.f[i * Q + q].as_f64();
             }
         }
-        T::r(m)
+        T::r(fluid as f64 + m)
     }
 
     /// Total momentum `[sum rho ux, sum rho uy]` over fluid cells (physical,
@@ -683,16 +689,20 @@ impl<T: Real> Simulation<T> {
     }
 }
 
-/// Equilibrium distribution for `(rho, u)`.
+/// Equilibrium distribution in deviation form: `feq_q - w_q`.
+///
+/// Written in terms of `drho = rho - 1` so no large-magnitude cancellation
+/// occurs — essential for the f32 precision of the deviation storage.
 fn equilibrium<T: Real>(p: &Params<T>, r: T, vx: T, vy: T) -> [T; Q] {
     let three = T::r(3.0);
     let f45 = T::r(4.5);
     let f15 = T::r(1.5);
     let usq = vx * vx + vy * vy;
+    let drho = r - T::one();
     let mut feq = [T::zero(); Q];
     for q in 0..Q {
         let cu = p.cxr[q] * vx + p.cyr[q] * vy;
-        feq[q] = p.wr[q] * r * (T::one() + three * cu + f45 * cu * cu - f15 * usq);
+        feq[q] = p.wr[q] * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
     }
     feq
 }
@@ -720,11 +730,12 @@ fn collide_row<T: Real>(
         let (r, vx, vy) = (rho[x], ux[x], uy[x]);
         let usq = vx * vx + vy * vy;
         let uf = vx * p.fx + vy * p.fy;
-        let mut feq = [T::zero(); Q];
+        let drho = r - T::one();
+        let mut feq = [T::zero(); Q]; // deviation form: feq_q - w_q
         let mut src = [T::zero(); Q];
         for q in 0..Q {
             let cu = p.cxr[q] * vx + p.cyr[q] * vy;
-            feq[q] = p.wr[q] * r * (T::one() + three * cu + f45 * cu * cu - f15 * usq);
+            feq[q] = p.wr[q] * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
             if force_on {
                 let cf = p.cxr[q] * p.fx + p.cyr[q] * p.fy;
                 src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);
@@ -792,7 +803,8 @@ fn stream_row<T: Real>(
             let s = sy as usize * nx + sx as usize;
             if solid[s] {
                 // Half-way bounce-back off the wall between cells s and i,
-                // with momentum injection for moving walls.
+                // with momentum injection for moving walls. In deviation
+                // storage the formula is unchanged (w_q == w_opp(q)).
                 let fout = f[i * Q + OPP[q]];
                 let wu = wall_u[s];
                 let cu = p.cxr[q] * wu[0] + p.cyr[q] * wu[1];
@@ -800,9 +812,14 @@ fn stream_row<T: Real>(
                 out[o + q] = fin;
                 if let Some(mask) = probe {
                     if mask[s] {
-                        // Momentum given to the wall through this link.
-                        pf[0] = pf[0] - p.cxr[q] * (fout + fin);
-                        pf[1] = pf[1] - p.cyr[q] * (fout + fin);
+                        // Momentum given to the wall through this link, using
+                        // physical populations (deviation + weight) so the
+                        // static-pressure contribution on open surfaces (e.g.
+                        // rims) is retained; for closed bodies the weight
+                        // terms sum to exactly zero.
+                        let ftot = fout + fin + T::r(2.0) * p.wr[q];
+                        pf[0] = pf[0] - p.cxr[q] * ftot;
+                        pf[1] = pf[1] - p.cyr[q] * ftot;
                     }
                 }
             } else {
@@ -828,15 +845,18 @@ fn moments_row<T: Real>(
             continue;
         }
         let o = x * Q;
-        let mut r = T::zero();
+        // Deviation storage: rho = 1 + sum(f_dev); sum(w c) = 0 so the
+        // momentum needs no correction.
+        let mut dr = T::zero();
         let mut mx = T::zero();
         let mut my = T::zero();
         for q in 0..Q {
             let fq = f[o + q];
-            r = r + fq;
+            dr = dr + fq;
             mx = mx + p.cxr[q] * fq;
             my = my + p.cyr[q] * fq;
         }
+        let r = T::one() + dr;
         rho[x] = r;
         let inv = T::one() / r;
         ux[x] = (mx + half * p.fx) * inv;
@@ -850,13 +870,17 @@ mod tests {
 
     #[test]
     fn equilibrium_moments_are_exact() {
-        // Build a sim to get params; check sum feq = rho, sum feq c = rho u,
-        // sum feq cc = rho (cs2 I + u u).
-        use crate::lattice::{CS2, CX, CY, Q};
+        // Deviation form: sum feq_dev = rho - 1, sum feq_dev c = rho u,
+        // sum feq_dev cc = rho (cs2 I + u u) - cs2 I.
+        use crate::lattice::{CS2, CX, CY, Q, W};
         let sim = SimConfig::<f64>::default().build().unwrap();
         let p = sim.params();
         for &(r, vx, vy) in &[(1.0, 0.0, 0.0), (0.9, 0.08, -0.05), (1.1, -0.1, 0.02)] {
-            let feq = super::equilibrium(&p, r, vx, vy);
+            let feq: Vec<f64> = super::equilibrium(&p, r, vx, vy)
+                .iter()
+                .zip(W.iter())
+                .map(|(dev, w)| dev + w)
+                .collect();
             let m0: f64 = feq.iter().sum();
             let mut m1 = [0.0; 2];
             let mut m2 = [[0.0; 2]; 2];
