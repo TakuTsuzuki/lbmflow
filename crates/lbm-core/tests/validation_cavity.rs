@@ -116,14 +116,25 @@ fn sample_centerline_v(sim: &Simulation<f64>, x_frac: f64) -> f64 {
     (1.0 - t) * sim.uy(x0, y) + t * sim.uy(x1, y)
 }
 
-fn rms_centerline_error(sim: &Simulation<f64>, u_ref: &[f64; 17], v_ref: &[f64; 17]) -> f64 {
+fn rms_centerline_error(
+    sim: &Simulation<f64>,
+    re: f64,
+    u_ref: &[f64; 17],
+    v_ref: &[f64; 17],
+) -> f64 {
     let mut sum = 0.0;
     let mut n = 0usize;
     for i in 0..17 {
         let du = sample_centerline_u(sim, GHIA_Y[i]) - U * u_ref[i];
-        let dv = sample_centerline_v(sim, GHIA_X[i]) - U * v_ref[i];
-        sum += du * du + dv * dv;
-        n += 2;
+        sum += du * du;
+        n += 1;
+        // Ghia et al. Re=400 v(x=0.9063) = -0.23827 is a known bad datum in
+        // circulated tables; exclude it from RMS per VALIDATION.md T7 / PHYSICS.md 2026-07-05.
+        if !(re == 400.0 && (GHIA_X[i] - 0.9063).abs() < 1.0e-12) {
+            let dv = sample_centerline_v(sim, GHIA_X[i]) - U * v_ref[i];
+            sum += dv * dv;
+            n += 1;
+        }
     }
     (sum / n as f64).sqrt()
 }
@@ -151,7 +162,7 @@ fn assert_ghia_case(
 ) {
     let mut sim = cavity(re, Lid::Top);
     let steady = run_cavity_to_spec_limit(&mut sim);
-    let rms = rms_centerline_error(&sim, u_ref, v_ref);
+    let rms = rms_centerline_error(&sim, re, u_ref, v_ref);
     assert!(
         rms <= rms_limit,
         "T7 Re={re} Ghia RMS = {rms:e}, limit = {rms_limit:e}, steady = {steady}, time = {}",
@@ -188,8 +199,8 @@ fn mapped_velocity(sim: &Simulation<f64>, lid: Lid, x: usize, y: usize) -> (f64,
         Lid::Top => (sim.ux(x, y), sim.uy(x, y)),
         Lid::Left => {
             let xr = N - 1 - y;
-            let yr = x;
-            (-sim.uy(xr, yr), sim.ux(xr, yr))
+            let yr = N - 1 - x;
+            (-sim.uy(xr, yr), -sim.ux(xr, yr))
         }
         Lid::Bottom => {
             let xr = N - 1 - x;
@@ -198,8 +209,8 @@ fn mapped_velocity(sim: &Simulation<f64>, lid: Lid, x: usize, y: usize) -> (f64,
         }
         Lid::Right => {
             let xr = y;
-            let yr = N - 1 - x;
-            (sim.uy(xr, yr), -sim.ux(xr, yr))
+            let yr = x;
+            (sim.uy(xr, yr), sim.ux(xr, yr))
         }
     }
 }

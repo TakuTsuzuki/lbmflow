@@ -78,3 +78,11 @@ order #2 の 5 件の dispositions:
    100000 step 実行で NaN/Inf と backflow 判定は先に通過したが、
    near-outlet pressure RMS ratio = 11.32538182631078
    （near = 2.0001796481913235e-3, mid = 1.766103499967275e-4）で仕様上限 3 を超過。
+
+## 解決状況（2026-07-05 codex adversarial test order #3）
+
+1. `t7_re400`: fixed-by-spec / fixed-in-test — 既知の誤植 datum を RMS から除外。
+2. `t7_orientation`: fixed-by-engine / fixed-in-test — リムコーナー修正済み、Left/Right 写像を仕様通りに修正。
+3. `t8_re20`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-1 に全面更新。
+4. `t8_re100`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-2 に全面更新。
+5. `t9_outflow`: fixed-by-spec / fixed-in-test — 圧力 RMS ratio 閾値を T9 の 15 に更新。
