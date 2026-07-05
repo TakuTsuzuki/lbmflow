@@ -699,6 +699,80 @@ fn split_2x2_tgv_periodic_cpusimd_matches_cpuscalar() {
     eprintln!("split-2x2 tgv: worst |Δ| = {worst:e}");
 }
 
+/// Two-pass streaming (the interior/boundary split that overlaps async
+/// halo exchanges) must hold for the fused backend too: destination cells
+/// are partitioned by the shell ranges, sources are ring-collided
+/// redundantly per shell with identical inputs. Cylinder + probe exercises
+/// the partial-range bounce-back and probe-fold paths.
+#[test]
+fn two_pass_streaming_cpusimd_matches_cpuscalar() {
+    type T = f64;
+    let (nx, ny) = (96usize, 48);
+    let mut walls = WallSpec::<T>::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    let mut faces = [FaceBC::Closed; 6];
+    faces[Face::XNeg.index()] = FaceBC::Velocity {
+        u: [0.05, 0.0, 0.0],
+    };
+    faces[Face::XPos.index()] = FaceBC::Outflow;
+    let spec = GlobalSpec::<T> {
+        dims: [nx, ny, 1],
+        nu: 0.02,
+        periodic: [false, false, false],
+        faces,
+        ..Default::default()
+    };
+    let (solid, wall_u) = build_wall_rims(2, spec.dims, &walls);
+    let mut a: Solver<D2Q9, T, CpuScalar, LocalPeriodic> = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    let mut b: Solver<D2Q9, T, CpuSimd, LocalPeriodic> = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuSimd::default(),
+        LocalPeriodic,
+    );
+    b.set_two_pass(true);
+    let (cx, cy, r) = (28.0f64, ny as f64 / 2.0 - 0.4, 6.1f64);
+    let inside = move |x: usize, y: usize| {
+        let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+        dx * dx + dy * dy < r * r
+    };
+    for y in 0..ny {
+        for x in 0..nx {
+            if inside(x, y) {
+                a.set_solid(x, y, 0);
+                b.set_solid(x, y, 0);
+            }
+        }
+    }
+    a.set_force_probe(move |x, y, _| inside(x, y));
+    b.set_force_probe(move |x, y, _| inside(x, y));
+    let mut worst = 0.0f64;
+    for s in 1..=200usize {
+        a.step();
+        b.step();
+        let (fa, fb) = (a.probed_force(), b.probed_force());
+        for c in 0..2 {
+            let d = (fa[c] - fb[c]).abs();
+            assert!(d <= 1e-11, "t={s}: probed_force[{c}] Δ = {d:e}");
+            worst = worst.max(d);
+        }
+        if s % 50 == 0 || s == 200 {
+            worst = worst.max(compare_state(&a, &b, &format!("two-pass t={s}")));
+        }
+    }
+    eprintln!("two-pass: worst |Δ| = {worst:e}");
+}
+
 /// 3D duct on a 2×2×1 CpuSimd decomposition vs monolithic CpuScalar: the
 /// z-band split must stay local to each part while x/y halos cross seams.
 #[test]
