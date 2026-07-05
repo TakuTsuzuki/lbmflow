@@ -1,14 +1,17 @@
 //! The core simulation loop: collide → stream → open-edge BCs → moments.
 //!
 //! Design notes:
-//! - Memory layout is cell-major AoS: `f[(y*nx + x)*Q + q]`.
+//! - Memory layout is plane-major SoA: `f[q*n + y*nx + x]` (one contiguous
+//!   plane per direction). The row loops are decomposed into solid-free spans
+//!   (via per-row solid runs) so the hot kernels are branch-free and
+//!   auto-vectorize; streaming interior spans is a plain shifted copy.
 //! - Streaming uses the pull scheme; wall edges are one-cell solid rims so
 //!   half-way bounce-back handles them uniformly (no corner special cases).
 //! - Macroscopic fields stored in `rho/ux/uy` always describe the *current*
 //!   post-step state; velocities include the Guo half-force correction.
 
 use crate::domain::{Collision, Edge, EdgeBC, Edges, SimConfig, MAX_SPEED};
-use crate::lattice::{dir_index, CX, CY, OPP, PAIRS, Q, W};
+use crate::lattice::{dir_index, CX, CY, OPP, Q, W};
 use crate::real::Real;
 
 #[cfg(feature = "parallel")]
@@ -48,6 +51,55 @@ enum ZouHe<T: Real> {
 /// the actual work on small grids.
 pub const PARALLEL_MIN_CELLS: usize = 16_384;
 
+/// Row-sliced mutable access to a plane-major population buffer
+/// (`buf[q*n + y*nx + x]`) shared across row-parallel tasks.
+///
+/// Soundness contract: parallel tasks partition the domain by `y`, and every
+/// task only requests rows for its own `y`, so the `(q, y)` row slices handed
+/// out are pairwise disjoint across live borrows.
+struct PlaneRows<'a, T> {
+    ptr: *mut T,
+    n: usize,
+    nx: usize,
+    ny: usize,
+    _marker: std::marker::PhantomData<&'a mut [T]>,
+}
+
+unsafe impl<T: Send> Send for PlaneRows<'_, T> {}
+unsafe impl<T: Send> Sync for PlaneRows<'_, T> {}
+
+impl<'a, T> PlaneRows<'a, T> {
+    fn new(buf: &'a mut [T], nx: usize, ny: usize) -> Self {
+        debug_assert_eq!(buf.len(), nx * ny * Q);
+        Self {
+            ptr: buf.as_mut_ptr(),
+            n: nx * ny,
+            nx,
+            ny,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Row `y` of plane `q`.
+    ///
+    /// # Safety
+    /// The caller must guarantee no other live slice overlaps `(q, y)`.
+    #[inline]
+    unsafe fn row(&self, q: usize, y: usize) -> &'a mut [T] {
+        debug_assert!(q < Q && y < self.ny);
+        std::slice::from_raw_parts_mut(self.ptr.add(q * self.n + y * self.nx), self.nx)
+    }
+
+    /// All nine plane rows at `y`.
+    ///
+    /// # Safety
+    /// As [`PlaneRows::row`], for all nine `(q, y)` rows at once.
+    #[inline]
+    unsafe fn rows(&self, y: usize) -> [&'a mut [T]; Q] {
+        std::array::from_fn(|q| self.row(q, y))
+    }
+}
+
 /// D2Q9 lattice Boltzmann simulation on a rectangular grid.
 pub struct Simulation<T: Real> {
     nx: usize,
@@ -58,6 +110,11 @@ pub struct Simulation<T: Real> {
     ux: Vec<T>,
     uy: Vec<T>,
     solid: Vec<bool>,
+    /// Per-row maximal runs of consecutive solid cells, `[start, end)` in x.
+    /// Lets the hot loops process the solid-free spans branch-free.
+    solid_runs: Vec<Vec<(u32, u32)>>,
+    /// Set by solid-mask mutations; `solid_runs` is rebuilt lazily.
+    solid_dirty: bool,
     /// Wall velocity per cell; only meaningful for solid cells.
     wall_u: Vec<[T; 2]>,
     edges: Edges<T>,
@@ -114,6 +171,8 @@ impl<T: Real> Simulation<T> {
             ux: vec![T::zero(); n],
             uy: vec![T::zero(); n],
             solid: vec![false; n],
+            solid_runs: Vec::new(),
+            solid_dirty: true,
             wall_u: vec![[T::zero(); 2]; n],
             edges: cfg.edges,
             omega_p,
@@ -170,6 +229,30 @@ impl<T: Real> Simulation<T> {
             Box::new((0..ny).map(move |y| y * nx + nx - 1)),
             self.edges.right,
         );
+        self.solid_dirty = true;
+    }
+
+    fn rebuild_solid_runs(&mut self) {
+        let (nx, ny) = (self.nx, self.ny);
+        self.solid_runs.resize(ny, Vec::new());
+        for y in 0..ny {
+            let row = &self.solid[y * nx..(y + 1) * nx];
+            let runs = &mut self.solid_runs[y];
+            runs.clear();
+            let mut x = 0;
+            while x < nx {
+                if row[x] {
+                    let start = x;
+                    while x < nx && row[x] {
+                        x += 1;
+                    }
+                    runs.push((start as u32, x as u32));
+                } else {
+                    x += 1;
+                }
+            }
+        }
+        self.solid_dirty = false;
     }
 
     fn params(&self) -> Params<T> {
@@ -209,6 +292,9 @@ impl<T: Real> Simulation<T> {
 
     /// Advance the simulation by one time step.
     pub fn step(&mut self) {
+        if self.solid_dirty {
+            self.rebuild_solid_runs();
+        }
         self.collide();
         let pf = self.stream();
         std::mem::swap(&mut self.f, &mut self.ftmp);
@@ -227,67 +313,71 @@ impl<T: Real> Simulation<T> {
 
     fn collide(&mut self) {
         let p = self.params();
-        let nx = self.nx;
-        let (rho, ux, uy, solid) = (&self.rho, &self.ux, &self.uy, &self.solid);
+        let (nx, ny) = (self.nx, self.ny);
+        let planes = PlaneRows::new(&mut self.f, nx, ny);
+        let (rho, ux, uy) = (&self.rho, &self.ux, &self.uy);
+        let runs = &self.solid_runs;
         let ff = self.force_field.as_deref();
-        let body = |(y, frow): (usize, &mut [T])| {
+        let force_on = p.fx != T::zero() || p.fy != T::zero() || ff.is_some();
+        let body = |y: usize| {
+            let mut fq = unsafe { planes.rows(y) };
             let r = y * nx..(y + 1) * nx;
-            collide_row(
-                frow,
-                &rho[r.clone()],
-                &ux[r.clone()],
-                &uy[r.clone()],
-                &solid[r.clone()],
-                ff.map(|f| &f[r]),
-                &p,
-            );
+            let (rho, ux, uy) = (&rho[r.clone()], &ux[r.clone()], &uy[r.clone()]);
+            let ff = ff.map(|f| &f[r]);
+            if force_on {
+                collide_row::<T, true>(&mut fq, rho, ux, uy, ff, &runs[y], &p);
+            } else {
+                collide_row::<T, false>(&mut fq, rho, ux, uy, ff, &runs[y], &p);
+            }
         };
         #[cfg(feature = "parallel")]
         if self.use_parallel {
-            self.f.par_chunks_mut(nx * Q).enumerate().for_each(body);
+            (0..ny).into_par_iter().for_each(body);
             return;
         }
-        self.f.chunks_mut(nx * Q).enumerate().for_each(body);
+        (0..ny).for_each(body);
     }
 
     fn stream(&mut self) -> [T; 2] {
         let p = self.params();
         let g = self.geom();
+        let planes = PlaneRows::new(&mut self.ftmp, g.nx, g.ny);
         let (f, solid, wall_u, rho) = (&self.f, &self.solid, &self.wall_u, &self.rho);
+        let runs = &self.solid_runs;
         let probe = self.probe.as_deref();
-        let body = move |(y, row): (usize, &mut [T])| -> [T; 2] {
-            stream_row(y, row, f, solid, wall_u, rho, probe, &g, &p)
+        let body = move |y: usize| -> [T; 2] {
+            stream_row(y, &planes, f, solid, runs, wall_u, rho, probe, &g, &p)
         };
         let add = |a: [T; 2], b: [T; 2]| [a[0] + b[0], a[1] + b[1]];
         #[cfg(feature = "parallel")]
         if self.use_parallel {
-            return self
-                .ftmp
-                .par_chunks_mut(g.nx * Q)
-                .enumerate()
+            return (0..g.ny)
+                .into_par_iter()
                 .map(body)
                 .reduce(|| [T::zero(); 2], add);
         }
-        self.ftmp
-            .chunks_mut(g.nx * Q)
-            .enumerate()
-            .map(body)
-            .fold([T::zero(); 2], add)
+        (0..g.ny).map(body).fold([T::zero(); 2], add)
     }
 
     fn update_moments(&mut self) {
+        if self.solid_dirty {
+            self.rebuild_solid_runs();
+        }
         let p = self.params();
         let nx = self.nx;
-        let (f, solid) = (&self.f, &self.solid);
+        let n = self.nx * self.ny;
+        let (f, runs) = (&self.f, &self.solid_runs);
         let ff = self.force_field.as_deref();
         let body = |(y, ((rrow, uxrow), uyrow)): (usize, ((&mut [T], &mut [T]), &mut [T]))| {
+            let base = y * nx;
+            let fq: [&[T]; Q] = std::array::from_fn(|q| &f[q * n + base..][..nx]);
             moments_row(
-                &f[y * nx * Q..(y + 1) * nx * Q],
+                &fq,
                 rrow,
                 uxrow,
                 uyrow,
-                &solid[y * nx..(y + 1) * nx],
-                ff.map(|f| &f[y * nx..(y + 1) * nx]),
+                ff.map(|f| &f[base..base + nx]),
+                &runs[y],
                 &p,
             );
         };
@@ -360,6 +450,7 @@ impl<T: Real> Simulation<T> {
         let lam = u_conv;
         let inv = T::one() / (T::one() + lam);
         let nx = self.nx;
+        let n = self.nx * self.ny;
         // weight share for the mass correction over the 3 unknown links
         let wsum = T::r(W[unknowns[0]] + W[unknowns[1]] + W[unknowns[2]]);
         for (x, y) in self.side_cells(edge) {
@@ -369,8 +460,8 @@ impl<T: Real> Simulation<T> {
                 continue;
             }
             for q in unknowns {
-                let prev = self.f[i * Q + q];
-                self.f[i * Q + q] = (prev + lam * self.f[j * Q + q]) * inv;
+                let prev = self.f[q * n + i];
+                self.f[q * n + i] = (prev + lam * self.f[q * n + j]) * inv;
             }
             // Mass-consistency correction: without it the independent
             // population relaxation lets the edge density drift away and the
@@ -379,12 +470,12 @@ impl<T: Real> Simulation<T> {
             let mut di = T::zero();
             let mut dj = T::zero();
             for q in 0..Q {
-                di = di + self.f[i * Q + q];
-                dj = dj + self.f[j * Q + q];
+                di = di + self.f[q * n + i];
+                dj = dj + self.f[q * n + j];
             }
             let corr = dj - di;
             for q in unknowns {
-                self.f[i * Q + q] = self.f[i * Q + q] + corr * T::r(W[q]) / wsum;
+                self.f[q * n + i] = self.f[q * n + i] + corr * T::r(W[q]) / wsum;
             }
         }
     }
@@ -414,19 +505,19 @@ impl<T: Real> Simulation<T> {
         let (nxr, nyr) = (T::r(nxi as f64), T::r(nyi as f64));
         let (txr, tyr) = (T::r(tx as f64), T::r(ty as f64));
         let nx = self.nx;
+        let n = self.nx * self.ny;
         let profile = self.inlet_profiles[edge.index()].take();
         for (coord, (x, y)) in self.side_cells(edge).into_iter().enumerate() {
             let i = y * nx + x;
             if self.solid[i] {
                 continue;
             }
-            let o = i * Q;
             let f = &mut self.f;
             // Deviation storage: the physical S0 + 2 S- equals the deviation
             // sums plus sum(w) over those directions, which is exactly 1 for
             // any straight edge (3 edge-parallel + 2x3 outgoing weights).
-            let s0 = f[o] + f[o + q_t] + f[o + q_mt];
-            let sneg = f[o + OPP[q_n]] + f[o + OPP[q_d1]] + f[o + OPP[q_d2]];
+            let s0 = f[i] + f[q_t * n + i] + f[q_mt * n + i];
+            let sneg = f[OPP[q_n] * n + i] + f[OPP[q_d1] * n + i] + f[OPP[q_d2] * n + i];
             let closure = s0 + two * sneg + T::one();
             let (r, un, ut) = match kind {
                 ZouHe::Velocity(u) => {
@@ -441,10 +532,10 @@ impl<T: Real> Simulation<T> {
                     (rho_bc, un, T::zero())
                 }
             };
-            let tcorr = half * (r * ut - (f[o + q_t] - f[o + q_mt]));
-            f[o + q_n] = f[o + OPP[q_n]] + c23 * r * un;
-            f[o + q_d1] = f[o + OPP[q_d1]] + c16 * r * un + tcorr;
-            f[o + q_d2] = f[o + OPP[q_d2]] + c16 * r * un - tcorr;
+            let tcorr = half * (r * ut - (f[q_t * n + i] - f[q_mt * n + i]));
+            f[q_n * n + i] = f[OPP[q_n] * n + i] + c23 * r * un;
+            f[q_d1 * n + i] = f[OPP[q_d1] * n + i] + c16 * r * un + tcorr;
+            f[q_d2 * n + i] = f[OPP[q_d2] * n + i] + c16 * r * un - tcorr;
         }
         self.inlet_profiles[edge.index()] = profile;
     }
@@ -460,6 +551,7 @@ impl<T: Real> Simulation<T> {
             dir_index(nxi - tx, nyi - ty),
         ];
         let nx = self.nx;
+        let n = self.nx * self.ny;
         for (x, y) in self.side_cells(edge) {
             let i = y * nx + x;
             let j = ((y as i32 + nyi) as usize) * nx + (x as i32 + nxi) as usize;
@@ -467,7 +559,7 @@ impl<T: Real> Simulation<T> {
                 continue;
             }
             for q in unknowns {
-                self.f[i * Q + q] = self.f[j * Q + q];
+                self.f[q * n + i] = self.f[q * n + j];
             }
         }
     }
@@ -494,6 +586,7 @@ impl<T: Real> Simulation<T> {
             "cannot place solid cells on an open (inlet/outlet/outflow) edge"
         );
         self.solid[y * self.nx + x] = true;
+        self.solid_dirty = true;
     }
 
     /// Mark every cell for which `pred(x, y)` returns true as solid.
@@ -520,6 +613,7 @@ impl<T: Real> Simulation<T> {
     pub fn init_with(&mut self, init: impl Fn(usize, usize) -> (T, T, T)) {
         let p = self.params();
         let (nx, ny) = (self.nx, self.ny);
+        let n = nx * ny;
         // Pass 1: store the macroscopic fields.
         for y in 0..ny {
             for x in 0..nx {
@@ -537,9 +631,10 @@ impl<T: Real> Simulation<T> {
         for y in 0..ny {
             for x in 0..nx {
                 let i = y * nx + x;
-                let o = i * Q;
                 let feq = equilibrium(&p, self.rho[i], self.ux[i], self.uy[i]);
-                self.f[o..o + Q].copy_from_slice(&feq);
+                for q in 0..Q {
+                    self.f[q * n + i] = feq[q];
+                }
                 if self.solid[i] {
                     continue;
                 }
@@ -585,7 +680,7 @@ impl<T: Real> Simulation<T> {
                     let (cx, cy) = (p.cxr[q], p.cyr[q]);
                     let ccgu = cx * cx * duxdx + cx * cy * (duydx + duxdy) + cy * cy * duydy;
                     let fneq = -p.wr[q] * self.rho[i] * tau * (three * ccgu - div);
-                    self.f[o + q] = self.f[o + q] + fneq;
+                    self.f[q * n + i] = self.f[q * n + i] + fneq;
                 }
             }
         }
@@ -734,15 +829,16 @@ impl<T: Real> Simulation<T> {
     /// not drown in summation round-off on `f32` grids.
     pub fn total_mass(&self) -> T {
         // Deviation storage: physical mass = fluid_cell_count + sum(f_dev).
+        let n = self.nx * self.ny;
         let mut m = 0.0f64;
         let mut fluid = 0usize;
-        for i in 0..self.nx * self.ny {
+        for i in 0..n {
             if self.solid[i] {
                 continue;
             }
             fluid += 1;
             for q in 0..Q {
-                m += self.f[i * Q + q].as_f64();
+                m += self.f[q * n + i].as_f64();
             }
         }
         T::r(fluid as f64 + m)
@@ -752,19 +848,19 @@ impl<T: Real> Simulation<T> {
     /// includes the half-force correction). Accumulated in `f64` like
     /// [`Simulation::total_mass`].
     pub fn total_momentum(&self) -> [T; 2] {
+        let n = self.nx * self.ny;
         let mut px = 0.0f64;
         let mut py = 0.0f64;
         let (ufx, ufy) = (self.force[0].as_f64(), self.force[1].as_f64());
         let ff = self.force_field.as_deref();
-        for i in 0..self.nx * self.ny {
+        for i in 0..n {
             if self.solid[i] {
                 continue;
             }
-            let o = i * Q;
             let mut mx = 0.0f64;
             let mut my = 0.0f64;
             for q in 0..Q {
-                let fq = self.f[o + q].as_f64();
+                let fq = self.f[q * n + i].as_f64();
                 mx += CX[q] as f64 * fq;
                 my += CY[q] as f64 * fq;
             }
@@ -797,71 +893,143 @@ fn equilibrium<T: Real>(p: &Params<T>, r: T, vx: T, vy: T) -> [T; Q] {
     feq
 }
 
-/// TRT collision (BGK when `omega_m == omega_p`) with Guo forcing, one row.
-/// `ff` optionally supplies a per-cell force added to the uniform one.
-fn collide_row<T: Real>(
-    f: &mut [T],
+/// TRT collision (BGK when `omega_m == omega_p`) with Guo forcing over the
+/// solid-free spans of one row. `ff` optionally supplies a per-cell force
+/// added to the uniform one.
+fn collide_row<T: Real, const FORCE: bool>(
+    fq: &mut [&mut [T]; Q],
     rho: &[T],
     ux: &[T],
     uy: &[T],
-    solid: &[bool],
     ff: Option<&[[T; 2]]>,
+    runs: &[(u32, u32)],
     p: &Params<T>,
 ) {
+    let nx = rho.len();
+    let mut cursor = 0usize;
+    for &(a, b) in runs.iter().chain(std::iter::once(&(nx as u32, nx as u32))) {
+        collide_span::<T, FORCE>(fq, rho, ux, uy, ff, cursor, a as usize, p);
+        cursor = b as usize;
+    }
+}
+
+/// Branch-free TRT collision over `[x0, x1)` of one row (deviation form,
+/// pairwise formulation). The pair decomposition works directly on
+/// `ep = (feq_a + feq_b)/2` and `em = (feq_a - feq_b)/2`, halving the
+/// equilibrium arithmetic and keeping x/y expressions mirror-symmetric so
+/// lattice equivariance is preserved bit-for-bit.
+#[allow(clippy::too_many_arguments)]
+fn collide_span<T: Real, const FORCE: bool>(
+    fq: &mut [&mut [T]; Q],
+    rho: &[T],
+    ux: &[T],
+    uy: &[T],
+    ff: Option<&[[T; 2]]>,
+    x0: usize,
+    x1: usize,
+    p: &Params<T>,
+) {
+    if x0 >= x1 {
+        return;
+    }
+    let w0 = T::r(4.0 / 9.0);
+    let w1 = T::r(1.0 / 9.0);
+    let w2 = T::r(1.0 / 36.0);
     let three = T::r(3.0);
     let f45 = T::r(4.5);
     let f15 = T::r(1.5);
     let nine = T::r(9.0);
     let half = T::r(0.5);
-    let force_on = p.fx != T::zero() || p.fy != T::zero() || ff.is_some();
-    for x in 0..rho.len() {
-        if solid[x] {
-            continue;
-        }
-        let o = x * Q;
+    let (op, om, cp, cm) = (p.omega_p, p.omega_m, p.cp, p.cm);
+    let [f0, f1, f2, f3, f4, f5, f6, f7, f8] = fq;
+    let (f0, f1, f2) = (&mut f0[x0..x1], &mut f1[x0..x1], &mut f2[x0..x1]);
+    let (f3, f4, f5) = (&mut f3[x0..x1], &mut f4[x0..x1], &mut f5[x0..x1]);
+    let (f6, f7, f8) = (&mut f6[x0..x1], &mut f7[x0..x1], &mut f8[x0..x1]);
+    let rho = &rho[x0..x1];
+    let ux = &ux[x0..x1];
+    let uy = &uy[x0..x1];
+    let ff = ff.map(|f| &f[x0..x1]);
+    let len = x1 - x0;
+    assert!(
+        f0.len() == len
+            && f1.len() == len
+            && f2.len() == len
+            && f3.len() == len
+            && f4.len() == len
+            && f5.len() == len
+            && f6.len() == len
+            && f7.len() == len
+            && f8.len() == len
+            && rho.len() == len
+            && ux.len() == len
+            && uy.len() == len
+    );
+    for x in 0..len {
         let (r, vx, vy) = (rho[x], ux[x], uy[x]);
-        let (fx, fy) = match ff {
-            Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
-            None => (p.fx, p.fy),
-        };
         let usq = vx * vx + vy * vy;
-        let uf = vx * fx + vy * fy;
         let drho = r - T::one();
-        let mut feq = [T::zero(); Q]; // deviation form: feq_q - w_q
-        let mut src = [T::zero(); Q];
-        for q in 0..Q {
-            let cu = p.cxr[q] * vx + p.cyr[q] * vy;
-            feq[q] = p.wr[q] * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
-            if force_on {
-                let cf = p.cxr[q] * fx + p.cyr[q] * fy;
-                src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);
-            }
+        let base = drho - f15 * r * usq;
+        let r3 = three * r;
+        let r45 = f45 * r;
+        // Forcing pieces (compiled out when FORCE is false).
+        let (fx, fy, uf3) = if FORCE {
+            let (fx, fy) = match ff {
+                Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
+                None => (p.fx, p.fy),
+            };
+            (fx, fy, three * (vx * fx + vy * fy))
+        } else {
+            (T::zero(), T::zero(), T::zero())
+        };
+        // Rest population: feq0 = w0 * base, src0 = -w0 * 3(u.F).
+        let v0 = f0[x];
+        f0[x] = if FORCE {
+            v0 - op * (v0 - w0 * base) + cp * (-w0 * uf3)
+        } else {
+            v0 - op * (v0 - w0 * base)
+        };
+        // Axis pairs (w = 1/9): (1,3) along x, (2,4) along y.
+        // Diagonal pairs (w = 1/36): (5,7) along +x+y, (6,8) along -x+y.
+        macro_rules! pair {
+            ($fa:ident, $fb:ident, $w:ident, $cu:expr, $cf:expr) => {{
+                let cu = $cu;
+                let (fa, fb) = ($fa[x], $fb[x]);
+                let ep = $w * (base + r45 * cu * cu);
+                let em = $w * (r3 * cu);
+                let fp = half * (fa + fb);
+                let fm = half * (fa - fb);
+                let rp = op * (fp - ep);
+                let rm = om * (fm - em);
+                if FORCE {
+                    let cf = $cf;
+                    let sp = $w * (nine * cu * cf - uf3);
+                    let sm = $w * (three * cf);
+                    $fa[x] = fa - rp - rm + cp * sp + cm * sm;
+                    $fb[x] = fb - rp + rm + cp * sp - cm * sm;
+                } else {
+                    $fa[x] = fa - rp - rm;
+                    $fb[x] = fb - rp + rm;
+                }
+            }};
         }
-        f[o] = f[o] - p.omega_p * (f[o] - feq[0]) + p.cp * src[0];
-        for (a, b) in PAIRS {
-            let (fa, fb) = (f[o + a], f[o + b]);
-            let fp = half * (fa + fb);
-            let fm = half * (fa - fb);
-            let ep = half * (feq[a] + feq[b]);
-            let em = half * (feq[a] - feq[b]);
-            let sp = half * (src[a] + src[b]);
-            let sm = half * (src[a] - src[b]);
-            let rp = p.omega_p * (fp - ep);
-            let rm = p.omega_m * (fm - em);
-            f[o + a] = fa - rp - rm + p.cp * sp + p.cm * sm;
-            f[o + b] = fb - rp + rm + p.cp * sp - p.cm * sm;
-        }
+        pair!(f1, f3, w1, vx, fx);
+        pair!(f2, f4, w1, vy, fy);
+        pair!(f5, f7, w2, vx + vy, fx + fy);
+        pair!(f6, f8, w2, vy - vx, fy - fx);
     }
 }
 
-/// Pull-scheme streaming for one destination row. Returns the
-/// momentum-exchange force accumulated over probed solid links.
+/// Pull-scheme streaming for one destination row, source-side decomposed:
+/// solid-free source spans become plain shifted copies, solid runs become
+/// half-way bounce-back. Returns the momentum-exchange force accumulated
+/// over probed solid links.
 #[allow(clippy::too_many_arguments)]
 fn stream_row<T: Real>(
     y: usize,
-    out: &mut [T],
+    out: &PlaneRows<'_, T>,
     f: &[T],
     solid: &[bool],
+    solid_runs: &[Vec<(u32, u32)>],
     wall_u: &[[T; 2]],
     rho: &[T],
     probe: Option<&[bool]>,
@@ -869,43 +1037,58 @@ fn stream_row<T: Real>(
     p: &Params<T>,
 ) -> [T; 2] {
     let six = T::r(6.0);
-    let mut pf = [T::zero(); 2];
+    let two = T::r(2.0);
     let nx = g.nx;
-    for x in 0..nx {
-        let i = y * nx + x;
-        if solid[i] {
-            continue;
+    let n = nx * g.ny;
+    let mut pf = [T::zero(); 2];
+    for q in 0..Q {
+        let mut sy = y as isize - CY[q] as isize;
+        if sy < 0 || sy >= g.ny as isize {
+            if g.per_y {
+                sy = (sy + g.ny as isize) % g.ny as isize;
+            } else {
+                // Unknown populations on an open edge; filled by the
+                // open-edge pass right after streaming.
+                continue;
+            }
         }
-        let o = x * Q;
-        for q in 0..Q {
-            let mut sx = x as isize - CX[q] as isize;
-            let mut sy = y as isize - CY[q] as isize;
-            if sx < 0 || sx >= nx as isize {
-                if g.per_x {
-                    sx = (sx + nx as isize) % nx as isize;
-                } else {
-                    // Unknown population on an open edge; filled by the
-                    // open-edge pass right after streaming.
+        let sy = sy as usize;
+        let cx = CX[q] as isize;
+        let src = &f[q * n + sy * nx..][..nx];
+        // SAFETY: this task is the only writer of row `y`.
+        let dst = unsafe { out.row(q, y) };
+        let mut cursor = 0usize;
+        for &(a, b) in solid_runs[sy]
+            .iter()
+            .chain(std::iter::once(&(nx as u32, nx as u32)))
+        {
+            let (a, b) = (a as usize, b as usize);
+            // Fluid span [cursor, a): shifted copy src -> dst.
+            copy_span(dst, src, cursor, a, cx, g.per_x);
+            // Solid run [a, b): half-way bounce-back into the destination
+            // cells, with momentum injection for moving walls.
+            for sx in a..b {
+                let mut x = sx as isize + cx;
+                if x < 0 || x >= nx as isize {
+                    if g.per_x {
+                        x = (x + nx as isize) % nx as isize;
+                    } else {
+                        continue;
+                    }
+                }
+                let x = x as usize;
+                let i = y * nx + x;
+                if solid[i] {
                     continue;
                 }
-            }
-            if sy < 0 || sy >= g.ny as isize {
-                if g.per_y {
-                    sy = (sy + g.ny as isize) % g.ny as isize;
-                } else {
-                    continue;
-                }
-            }
-            let s = sy as usize * nx + sx as usize;
-            if solid[s] {
-                // Half-way bounce-back off the wall between cells s and i,
-                // with momentum injection for moving walls. In deviation
-                // storage the formula is unchanged (w_q == w_opp(q)).
-                let fout = f[i * Q + OPP[q]];
+                let s = sy * nx + sx;
+                // In deviation storage the formula is unchanged
+                // (w_q == w_opp(q)).
+                let fout = f[OPP[q] * n + i];
                 let wu = wall_u[s];
                 let cu = p.cxr[q] * wu[0] + p.cyr[q] * wu[1];
                 let fin = fout + six * p.wr[q] * rho[i] * cu;
-                out[o + q] = fin;
+                dst[x] = fin;
                 if let Some(mask) = probe {
                     if mask[s] {
                         // Momentum given to the wall through this link, using
@@ -913,46 +1096,119 @@ fn stream_row<T: Real>(
                         // static-pressure contribution on open surfaces (e.g.
                         // rims) is retained; for closed bodies the weight
                         // terms sum to exactly zero.
-                        let ftot = fout + fin + T::r(2.0) * p.wr[q];
+                        let ftot = fout + fin + two * p.wr[q];
                         pf[0] = pf[0] - p.cxr[q] * ftot;
                         pf[1] = pf[1] - p.cyr[q] * ftot;
                     }
                 }
-            } else {
-                out[o + q] = f[s * Q + q];
             }
+            cursor = b;
         }
     }
     pf
 }
 
-/// Recompute macroscopic fields from the populations for one row.
+/// Copy the source span `[s0, s1)` of one plane row into its destination
+/// (shifted by `cx`), wrapping the boundary element when periodic in x and
+/// dropping it otherwise (open-edge slots keep their previous contents and
+/// are rewritten by the BC pass).
+#[inline]
+fn copy_span<T: Copy>(dst: &mut [T], src: &[T], s0: usize, s1: usize, cx: isize, per_x: bool) {
+    if s0 >= s1 {
+        return;
+    }
+    let nx = src.len();
+    match cx {
+        0 => dst[s0..s1].copy_from_slice(&src[s0..s1]),
+        1 => {
+            let e = s1.min(nx - 1);
+            if s0 < e {
+                dst[s0 + 1..e + 1].copy_from_slice(&src[s0..e]);
+            }
+            if s1 == nx && per_x {
+                dst[0] = src[nx - 1];
+            }
+        }
+        -1 => {
+            let s = s0.max(1);
+            if s < s1 {
+                dst[s - 1..s1 - 1].copy_from_slice(&src[s..s1]);
+            }
+            if s0 == 0 && per_x {
+                dst[nx - 1] = src[0];
+            }
+        }
+        _ => unreachable!("D2Q9 x-shifts are -1, 0, 1"),
+    }
+}
+
+/// Recompute macroscopic fields from the populations over the solid-free
+/// spans of one row.
 fn moments_row<T: Real>(
-    f: &[T],
+    fq: &[&[T]; Q],
     rho: &mut [T],
     ux: &mut [T],
     uy: &mut [T],
-    solid: &[bool],
     ff: Option<&[[T; 2]]>,
+    runs: &[(u32, u32)],
     p: &Params<T>,
 ) {
+    let nx = rho.len();
+    let mut cursor = 0usize;
+    for &(a, b) in runs.iter().chain(std::iter::once(&(nx as u32, nx as u32))) {
+        moments_span(fq, rho, ux, uy, ff, cursor, a as usize, p);
+        cursor = b as usize;
+    }
+}
+
+/// Branch-free moment update over `[x0, x1)` of one row. The signed sums are
+/// grouped pairwise (axis, then diagonals) to stay mirror-symmetric in x/y.
+#[allow(clippy::too_many_arguments)]
+fn moments_span<T: Real>(
+    fq: &[&[T]; Q],
+    rho: &mut [T],
+    ux: &mut [T],
+    uy: &mut [T],
+    ff: Option<&[[T; 2]]>,
+    x0: usize,
+    x1: usize,
+    p: &Params<T>,
+) {
+    if x0 >= x1 {
+        return;
+    }
     let half = T::r(0.5);
-    for x in 0..rho.len() {
-        if solid[x] {
-            continue;
-        }
-        let o = x * Q;
+    let [f0, f1, f2, f3, f4, f5, f6, f7, f8] = fq;
+    let (f0, f1, f2) = (&f0[x0..x1], &f1[x0..x1], &f2[x0..x1]);
+    let (f3, f4, f5) = (&f3[x0..x1], &f4[x0..x1], &f5[x0..x1]);
+    let (f6, f7, f8) = (&f6[x0..x1], &f7[x0..x1], &f8[x0..x1]);
+    let rho = &mut rho[x0..x1];
+    let ux = &mut ux[x0..x1];
+    let uy = &mut uy[x0..x1];
+    let ff = ff.map(|f| &f[x0..x1]);
+    let len = x1 - x0;
+    assert!(
+        f0.len() == len
+            && f1.len() == len
+            && f2.len() == len
+            && f3.len() == len
+            && f4.len() == len
+            && f5.len() == len
+            && f6.len() == len
+            && f7.len() == len
+            && f8.len() == len
+            && rho.len() == len
+            && ux.len() == len
+            && uy.len() == len
+    );
+    for x in 0..len {
         // Deviation storage: rho = 1 + sum(f_dev); sum(w c) = 0 so the
         // momentum needs no correction.
-        let mut dr = T::zero();
-        let mut mx = T::zero();
-        let mut my = T::zero();
-        for q in 0..Q {
-            let fq = f[o + q];
-            dr = dr + fq;
-            mx = mx + p.cxr[q] * fq;
-            my = my + p.cyr[q] * fq;
-        }
+        let dr = f0[x] + ((f1[x] + f3[x]) + (f2[x] + f4[x])) + ((f5[x] + f7[x]) + (f6[x] + f8[x]));
+        let a = f5[x] - f7[x];
+        let b = f8[x] - f6[x];
+        let mx = (f1[x] - f3[x]) + (a + b);
+        let my = (f2[x] - f4[x]) + (a - b);
         let (fx, fy) = match ff {
             Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
             None => (p.fx, p.fy),
@@ -1009,6 +1265,71 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn pairwise_collision_matches_generic_reference() {
+        // The span kernel's pair decomposition must agree with the plain
+        // per-direction TRT formula to round-off accuracy.
+        use crate::lattice::{PAIRS, Q};
+        let sim = SimConfig::<f64> {
+            nu: 0.03,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        let p = sim.params();
+        let (r, vx, vy) = (1.05, 0.07, -0.04);
+        let (fx, fy) = (1e-4, -2e-4);
+        let fin: [f64; Q] = std::array::from_fn(|q| 1e-3 * (q as f64 - 4.0));
+        // Reference: generic per-direction TRT with Guo forcing.
+        let feq = super::equilibrium(&p, r, vx, vy);
+        let uf = vx * fx + vy * fy;
+        let mut src = [0.0; Q];
+        for q in 0..Q {
+            let cu = p.cxr[q] * vx + p.cyr[q] * vy;
+            let cf = p.cxr[q] * fx + p.cyr[q] * fy;
+            src[q] = p.wr[q] * (3.0 * (cf - uf) + 9.0 * cu * cf);
+        }
+        let mut want = fin;
+        want[0] = fin[0] - p.omega_p * (fin[0] - feq[0]) + p.cp * src[0];
+        for (a, b) in PAIRS {
+            let fp = 0.5 * (fin[a] + fin[b]);
+            let fm = 0.5 * (fin[a] - fin[b]);
+            let ep = 0.5 * (feq[a] + feq[b]);
+            let em = 0.5 * (feq[a] - feq[b]);
+            let sp = 0.5 * (src[a] + src[b]);
+            let sm = 0.5 * (src[a] - src[b]);
+            let rp = p.omega_p * (fp - ep);
+            let rm = p.omega_m * (fm - em);
+            want[a] = fin[a] - rp - rm + p.cp * sp + p.cm * sm;
+            want[b] = fin[b] - rp + rm + p.cp * sp - p.cm * sm;
+        }
+        // Kernel under test, on a one-cell row.
+        let mut cell: [Vec<f64>; Q] = std::array::from_fn(|q| vec![fin[q]]);
+        let mut fq: [&mut [f64]; Q] = {
+            let mut it = cell.iter_mut();
+            std::array::from_fn(|_| it.next().unwrap().as_mut_slice())
+        };
+        let ffield = [[fx - p.fx, fy - p.fy]; 1];
+        super::collide_span::<f64, true>(
+            &mut fq,
+            &[r],
+            &[vx],
+            &[vy],
+            Some(&ffield),
+            0,
+            1,
+            &p,
+        );
+        for q in 0..Q {
+            assert!(
+                (cell[q][0] - want[q]).abs() < 1e-15,
+                "direction {q}: {} vs {}",
+                cell[q][0],
+                want[q]
+            );
         }
     }
 
