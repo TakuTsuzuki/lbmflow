@@ -610,6 +610,50 @@ where
         self.masks_dirty = true;
     }
 
+    /// Prescribe the per-cell body force (Guo forcing) from a closure over
+    /// global cell coordinates `(x, y, z)`. The closure is evaluated once per
+    /// owned core cell and stored in the part's compact layout, so the result
+    /// is decomposition-invariant (identical global field for any `decomp`).
+    /// Existing allocations are reused; call it before [`Solver::step`] each
+    /// time the field changes (e.g. a time-dependent force). The force enters
+    /// collision with the usual Guo half-force velocity correction, so
+    /// `u(x)` accessors keep returning the physical velocity.
+    ///
+    /// Unlike [`Solver::update_shan_chen_force`] this stencil is purely local
+    /// (no neighbour reads, no halo exchange): it is the general hook for
+    /// spatially/temporally varying forcing — uniform or linear forcing,
+    /// sponge/absorbing layers, and volume-penalization (Brinkman) regions
+    /// that relax the local velocity toward a prescribed target.
+    pub fn set_body_force_field(&mut self, f: impl Fn(usize, usize, usize) -> [T; 3]) {
+        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+            let g = sub.geom;
+            let n_core = g.n_core();
+            let buf = fields
+                .force_field
+                .get_or_insert_with(|| vec![[T::zero(); 3]; n_core]);
+            if buf.len() != n_core {
+                buf.clear();
+                buf.resize(n_core, [T::zero(); 3]);
+            }
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        buf[g.cidx(x, y, z)] =
+                            f(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drop the per-cell body force field on every owned part (subsequent
+    /// steps run force-free unless [`GlobalSpec::force`] is nonzero).
+    pub fn clear_body_force_field(&mut self) {
+        for fields in self.parts.iter_mut() {
+            fields.force_field = None;
+        }
+    }
+
     /// Prescribe a per-node inlet profile on a `Velocity` face, `values`
     /// indexed by the global along-face coordinate in canonical face order:
     /// with tangent axes `(t1, t2) = face.tangents()`, the index is
