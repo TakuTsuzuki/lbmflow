@@ -753,9 +753,13 @@ mod tests {
                 collision: CollisionSpec::Trt,
                 force: [0.0, 0.0],
                 precision: Precision::F64,
+                gravity: None,
             },
             units: None,
             compute: None,
+            wall: None,
+            rotor: None,
+            particles: None,
             edges: EdgesSpec {
                 left: EdgeSpec::BounceBack,
                 right: EdgeSpec::BounceBack,
