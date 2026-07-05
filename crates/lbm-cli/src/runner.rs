@@ -24,6 +24,8 @@ pub struct Manifest {
     pub mlups: f64,
     pub diagnostics: Diagnostics,
     pub warnings: Vec<lbm_scenario::Warning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub units: Option<lbm_scenario::UnitReport>,
     pub files: Vec<String>,
 }
 
@@ -38,15 +40,24 @@ pub struct Diagnostics {
 pub fn run(sc: &Scenario, out_dir: &Path) -> Result<Manifest> {
     fs::create_dir_all(out_dir)
         .with_context(|| format!("cannot create output directory: {}", out_dir.display()))?;
+    let resolved = lbm_scenario::resolve(sc).map_err(anyhow::Error::msg)?;
+    let units = resolved.as_ref().map(|r| r.report.clone());
+    let resolved_scenario;
+    let sc = if let Some(r) = resolved {
+        resolved_scenario = r.scenario;
+        &resolved_scenario
+    } else {
+        sc
+    };
     if sc.is_3d() {
         return match lbm_scenario::build3d(sc)? {
-            Sim3Handle::F64(s) => run3d_t(sc, s, out_dir),
-            Sim3Handle::F32(s) => run3d_t(sc, s, out_dir),
+            Sim3Handle::F64(s) => run3d_t(sc, s, out_dir, units),
+            Sim3Handle::F32(s) => run3d_t(sc, s, out_dir, units),
         };
     }
     match lbm_scenario::build(sc)? {
-        SimHandle::F64(sim, mp) => run_t(sc, sim, mp, out_dir),
-        SimHandle::F32(sim, mp) => run_t(sc, sim, mp, out_dir),
+        SimHandle::F64(sim, mp) => run_t(sc, sim, mp, out_dir, units),
+        SimHandle::F32(sim, mp) => run_t(sc, sim, mp, out_dir, units),
     }
 }
 
@@ -62,6 +73,7 @@ fn run_t<T: Real>(
     mut sim: Simulation<T>,
     mp: Option<ShanChen<T>>,
     out_dir: &Path,
+    units: Option<lbm_scenario::UnitReport>,
 ) -> Result<Manifest> {
     let mut files: Vec<String> = Vec::new();
     let mut probes: Vec<CsvProbe> = Vec::new();
@@ -190,6 +202,7 @@ fn run_t<T: Real>(
             tau: sim.tau(),
         },
         warnings: lbm_scenario::validate(sc),
+        units,
         files,
     };
     fs::write(
@@ -500,6 +513,7 @@ fn run3d_t<T: lbm_core::real::Real>(
     sc: &Scenario,
     mut s: Solver3<T>,
     out_dir: &Path,
+    units: Option<lbm_scenario::UnitReport>,
 ) -> Result<Manifest> {
     let dims = s.dims();
     let [nx, ny, nz] = dims;
@@ -657,6 +671,7 @@ fn run3d_t<T: lbm_core::real::Real>(
             tau: s.tau(),
         },
         warnings: lbm_scenario::validate(sc),
+        units,
         files,
     };
     fs::write(

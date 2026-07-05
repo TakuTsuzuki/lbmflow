@@ -824,3 +824,16 @@ validation + lbm-cli manifest surfaces):
 ShearRate=gamma_dot (raw gather), DissipationRate=eps (SCALEUP consumes eps for
 <eps>_vol / eta). cargo check green. If r2-units touches the FieldKind enum or the
 runner FieldKind matches, expect a trivial enum-arm merge — ping me. Merge queue: PM.
+## R-Phase 2 W-UNIT - SI UnitConverter boundary work (2026-07-05)
+
+Implemented the scenario-boundary SI converter in `lbm-scenario`; no physical
+units enter `lbm-core`. The adversarial unit matrix covers conversion-factor
+round trips, three-constructor equivalence, Schaefer-Turek and Poiseuille
+anchors, exact threshold boundaries for all unit diagnostic codes,
+missing-density rejection, rounding drift, suggestion feedback, effective
+viscosity echo, and no-units legacy serialization.
+
+Gates run in this session before the full workspace gate:
+`cargo test -p lbm-scenario --release units::tests -- --nocapture` passed
+9/9. `cargo test -p lbm-cli --release --test mcp_async_e2e -- --nocapture`
+passed 1/1. `cargo test --workspace --release` passed.

@@ -413,9 +413,7 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing runId"))?;
             let status = registry.status_json(run_id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "runId '{run_id}' not found. Check list_runs for the run list"
-                )
+                anyhow::anyhow!("runId '{run_id}' not found. Check list_runs for the run list")
             })?;
             Ok(text_result(serde_json::to_string_pretty(&status)?))
         }
@@ -428,12 +426,19 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("missing scenario"))?,
             )?;
-            let warnings = lbm_scenario::validate(&sc);
+            let units = lbm_scenario::unit_report_for(&sc).map_err(anyhow::Error::msg)?;
+            let resolved = lbm_scenario::resolve(&sc);
+            let sc_for_warnings = match &resolved {
+                Ok(Some(r)) => &r.scenario,
+                _ => &sc,
+            };
+            let warnings = lbm_scenario::validate(sc_for_warnings);
             let build = lbm_scenario::build_check(&sc);
             Ok(text_result(serde_json::to_string_pretty(&json!({
                 "ok": build.is_ok(),
                 "error": build.err(),
                 "warnings": warnings,
+                "units": units,
             }))?))
         }
         "list_presets" => {
