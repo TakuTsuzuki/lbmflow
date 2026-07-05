@@ -391,3 +391,15 @@ reviewer had not seen). Dispositions:
 
 Net: 13 adopted (1 adapted), 1 already-fixed-and-strengthened. REQ is now rev.4.
 Reviewer read rev.1a — overlaps with rev.2/rev.3 noted above to avoid double-fixing.
+
+## D-5 validation horizon (2026-07-05)
+
+- Added `crates/lbm-core/tests/d5_long_horizon.rs`.
+- Native `Solver<D2Q9, f64, CpuScalar, LocalPeriodic>` TGV convergence, default suite:
+  `cargo test -p lbm-core --release --test d5_long_horizon d5_native_solver_tgv_converges_second_order -- --nocapture`
+  measured `e32=2.622406e-3`, `e64=6.982198e-4`, `order=1.909`.
+- Ignored long-horizon Re=100 cavity compat facade vs native Solver:
+  `cargo test -p lbm-core --release --test d5_long_horizon d5_cavity_re100_compat_matches_native_after_20k_steps -- --ignored --nocapture`
+  measured `rho=0.000000e0`, `ux=0.000000e0`, `uy=0.000000e0`, `worst=0.000000e0`
+  after 20,000 steps on a 129x129 f64 TRT cavity. The frozen assert is `worst <= 1e-12`,
+  below the D-5 `1e-9` ceiling.
