@@ -1,0 +1,13 @@
+# docs/SOLVER_IMPROVEMENT_SPEC.md の妥当性検証実験（E2〜E8）。
+# 実行: cd scripts/spec-experiments && cargo run --release e2   (e2|e3|e4|e5|e6|e7|e8)。main 取り込み時にパス翻訳済み: lbm_core2->lbm_core, V1->compat
+# ワークスペース外の独立クレート（[workspace] で親から離脱）。
+[package]
+name = "spec-experiments"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+lbm-core = { path = "../../crates/lbm-core" }
+
+[workspace]
