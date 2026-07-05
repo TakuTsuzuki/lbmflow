@@ -57,9 +57,18 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 
 ## Team & conventions
 
-- Fable is PM. Implementation is delegated to Opus/Sonnet subagents / codex.
-  **Validation tests are written adversarially by codex or Opus/Sonnet from the
-  spec (VALIDATION.md)**, kept separate from the implementation.
+- Fable is PM. **Implementation workhorse = codex CLI, fanned out aggressively
+  (user directive 2026-07-05: "use codex fully, even ~100 parallel, finish
+  fastest")**: one order = one focused item bundle = one dedicated git worktree
+  + background `codex exec -C <worktree>`; PM merges landed branches in
+  dependency order. Bundle same-file items into ONE order (parallelize across
+  files, not within a file). Effective concurrency is machine-bounded — cargo
+  is CPU/RAM heavy, ~5-8 compile-bound orders at once on this M5 Max; add more
+  only for read/write-light work. Claude subagents remain for design-heavy or
+  cross-cutting work. **Validation tests are written adversarially by codex or
+  Opus/Sonnet from the spec (VALIDATION.md)**, kept separate from the
+  implementation (a test order and an implementation order never share a
+  worktree).
 - codex invocation example:
   `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
   (model gpt-5.5. **`< /dev/null` is mandatory** — with a pipe as stdin, codex
