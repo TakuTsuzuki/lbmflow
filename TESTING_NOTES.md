@@ -271,3 +271,63 @@ order #2 の 5 件の dispositions:
    84% 相当が天井で、MPI 化の追加損は ~12%（ロックステップのジッタ結合）。
    n≤4（均質コア内）は R3 ローカル線 ≥85% を満たす。真の測定はクラスタ待ち
    （測定リスト: docs/MPI_GUIDE.md §クラスタ）。
+
+## New (2026-07-05 R-Phase 1: entry guards A-2..A-10, branch r-phase1)
+
+Written in English per the 2026-07-05 language policy (new notes English-only).
+Engine-side changes that alter *rejection* semantics — adversarial tests
+(codex order #7+) should target these seams. No numerical path changed:
+probe_state_hash-equivalent bit invariance of legal configurations is pinned
+by `healthy_run_is_ok_and_bit_identical` (run vs run_guarded) and the
+untouched T13/T14/backend_simd gates.
+
+1. **A-2/A-6 (compat `SimConfig::build`)**: NaN/Inf in edge velocities, body
+   force, or TRT magic now `Err(NonFiniteParameter)` / `InvalidParameter`
+   (speed test reversed to NaN-safe `!(s <= MAX_SPEED)`). A MovingWall with a
+   wall-normal velocity component is rejected (E7: silent -56% mass / 500
+   steps). `MAX_SPEED` moved to `params::MAX_SPEED`; compat re-exports it.
+2. **A-7 (compat `init_with`)**: panics with the offending coordinate on
+   rho <= 0, non-finite rho, or speed > MAX_SPEED. Closure purity documented
+   (re-evaluated up to 5x per cell by the FD stencil).
+3. **A-3 (compat/wasm `set_solid`)**: placing a solid on the cell directly
+   inward of an open edge (x==1 / x==nx-2 / y==1 / y==ny-2 for open
+   left/right/bottom/top) now panics — that neighbour feeds the open-face BC;
+   a solid there froze the unknown slots (E5b: permanent ux=-0.115, no NaN).
+   Non-panicking pre-check: `Simulation::set_solid_allowed(x, y)`. The wasm
+   paint tool refuses such strokes silently.
+4. **A-4 (`GlobalSpec::validate(d, solid) -> Result<(), SpecError>`)**: the
+   V2-native gate. Rejects: non-finite/non-positive nu; bad TRT magic;
+   non-finite force and (2D) force[2] != 0; active axis < 3 cells; periodic x
+   open on one axis; open faces on more than one axis; a non-periodic face
+   that is neither open nor a full solid rim (E2); inlet speed > MAX_SPEED
+   (NaN-safe); outlet rho <= 0; u_conv outside (0,1]; open-face axis < 3.
+   `Solver::build` enforces it (panic, defense-in-depth); lbm-scenario
+   `build3d` calls it and maps `SpecError` -> `Build3Error::Spec`. Scenario
+   keeps only: periodic *pairing* (two EdgeSpecs -> one bool), the
+   `AdjacentOpenEdges` kind its guard test pins, and MovingWall speed (wall
+   velocities live in WallSpec, invisible to GlobalSpec).
+5. **A-5 (`HaloExchange::SCOPE`)**: `Solver::new_local_part` (single-part
+   owner) now requires a `Remote`-scope exchange at construction;
+   LocalPeriodic/InProcess are `Local` and panic (E4: silent self-wrap,
+   rho off by 7.7e-2). MpiExchange declares `Remote`.
+6. **A-8**: `zou_he_face_3d` asserts `unknowns(face).len() == 5` (D3Q27
+   would otherwise silently skip 4 slots). New `tests/stream_contract.rs`
+   pins the ConvectiveOutflow memory-term contract: streaming must not write
+   open-face unknown slots — CPU: sentinel bits unchanged across a full
+   stream pass (D2Q9 4 faces, D3Q19 6 faces); GPU: 200-step channel agrees
+   with CPU on the outflow-face unknowns <= 1e-4 (M5 Max/Metal, green).
+7. **A-9 (`run_guarded(steps, check_every)`)**: standard watchdog on
+   Solver / GpuSolver (readback) / MpiSolver (collective 2-double
+   Allreduce). NaN/Inf caught at the next check with the step number.
+   Overhead at 512^2, check_every=100: 0.45-0.49% (per-check 1.6-1.9 ms vs
+   per-step 3.6-3.9 ms; ignored test asserts the <1% line on the component
+   ratio — end-to-end timing is machine-noise-dominated on a shared box).
+   CLI drivers still use their own rho-scan (behaviour pinned by runner
+   tests); rewiring them onto run_guarded is a PM follow-up.
+8. **A-10f**: `equilibrium()` vs collide's inline feq pinned to bit identity
+   via the fixed-point property (equilibrium state must survive forceless
+   collision bit-exactly), D2Q9/D3Q19 x f32/f64.
+9. **A-1 residual**: not needed — no AUTO-GENERATED headers remain under
+   crates/lbm-core/tests/ (sync-tests.sh deleted; suites are compat-native).
+   A-10a/b: not applicable on main (V1 deleted; facade carries neither the
+   unused_mut nor the misleading solid-rho comment).
