@@ -1,0 +1,81 @@
+{
+  "version": 0,
+  "name": "resusp-high",
+  "grid": {
+    "nx": 128,
+    "ny": 128
+  },
+  "physics": {
+    "nu": 0.02,
+    "collision": {
+      "type": "trt"
+    },
+    "force": [
+      0.0,
+      0.0
+    ],
+    "gravity": [
+      0.0,
+      -0.0002,
+      0.0
+    ],
+    "precision": "f64"
+  },
+  "edges": {
+    "left": {
+      "type": "bounceBack"
+    },
+    "right": {
+      "type": "bounceBack"
+    },
+    "bottom": {
+      "type": "bounceBack"
+    },
+    "top": {
+      "type": "bounceBack"
+    }
+  },
+  "init": {
+    "kind": "rest"
+  },
+  "particles": {
+    "count": 300,
+    "d": 8.0,
+    "rhoP": 1.05,
+    "restitution": 0.0,
+    "seed": {
+      "x0": 8.0,
+      "y0": 1.5,
+      "x1": 119.0,
+      "y1": 6.0
+    },
+    "outputEvery": 2000
+  },
+  "run": {
+    "steps": 60000
+  },
+  "outputs": [
+    {
+      "field": "speed",
+      "format": "png",
+      "every": 0
+    },
+    {
+      "field": "speed",
+      "format": "csv",
+      "every": 20000
+    }
+  ],
+  "rotor": {
+    "cx": 64.0,
+    "cy": 64.0,
+    "nBlades": 4,
+    "rHub": 4.0,
+    "rBlade": 40.0,
+    "thickness": 3.0,
+    "omega": 0.0025,
+    "chi": 1.0,
+    "rampSteps": 200,
+    "theta0": 0.0
+  }
+}

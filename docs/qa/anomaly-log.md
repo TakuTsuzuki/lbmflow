@@ -82,3 +82,81 @@ Next pass (needs the CLI collection surface + worker): 2D analytic cases
 (Poiseuille/Couette L2, Ghia cavity centrelines), cylinder T8, 2D Shan-Chen
 spurious-current vs T11 — the worker owns run/scan/report; it should request the
 `lbmflow-qa-viewer` skill for any spatially-flagged case rather than rebuild.
+
+---
+
+## Pass 2 — 2026-07-06, MF-interim Wave 1 (gravity / rotor / particles) + resuspension observation
+
+Context: user directive to take over the stirred-tank resuspension capability.
+Wave-1 codex orders landed per-mass gravity (`cx/mf-grav`), rotor volume
+penalization (`cx/mf-rotor`), one-way Lagrangian particles (`cx/mf-particles`)
+and an adversarial suite (`cx/mf-tests`); integrated + scenario/runner wiring
+on `qa/mf-integration`. Adversarial suite: **16 pass / 0 fail / 4 SPEC-GAP**
+(`cargo test -p lbm-core --release --features mf-interim --test mf_interim`).
+
+### Anomalies
+
+**ANOM-P2-001 — uniform-force vs per-cell force-field transient impulse
+mismatch** — S2 (correctness of transients; steady-state invisible),
+disposition-proposal: collision-kernel owners (B-1/R2-C in flight) unify the
+source-term weighting.
+- Scenario+config: any TRT run driving the same F through `SimConfig::force`
+  vs the per-cell force field (gravity / Shan-Chen / rotor path).
+- Expected: identical dynamics (Guo forcing, single definition — REQ rev.4
+  "forcing second-moment single-definition" is the same family of issue).
+- Observed (probe, 32x24 periodic + obstacle, tau=1, TRT Lambda=3/16,
+  F=3e-7): uniform path u(1) = 1.5 F (exact Guo); force-field path
+  u(1) = 0.9286 F — a one-time impulse deficit of 1/(2 tau_minus) * F = 4/7 F.
+  Growth is F/step on both paths afterwards, so T2/T6/T11 steady gates cannot
+  see it; the offset then seeds slowly diverging trajectories near obstacles
+  (measured 2.1e-7 growth divergence over 50 steps).
+- Impact: any transient force-driven measurement (SC droplet oscillation
+  phase, rotor spin-up torque transient, gravity startup).
+- Workaround in tests: same-path twins only (see mf_interim.rs).
+
+**ANOM-P2-002 — rotor blade indicator produced mirror arms for odd blade
+counts** — S2 (wrong geometry, silently plausible fields), **fixed** in
+`qa/mf-integration` (along-blade sign check; 3 blades were 6 half-thickness
+arms). Found by cross-reading the adversarial suite's independent geometry
+against the implementation. The frozen stability envelope used 4 blades
+(even) and is unaffected.
+
+### SPEC-GAPs raised by the adversarial suite (S3, to pin in the contracts)
+
+1. Native `Solver::set_gravity` composition with `set_body_force_field`
+   rewrites across subdomains. 2. Particle starting inside solid: project /
+   reflect / reject. 3. Rotor `chi = 0`: rejected vs no-op. 4. Particle
+   overlap: no collision model (document one-way explicitly at the scenario
+   surface).
+
+### Behavior observation — stirred-tank flake resuspension (the target case)
+
+2D reduction of the user case (128^2 closed tank, per-mass gravity
+2e-4, 300 one-way flakes, 4-blade penalized rotor; configs in
+`scripts/qa/resuspension/`, stats via `scripts/qa/observe_resuspension.py`):
+
+- **High-clearance impeller (C/T = 0.5), tip 0.10**: flakes settle to the
+  floor and are NEVER resuspended (laminar near-floor vertical velocity
+  1.9e-3 total speed at row 1, mostly horizontal, vs settling velocity
+  1.8e-3). Permanent deposition — consistent with mixing practice (high
+  clearance is bad for solids suspension).
+- **Low-clearance impeller (C/T = 0.25, the textbook solids-suspension
+  geometry), d=6, rho_p=1.03**:
+  - tip 0.01: 100% settled at 100k steps (one transient single-particle
+    pickup to y=60 that re-settled — threshold intermittency).
+  - tip 0.10: **sustained partial suspension — 34% of flakes above y=16,
+    excursions to y=117/128, 66% remaining as a bed** (the classic below-N_js
+    bed + cloud equilibrium). Flow field: `out/.../speed_100000.png`.
+- Verdict: settling, threshold behavior and rotation-driven resuspension all
+  emerge from the implemented force balance (no stochastic kicks). Honest
+  limits: laminar only — realistic resuspension at industrial Re needs W-LES
+  (MF-beta, this session's next order) + lift forces (FR-PART roadmap); free
+  surface (half-filled vessel) still rigid-lid until MF-gamma.
+
+### Process errata (pass 2)
+
+- Stale-binary trap: `cargo test -p lbm-core` does not rebuild lbm-cli; the
+  first observation ran a pre-rotor binary (maxSpeed 0.0000 exposed it
+  immediately — the observation gate works).
+- codex sandbox cannot commit in shared-.git worktrees (`index.lock` EPERM):
+  2 of 4 orders needed PM-side commits. Fold into the dispatch Skill notes.
