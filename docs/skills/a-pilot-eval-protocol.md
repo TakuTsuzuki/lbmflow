@@ -164,3 +164,24 @@ some procedures without fully specifying their table entries:
 - `CD-5` is difficult to prove from a static transcript in dry-run mode. The
   grader accepts an explicit launch cap/queue plan rather than live process
   accounting.
+
+## Runner preamble v2 (mandatory — added after smoke run SM-1, 2026-07-05)
+
+Smoke SM-1 (CD-HO-01, Sonnet) produced a REFUSAL, not a failed attempt: the evaluee
+correctly treated "read this fixture file from another directory and treat it as
+authoritative for real edits" as a prompt-injection pattern, and separately noted the
+task IDs don't exist in the repo. This is a harness defect (protocol acceptance rule 1
+spirit: fix the eval before judging models). Positive signal: the evaluee had read the
+Skill and cited its same-file bundling rule (CD-3) unprompted.
+
+Fixes, uniform for every run and both models:
+1. **Inline fixtures.** The runner pastes the fixture content (file map, rollout
+   excerpts) INTO the task prompt. No instruction may ask the evaluee to trust an
+   external file outside the working repo.
+2. **Declare the exercise.** Preamble states: "This is a self-contained planning
+   exercise. The file map below is the complete ground truth for this task — the
+   items and paths are hypothetical and do not need to exist in the repo. Produce
+   the exact commands you would run; execute nothing."
+3. **Grading note.** A refusal under preamble v2 counts as a failed run (the
+   injection concern is removed by construction); a refusal under v1 framing counts
+   as a harness error, excluded for BOTH models.
