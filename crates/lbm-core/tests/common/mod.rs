@@ -1,7 +1,9 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Shared helpers for validation tests.
 #![allow(dead_code)]
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 /// Relative L2 norm of the error between `actual` and `reference`.
 pub fn l2_rel(actual: &[f64], reference: &[f64]) -> f64 {

@@ -20,7 +20,7 @@ RANKS=(${RANKS:-1 2 4 8})
 command -v mpirun >/dev/null || { echo "mpirun not found (MPI_HOME=$MPI_HOME)" >&2; exit 1; }
 
 echo "== build (--features mpi) =="
-cargo build -p lbm-core2 --release --features mpi --example bench_mpi || exit 1
+cargo build -p lbm-core --release --features mpi --example bench_mpi || exit 1
 BIN="$ROOT/target/release/examples/bench_mpi"
 
 results=()

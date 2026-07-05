@@ -1,11 +1,17 @@
 //! Scalar abstraction so the engine runs in either `f32` or `f64`.
+//!
+//! Identical contract to the retired V1 engine's `real::Real` (the V2 core
+//! was forbidden from build-depending on V1, hence the duplicate; V1 itself
+//! was deleted 2026-07-05 — `compat::real` re-exports this trait).
 
 use num_traits::{Float, FromPrimitive};
 
 /// Floating-point scalar used by the simulation (`f32` or `f64`).
 ///
-/// The accuracy/speed trade-off axis #1: `Simulation<f64>` for validation-grade
-/// accuracy, `Simulation<f32>` for roughly 2x memory-bandwidth-bound speed.
+/// The accuracy/speed trade-off axis #1: `f64` for validation-grade accuracy,
+/// `f32` for roughly 2x memory-bandwidth-bound speed. The deviation storage
+/// (populations hold `f - w`) keeps `f32` runs at validation grade for the
+/// standard benchmarks (docs/PHYSICS.md).
 pub trait Real:
     Float
     + FromPrimitive

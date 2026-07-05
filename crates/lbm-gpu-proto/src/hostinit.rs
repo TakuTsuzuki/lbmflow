@@ -19,7 +19,7 @@
 //! Everything below is a line-for-line port of `lbm-core/src/sim.rs`
 //! specialised to: f32, fully periodic, no solids, no body force.
 
-use lbm_core::lattice::{CX, CY, PAIRS, Q, W};
+use lbm_core::compat::lattice::{CX, CY, PAIRS, Q, W};
 
 /// Lattice constants pre-converted to f32 (mirrors `Simulation::params`).
 struct Consts {

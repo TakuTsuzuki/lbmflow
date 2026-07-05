@@ -1,8 +1,10 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Smoke test: exact conservation properties.
 
 mod common;
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 use std::f64::consts::PI;
 
 fn smooth_init(n: usize) -> impl Fn(usize, usize) -> (f64, f64, f64) {

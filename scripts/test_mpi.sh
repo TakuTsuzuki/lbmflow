@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # T13-MPI verification driver (docs/MPI_GUIDE.md).
 #
-# Builds lbm-core2 with `--features mpi` and runs the distributed-vs-
+# Builds lbm-core with `--features mpi` and runs the distributed-vs-
 # monolithic equivalence example under mpirun -n {1, 2, 4, 8}:
 #   n = 1, 2, 4 : 2D TGV / cavity (lid over the seam) / cylinder + probe on
 #                 the seam / Shan-Chen droplet (2x2 corner at n = 4)
@@ -32,7 +32,7 @@ fi
 echo "using $(command -v mpirun): $(mpirun --version | head -1)"
 
 echo "== build (--features mpi) =="
-cargo build -p lbm-core2 --release --features mpi --example mpi_t13 || exit 1
+cargo build -p lbm-core --release --features mpi --example mpi_t13 || exit 1
 BIN="$ROOT/target/release/examples/mpi_t13"
 
 fail=0

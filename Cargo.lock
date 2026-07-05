@@ -732,7 +732,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "lbm-core2",
+ "lbm-core",
  "lbm-scenario",
  "png",
  "serde",
@@ -741,15 +741,6 @@ dependencies = [
 
 [[package]]
 name = "lbm-core"
-version = "0.1.0"
-dependencies = [
- "approx",
- "num-traits",
- "rayon",
-]
-
-[[package]]
-name = "lbm-core2"
 version = "0.1.0"
 dependencies = [
  "approx",
@@ -766,7 +757,7 @@ dependencies = [
 name = "lbm-scenario"
 version = "0.1.0"
 dependencies = [
- "lbm-core2",
+ "lbm-core",
  "serde",
  "serde_json",
 ]

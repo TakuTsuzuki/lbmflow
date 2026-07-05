@@ -1,7 +1,9 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T12: two-component MCMP separation and Rayleigh-Taylor growth.
 
-use lbm_core::multiphase::MultiComponent;
-use lbm_core::prelude::*;
+use lbm_core::compat::multiphase::MultiComponent;
+use lbm_core::compat::prelude::*;
 use std::f64::consts::PI;
 
 const TRACE: f64 = 0.05;

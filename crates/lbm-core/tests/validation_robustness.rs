@@ -1,7 +1,9 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T10: configuration errors, near-limit TRT stability, and
 //! unsupported solid placement on open edges.
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 fn expect_err(cfg: SimConfig<f64>, want: fn(&ConfigError) -> bool, label: &str) {
     match cfg.build() {

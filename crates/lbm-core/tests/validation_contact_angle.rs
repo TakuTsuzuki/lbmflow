@@ -1,7 +1,9 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T11b: Shan-Chen wall adhesion contact-angle regression.
 
-use lbm_core::multiphase::ShanChen;
-use lbm_core::prelude::*;
+use lbm_core::compat::multiphase::ShanChen;
+use lbm_core::compat::prelude::*;
 use std::f64::consts::PI;
 
 const G: f64 = -5.0;

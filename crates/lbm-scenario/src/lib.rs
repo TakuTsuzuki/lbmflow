@@ -4,8 +4,8 @@
 //! See `docs/AGENT_MODE_DESIGN.md` for the schema rationale. Field names are
 //! camelCase in JSON.
 
-use lbm_core2::compat::multiphase::ShanChen;
-use lbm_core2::compat::prelude::*;
+use lbm_core::compat::multiphase::ShanChen;
+use lbm_core::compat::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------- schema
@@ -480,11 +480,11 @@ pub enum SimHandle {
 
 /// The 3D engine type behind a scenario: V2 core, D3Q19, CPU backend,
 /// monolithic decomposition (ARCHITECTURE_V2; `compute.backend: "cpu"`).
-pub type Solver3<T> = lbm_core2::solver::Solver<
-    lbm_core2::lattice::D3Q19,
+pub type Solver3<T> = lbm_core::solver::Solver<
+    lbm_core::lattice::D3Q19,
     T,
-    lbm_core2::backend::CpuScalar,
-    lbm_core2::halo::LocalPeriodic,
+    lbm_core::backend::CpuScalar,
+    lbm_core::halo::LocalPeriodic,
 >;
 
 /// A built 3D simulation, precision-erased for the runner.
@@ -558,8 +558,8 @@ pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
     })
 }
 
-fn build3d_t<T: lbm_core2::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build3Error> {
-    use lbm_core2::prelude::{
+fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build3Error> {
+    use lbm_core::prelude::{
         build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic,
         Solver, WallSpec,
     };

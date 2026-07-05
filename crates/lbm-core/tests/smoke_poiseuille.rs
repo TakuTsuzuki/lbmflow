@@ -1,3 +1,5 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Smoke test: body-force-driven Poiseuille flow between half-way
 //! bounce-back walls. TRT with magic 3/16 must reproduce the discrete
 //! parabola exactly; BGK converges at 2nd order.
@@ -5,7 +7,7 @@
 mod common;
 use common::run_to_steady;
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 /// Returns (simulated profile, analytical profile) over the fluid rows.
 fn poiseuille(ny: usize, collision: Collision) -> (Vec<f64>, Vec<f64>) {

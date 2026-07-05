@@ -1,3 +1,5 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Smoke test: Taylor–Green vortex decay (periodic box).
 //!
 //! Diffusive scaling (u0 ∝ 1/N) so the compressibility error shrinks together
@@ -5,7 +7,7 @@
 
 mod common;
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 use std::f64::consts::PI;
 
 fn tgv_l2(n: usize, collision: Collision) -> f64 {

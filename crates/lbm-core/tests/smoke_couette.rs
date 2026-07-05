@@ -1,3 +1,5 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Smoke test: Couette flow with a moving top wall. The steady profile is
 //! linear and exact for half-way bounce-back at any tau; also sanity-checks
 //! the momentum-exchange force probe against the analytical wall shear.
@@ -5,7 +7,7 @@
 mod common;
 use common::run_to_steady;
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 fn couette(tau: f64, collision: Collision) -> Simulation<f64> {
     let nu = (tau - 0.5) / 3.0;

@@ -1,3 +1,5 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T4/T5: open boundary channels.
 //!
 //! T4 uses a prescribed parabolic inlet profile and checks bulk mass-flux
@@ -6,8 +8,8 @@
 mod common;
 
 use common::{l2_rel, run_to_steady};
-use lbm_core::lattice::CS2;
-use lbm_core::prelude::*;
+use lbm_core::compat::lattice::CS2;
+use lbm_core::compat::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
 enum Orientation {
