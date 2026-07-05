@@ -1356,6 +1356,69 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         fields.state.borrow_mut().steps_recorded += 1;
     }
 
+    fn run_span<H: HaloExchange<f32>>(
+        &mut self,
+        _exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [GpuFields],
+        p: &StepParams<f32>,
+        two_pass: bool,
+        probed_force: &mut [f32; 3],
+        steps: usize,
+    ) {
+        if steps == 0 {
+            return;
+        }
+        assert!(
+            !two_pass,
+            "WgpuBackend streams the full grid in one fused dispatch (no two-pass split)"
+        );
+        assert_eq!(
+            fields.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic part"
+        );
+        assert_eq!(
+            subs.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic subdomain"
+        );
+        let sub = &subs[0];
+        let field = &mut fields[0];
+        self.ensure_params(sub, field, p);
+        self.ensure_bc(sub, field, p);
+        let open_faces = std::array::from_fn::<_, 6, _>(|fi| {
+            let face = Face::ALL[fi];
+            face.axis() < L::D && sub.touches_global_face(face) && p.faces[fi].is_open()
+        });
+        let mut st = field.state.borrow_mut();
+        assert!(
+            !st.pending_collide,
+            "run_span called with an unfinished collide/stream pair"
+        );
+        for _ in 0..steps {
+            if field.has_probe {
+                st.ops.push(Op::ClearProbe);
+            }
+            let cur = st.cur;
+            st.ops.push(Op::Fused { bg: cur });
+            st.generation += 1;
+            st.f_cache = None;
+            st.cur ^= 1;
+            let cur = st.cur;
+            for (face, &is_open) in open_faces.iter().enumerate() {
+                if is_open {
+                    st.ops.push(Op::Bc { face, bg: cur });
+                }
+            }
+            st.steps_recorded += 1;
+        }
+        // The probe force accumulates on-device and is read explicitly by
+        // GpuSolver::probed_force; the unified scalar slot stays at the same
+        // zero value returned by WgpuBackend::stream.
+        *probed_force = [0.0; 3];
+    }
+
     fn run_chunk_size(&self, fields: &[GpuFields]) -> usize {
         if fields
             .iter()
@@ -1371,7 +1434,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         for field in fields {
             self.flush(field);
         }
-        self.ctx.wait_idle();
+        let calibrating = !self.submit_chunk_calibrated;
+        if calibrating {
+            self.ctx.wait_idle();
+        }
         for field in fields {
             let mut st = field.state.borrow_mut();
             if st.use_cached_moments_once {
@@ -1379,7 +1445,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
                 st.params_words = None;
             }
         }
-        if !self.submit_chunk_calibrated {
+        if calibrating {
             self.calibrate_submit_chunk(steps, start.elapsed());
         }
     }

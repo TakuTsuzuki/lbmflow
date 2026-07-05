@@ -6,7 +6,7 @@
 //! compat facade is a thin wrapper over this type with a monolithic (1×1×1)
 //! decomposition.
 
-use crate::backend::{Backend, CellRange, HostMoments};
+use crate::backend::{Backend, HostMoments};
 use crate::fields::SoaFields;
 use crate::halo::{ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
@@ -733,29 +733,15 @@ where
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
         self.stage_in_if_dirty();
-        for i in 0..self.parts.len() {
-            self.backend
-                .collide(&self.subs[i], &mut self.parts[i], &self.params);
-        }
-        self.backend
-            .exchange_f(&self.exchange, &self.subs, &mut self.parts);
-        let mut pf = [T::zero(); 3];
-        for i in 0..self.parts.len() {
-            let part_pf = self.stream_part(i);
-            pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
-        }
-        for i in 0..self.parts.len() {
-            self.backend.swap(&mut self.parts[i]);
-        }
-        self.probed_force = pf;
-        for i in 0..self.parts.len() {
-            self.backend
-                .apply_open_faces(&self.subs[i], &mut self.parts[i], &self.params);
-        }
-        for i in 0..self.parts.len() {
-            self.backend
-                .update_moments(&self.subs[i], &mut self.parts[i], &self.params);
-        }
+        self.backend.run_span(
+            &self.exchange,
+            &self.subs,
+            &mut self.parts,
+            &self.params,
+            self.two_pass,
+            &mut self.probed_force,
+            1,
+        );
         self.time += 1;
         self.device_ahead = true;
         if !self.backend.handles_single_part_periodic_halo() {
@@ -763,47 +749,10 @@ where
         }
     }
 
-    fn stream_part(&mut self, i: usize) -> [T; 3] {
-        let sub = &self.subs[i];
-        if !self.two_pass {
-            return self.backend.stream(
-                sub,
-                &mut self.parts[i],
-                &self.params,
-                CellRange::full(sub),
-            );
-        }
-        // Interior pass first (would overlap an async exchange), then the
-        // one-cell boundary shell. Field results are identical to the full
-        // pass; only the probe partials' summation order differs.
-        let c = sub.geom.core;
-        let interior = CellRange {
-            lo: [1, 1, if sub.geom.d == 3 { 1 } else { 0 }],
-            hi: [
-                c[0].saturating_sub(1),
-                c[1].saturating_sub(1),
-                if sub.geom.d == 3 {
-                    c[2].saturating_sub(1)
-                } else {
-                    c[2]
-                },
-            ],
-        };
-        let sub = sub.clone();
-        let mut pf = self
-            .backend
-            .stream(&sub, &mut self.parts[i], &self.params, interior);
-        for shell in boundary_shells(&sub, interior) {
-            let p2 = self
-                .backend
-                .stream(&sub, &mut self.parts[i], &self.params, shell);
-            pf = [pf[0] + p2[0], pf[1] + p2[1], pf[2] + p2[2]];
-        }
-        pf
-    }
-
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
+        self.sync_masks_if_dirty();
+        self.stage_in_if_dirty();
         let mut remaining = steps;
         while remaining > 0 {
             let chunk = self
@@ -811,10 +760,21 @@ where
                 .run_chunk_size(&self.parts)
                 .max(1)
                 .min(remaining);
-            for _ in 0..chunk {
-                self.step();
-            }
+            self.backend.run_span(
+                &self.exchange,
+                &self.subs,
+                &mut self.parts,
+                &self.params,
+                self.two_pass,
+                &mut self.probed_force,
+                chunk,
+            );
+            self.time += chunk as u64;
+            self.device_ahead = true;
             self.backend.finish_run_chunk(&self.parts, chunk);
+            if !self.backend.handles_single_part_periodic_halo() {
+                self.stage_out_all();
+            }
             remaining -= chunk;
         }
     }
@@ -836,16 +796,11 @@ where
     /// occurred at most `check_every` steps earlier.
     pub fn run_guarded(&mut self, steps: usize, check_every: usize) -> Result<(), Diverged> {
         let check_every = check_every.max(1);
-        let mut since_check = 0usize;
-        for _ in 0..steps {
-            self.step();
-            since_check += 1;
-            if since_check == check_every {
-                since_check = 0;
-                self.check_mass_finite()?;
-            }
-        }
-        if since_check > 0 {
+        let mut remaining = steps;
+        while remaining > 0 {
+            let chunk = remaining.min(check_every);
+            self.run(chunk);
+            remaining -= chunk;
             self.check_mass_finite()?;
         }
         Ok(())
@@ -1616,47 +1571,6 @@ where
         }
         out
     }
-}
-
-/// Boundary shells complementing the interior box: fixed order YNeg row,
-/// YPos row, XNeg column, XPos column (minus corners already covered), then
-/// Z planes for 3D. Only the probe partials' summation order depends on
-/// this; field results do not.
-fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellRange> {
-    let c = sub.geom.core;
-    let mut shells = Vec::new();
-    let z_full = (0, c[2]);
-    // y = 0 and y = ny-1 full-width rows.
-    shells.push(CellRange {
-        lo: [0, 0, z_full.0],
-        hi: [c[0], interior.lo[1], z_full.1],
-    });
-    shells.push(CellRange {
-        lo: [0, interior.hi[1], z_full.0],
-        hi: [c[0], c[1], z_full.1],
-    });
-    // x columns between the y rows.
-    shells.push(CellRange {
-        lo: [0, interior.lo[1], z_full.0],
-        hi: [interior.lo[0], interior.hi[1], z_full.1],
-    });
-    shells.push(CellRange {
-        lo: [interior.hi[0], interior.lo[1], z_full.0],
-        hi: [c[0], interior.hi[1], z_full.1],
-    });
-    if sub.geom.d == 3 {
-        // z planes of the remaining interior-xy box.
-        shells.push(CellRange {
-            lo: [interior.lo[0], interior.lo[1], 0],
-            hi: [interior.hi[0], interior.hi[1], interior.lo[2]],
-        });
-        shells.push(CellRange {
-            lo: [interior.lo[0], interior.lo[1], interior.hi[2]],
-            hi: [interior.hi[0], interior.hi[1], c[2]],
-        });
-    }
-    shells.retain(|s| !s.is_empty());
-    shells
 }
 
 #[cfg(test)]

@@ -3,6 +3,69 @@
 Communication log between the test author (codex) and the engine author (PM/Fable).
 New discrepancies are appended at the end. Processed items are retained with their Disposition.
 
+## B-1 GPU per-step host-overhead inspection (2026-07-06)
+
+Compared against `git show 55dbccb^:crates/lbm-core/src/gpu/solver.rs`, the old
+`GpuSolver::try_run` hot loop recorded each step directly as:
+`collide` (arm fused step) → `stream` (record clear-probe/fused dispatch) → `swap`
+→ `apply_open_faces` → `update_moments`, with submit-chunk calibration and queue
+submit inside the same loop. It did not call the generic solver step path per
+GPU timestep.
+
+The unified `Solver::run` path added these host-side operations per GPU step:
+
+1. `Solver::step` entry checks: `sync_masks_if_dirty()` and `stage_in_if_dirty()`
+   branches on every step, even after setup has already uploaded fields.
+2. Generic `Vec` iteration over `parts` for every phase. The Wgpu path is
+   monolithic, so these loops always iterate one element but still run five
+   separate phase loops per step.
+3. `WgpuBackend::collide` per-step `ensure_params` call, including `StepParams`
+   word reconstruction, `sub.halo_flags()` calculation, face-flag scanning,
+   `RefCell` immutable borrow for cached-moment state, then `RefCell` mutable
+   borrow for `params_words`, followed by a second mutable borrow to set
+   `pending_collide`.
+4. `WgpuBackend::exchange_f` per-step trait dispatch. It is a no-op for the
+   B-1 monolithic GPU path but still checks `subs.len() == fields.len() == 1`.
+5. `Solver::stream_part` per-step branch on `two_pass`, `CellRange::full`
+   construction, backend trait call, and probe-force scalar accumulation. GPU
+   returns `[0,0,0]` because the real probe force stays on-device.
+6. `WgpuBackend::stream` per-step full-range assert, `RefCell` mutable borrow,
+   `pending_collide` assertion/clear, optional `ClearProbe` record, `Fused`
+   op push, generation increment, and f-cache invalidation.
+7. `WgpuBackend::swap` per-step second `RefCell` mutable borrow just to flip
+   the ping-pong parity.
+8. `Solver` per-step assignment to `probed_force`, which is always zero for
+   Wgpu until explicit probe readback.
+9. `WgpuBackend::apply_open_faces` per-step `ensure_bc`, including cached BC
+   word comparison path and a scan of all `Face::ALL` entries, followed by
+   another face scan to push open-face BC ops.
+10. `WgpuBackend::update_moments` per-step `RefCell` mutable borrow to increment
+    `steps_recorded`; moments remain lazy and no kernel is recorded here.
+11. `Solver::step` per-step time/device-ahead bookkeeping and a
+    `handles_single_part_periodic_halo()` branch.
+12. `Solver::run` chunk loop drove the above one step at a time, so all generic
+    branch/borrow/loop overhead scaled with simulated steps instead of submit
+    chunks.
+
+Per-chunk waste found by inspection:
+
+1. `WgpuBackend::finish_run_chunk` submitted recorded ops and then
+   unconditionally called `wait_idle()`. The old path only waited while
+   calibrating the submit chunk; normal `run` returned asynchronously and
+   explicit readback APIs performed the blocking wait.
+2. `finish_run_chunk` iterates all fields and flushes each one. This is harmless
+   for the current monolithic GPU path (`fields.len() == 1`) but would become
+   waste for multi-part GPU unless replaced with a grouped submit.
+
+Disposition in this change: added `Backend::run_span` with a default
+implementation equal to the current generic phase loop for CPU/partitioned
+backends. `Solver::run` now stages once, drives backend spans per calibrated
+chunk, and keeps guarded checks at `check_every` chunk boundaries. `WgpuBackend`
+overrides `run_span` to precompute parameter/BC state once per span and record
+the same per-step op sequence directly inside one recorder borrow. The normal
+GPU `finish_run_chunk` no longer waits after submit except during first-submit
+calibration; explicit readback/reduction paths still flush and wait.
+
 ## MPI ops bundle (2026-07-05)
 
 1. Persistent MPI exchange buffers were verified with

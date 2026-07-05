@@ -76,6 +76,47 @@ impl CellRange {
     }
 }
 
+/// Boundary shells complementing the interior box: fixed order YNeg row,
+/// YPos row, XNeg column, XPos column (minus corners already covered), then
+/// Z planes for 3D. Only the probe partials' summation order depends on
+/// this; field results do not.
+pub(crate) fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellRange> {
+    let c = sub.geom.core;
+    let mut shells = Vec::new();
+    let z_full = (0, c[2]);
+    // y = 0 and y = ny-1 full-width rows.
+    shells.push(CellRange {
+        lo: [0, 0, z_full.0],
+        hi: [c[0], interior.lo[1], z_full.1],
+    });
+    shells.push(CellRange {
+        lo: [0, interior.hi[1], z_full.0],
+        hi: [c[0], c[1], z_full.1],
+    });
+    // x columns between the y rows.
+    shells.push(CellRange {
+        lo: [0, interior.lo[1], z_full.0],
+        hi: [interior.lo[0], interior.hi[1], z_full.1],
+    });
+    shells.push(CellRange {
+        lo: [interior.hi[0], interior.lo[1], z_full.0],
+        hi: [c[0], interior.hi[1], z_full.1],
+    });
+    if sub.geom.d == 3 {
+        // z planes of the remaining interior-xy box.
+        shells.push(CellRange {
+            lo: [interior.lo[0], interior.lo[1], 0],
+            hi: [interior.hi[0], interior.hi[1], interior.lo[2]],
+        });
+        shells.push(CellRange {
+            lo: [interior.lo[0], interior.lo[1], interior.hi[2]],
+            hi: [interior.hi[0], interior.hi[1], c[2]],
+        });
+    }
+    shells.retain(|s| !s.is_empty());
+    shells
+}
+
 /// A compute + storage target for one subdomain's fields.
 ///
 /// One time step, orchestrated by the solver, is:
@@ -158,6 +199,66 @@ pub trait Backend<L: Lattice, T: Real> {
 
     /// Recompute macroscopic moments from the populations.
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
+
+    /// Record/execute a span of whole steps. The default is exactly the
+    /// generic orchestrator step loop; asynchronous backends may override it
+    /// to keep their per-step hot loop inside backend-owned storage and
+    /// recorder state.
+    fn run_span<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [Self::Fields],
+        p: &StepParams<T>,
+        two_pass: bool,
+        probed_force: &mut [T; 3],
+        steps: usize,
+    ) {
+        for _ in 0..steps {
+            for i in 0..fields.len() {
+                self.collide(&subs[i], &mut fields[i], p);
+            }
+            self.exchange_f(exchange, subs, fields);
+            let mut pf = [T::zero(); 3];
+            for i in 0..fields.len() {
+                let sub = &subs[i];
+                let part_pf = if !two_pass {
+                    self.stream(sub, &mut fields[i], p, CellRange::full(sub))
+                } else {
+                    let c = sub.geom.core;
+                    let interior = CellRange {
+                        lo: [1, 1, if sub.geom.d == 3 { 1 } else { 0 }],
+                        hi: [
+                            c[0].saturating_sub(1),
+                            c[1].saturating_sub(1),
+                            if sub.geom.d == 3 {
+                                c[2].saturating_sub(1)
+                            } else {
+                                c[2]
+                            },
+                        ],
+                    };
+                    let mut part_pf = self.stream(sub, &mut fields[i], p, interior);
+                    for shell in boundary_shells(sub, interior) {
+                        let p2 = self.stream(sub, &mut fields[i], p, shell);
+                        part_pf = [part_pf[0] + p2[0], part_pf[1] + p2[1], part_pf[2] + p2[2]];
+                    }
+                    part_pf
+                };
+                pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
+            }
+            for field in fields.iter_mut() {
+                self.swap(field);
+            }
+            *probed_force = pf;
+            for i in 0..fields.len() {
+                self.apply_open_faces(&subs[i], &mut fields[i], p);
+            }
+            for i in 0..fields.len() {
+                self.update_moments(&subs[i], &mut fields[i], p);
+            }
+        }
+    }
 
     /// Maximum number of steps the orchestrator should record before calling
     /// [`Backend::finish_run_chunk`]. CPU backends execute immediately, so the
