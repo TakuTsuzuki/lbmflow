@@ -553,3 +553,32 @@ untouched T13/T14/backend_simd gates.
    crates/lbm-core/tests/ (sync-tests.sh deleted; suites are compat-native).
    A-10a/b: not applicable on main (V1 deleted; facade carries neither the
    unused_mut nor the misleading solid-rho comment).
+
+
+## Translation session — completion note (2026-07-05)
+
+Dedicated English-translation session. Branch `claude/lucid-fermi-b7bd08`
+(merged to `main` and pushed to `origin`). All legacy Japanese content in the
+repository was translated to English per the 2026-07-05 English-only directive;
+meaning-preserving, every number / frozen band / test ID / file name / git hash
+preserved.
+
+Commits (this branch, on top of the merge of `main`):
+- docs: translate all docs/*.md to English
+- docs: CLAUDE.md / README / root config comments (superseded by main's own
+  English versions during merge; AGENTS.md folded in)
+- i18n: Rust comments + user-facing strings (lbm-cli / lbm-scenario / lbm-wasm /
+  lbm-core); build(wasm): pkg regenerated with English JsError strings
+- i18n(web): GUI fully English (index.html, all TS, css, web/README)
+- docs: TESTING_NOTES.md (root + web)
+- Post-merge: re-translated PHYSICS/VALIDATION/REQ against main's latest content
+  (REQ rev.4, T15.5 bands kept verbatim); translated main's new skills docs
+  (.claude/skills/*, docs/skills/b1-capability-map.md) to match the English CLI.
+
+Gates (all green): `cargo test --workspace --release` exit 0 (all suites ok) ·
+`wasm-pack build` OK · `cd web && npm run build` (tsc strict + vite) OK ·
+`lbm presets run cavity` OK.
+
+Leftover check: `grep -rn '[kana/kanji]' . --exclude-dir=target,node_modules,.git,pkg,dist`
+returns empty (source tree fully English). The committed wasm binary carries the
+English JsError strings.
