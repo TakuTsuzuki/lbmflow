@@ -18,7 +18,7 @@ mod gpu;
 mod hostinit;
 
 use gpu::{GpuContext, GpuLbm};
-use lbm_core::prelude::{SimConfig, Simulation};
+use lbm_core::compat::prelude::{SimConfig, Simulation};
 use std::f64::consts::PI;
 use std::time::Instant;
 

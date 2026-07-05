@@ -1,10 +1,12 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T1: Taylor-Green vortex decay, convergence, viscosity, and
 //! 90-degree rotational symmetry.
 
 mod common;
 
 use common::l2_rel;
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy)]

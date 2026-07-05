@@ -1,9 +1,11 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T2/T3: forced Poiseuille and moving-wall Couette channels.
 
 mod common;
 
 use common::run_to_steady;
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 fn linf_rel(actual: &[f64], reference: &[f64]) -> f64 {
     let den = reference.iter().map(|v| v.abs()).fold(0.0f64, f64::max);

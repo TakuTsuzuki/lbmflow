@@ -1,7 +1,9 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T6: conservation laws and equilibrium moment identities.
 
-use lbm_core::lattice::{CS2, CX, CY, Q, W};
-use lbm_core::prelude::*;
+use lbm_core::compat::lattice::{CS2, CX, CY, Q, W};
+use lbm_core::compat::prelude::*;
 use std::f64::consts::PI;
 
 fn smooth_init_f64(n: usize) -> impl Fn(usize, usize) -> (f64, f64, f64) {

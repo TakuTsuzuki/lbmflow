@@ -1,6 +1,8 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T8: Schaefer-Turek channel flow past a circular cylinder.
 
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 const MAGIC: f64 = 3.0 / 16.0;
 const RHO: f64 = 1.0;

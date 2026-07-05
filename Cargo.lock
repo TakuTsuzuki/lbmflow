@@ -733,7 +733,6 @@ dependencies = [
  "anyhow",
  "clap",
  "lbm-core",
- "lbm-core2",
  "lbm-scenario",
  "png",
  "serde",
@@ -745,18 +744,8 @@ name = "lbm-core"
 version = "0.1.0"
 dependencies = [
  "approx",
- "num-traits",
- "rayon",
-]
-
-[[package]]
-name = "lbm-core2"
-version = "0.1.0"
-dependencies = [
- "approx",
  "bytemuck",
  "futures-intrusive",
- "lbm-core",
  "mpi",
  "num-traits",
  "pollster",
@@ -769,7 +758,6 @@ name = "lbm-scenario"
 version = "0.1.0"
 dependencies = [
  "lbm-core",
- "lbm-core2",
  "serde",
  "serde_json",
 ]

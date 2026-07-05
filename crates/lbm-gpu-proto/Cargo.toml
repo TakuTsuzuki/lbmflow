@@ -6,7 +6,8 @@ license = "MIT OR Apache-2.0"
 description = "Phase 9c evaluation prototype: D2Q9 LBM on wgpu compute (Metal). Standalone; NOT a workspace member."
 publish = false
 
-# Runs verification (GPU vs lbm-core CPU reference) and the MLUPS benchmark
+# Runs verification (GPU vs the lbm-core compat facade CPU reference; the
+# retired V1 engine originally) and the MLUPS benchmark
 # in one shot:
 #
 #     cd crates/lbm-gpu-proto && cargo run --release

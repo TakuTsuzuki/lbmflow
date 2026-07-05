@@ -239,7 +239,7 @@ Cd = 2Fx/(ρ U_mean² D)、Cl = 2Fy/(ρ U_mean² D)。
 
 ### T15.（M-C: 3D/D3Q19 導入時）3D 物理検証
 コア V2 の D3Q19 に対する受入基準（COMPETITIVE_SPEC R1）。
-テスト実体: `crates/lbm-core2/tests/t15_3d.rs`（実測値は 2026-07-05 M-C 実装時）:
+テスト実体: `crates/lbm-core/tests/t15_3d.rs`（実測値は 2026-07-05 M-C 実装時）:
 1. **z 不変 2D-TGV の退化一致**: 3D 格子（N×N×4、z 周期）に z 不変の 2D TGV を
    初期化し、D2Q9 の同一シナリオと**場単位で一致**（f64 ≤1e-12。実測 8.9e-16/648step —
    z 不変射影は実質ビット精度で保たれる）。

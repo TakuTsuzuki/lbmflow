@@ -1,50 +1,56 @@
 //! # lbm-core
 //!
-//! Lattice Boltzmann method (D2Q9) fluid simulation engine.
+//! Lattice Boltzmann core (the V2 architecture, sole engine since the V1
+//! retirement on 2026-07-05): the dimension / lattice / precision / backend /
+//! decomposition axes are orthogonal (docs/ARCHITECTURE_V2.md). The physics
+//! kernels are written once, generically over a [`lattice::Lattice`] and a
+//! [`real::Real`], and specialise at compile time.
 //!
-//! - Collision: BGK or TRT (magic 3/16 ⇒ exact half-way walls for parabolic
-//!   flows), with 2nd-order Guo forcing.
-//! - Boundaries: periodic, half-way bounce-back (stationary/moving walls,
-//!   realised as one-cell solid rims for domain edges), Zou–He velocity /
-//!   pressure open edges, zero-gradient outflow, interior solid obstacles.
-//! - Precision: generic over `f32` / `f64` (see [`real::Real`]).
-//! - Parallelism: rayon row-parallel loops behind the `parallel` feature
-//!   (enabled by default; disable for WASM).
+//! Layer map (docs/ARCHITECTURE_V2.md §1):
 //!
-//! See `docs/VALIDATION.md` at the repository root for the validation matrix
-//! this engine is required to pass.
-//!
-//! ```
-//! use lbm_core::prelude::*;
-//!
-//! // Lid-driven cavity, Re = U*L/nu = 0.1*62/0.02 = 310
-//! let mut sim: Simulation<f64> = SimConfig {
-//!     nx: 64,
-//!     ny: 64,
-//!     nu: 0.02,
-//!     edges: Edges {
-//!         left: EdgeBC::BounceBack,
-//!         right: EdgeBC::BounceBack,
-//!         bottom: EdgeBC::BounceBack,
-//!         top: EdgeBC::MovingWall { u: [0.1, 0.0] },
-//!     },
-//!     ..Default::default()
-//! }
-//! .build()
-//! .unwrap();
-//! sim.run(100);
-//! assert!(sim.ux(32, 60) != 0.0); // fluid is being dragged by the lid
-//! ```
+//! - [`lattice`] — compile-time velocity sets (D2Q9, D3Q19) with derived
+//!   tables (TRT pairs, per-face unknown sets).
+//! - [`fields`] — q-major SoA deviation storage over halo-padded local boxes.
+//! - `kernels` (private) — the physics (collide/stream/moments/BCs), written
+//!   once, generic over lattice and precision; V1-faithful arithmetic.
+//! - [`backend`] — the compute-target trait and the `CpuScalar` reference.
+//! - [`subdomain`] / [`halo`] — decomposition and halo exchange.
+//! - [`solver`] — the orchestrator (V1 step sequence over parts).
+//! - [`compat`] — the retired V1 engine's public API as a supported facade
+//!   (scenario/CLI/wasm run through it); V1↔V2 equivalence was proven by
+//!   `tests/v1_match.rs`, frozen and removed with V1 (see branch history).
 
-pub mod domain;
+pub mod backend;
+pub mod backend_simd;
+pub mod compat;
+#[cfg(feature = "mpi")]
+pub mod dist;
+pub mod fields;
+#[cfg(feature = "gpu")]
+pub mod gpu;
+pub mod halo;
+mod kernels;
 pub mod lattice;
-pub mod multiphase;
+pub mod params;
 pub mod real;
-pub mod sim;
+pub mod solver;
+pub mod subdomain;
 
-/// Convenient glob import: `use lbm_core::prelude::*;`.
+/// Convenient glob import for the V2 API.
 pub mod prelude {
-    pub use crate::domain::{Collision, ConfigError, Edge, EdgeBC, Edges, SimConfig, MAX_SPEED};
+    pub use crate::backend::{Backend, CellRange, CpuScalar, HostMoments, PARALLEL_MIN_CELLS};
+    pub use crate::backend_simd::CpuSimd;
+    pub use crate::fields::{LocalGeom, SoaFields};
+    pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
+    pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};
+    pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
     pub use crate::real::Real;
-    pub use crate::sim::Simulation;
+    pub use crate::solver::{build_wall_rims, partition, GlobalSpec, Solver, WallSpec};
+    pub use crate::subdomain::Subdomain;
+
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu::{GpuContext, GpuSolver, WgpuBackend};
+
+    #[cfg(feature = "mpi")]
+    pub use crate::dist::{MpiExchange, MpiSolver};
 }

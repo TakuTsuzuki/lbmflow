@@ -3,8 +3,8 @@
 
 use crate::render::write_png;
 use anyhow::{Context, Result};
-use lbm_core::multiphase::ShanChen;
-use lbm_core::prelude::*;
+use lbm_core::compat::multiphase::ShanChen;
+use lbm_core::compat::prelude::*;
 use lbm_scenario::{
     FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, Sim3Handle, SimHandle, Solver3,
 };
@@ -307,7 +307,7 @@ struct Fields3 {
     rho: Vec<f64>,
 }
 
-fn gather3<T: lbm_core2::real::Real>(s: &Solver3<T>) -> Fields3 {
+fn gather3<T: lbm_core::real::Real>(s: &Solver3<T>) -> Fields3 {
     let to64 = |v: Vec<T>| v.into_iter().map(|x| x.as_f64()).collect::<Vec<f64>>();
     Fields3 {
         ux: to64(s.gather_ux()),
@@ -349,7 +349,7 @@ fn field_values3(f: &Fields3, dims: [usize; 3], kind: FieldKind) -> Vec<f64> {
     }
 }
 
-fn write_output3<T: lbm_core2::real::Real>(
+fn write_output3<T: lbm_core::real::Real>(
     s: &Solver3<T>,
     f: &Fields3,
     o: &OutputSpec,
@@ -402,7 +402,7 @@ fn write_output3<T: lbm_core2::real::Real>(
     }
 }
 
-fn run3d_t<T: lbm_core2::real::Real>(
+fn run3d_t<T: lbm_core::real::Real>(
     sc: &Scenario,
     mut s: Solver3<T>,
     out_dir: &Path,

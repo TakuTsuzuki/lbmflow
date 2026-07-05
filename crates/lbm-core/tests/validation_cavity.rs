@@ -1,9 +1,11 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T7: lid-driven cavity against Ghia et al. centreline data.
 
 mod common;
 
 use common::run_to_steady;
-use lbm_core::prelude::*;
+use lbm_core::compat::prelude::*;
 
 const N: usize = 129;
 const L: f64 = (N - 2) as f64;

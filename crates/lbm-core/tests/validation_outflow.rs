@@ -1,7 +1,9 @@
+// Inherited verbatim from the retired V1 suite at its retirement (2026-07-05,
+// scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T9: zero-gradient outflow robustness for a cylinder wake.
 
-use lbm_core::lattice::CS2;
-use lbm_core::prelude::*;
+use lbm_core::compat::lattice::CS2;
+use lbm_core::compat::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
 struct OutflowCase {

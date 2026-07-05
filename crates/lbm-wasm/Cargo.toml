@@ -9,6 +9,8 @@ description = "wasm-bindgen bridge exposing lbm-core to the browser GUI"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# default-features = false: no rayon in the wasm build (single-threaded
+# runtime); the compat facade then runs the serial CpuScalar path.
 lbm-core = { path = "../lbm-core", default-features = false }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }

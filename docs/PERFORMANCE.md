@@ -1,20 +1,21 @@
 # PERFORMANCE.md — 実測性能と精度/速度トレードオフガイド
 
 測定環境: Apple Silicon 18 コア（P/E 混成）、macOS、rustc 1.93、
-`--release`（thin LTO, codegen-units=1）。測定: `examples/bench_mlups.rs`。
-MLUPS = 百万格子点更新/秒。2026-07-05 時点（Phase 9a/9b カーネル改修後）。
+`--release`（thin LTO, codegen-units=1）。測定: `examples/bench_backends.rs`
+（V1 時代の `bench_mlups.rs` は V1 と共に引退 — 当時の測定記録は本文書の
+Phase 9 節に凍結）。MLUPS = 百万格子点更新/秒。2026-07-05 時点。
 
 ## V2 CpuSimd バックエンド（M-E、2026-07-05）
 
 V1 融合カーネル（`step_band`）を V2 の `Backend` として移植したもの
-（`crates/lbm-core2/src/backend_simd.rs`）。D2Q9 は V1 と同型の完全融合
+（`crates/lbm-core/src/backend_simd.rs`）。D2Q9 は V1 と同型の完全融合
 （collide+stream+moments 1 パス、行バンド並列、3 スラブリング）、D3Q19 も
 同構造（z 平面スラブ、ブロック化スパンカーネル）。halo 交換はフェーズ境界の
 ままなので Subdomain / InProcess / MPI とそのまま合成できる。等価性は
 `tests/backend_simd_equiv.rs`（CpuScalar と 8 シナリオ × f64/f32、場は
 実測差 ~1e-13/f64 で全ゲート緑）。
 
-測定: `cargo run --release -p lbm-core2 --example bench_backends`
+測定: `cargo run --release -p lbm-core --example bench_backends`
 （V1 を同一バイナリから同時刻交互実行、best-of-3。共有機のためレート絶対値は
 時間帯変動あり。負荷 load≈7 の窓での実測）。
 
@@ -74,6 +75,11 @@ P/E 異種コアで負荷分散できない（CpuScalar は行粒度 work steali
   （毎ステップの確保+ゼロ埋め 92 MB/step@f64 を排除）。
 
 ## Phase 9 カーネル改修の結果（同時刻交互実行の相対比較）
+
+**歴史的記録**（V1 エンジンの改修記録。V1・`bench_mlups`・`probe_state_hash`
+は 2026-07-05 の V1 引退で削除済み — 数値と手法の記録として保存。融合カーネル
+自体は V2 `CpuSimd` に移植され、等価性ゲートは `tests/backend_simd_equiv.rs` +
+T13 が引き継いだ）。
 
 **測定注意**: この日の測定機では検証エージェント等が並行稼働しており、絶対値は
 時間帯で最大 3 倍変動した。下表は新旧バイナリを**同時刻に交互実行**（best-of-5、

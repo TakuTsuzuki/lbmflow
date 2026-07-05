@@ -1,12 +1,12 @@
-//! wasm-bindgen bridge: exposes `lbm_core::Simulation<f32>` behind the
-//! TypeScript `Engine` interface (see `web/src/engine/types.ts`).
+//! wasm-bindgen bridge: exposes `lbm_core::compat::Simulation<f32>` behind
+//! the TypeScript `Engine` interface (see `web/src/engine/types.ts`).
 //!
 //! Field access is zero-copy: the `*_ptr` methods return pointers into wasm
 //! linear memory; the JS adapter wraps them in `Float32Array` views that are
 //! valid until the next `step`/`init` call.
 
-use lbm_core::multiphase::ShanChen;
-use lbm_core::prelude::*;
+use lbm_core::compat::multiphase::ShanChen;
+use lbm_core::compat::prelude::*;
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
