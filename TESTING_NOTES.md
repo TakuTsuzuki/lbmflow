@@ -889,3 +889,14 @@ The async T14 test was corrected to match the restored pre-B-1 contract:
 `run()` must submit recorded chunks, while completion is guaranteed at sync
 points. The test now counts `WgpuBackend` queue submissions and fences with
 `sync()` for the elapsed-time witness.
+
+## 2026-07-06 PM ruling: probe-force tolerance denominator (t14_probe_solid_touches_domain_face)
+The adversarial probe test asserted DIAG_TOL (1e-4) per-component relative. The probed
+force at t=300 is (3.890e-3, -4.506, 0): force[0] is cancellation-dominated, so the
+per-component limit demanded ~1e-7 of the force scale. Measured GPU deltas (r2-b1,
+outside sandbox): 3.614e-7 / 4.210e-7 / 4.806e-7 absolute on |F|_inf = 4.506 =
+0.8-1.1e-7 relative to scale — excellent f32 agreement that straddled the old limit
+purely through arithmetic reassociation (trunk 5/5 green, r2-b1 2/5, same physics).
+Changed the assertion denominator to the force-vector L_inf scale, consistent with the
+T14 field-scale-relative convention. This is a denominator fix, not a gate loosening:
+effective absolute limit at this config 4.5e-4, measured deltas have 3 orders headroom.

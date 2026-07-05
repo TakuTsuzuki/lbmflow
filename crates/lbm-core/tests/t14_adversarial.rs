@@ -201,11 +201,21 @@ fn face_touching_probe_pair() -> Option<Pair> {
 }
 
 fn assert_probe_close(cpu_force: &[f32; 3], gpu_force: &[f32; 3], what: &str) {
+    // Tolerance is relative to the force-vector scale (L_inf norm), matching the
+    // T14 convention of field-scale-relative gates. A per-component relative
+    // check would demand ~1e-7 of the force scale on cancellation-dominated
+    // components (PM ruling 2026-07-06: measured GPU deltas 3.6-4.8e-7 on
+    // |F|_inf = 4.5 straddled the old per-component limit purely via f32
+    // reassociation; see TESTING_NOTES).
+    let scale = cpu_force
+        .iter()
+        .map(|v| (*v as f64).abs())
+        .fold(1e-6_f64, f64::max);
     for c in 0..2 {
         let cpu = cpu_force[c] as f64;
         let gpu = gpu_force[c] as f64;
         let d = (cpu - gpu).abs();
-        let lim = DIAG_TOL * cpu.abs().max(1e-6);
+        let lim = DIAG_TOL * scale;
         assert!(
             d <= lim,
             "{what} force[{c}]: |delta|={d:.3e} > {lim:.3e} (cpu={cpu:.9e}, gpu={gpu:.9e})"
