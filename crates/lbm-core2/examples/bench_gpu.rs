@@ -7,6 +7,21 @@
 //!
 //! Timing convention matches the proto: wall time of encode + submit +
 //! wait-until-idle after a warmup, so nothing hides in queue latency.
+//!
+//! **Measurement hygiene** (GPU_EVALUATION.md's own caveat): this box runs
+//! other agents' suites; on unified memory a saturated CPU eats the DRAM
+//! bandwidth the (bandwidth-bound) GPU kernel needs, so compare against a
+//! *same-window* proto run (`cd crates/lbm-gpu-proto && cargo run --release
+//! -- --gpu-only`), not only the frozen table. Same-window measurement
+//! 2026-07-05 (load avg ~38 from a concurrent 3D suite; proto run minutes
+//! apart): 512² 10,581 vs 11,307 (−6.4%) / 1024² 5,435 vs 6,086 (−10.7%) /
+//! 2048² 4,623 vs 5,349 (−13.6%) — within the ±20% line. The residual gap
+//! is the push-form fused kernel's scatter writes (vs the proto's gather
+//! reads) — the deliberate trade that preserves the CPU's S∘C operator
+//! order and makes the boundary-condition set + direct T14 equivalence
+//! possible. Measured non-causes: the mask reads (skipping all 8 neighbour
+//! mask loads changes nothing — cache-served) and the workgroup shape
+//! (256×1 beat 128×1 / 64×2 / 32×4 for the push kernel).
 
 use lbm_core2::lattice::D2Q9;
 use lbm_core2::prelude::*;
