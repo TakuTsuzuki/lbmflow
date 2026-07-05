@@ -254,6 +254,23 @@ impl<T: Real> Simulation<T> {
         }
     }
 
+    /// Enable Bouzidi interpolated bounce-back records for an analytic circle.
+    /// The matching solid cells must already have been marked.
+    pub fn set_bouzidi_circle(&mut self, cx: f64, cy: f64, r: f64) {
+        self.solver.set_bouzidi_circle(cx, cy, r);
+    }
+
+    /// Enable qd=1/2 Bouzidi records for every fluid-solid link. Used to prove
+    /// exact degeneracy to the half-way bounce-back path.
+    pub fn set_bouzidi_half_way_links(&mut self) {
+        self.solver.set_bouzidi_half_way_links();
+    }
+
+    /// Disable Bouzidi records.
+    pub fn clear_bouzidi(&mut self) {
+        self.solver.clear_bouzidi();
+    }
+
     /// Initialise every cell from the given `(rho, ux, uy)` field.
     ///
     /// Second-order consistent: sets `f = feq + f_neq`, where the

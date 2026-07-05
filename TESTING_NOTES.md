@@ -854,3 +854,193 @@ Measured and frozen bands:
 - Runner FieldKind consistency: `DissipationRate == nu * ShearRate^2` pointwise
   max_abs = 0.000e0. Frozen band: max_abs <= 1.0e-18.
 - Solid and solid-adjacent channel cells checked finite for shear and epsilon.
+## D-8 adversarial T14/T15 tests (2026-07-06)
+
+Added `crates/lbm-core/tests/t14_adversarial.rs` and
+`crates/lbm-core/tests/t15_adversarial.rs` from the D-8 order. Default-suite
+light attacks pass except for one intentionally ignored GPU repro below.
+
+T14 CPU-vs-wgpu f32 measured on this machine:
+- Initial discontinuity exactly on a velocity boundary face, 300 steps:
+  max field rel 1.452e-5 under the pressure/open-face 1e-4 line.
+- Solid force probe touching a domain wall face, 300 steps: max field rel
+  1.996e-6 and probe diagnostics inside 1e-4.
+- Near-MAX_SPEED TGV (`u0=0.29`, `MAX_SPEED=0.3`), 300 steps: max field rel
+  1.644e-6.
+- **Known D-8 defect repro, ignored by default**:
+  `cargo test -p lbm-core --release --features gpu --test t14_adversarial \
+  t14_mixed_force_field_moving_wall_and_open_faces -- --ignored --nocapture`
+  mixes a per-cell force field, uniform force, moving wall, velocity inlet, and
+  convective outlet. It exceeds the strict T14 1e-5 field line at t=75:
+  `rho=4.235e-6, ux=8.516e-5, uy=8.418e-5`. This is not the documented
+  pressure-BC exception. Severity: S2 validation gap/possible GPU equivalence
+  defect in the mixed force/open/moving-wall path.
+
+T15 D3Q19/f64 measured:
+- z-degeneracy breaker (`eps=1e-7`) after 120 steps: z-spread 2.864e-8,
+  max|uz| 2.091e-9, so the solver does not silently project the state to 2D.
+- Extreme aspect-ratio ducts, light defaults `64x8x8` and `8x8x64`: both
+  L_inf_rel = 6.616e-3 vs the rectangular-duct series, inside the frozen
+  adversarial light band 1.5e-2. Spec-size `128x8x8` / `8x8x128` variants are
+  present as ignored heavier attacks with the same band.
+- Off-center sphere drag, light D=10/Re=20: Cd=2.4741 after 3600 steps,
+  inside the existing D_h-normalized 15% light sphere band. D=24 spec-size
+  off-center variant is ignored as heavy and keeps the 10% band.
+- Closed six-face 3D box mass conservation, 600 steps: relative drift 0.0.
+- R-Phase guard-boundary probes pass: velocity exactly `MAX_SPEED` is legal
+  while `MAX_SPEED+1e-12` returns `SpecError::VelocityTooHigh`; positive
+  pressure density (`f64::MIN_POSITIVE`) is legal while zero density returns
+  `SpecError::NonPositiveDensity`; convective speed 1.0 is legal while
+  `1.0+1e-12` returns `SpecError::InvalidConvectiveSpeed`.
+## Bouzidi Phase 1 characterization (2026-07-06)
+
+Implemented the analytic circle/sphere Bouzidi record list and CPU post-stream
+pass from the original Bouzidi/Firdaouss/Lallemand 2001 and Guo 2002 formulas
+only; no GPL/AGPL code was used. STL voxelization is deferred.
+
+Validation evidence from this worktree:
+- `cargo test -p lbm-core --release --test bouzidi -- --nocapture`: 3 passed.
+  This covers sorted/nonempty analytic circle records, qd=1/2 bit identity
+  against half-way bounce-back, and CpuScalar/CpuSimd parity on a Bouzidi
+  cylinder.
+- `cargo test -p lbm-core --release --test t13_adversarial -- --nocapture`: 7
+  passed, 1 ignored; includes `t13_bouzidi_cylinder_split_matches`.
+- `cargo test -p lbm-core --release --test t13_split_invariance -- --nocapture`:
+  8 passed.
+- `cargo test -p lbm-core --release --test backend_simd_equiv -- --nocapture`:
+  20 passed; existing SIMD equivalence gate unchanged.
+- `cargo test --workspace --release`: passed (default suite).
+- Explicit T8 Bouzidi characterization:
+  `cargo test -p lbm-core --release --test validation_cylinder
+  t8_bouzidi_2d1_d20_cylinder_steady_drag_lift_characterization -- --ignored
+  --nocapture`: Cd=5.83340474, Cl=0.00867670, Re=20, samples=10000.
+
+The D=20 Bouzidi Cd result is outside the requested tightened target band
+5.41..5.75. Treat the current ignored test as a characterization freeze, not
+acceptance. Convergence slope D={10,20,40} and off-grid Poiseuille were not
+completed in this phase-1 pass.
+
+## Bouzidi T8 Cd-band recovery (2026-07-06 continuation)
+
+Root cause: the first Bouzidi T8 characterization used a geometry inconsistent
+with the tightened band: D=20 at grid 440x82 has H/D=4.0 and an on-node cylinder
+center (40,40). The recovered T8 geometry is H/D=4.1 with the cylinder surface
+off-lattice; in this lattice representation that is grid 440x84 with center
+(40.5,40.5). The center is 2D from the bottom half-way wall surface at y=0.5.
+
+Diagnosis matrix numbers:
+
+1. Radius/qd convention audit:
+   - D=10, grid 220x43, center (20.5,20.5), H/D=4.1, Re=20, Umean=0.05,
+     umax=0.075, nu=0.025: links=100, boundary cells=44, qd min=0.10883501,
+     qd max=0.96446609, qd mean=0.54226219, by_q=[10,10,10,10,15,15,15,15].
+   - D=20 original, grid 440x82, center (40,40), H/D=4.0, Re=20:
+     links=148, boundary cells=68, qd min=0.04564394, qd max=0.92893219,
+     qd mean=0.44265526, by_q=[14,14,14,14,23,23,23,23].
+   - D=20 half-integer only, grid 440x82, center (40.5,40.5), H/D=4.0,
+     Re=20: links=196, boundary cells=84, qd min=0.08986252,
+     qd max=0.94663201, qd mean=0.52007325,
+     by_q=[20,20,20,20,29,29,29,29].
+   - D=20 accepted geometry, grid 440x84, center (40.5,40.5), H/D=4.1,
+     Re=20: links=196, boundary cells=84, qd min=0.08986252,
+     qd max=0.94663201, qd mean=0.52007325,
+     by_q=[20,20,20,20,29,29,29,29].
+   - D=20 mixed inlet-center probe, grid 440x84, center (40.0,40.5),
+     H/D=4.1, Re=20: links=190, boundary cells=82, qd min=0.01191829,
+     qd max=0.97007166, qd mean=0.46764643,
+     by_q=[20,19,20,19,28,28,28,28].
+   - D=40, grid 880x166, center (80.5,80.5), H/D=4.1, Re=20,
+     Umean=0.05, umax=0.075, nu=0.1: links=388, boundary cells=164,
+     qd min=0.01042119, qd max=0.97118578, qd mean=0.56077426,
+     by_q=[40,40,40,40,57,57,57,57].
+   - The qd=1/2 degeneracy test remained bitwise green.
+2. Re definition:
+   - All probes use Umean=(2/3)umax=0.05 and Re=Umean*D/nu=20.
+   - D=10 nu=0.025, D=20 nu=0.05, D=40 nu=0.1.
+3. Blockage/domain:
+   - Original D20 on-node/H/D=4.0: Cd=5.83340474, Cl=0.00867670.
+   - Half-integer center only at H/D=4.0: Cd=5.76404261, Cl=-0.00000000.
+   - Strict H/D=4.1 + half-integer center: Cd=5.68907938, Cl=0.01101959.
+   - Strict H/D=4.1 + mixed center (40.0,40.5): Cd=5.70433884,
+     Cl=0.01090008.
+4. Force evaluation:
+   - Stationary cylinder, so u_w=0 and Wen's Galilean terms vanish here.
+   - Record counts by direction are symmetric for the accepted geometry and
+     `BouzidiLinks::new` deduplicates by (cell,q). Diagonal links are present
+     (D20 accepted by_q diagonals 29 each versus axial 20 each).
+   - The CPU pass remains a post-stream pass over the link list, preserving the
+     GPU-port seam from SPEC_BOUZIDI_STL.md.
+5. Convergence:
+   - Heavy ignored run:
+     `cargo test -p lbm-core --release --test validation_cylinder
+     t8_bouzidi_2d1_drag_converges_at_second_order -- --ignored --nocapture`.
+   - D=10: Cd=5.69401036, Cl=0.01188147, |Cd-5.5795|=0.11451036,
+     samples=8000.
+   - D=20: Cd=5.68907938, Cl=0.01101959, |Cd-5.5795|=0.10957938,
+     samples=10000.
+   - D=40: Cd=5.68763550, Cl=0.01095140, |Cd-5.5795|=0.10813550,
+     samples=15000.
+   - Successive-difference convergence: delta10_20=0.00493098,
+     delta20_40=0.00144388, observed order=1.7719, extrapolated
+     Cd limit=5.68703764, inside fixed band [5.41,5.75].
+   - The sequence does not converge to the literature center value 5.5795;
+     it converges inside the accepted Cd band. No tolerance or band was edited.
+
+Additional deferral closure:
+
+- Off-grid Poiseuille via explicit Bouzidi horizontal-wall link records:
+  `cargo test -p lbm-core --release --test bouzidi
+  offgrid_poiseuille_bouzidi_beats_half_way_bounce_back -- --nocapture`
+  measured Bouzidi L2rel=3.8616236862547863e-3 versus half-way
+  L2rel=6.516490066186022e-2.
+
+Acceptance/verification:
+
+- Before Cd (phase 1): D20 original Bouzidi Cd=5.83340474, Cl=0.00867670.
+- After Cd (accepted geometry): D20 Bouzidi Cd=5.68907938, Cl=0.01101959.
+- `cargo test -p lbm-core --release --test validation_cylinder
+  t8_bouzidi_2d1_d20_cylinder_steady_drag_lift_are_in_tight_band -- --ignored
+  --nocapture`: passed.
+- `cargo test --workspace --release`: passed.
+
+## R2-D 3D CPU scaling investigation (r2-d-cpuscale, 2026-07-06)
+
+Scope: `crates/lbm-core/src/backend_simd.rs` scheduler only; collision arithmetic
+internals were not changed.
+
+Baseline in this session, before edits:
+- `cargo run --release -p lbm-core --example bench_backends -- simd f32 128 18 80 128`
+  → 265.1 MLUPS.
+- `cargo run --release -p lbm-core --example bench_backends -- simd f32 1024 18 80`
+  → 1205.7 MLUPS.
+
+Rejected experiments:
+- 8-band 3D cap: 128^3 f32 87.7 MLUPS; too few rayon tasks, cores idle.
+- Shared edge-slab post-collide cache: backend equivalence targeted 3D tests
+  passed, but 128^3 f32 fell to 100.0 MLUPS because full-slab cache allocation
+  and copy traffic outweighed the saved duplicate collision.
+- 2x band oversubscription for work stealing: 128^3 f32 123.7 MLUPS; extra
+  band-edge recollides dominated the load-balance gain.
+- 14-band cap: 131.6 MLUPS under the later overloaded window.
+- 17-band cap: 135.9 MLUPS under the later overloaded window.
+
+Final scheduler change under test:
+- 3D `CpuSimd` caps bands at 16 on an 18-thread pool. This reduces 128^3
+  inter-band duplicate source slabs from 34 to 30 and avoids the slowest
+  heterogeneous-core tail without changing 2D scheduling.
+- Later measurement window was not acceptance-grade: `uptime` showed load
+  averages around 100-110 (`load averages: 110.46 106.87 99.80`). Under that
+  load, restored 18-band code measured 121.7 MLUPS, while the 16-band cap
+  measured 146.7 / 142.2 MLUPS in nearby runs. Treat this as relative evidence
+  only, not the required public-bench result.
+- 2D check in the overloaded window: 1024^2 f32 18-thread measured 493.5 MLUPS;
+  this is also not acceptance-grade and is dominated by machine contention. The
+  2D code path is unchanged by the final patch.
+
+Gates run:
+- `cargo test -p lbm-core --release --test backend_simd_equiv -- --nocapture`
+  passed: 20/20.
+- `cargo test -p lbm-core --release --test t13_split_invariance -- --nocapture`
+  passed: 8/8.
+- `cargo test --workspace --release` passed under high machine load; long
+  validation tests completed without failures.

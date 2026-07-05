@@ -30,6 +30,8 @@ pub struct Scenario {
     pub units: Option<FlowParams>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<ComputeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall: Option<WallModel>,
     pub edges: EdgesSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inlet_profile: Option<InletProfile>,
@@ -97,6 +99,12 @@ pub enum BackendSpec {
     Auto,
     Cpu,
     Gpu,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WallModel {
+    Bouzidi,
 }
 
 const GPU_2D_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: the 2D compat scenario path cannot honor explicit GPU requests pending R-Phase 2 B-1, and this build was compiled without GPU scenario dispatch (--features gpu is not enabled for this scenario path). Use compute.backend \"cpu\" or \"auto\".";
@@ -1095,6 +1103,9 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
                     let dy = y as f64 - cy;
                     dx * dx + dy * dy <= r2
                 });
+                if sc.wall == Some(WallModel::Bouzidi) {
+                    sim.set_bouzidi_circle(cx, cy, r);
+                }
             }
             Obstacle::Rect { x0, y0, x1, y1 } => {
                 sim.set_solid_region(|x, y| x >= x0 && x <= x1 && y >= y0 && y <= y1);
@@ -1212,6 +1223,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         },
         units: None,
         compute: None,
+        wall: None,
         edges: EdgesSpec {
             left: EdgeSpec::BounceBack,
             right: EdgeSpec::BounceBack,
@@ -1257,6 +1269,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         },
         units: None,
         compute: None,
+        wall: None,
         edges: EdgesSpec {
             left: EdgeSpec::VelocityInlet { u: [0.1, 0.0] },
             right: EdgeSpec::PressureOutlet { rho: 1.0 },
@@ -1314,6 +1327,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         },
         units: None,
         compute: None,
+        wall: None,
         edges: EdgesSpec {
             left: EdgeSpec::Periodic,
             right: EdgeSpec::Periodic,
@@ -1368,6 +1382,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         },
         units: None,
         compute: None,
+        wall: None,
         edges: EdgesSpec {
             left: EdgeSpec::Periodic,
             right: EdgeSpec::Periodic,

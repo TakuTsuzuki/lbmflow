@@ -693,8 +693,8 @@ where
         }
     }
 
-    /// Advance one time step (V1 `step` order: collide → stream → swap →
-    /// open faces → moments).
+    /// Advance one time step (V1 order plus optional Bouzidi correction:
+    /// collide → stream → Bouzidi → swap → open faces → moments).
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
         let gravity_stage = self.stage_gravity();
@@ -706,6 +706,12 @@ where
         let mut pf = [T::zero(); 3];
         for i in 0..self.parts.len() {
             let part_pf = self.stream_part(i);
+            pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
+        }
+        for i in 0..self.parts.len() {
+            let part_pf =
+                self.backend
+                    .apply_bouzidi(&self.subs[i], &mut self.parts[i], &self.params);
             pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
         }
         for i in 0..self.parts.len() {
@@ -1016,6 +1022,52 @@ where
         let pi = self.subs[i].geom.pidx(lx, ly, lz);
         self.parts[i].solid[pi] = true;
         self.masks_dirty = true;
+    }
+
+    /// Build analytic Bouzidi records for a circle. Solid cells must already
+    /// be marked with the same geometry.
+    pub fn set_bouzidi_circle(&mut self, cx: f64, cy: f64, r: f64) {
+        self.sync_masks_if_dirty();
+        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+            let links =
+                crate::bouzidi::circle_links(&fields.geom, sub.origin, &fields.solid, cx, cy, r);
+            fields.bouzidi = (!links.is_empty()).then_some(links);
+        }
+    }
+
+    /// Build analytic Bouzidi records for a sphere. Solid cells must already
+    /// be marked with the same geometry.
+    pub fn set_bouzidi_sphere(&mut self, cx: f64, cy: f64, cz: f64, r: f64) {
+        self.sync_masks_if_dirty();
+        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+            let links = crate::bouzidi::sphere_links::<T, L>(
+                &fields.geom,
+                sub.origin,
+                &fields.solid,
+                cx,
+                cy,
+                cz,
+                r,
+            );
+            fields.bouzidi = (!links.is_empty()).then_some(links);
+        }
+    }
+
+    /// Install qd=1/2 records for every fluid-solid link. This is intended as
+    /// a degeneracy regression for bitwise equivalence to half-way BB.
+    pub fn set_bouzidi_half_way_links(&mut self) {
+        self.sync_masks_if_dirty();
+        for fields in self.parts.iter_mut() {
+            let links = crate::bouzidi::half_way_links::<T, L>(&fields.geom, &fields.solid);
+            fields.bouzidi = (!links.is_empty()).then_some(links);
+        }
+    }
+
+    /// Remove all Bouzidi records; subsequent steps use pure half-way BB.
+    pub fn clear_bouzidi(&mut self) {
+        for fields in self.parts.iter_mut() {
+            fields.bouzidi = None;
+        }
     }
 
     /// Select the solid cells whose momentum-exchange force is accumulated

@@ -67,7 +67,7 @@
 
 use crate::backend::{
     apply_open_faces_impl, read_moments_impl, reduce_impl, update_moments_impl, Backend, CellRange,
-    HostMoments, PARALLEL_MIN_CELLS,
+    CpuScalar, HostMoments, PARALLEL_MIN_CELLS,
 };
 use crate::fields::{FusedScratch, LocalGeom, SoaFields};
 use crate::kernels::{for_face_cells, RawSlice};
@@ -1328,6 +1328,11 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
     /// other cells stay pre-collide (the fused pass collides them
     /// just-in-time).
     fn collide(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        if fields.bouzidi.is_some() {
+            fields.fused = None;
+            let mut scalar = CpuScalar::default();
+            return <CpuScalar as Backend<L, T>>::collide(&mut scalar, sub, fields, p);
+        }
         let g = fields.geom;
         assert_eq!(g.halo, 1, "CpuSimd assumes one-cell halos");
         let halo = sub.halo_flags();
@@ -1512,6 +1517,11 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         p: &StepParams<T>,
         range: CellRange,
     ) -> [T; 3] {
+        if fields.bouzidi.is_some() {
+            fields.fused = None;
+            let mut scalar = CpuScalar::default();
+            return <CpuScalar as Backend<L, T>>::stream(&mut scalar, sub, fields, p, range);
+        }
         if range.is_empty() {
             return [T::zero(); 3];
         }
@@ -1569,11 +1579,13 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         };
         #[cfg(not(feature = "parallel"))]
         let threads = 1;
-        // One band per thread: oversubscribing bands for work stealing was
-        // measured net-negative (2x bands: -8% at 128^3 12T — the extra
-        // band-edge recollides outweigh the balance gain).
+        // One band per worker, capped on asymmetric Apple Silicon: the last
+        // E-core workers extend the 3D tail more than their bands repay, and
+        // every extra band also recollides two shared edge slabs. On the
+        // M5 Max 128^3 f32 bench, 16 bands beat the 18-band split in the
+        // same overloaded window (146.7 vs 121.7 MLUPS; see TESTING_NOTES).
         let nbands = if L::D == 3 {
-            threads.clamp(1, (n_range / 4).max(1))
+            threads.min(16).clamp(1, (n_range / 4).max(1))
         } else {
             threads.clamp(1, (n_range / 16).max(1))
         };
@@ -1645,6 +1657,15 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             std::mem::swap(&mut fields.uy, &mut s.uy2);
             std::mem::swap(&mut fields.uz, &mut s.uz2);
         }
+    }
+
+    fn apply_bouzidi(
+        &mut self,
+        _sub: &Subdomain,
+        fields: &mut SoaFields<T>,
+        p: &StepParams<T>,
+    ) -> [T; 3] {
+        crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p)
     }
 
     /// Restore the previous step's post-collide populations into the open

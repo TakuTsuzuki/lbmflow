@@ -102,6 +102,17 @@ pub trait Backend<L: Lattice, T: Real> {
     /// Swap the population ping-pong pair (after all stream ranges ran).
     fn swap(&mut self, fields: &mut Self::Fields);
 
+    /// Curved-wall post-stream correction. Default is a no-op for backends
+    /// without Bouzidi support; CPU backends override it for `SoaFields`.
+    fn apply_bouzidi(
+        &mut self,
+        _sub: &Subdomain,
+        _fields: &mut Self::Fields,
+        _p: &StepParams<T>,
+    ) -> [T; 3] {
+        [T::zero(); 3]
+    }
+
     /// Open-face BC pass (Zou–He / outflow / convective) on the faces of
     /// this subdomain that lie on an open global face.
     fn apply_open_faces(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
@@ -255,6 +266,15 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
 
     fn swap(&mut self, fields: &mut SoaFields<T>) {
         fields.swap_f();
+    }
+
+    fn apply_bouzidi(
+        &mut self,
+        _sub: &Subdomain,
+        fields: &mut SoaFields<T>,
+        p: &StepParams<T>,
+    ) -> [T; 3] {
+        crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p)
     }
 
     fn apply_open_faces(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
