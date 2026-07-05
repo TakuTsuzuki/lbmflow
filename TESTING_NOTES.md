@@ -449,3 +449,26 @@ dependency from core tests to the scenario crate.
   offline. The stub is not compiled for the normal wasm smoke.
 - Added a Rust-only `lbm-scenario` test for the GUI-exported scenario JSON shape; it parses, builds,
   reserializes, reparses, and serializes byte-stably without node/web tooling.
+
+## PM record — B1 approval, order-A/B/C triage, dispatch lesson (2026-07-05 late)
+
+- **B1 capability map APPROVED and merged** (docs/skills/b1-capability-map.md, one-file
+  branch). Highlights: 7 MCP tools empirically confirmed (async path driven end-to-end);
+  **BUG found: explicit 2D backend:"gpu" silently runs on CPU** (status:completed,
+  validate ok:true, no warning) → fix order dispatched (branch cx-gpu-fallback-guard:
+  honored-or-error for explicit backend requests; "auto" may fall back by design).
+  Other reds: no unit->lattice conversion anywhere; no user-facing accuracy-compare
+  command (validation is cargo-test only); 3D limited to single-phase + init:rest + CPU.
+  B2 session launched on the approved map (branch skills/b2).
+- **Bioreactor session's follow-up orders triaged**: §1 body-force API = already in
+  trunk (guard suites green). Order A (strain-rate observable per FR-STRESS-01) =
+  ACCEPTED, dispatched (branch cx-strain-rate; W-STRESS pulled forward — hard dep is
+  W0 only per REQ §11). Order B (moving no-slip boundary) = DEFERRED to MF-δ; their
+  adversarial test seeds recorded: translating flat-plate drag vs analytic,
+  Taylor-Couette interior azimuthal profile, mass conservation across mask motion,
+  partition invariance. Order C (raster lift) = queued behind A.
+- **Dispatch lesson (feeds lbmflow-codex-dispatch Skill v2)**: an inline codex order
+  containing backticks dies in zsh command substitution (parse error near ')').
+  Robust invocation: write the order to a file and pass "$(cat <file>)" — the
+  substituted string is NOT re-parsed. The Skill's invocation section should make
+  file-passing the default for any order containing backticks/code spans.
