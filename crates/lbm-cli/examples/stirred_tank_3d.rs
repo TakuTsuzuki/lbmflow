@@ -31,16 +31,40 @@ use std::path::{Path, PathBuf};
 type S3 = Solver<D3Q19, f64, CpuScalar, LocalPeriodic>;
 
 const VIRIDIS: [[u8; 3]; 16] = [
-    [68, 1, 84], [72, 26, 108], [71, 47, 125], [65, 68, 135],
-    [57, 86, 140], [49, 104, 142], [42, 120, 142], [35, 136, 142],
-    [31, 152, 139], [34, 168, 132], [53, 183, 121], [84, 197, 104],
-    [122, 209, 81], [165, 219, 54], [210, 226, 27], [253, 231, 37],
+    [68, 1, 84],
+    [72, 26, 108],
+    [71, 47, 125],
+    [65, 68, 135],
+    [57, 86, 140],
+    [49, 104, 142],
+    [42, 120, 142],
+    [35, 136, 142],
+    [31, 152, 139],
+    [34, 168, 132],
+    [53, 183, 121],
+    [84, 197, 104],
+    [122, 209, 81],
+    [165, 219, 54],
+    [210, 226, 27],
+    [253, 231, 37],
 ];
 const INFERNO: [[u8; 3]; 16] = [
-    [0, 0, 4], [12, 8, 38], [36, 12, 79], [66, 10, 104],
-    [93, 18, 110], [120, 28, 109], [147, 38, 103], [174, 48, 92],
-    [199, 62, 76], [220, 81, 57], [237, 105, 37], [246, 133, 17],
-    [251, 163, 12], [249, 195, 41], [240, 226, 96], [252, 255, 164],
+    [0, 0, 4],
+    [12, 8, 38],
+    [36, 12, 79],
+    [66, 10, 104],
+    [93, 18, 110],
+    [120, 28, 109],
+    [147, 38, 103],
+    [174, 48, 92],
+    [199, 62, 76],
+    [220, 81, 57],
+    [237, 105, 37],
+    [246, 133, 17],
+    [251, 163, 12],
+    [249, 195, 41],
+    [240, 226, 96],
+    [252, 255, 164],
 ];
 
 fn lut(anchors: &[[u8; 3]], t: f64) -> [u8; 3] {
@@ -55,8 +79,16 @@ fn lut(anchors: &[[u8; 3]], t: f64) -> [u8; 3] {
     ]
 }
 
-fn write_png(path: &Path, field: &[f64], mask: &[bool], w: usize, h: usize,
-             vmax: f64, anchors: &[[u8; 3]], sc: usize) {
+fn write_png(
+    path: &Path,
+    field: &[f64],
+    mask: &[bool],
+    w: usize,
+    h: usize,
+    vmax: f64,
+    anchors: &[[u8; 3]],
+    sc: usize,
+) {
     let (ow, oh) = (w * sc, h * sc);
     let mut buf = vec![0u8; ow * oh * 3];
     for oy in 0..oh {
@@ -64,7 +96,11 @@ fn write_png(path: &Path, field: &[f64], mask: &[bool], w: usize, h: usize,
         for ox in 0..ow {
             let x = ox / sc;
             let i = y * w + x;
-            let rgb = if mask[i] { [92u8, 96, 104] } else { lut(anchors, field[i] / vmax.max(1e-30)) };
+            let rgb = if mask[i] {
+                [92u8, 96, 104]
+            } else {
+                lut(anchors, field[i] / vmax.max(1e-30))
+            };
             let px = ((oh - 1 - oy) * ow + ox) * 3;
             buf[px..px + 3].copy_from_slice(&rgb);
         }
@@ -83,8 +119,8 @@ struct Geom {
     cx: f64,
     cy: f64,
     r_tank: f64,
-    zc: f64,       // impeller mid-plane height
-    tip_r: f64,    // blade tip radius (= D/2)
+    zc: f64,    // impeller mid-plane height
+    tip_r: f64, // blade tip radius (= D/2)
     disk_r: f64,
     hub_r: f64,
     shaft_r: f64,
@@ -211,18 +247,34 @@ fn main() {
 
     // ---- build solver ------------------------------------------------------
     let mut walls = WallSpec::<f64>::default();
-    for f in [Face::XNeg, Face::XPos, Face::YNeg, Face::YPos, Face::ZNeg, Face::ZPos] {
+    for f in [
+        Face::XNeg,
+        Face::XPos,
+        Face::YNeg,
+        Face::YPos,
+        Face::ZNeg,
+        Face::ZPos,
+    ] {
         walls.is_wall[f.index()] = true;
     }
     let spec = GlobalSpec::<f64> {
         dims: [nx, ny, nz],
         nu,
         periodic: [false, false, false],
-        collision: CollisionKind::Trt { magic: CollisionKind::MAGIC_STD },
+        collision: CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
         ..Default::default()
     };
     let (solid, wall_u) = build_wall_rims(3, spec.dims, &walls);
-    let mut sim = S3::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut sim = S3::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
 
     // Carve the round tank wall + baffles (static solids).
     for z in 0..nz {
@@ -244,17 +296,32 @@ fn main() {
     let zb0 = (g.zc - g.blade_hh - 1.0).floor().max(1.0) as usize;
     let zb1 = (g.zc + g.blade_hh + 1.0).ceil().min(nz as f64 - 2.0) as usize;
     let bb = (g.tip_r + 2.0).ceil() as i64;
-    let (bx0, bx1) = ((g.cx as i64 - bb).max(1) as usize, (g.cx as i64 + bb).min(nx as i64 - 2) as usize);
-    let (by0, by1) = ((g.cy as i64 - bb).max(1) as usize, (g.cy as i64 + bb).min(ny as i64 - 2) as usize);
+    let (bx0, bx1) = (
+        (g.cx as i64 - bb).max(1) as usize,
+        (g.cx as i64 + bb).min(nx as i64 - 2) as usize,
+    );
+    let (by0, by1) = (
+        (g.cy as i64 - bb).max(1) as usize,
+        (g.cy as i64 + bb).min(ny as i64 - 2) as usize,
+    );
     let sb = (g.shaft_r + 2.0).ceil() as i64;
-    let (sx0, sx1) = ((g.cx as i64 - sb).max(1) as usize, (g.cx as i64 + sb).min(nx as i64 - 2) as usize);
-    let (sy0, sy1) = ((g.cy as i64 - sb).max(1) as usize, (g.cy as i64 + sb).min(ny as i64 - 2) as usize);
+    let (sx0, sx1) = (
+        (g.cx as i64 - sb).max(1) as usize,
+        (g.cx as i64 + sb).min(nx as i64 - 2) as usize,
+    );
+    let (sy0, sy1) = (
+        (g.cy as i64 - sb).max(1) as usize,
+        (g.cy as i64 + sb).min(ny as i64 - 2) as usize,
+    );
 
     println!(
         "Rushton stirred tank: {n}^3, tank r={:.1}, tip r={:.1}, {} blades, \
          omega={omega:.5}/step (period {:.0}), u_tip={u_tip}, nu={nu}, tau={tau:.3}, \
          Ma_tip={ma_tip:.3}, Re~{re:.0}, steps={steps}",
-        g.r_tank, g.tip_r, g.n_blades, 2.0 * PI / omega
+        g.r_tank,
+        g.tip_r,
+        g.n_blades,
+        2.0 * PI / omega
     );
 
     let v_speed = u_tip;
@@ -262,8 +329,14 @@ fn main() {
     let scale = if n <= 96 { 5 } else { 4 };
     let mut frame = 0usize;
 
-    let stamp_region = |force: &mut [[f64; 3]], theta: f64, ramp: f64,
-                        ux: &[f64], uy: &[f64], x: usize, y: usize, z: usize| {
+    let stamp_region = |force: &mut [[f64; 3]],
+                        theta: f64,
+                        ramp: f64,
+                        ux: &[f64],
+                        uy: &[f64],
+                        x: usize,
+                        y: usize,
+                        z: usize| {
         if g.is_solid(x, y, z) {
             return;
         }
@@ -355,9 +428,36 @@ fn main() {
                 }
             }
             let name = |p: &str| outdir.join(format!("{p}_{frame:04}.png"));
-            write_png(&name("top_speed"), &ts, &tm, nx, ny, v_speed, &VIRIDIS, scale);
-            write_png(&name("top_shear"), &th, &tm, nx, ny, v_shear, &INFERNO, scale);
-            write_png(&name("side_speed"), &ss, &sm, nx, nz, v_speed, &VIRIDIS, scale);
+            write_png(
+                &name("top_speed"),
+                &ts,
+                &tm,
+                nx,
+                ny,
+                v_speed,
+                &VIRIDIS,
+                scale,
+            );
+            write_png(
+                &name("top_shear"),
+                &th,
+                &tm,
+                nx,
+                ny,
+                v_shear,
+                &INFERNO,
+                scale,
+            );
+            write_png(
+                &name("side_speed"),
+                &ss,
+                &sm,
+                nx,
+                nz,
+                v_speed,
+                &VIRIDIS,
+                scale,
+            );
 
             let smax = speed.iter().cloned().fold(0.0f64, f64::max);
             if frame % 10 == 0 {
@@ -418,17 +518,33 @@ fn main() {
          final_max|u|={final_max:.4} Ma_field={ma_field:.2} grid_Re={grid_re:.0} \
          shear_max={shear_max:.5} -> {status}"
     );
-    export_volume(&outdir, &g, &ux, &uy, &uz, &shear, nx, ny, nz, omega, u_tip, nu);
+    export_volume(
+        &outdir, &g, &ux, &uy, &uz, &shear, nx, ny, nz, omega, u_tip, nu,
+    );
 
-    println!("\nWrote {frame} frames x3 + volume.bin/json to {}", outdir.display());
+    println!(
+        "\nWrote {frame} frames x3 + volume.bin/json to {}",
+        outdir.display()
+    );
     for s in ["top_speed", "top_shear", "side_speed"] {
-        println!("ffmpeg -y -framerate 25 -i {0}/{s}_%04d.png -c:v libx264 -pix_fmt yuv420p \
-                  -crf 18 -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 {0}/{s}.mp4", outdir.display());
+        println!(
+            "ffmpeg -y -framerate 25 -i {0}/{s}_%04d.png -c:v libx264 -pix_fmt yuv420p \
+                  -crf 18 -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 {0}/{s}.mp4",
+            outdir.display()
+        );
     }
 }
 
 /// Shear stress rho*nu*gamma_dot, gamma_dot = sqrt(2 S:S), central differences.
-fn shear_field(ux: &[f64], uy: &[f64], uz: &[f64], nx: usize, ny: usize, nz: usize, nu: f64) -> Vec<f64> {
+fn shear_field(
+    ux: &[f64],
+    uy: &[f64],
+    uz: &[f64],
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    nu: f64,
+) -> Vec<f64> {
     let idx = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
     let mut out = vec![0.0; nx * ny * nz];
     for z in 1..nz - 1 {
@@ -447,8 +563,8 @@ fn shear_field(ux: &[f64], uy: &[f64], uz: &[f64], nx: usize, ny: usize, nz: usi
                 let sxy = 0.5 * (uxy + uyx);
                 let sxz = 0.5 * (uxz + uzx);
                 let syz = 0.5 * (uyz + uzy);
-                let ss = uxx * uxx + uyy * uyy + uzz * uzz
-                    + 2.0 * (sxy * sxy + sxz * sxz + syz * syz);
+                let ss =
+                    uxx * uxx + uyy * uyy + uzz * uzz + 2.0 * (sxy * sxy + sxz * sxz + syz * syz);
                 out[idx(x, y, z)] = nu * (2.0 * ss).sqrt();
             }
         }
@@ -459,11 +575,24 @@ fn shear_field(ux: &[f64], uy: &[f64], uz: &[f64], nx: usize, ny: usize, nz: usi
 /// Subsample the domain to a `vn^3` grid and write vx,vy,vz,shear as f32 LE
 /// plus a JSON meta block (all geometry in lattice cells).
 #[allow(clippy::too_many_arguments)]
-fn export_volume(outdir: &Path, g: &Geom, ux: &[f64], uy: &[f64], uz: &[f64], shear: &[f64],
-                 nx: usize, ny: usize, nz: usize, omega: f64, u_tip: f64, nu: f64) {
+fn export_volume(
+    outdir: &Path,
+    g: &Geom,
+    ux: &[f64],
+    uy: &[f64],
+    uz: &[f64],
+    shear: &[f64],
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    omega: f64,
+    u_tip: f64,
+    nu: f64,
+) {
     let idx = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
     let vn = 60usize.min(nx);
-    let map = |i: usize, m: usize| ((i as f64) * (m as f64 - 1.0) / (vn as f64 - 1.0)).round() as usize;
+    let map =
+        |i: usize, m: usize| ((i as f64) * (m as f64 - 1.0) / (vn as f64 - 1.0)).round() as usize;
     let mut buf: Vec<f32> = Vec::with_capacity(vn * vn * vn * 4);
     let mut smax = 0.0f64;
     let mut shmax = 0.0f64;
@@ -498,10 +627,27 @@ fn export_volume(outdir: &Path, g: &Geom, ux: &[f64], uy: &[f64], uz: &[f64], sh
             "\"baffle_len\": {}, \"baffle_hw\": {}, ",
             "\"omega\": {}, \"u_tip\": {}, \"nu\": {}, \"speed_max\": {}, \"shear_max\": {}}}\n"
         ),
-        vn, g.n, g.cx, g.cy, g.r_tank, g.zc,
-        g.tip_r, g.disk_r, g.hub_r, g.shaft_r,
-        g.blade_hh, g.disk_hh, g.n_blades, g.blade_hw,
-        g.baffle_len, g.baffle_hw, omega, u_tip, nu, smax, shmax
+        vn,
+        g.n,
+        g.cx,
+        g.cy,
+        g.r_tank,
+        g.zc,
+        g.tip_r,
+        g.disk_r,
+        g.hub_r,
+        g.shaft_r,
+        g.blade_hh,
+        g.disk_hh,
+        g.n_blades,
+        g.blade_hw,
+        g.baffle_len,
+        g.baffle_hw,
+        omega,
+        u_tip,
+        nu,
+        smax,
+        shmax
     );
     std::fs::write(outdir.join("volume.json"), meta).expect("volume.json");
     println!("volume: {vn}^3 (speed_max={smax:.4}, shear_max={shmax:.5})");

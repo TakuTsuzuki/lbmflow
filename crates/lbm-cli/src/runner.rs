@@ -68,6 +68,24 @@ struct CsvProbe {
     point: (usize, usize),
 }
 
+fn write_particles(
+    ps: &lbm_core::particles::ParticleSet,
+    step: usize,
+    out_dir: &Path,
+) -> Result<String> {
+    let name = format!("particles_{step}.csv");
+    let mut file = fs::File::create(out_dir.join(&name))?;
+    writeln!(file, "id,x,y,z,vx,vy,vz,exposure")?;
+    for (i, p) in ps.particles.iter().enumerate() {
+        writeln!(
+            file,
+            "{i},{},{},{},{},{},{},{}",
+            p.pos[0], p.pos[1], p.pos[2], p.vel[0], p.vel[1], p.vel[2], p.exposure
+        )?;
+    }
+    Ok(name)
+}
+
 fn run_t<T: Real>(
     sc: &Scenario,
     mut sim: Simulation<T>,
@@ -107,6 +125,71 @@ fn run_t<T: Real>(
         }
     }
 
+    // Rotating impeller (volume penalization). The rotor ADDS into the
+    // per-cell force field each step; when no multiphase driver rewrites the
+    // field, the runner clears it so forces do not accumulate across steps.
+    if let Some(r) = &sc.rotor {
+        let tip = (r.omega * r.r_blade).abs();
+        anyhow::ensure!(
+            tip <= 0.3,
+            "rotor tip speed {tip} exceeds the low-Mach hard limit 0.3"
+        );
+    }
+    let mut rotor = sc.rotor.map(|r| {
+        lbm_core::compat::rotor::Rotor::new(T::r(r.cx), T::r(r.cy))
+            .n_blades(r.n_blades)
+            .r_hub(T::r(r.r_hub))
+            .r_blade(T::r(r.r_blade))
+            .blade_thickness(T::r(r.thickness))
+            .omega(T::r(r.omega))
+            .chi(T::r(r.chi))
+            .omega_ramp_steps(r.ramp_steps as u64)
+            .theta0(T::r(r.theta0))
+    });
+    let mut torque_file = if sc.rotor.is_some() {
+        let path = out_dir.join("torque.csv");
+        let mut f = fs::File::create(&path)?;
+        writeln!(f, "step,torque,torqueIntegral")?;
+        files.push("torque.csv".into());
+        Some(f)
+    } else {
+        None
+    };
+
+    // One-way Lagrangian particles: deterministic grid seeding, velocities
+    // sampled bilinearly from the resolved field after each step.
+    let mut pset = sc.particles.as_ref().map(|spec| {
+        let mut parts = Vec::with_capacity(spec.count);
+        let (w, h) = (spec.seed.x1 - spec.seed.x0, spec.seed.y1 - spec.seed.y0);
+        let cols = ((spec.count as f64 * (w / h.max(1e-9)).max(1e-9))
+            .sqrt()
+            .ceil() as usize)
+            .max(1);
+        let rows = spec.count.div_ceil(cols);
+        for i in 0..spec.count {
+            let (cx, cy) = (i % cols, i / cols);
+            parts.push(lbm_core::particles::Particle {
+                pos: [
+                    spec.seed.x0 + (cx as f64 + 0.5) * w / cols as f64,
+                    spec.seed.y0 + (cy as f64 + 0.5) * h / rows.max(1) as f64,
+                    0.0,
+                ],
+                vel: [0.0; 3],
+                d: spec.d,
+                rho_p: spec.rho_p,
+                exposure: 0.0,
+            });
+        }
+        lbm_core::particles::ParticleSet::new(
+            parts,
+            1.0,
+            sc.physics.nu,
+            sc.physics.gravity.unwrap_or([0.0; 3]),
+        )
+        .with_restitution(spec.restitution)
+    });
+    let particles_every = sc.particles.map(|p| p.output_every).unwrap_or(0);
+
     let t0 = Instant::now();
     let mut status = "completed";
     let mut prev_steady: Option<Vec<f64>> = None;
@@ -117,8 +200,44 @@ fn run_t<T: Real>(
         if let Some(mp) = &mp {
             mp.update_force(&mut sim);
         }
+        if let Some(rt) = &mut rotor {
+            if mp.is_none() {
+                sim.clear_force_field();
+            }
+            rt.update_force(&mut sim);
+        }
         sim.step();
         executed = step;
+
+        if let Some(rt) = &rotor {
+            if let Some(f) = &mut torque_file {
+                if step % 10 == 0 {
+                    writeln!(
+                        f,
+                        "{step},{},{}",
+                        rt.torque().as_f64(),
+                        rt.torque_integral().as_f64()
+                    )?;
+                }
+            }
+        }
+
+        if let Some(ps) = &mut pset {
+            let dims = [sim.nx(), sim.ny(), 1];
+            let sampler = |pos: [f64; 3]| {
+                lbm_core::particles::sample_grid(pos, dims, |x, y, _| {
+                    if sim.is_solid(x, y) {
+                        ([0.0, 0.0, 0.0], true)
+                    } else {
+                        ([sim.ux(x, y).as_f64(), sim.uy(x, y).as_f64(), 0.0], false)
+                    }
+                })
+            };
+            ps.step(sampler, None::<fn([f64; 3]) -> f64>);
+            if particles_every > 0 && step % particles_every == 0 {
+                files.push(write_particles(ps, step, out_dir)?);
+            }
+        }
 
         for p in &mut probes {
             if step % p.every == 0 {
@@ -181,6 +300,9 @@ fn run_t<T: Real>(
             files.push(write_output(&sim, o, i, executed, out_dir)?);
         }
     }
+    if let Some(ps) = &pset {
+        files.push(write_particles(ps, executed, out_dir)?);
+    }
 
     let wall = t0.elapsed().as_secs_f64();
     let cells = (sim.nx() * sim.ny()) as f64;
@@ -216,8 +338,12 @@ fn run_t<T: Real>(
 /// fields are sequential (Inferno for stress/shear, Viridis for speed/density).
 fn colormap_for(field: FieldKind) -> Colormap {
     match field {
-        FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy | FieldKind::QCriterion => Colormap::RdBu,
-        FieldKind::ShearRate | FieldKind::DissipationRate | FieldKind::VorticityMag => Colormap::Inferno,
+        FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy | FieldKind::QCriterion => {
+            Colormap::RdBu
+        }
+        FieldKind::ShearRate | FieldKind::DissipationRate | FieldKind::VorticityMag => {
+            Colormap::Inferno
+        }
         FieldKind::Speed | FieldKind::Rho => Colormap::Viridis,
     }
 }
@@ -341,7 +467,16 @@ fn write_output<T: Real>(
         OutputFormat::Png => {
             let name = format!("{kind_name}_{step}.png");
             let path: PathBuf = out_dir.join(&name);
-            write_png_scaled(&path, &values, &solid, nx, ny, colormap_for(o.field), None, 1)?;
+            write_png_scaled(
+                &path,
+                &values,
+                &solid,
+                nx,
+                ny,
+                colormap_for(o.field),
+                None,
+                1,
+            )?;
             Ok(name)
         }
         OutputFormat::Csv => {
@@ -482,7 +617,16 @@ fn write_output3<T: lbm_core::real::Real>(
                 .map(|(x, y)| s.is_solid(x, y, zmid))
                 .collect();
             let name = format!("{kind_name}_{step}.png");
-            write_png_scaled(&out_dir.join(&name), slice, &solid, nx, ny, colormap_for(o.field), None, 1)?;
+            write_png_scaled(
+                &out_dir.join(&name),
+                slice,
+                &solid,
+                nx,
+                ny,
+                colormap_for(o.field),
+                None,
+                1,
+            )?;
             Ok(name)
         }
         OutputFormat::Csv => {

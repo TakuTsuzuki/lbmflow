@@ -39,6 +39,12 @@ pub struct Scenario {
     pub init: InitSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiphase: Option<MultiphaseSpec>,
+    /// Rotating-impeller volume penalization (MF-delta interim; 2D only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotor: Option<RotorSpec>,
+    /// One-way Lagrangian particles (FR-PART-01 subset; 2D only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub particles: Option<ParticlesSpec>,
     pub run: RunSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub probes: Vec<ProbeSpec>,
@@ -105,6 +111,13 @@ pub struct Physics {
     pub collision: CollisionSpec,
     #[serde(default)]
     pub force: [f64; 2],
+    /// Per-mass gravity g (lattice units): applied each step as a per-cell
+    /// force density rho(x)*g on fluid cells, additive with `force` and any
+    /// multiphase/rotor per-cell force. Unlike `force` (a constant force
+    /// DENSITY, hydrostatically balanced), gravity produces buoyancy. 2D
+    /// scenarios require g[2] == 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity: Option<[f64; 3]>,
     #[serde(default)]
     pub precision: Precision,
 }
@@ -281,6 +294,65 @@ pub struct MultiphaseSpec {
     pub wall_rho: Option<f64>,
 }
 
+/// Rotating-impeller volume penalization (MF-delta interim). The runner
+/// constructs `lbm_core::compat::rotor::Rotor` from this each run; defaults
+/// mirror the measured stability envelope in docs/PHYSICS.md.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RotorSpec {
+    pub cx: f64,
+    pub cy: f64,
+    pub n_blades: usize,
+    #[serde(default)]
+    pub r_hub: f64,
+    pub r_blade: f64,
+    pub thickness: f64,
+    /// Angular velocity in rad/step. Tip speed omega*rBlade obeys the same
+    /// low-Mach limits as walls (warn > 0.15, reject > 0.3).
+    pub omega: f64,
+    /// Penalization strength in (0, 1]; 1 pins blade cells to solid-body
+    /// rotation exactly.
+    #[serde(default = "default_chi")]
+    pub chi: f64,
+    /// Linear motor spin-up ramp on omega, in steps (0 = instant start).
+    #[serde(default)]
+    pub ramp_steps: usize,
+    #[serde(default)]
+    pub theta0: f64,
+}
+
+fn default_chi() -> f64 {
+    1.0
+}
+
+/// One-way Lagrangian particles: deterministic grid seeding inside `seed`,
+/// Schiller-Naumann drag, buoyancy-reduced gravity from `physics.gravity`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticlesSpec {
+    pub count: usize,
+    /// Particle diameter (lattice units).
+    pub d: f64,
+    /// Particle density relative to the fluid (rho_f = 1).
+    pub rho_p: f64,
+    #[serde(default)]
+    pub restitution: f64,
+    pub seed: SeedRegion,
+    /// Write particles_<step>.csv every N steps (0 = end of run only).
+    #[serde(default)]
+    pub output_every: usize,
+}
+
+/// Axis-aligned seeding region [x0, x1] x [y0, y1] (lattice units).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SeedRegion {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunSpec {
@@ -403,6 +475,58 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 format!(
                     "grid Reynolds number U/ν = {grid_re:.1} > {GRID_RE_WARN_THRESHOLD}: risk of divergence (see PHYSICS.md)"
                 ),
+            );
+        }
+    }
+    if let Some(r) = &sc.rotor {
+        let tip = (r.omega * r.r_blade).abs();
+        if tip > 0.3 {
+            warn(
+                "rotor.omega",
+                format!("tip speed {tip:.3} exceeds the hard low-Mach limit 0.3 (the runner will reject it)"),
+            );
+        } else if tip > 0.15 {
+            warn(
+                "rotor.omega",
+                format!("tip speed {tip:.3} is at a level where compressibility error is noticeable (above 0.15)"),
+            );
+        }
+        if !(r.chi > 0.0 && r.chi <= 1.0) {
+            warn("rotor.chi", format!("chi = {} is outside (0, 1]", r.chi));
+        }
+        if r.r_blade as usize * 2 >= sc.grid.nx.min(sc.grid.ny) {
+            warn(
+                "rotor.rBlade",
+                "impeller diameter reaches the domain edge (leave clearance to the walls)"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(p) = &sc.particles {
+        if p.count == 0 || p.d <= 0.0 || p.rho_p <= 0.0 {
+            warn(
+                "particles",
+                "count, d and rhoP must be positive".to_string(),
+            );
+        }
+        if sc.physics.gravity.is_none() {
+            warn(
+                "particles",
+                "no physics.gravity set: particles will neither settle nor feel buoyancy"
+                    .to_string(),
+            );
+        }
+        let (w, h) = (sc.grid.nx as f64, sc.grid.ny as f64);
+        if p.seed.x0 < 0.0
+            || p.seed.y0 < 0.0
+            || p.seed.x1 >= w
+            || p.seed.y1 >= h
+            || p.seed.x0 > p.seed.x1
+            || p.seed.y0 > p.seed.y1
+        {
+            warn(
+                "particles.seed",
+                "seed region is empty or outside the grid".to_string(),
             );
         }
     }
@@ -668,6 +792,16 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     if sc.multiphase.is_some() {
         return Err(Build3Error::Unsupported("multiphase (multiphase flow)"));
     }
+    if sc.rotor.is_some() {
+        return Err(Build3Error::Unsupported(
+            "rotor (2D only in this increment; 3D rotor lands with the z-extruded evaluator)",
+        ));
+    }
+    if sc.particles.is_some() {
+        return Err(Build3Error::Unsupported(
+            "particles (2D only in this increment)",
+        ));
+    }
     if !matches!(sc.init, InitSpec::Rest) {
         return Err(Build3Error::Unsupported("init must be rest only"));
     }
@@ -779,6 +913,10 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         CpuScalar::default(),
         LocalPeriodic,
     );
+
+    if let Some(g) = sc.physics.gravity {
+        s.set_gravity([T::r(g[0]), T::r(g[1]), T::r(g[2])]);
+    }
 
     // Obstacles: 2D shapes extrude along z; spheres are native 3D.
     let mut any_obstacle = false;
@@ -938,6 +1076,16 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
     }
     .build()?;
 
+    if let Some(g) = sc.physics.gravity {
+        if g[2] != 0.0 {
+            return Err(ConfigError::InvalidParameter {
+                what: "physics.gravity[2] (2D scenarios require gz == 0)",
+                value: g[2],
+            });
+        }
+        sim.set_gravity([T::r(g[0]), T::r(g[1])]);
+    }
+
     for ob in &sc.obstacles {
         match *ob {
             Obstacle::Circle { cx, cy, r } => {
@@ -1059,6 +1207,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nu: 0.02,
             collision: CollisionSpec::Trt,
             force: [0.0, 0.0],
+            gravity: None,
             precision: Precision::F64,
         },
         units: None,
@@ -1075,6 +1224,8 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         obstacles: vec![],
         init: InitSpec::Rest,
         multiphase: None,
+        rotor: None,
+        particles: None,
         run: RunSpec {
             steps: 20_000,
             stop_when_steady: Some(SteadySpec {
@@ -1101,6 +1252,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nu: 0.04,
             collision: CollisionSpec::Trt,
             force: [0.0, 0.0],
+            gravity: None,
             precision: Precision::F64,
         },
         units: None,
@@ -1125,6 +1277,8 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         }],
         init: InitSpec::Rest,
         multiphase: None,
+        rotor: None,
+        particles: None,
         run: RunSpec {
             steps: 40_000,
             stop_when_steady: None,
@@ -1155,6 +1309,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nu: 1.0 / 6.0,
             collision: CollisionSpec::Trt,
             force: [0.0, 0.0],
+            gravity: None,
             precision: Precision::F64,
         },
         units: None,
@@ -1181,6 +1336,8 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             g_wall: 0.0,
             wall_rho: None,
         }),
+        rotor: None,
+        particles: None,
         run: RunSpec {
             steps: 20_000,
             stop_when_steady: None,
@@ -1206,6 +1363,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nu: 1.0 / 6.0,
             collision: CollisionSpec::Trt,
             force: [0.0, 0.0],
+            gravity: None,
             precision: Precision::F64,
         },
         units: None,
@@ -1232,6 +1390,8 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             g_wall: 0.0,
             wall_rho: Some(1.0),
         }),
+        rotor: None,
+        particles: None,
         run: RunSpec {
             steps: 30_000,
             stop_when_steady: None,

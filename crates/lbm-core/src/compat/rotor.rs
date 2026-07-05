@@ -43,6 +43,7 @@ pub struct Rotor<T: Real> {
     omega_ramp_steps: u64,
     theta0: T,
     accumulated_angle: T,
+    last_omega: T,
     last_torque: T,
     torque_integral: T,
 }
@@ -63,6 +64,7 @@ impl<T: Real> Rotor<T> {
             omega_ramp_steps: 200,
             theta0: T::zero(),
             accumulated_angle: T::zero(),
+            last_omega: T::zero(),
             last_torque: T::zero(),
             torque_integral: T::zero(),
         }
@@ -151,6 +153,10 @@ impl<T: Real> Rotor<T> {
     }
 
     fn blade_chi(&self, x: T, y: T) -> T {
+        self.blade_chi_at(self.accumulated_angle, x, y)
+    }
+
+    fn blade_chi_at(&self, angle: T, x: T, y: T) -> T {
         let dx = x - self.cx;
         let dy = y - self.cy;
         let r2 = dx * dx + dy * dy;
@@ -160,17 +166,39 @@ impl<T: Real> Rotor<T> {
         let half = T::r(0.5) * self.blade_thickness;
         let two_pi = T::r(std::f64::consts::TAU);
         for b in 0..self.n_blades {
-            let theta = self.theta0
-                + self.accumulated_angle
-                + two_pi * T::r(b as f64 / self.n_blades as f64);
+            let theta = self.theta0 + angle + two_pi * T::r(b as f64 / self.n_blades as f64);
             let nx = -theta.sin();
             let ny = theta.cos();
             let perp = (dx * nx + dy * ny).abs();
-            if perp <= half {
+            // The arm extends only along +(cos, sin); without this check the
+            // |perp| band also matches the mirror direction, which duplicates
+            // every arm for odd blade counts (3 blades became 6).
+            let along = dx * theta.cos() + dy * theta.sin();
+            if perp <= half && along >= T::zero() {
                 return self.chi;
             }
         }
         T::zero()
+    }
+
+    /// Whether `p` lies inside a blade at the state of the most recent
+    /// [`Rotor::update_force`] call (the geometry the last force used).
+    pub fn contains(&self, p: [T; 2]) -> bool {
+        self.blade_chi_at(self.last_angle(), p[0], p[1]) > T::zero()
+    }
+
+    /// Solid-body target velocity at `p` for the omega applied by the most
+    /// recent [`Rotor::update_force`] call.
+    pub fn target_velocity(&self, p: [T; 2]) -> [T; 2] {
+        [
+            -self.last_omega * (p[1] - self.cy),
+            self.last_omega * (p[0] - self.cx),
+        ]
+    }
+
+    fn last_angle(&self) -> T {
+        // update_force advances accumulated_angle by the omega it applied.
+        self.accumulated_angle - self.last_omega
     }
 
     /// Add this step's penalization force into `sim.force_field_mut()`.
@@ -213,6 +241,7 @@ impl<T: Real> Rotor<T> {
         self.last_torque = reaction_torque;
         self.torque_integral = self.torque_integral + reaction_torque;
         let _ = fluid_torque;
+        self.last_omega = omega;
         self.accumulated_angle = self.accumulated_angle + omega;
     }
 }
