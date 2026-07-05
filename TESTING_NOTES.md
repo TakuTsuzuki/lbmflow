@@ -103,3 +103,31 @@ order #2 の 5 件の dispositions:
 3. `t8_re20`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-1 に全面更新。
 4. `t8_re100`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-2 に全面更新。
 5. `t9_outflow`: fixed-by-spec / fixed-in-test — 圧力 RMS ratio 閾値を T9 の 15 に更新。
+
+## 新規メモ（2026-07-05 codex adversarial test order #6）
+
+1. Core V2 `Solver` には分割対応の single-component Shan-Chen driver が直接は露出していない。
+   Shan-Chen は現状 V1 互換 `Simulation` facade 経由で利用できるが、T13 の 2x2 seam 上で
+   `Solver<D2Q9, ..., InProcess>` に対して密度から force field を再計算する公開 API は未整備。
+   そのため `t13_adversarial.rs` では gap を残しつつ、同じ下層経路である per-cell
+   `force_field` を各 subdomain の compact core に直接設定し、四分割 corner 上の droplet 型
+   force field が一枚岩と一致することを検査する。
+
+## 新規不一致（2026-07-05 codex adversarial test order #6）
+
+1. `d3q19_lattice_properties_from_all_angles`: D3Q19 の face closure constant を
+   `assert_eq!(closure, 1.0)` で検査すると、`XNeg` で `closure = 1.0000000000000002`
+   となり失敗する。既存 unit test は `abs <= 1e-15` で許容しているが、今回の発注条件
+   「closure constant exactly 1」に対しては red。原因は `1/3, 1/18, 1/36` の f64 加算順に
+   よる丸めの可能性が高いが、テーブル/API が「exact」を名乗るなら rational/整数式での
+   定数化、または仕様文言の明確化が必要。
+
+## 処理済み（2026-07-05 PM triage #3: codex order #6）
+
+- `d3q19_lattice_properties_from_all_angles` の閉包定数「厳密 == 1.0」失敗
+  → **テストの過剰厳密**（カテゴリ: テストのバグ）。エンジンは解析値 T::one() を
+  ハードコード済み（kernels.rs zou_he）で物理は正しい。テスト自身の f64 総和が
+  加算順で 1 ulp ずれるだけ（XNeg: 1.0000000000000002）。判定を 4 ulp 許容に修正。
+  分割不変性への攻撃 8 種（分割線上円柱+プローブ/L字3分割跨ぎ/蓋・流入の分割跨ぎ/
+  不均等[3,1,1]/最小幅ガード/4分割コーナー液滴/20k長時間）は**全て耐えた**。
+  Shan-Chen V2 ネイティブAPI未整備のギャップは記録どおり（M-C/M-D で配線）。
