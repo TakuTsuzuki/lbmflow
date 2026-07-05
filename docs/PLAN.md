@@ -90,9 +90,70 @@ GUI モードと、エージェントから操作できる Agent モードの両
    （修正理由を PHYSICS.md に記録）、(c) テストのバグ → codex に差し戻し。
 4. 全 green で次フェーズへ。フェーズ末に `git commit`。
 
+## 現行キュー: 改善フェーズ（R-Phase）と M-F（2026-07-05 制定）
+
+原典 2 本: [SOLVER_IMPROVEMENT_SPEC.md](SOLVER_IMPROVEMENT_SPEC.md)（並走レビューの
+41 項目・実験 E1〜E10 で全主張検証済み・main 取込済み）と
+[REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md)（M-F 要求 rev.1b、codex 敵対レビュー
+48 件反映済み、受入は VALIDATION.md **T17**）。
+
+### R-Phase（改善仕様書 §4 の実施順序に従う）
+
+- **R-Phase 1（実行中 2026-07-05〜）**: A-2〜A-10 = 入口ガード・正しさ。
+  worktree `r-phase1`、Opus 委任。共通 DoD = 既存テスト無修正 green・合法設定ビット不変。
+  D-6/D-7（文書整合）は PM 直轄で適用済み（COMPETITIVE_SPEC 改定履歴・VALIDATION T13/T14 節）。
+- **R-Phase 2（R-1 着地後・~1.5 週）**: B-1（Fields 一般化 + GpuSolver 統合）→ B-2
+  （同期点契約）→ 並行 B-3 / B-5〜B-8、C-9〜C-11、D-1〜D-5。
+  **M-F からの追加要求**: B-1 の設計は複数分布セット（相場 g・スカラー h）・per-cell
+  物性場（B-6 の一般化）・Lagrangian バッファ（IBM マーカー/粒子/点気泡）を収容できる
+  こと — M-F の構造前提であり、M-E（FP16/マルチ GPU）と共通の土台。
+- **R-Phase 3（M-E と並走可）**: C-1（MPI セットアップのローカル化 = 10⁹ 格子 OOM 解消）、
+  C-2（通信オーバーラップ。前提: E8 の probe 二重計上シェル修正）、C-4〜C-8、
+  C-12〜C-16、D-8〜D-10。
+- **M-E は B-1/B-2/C-9/C-12/C-13/D-9 完了が前提**（仕様書 §4 の依存関係）。
+
+### M-F: 回転境界・高密度比二相・LES 連成 3D（REQ-M-F-STR rev.1b）
+
+確定済み設計判断（プロジェクトオーナー決定）: **スコープ一括**（サブシステムを段階分割
+せず同時実装）/ **忠実度既定**（IBM-inertial・resolved-phasefield・active スカラー・
+two-way 粒子・uniform 格子・界面近傍 f64+バルク f32）、低コスト近似（MRF・point-bubble・
+one-way・AMR・積極 f32）は同一 trait 背後の後付け拡張 / 物理競合モードは構成検証で
+実行時相互排他（A-4 の `GlobalSpec::validate` を拡張）。
+
+実装トラック（R-Phase 2 着地後に並列発注。worktree 分離・実装 Opus/Sonnet・
+**検証テストは codex が REQ/T17 から敵対的に作成**の従来体制）:
+
+| トラック | 内容 | 主要 FR | 検証 | 依存 |
+|---|---|---|---|---|
+| MF-α | D3Q27 格子 + 中心モーメント/cumulant 衝突 | FR-CORE-01/02 | モーメント等方性・TGV3D 次数・ガリレイ不変帯 | R-2 |
+| MF-β | LES（WALE 既定）+ 非 Newton μ(γ̇) + 応力場評価（規約 FR-STRESS-01 固定済み） | FR-LES-*, FR-STRESS-* | VR-STR-03、チャネル Re_τ=180 vs DNS | R-2（B-6） |
+| MF-γ | 保存型 Allen-Cahn 高密度比二相（10³）+ well-balanced 重力 + スパージャ/脱気 BC | FR-VOF-*, FR-BC-* | VR-STR-02/06、Laplace・寄生流 Ca<10⁻³・単一気泡 Grace | R-2（B-1 複数分布） |
+| MF-δ | IBM-inertial 回転境界 + トルク/Np 測定 | FR-ROT-* | VR-STR-01、Taylor-Couette トルク・IBM 球抗力 vs T15 基準 | R-2（B-1 Lagrangian） |
+| MF-ε | スカラー ADE（active 帰還）+ Lagrangian 粒子（せん断曝露記録） | FR-LES-04, FR-PART-* | VR-STR-04、Taylor-Aris・沈降終端速度 vs SN | R-2（B-1） |
+| MF-ζ | 連成統合（§5 データフロー・dt 制約）+ 構成排他 + I/O/統計/GUI 3D 表示 + 受入ラン | FR-COUP-*, FR-INIT, FR-IO-* | VR-STR-05/07 + 01/02 の連成系 | MF-α〜ε |
+
+残仕様詰めの担当割当: **active スカラー帰還式** = リサーチ委任中（成果 →
+docs/proposals/active-scalar-feedback.md → PM レビュー → REQ rev.2 へ反映）/
+**f64/f32 界面帯幅** = MF-γ 実装時に実験で凍結（characterize→freeze）/
+**trait 境界 API** = R-Phase 2 の B-1 設計と同時に確定（ARCHITECTURE_V2 に追記）/
+**REQ 第 2 次 codex 検証** = rev.1b に対して発注（原則追加後の残存齟齬確認）。
+
+工数感（並列エージェント前提）: R-2 ~1.5 週 → MF-α〜ε 並列 ~1-2 週 → MF-ζ 統合 ~1 週。
+1e9 格子級はメモリ予算表（REQ §7）により**クラスタ専用**（単機開発線は ≤256³）—
+実測はクラスタ計画（CLUSTER_OPTIONS.md、ユーザー判断待ち）に統合。
+
 ## 進捗メモ
 
-- 2026-07-05 晩: **R1/R2/R3 全達成を公式判定**（REVIEW_2026-07-05_2.md）。
+- 2026-07-05 深夜: **並走レビューセッションの成果を main へ統合**。改善仕様書 v1 +
+  実験クレート取込（E2/E7 が改名後 main で数値一致再現）。PM 判断 4 件確定:
+  (a) 仕様書取込 = PM 実施済み (b) R-Phase 2 は R-1 直後・M-E/M-F 共通前提
+  (c) D-6 = PM 直轄で適用済み（COMPETITIVE_SPEC 改定履歴参照）(d) codex D-8 発注は
+  R-1 着地後。**R-Phase 1 発注**（worktree r-phase1・Opus・A-2〜A-10）。
+  **M-F 要求 rev.1b 確定**（表題中立化・メモリ予算表・T17 配線）と実装トラック計画
+  （上表）。codex #7（T15.5 3D キャビティ）実行中。
+- 2026-07-05 晩: **R1/R2/R3 全達成を公式判定**（REVIEW_2026-07-05_2.md。
+  ※受入帯は 2026-07-05 D-6 改定を正とする: 球抗力 ±10%・D_h 正規化、弱スケ
+  85% 線は n≤4 局所、3D キャビティ T15.5 は codex #7 で追実装中）。
   M-D MPI 完了（T13-MPI 全ケースビット一致、弱スケ 97-99% n≤4、MPI_GUIDE 完備）。
   CpuSimd 融合バックエンド（2D 新記録 1,183 MLUPS、3D 2-3x、等価 ~6e-14）。
   ワークスペース 205 テスト緑。進行中: V1 引退（v1-retirement）+ リサーチ 3 本

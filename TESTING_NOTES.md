@@ -271,3 +271,34 @@ order #2 の 5 件の dispositions:
    84% 相当が天井で、MPI 化の追加損は ~12%（ロックステップのジッタ結合）。
    n≤4（均質コア内）は R3 ローカル線 ≥85% を満たす。真の測定はクラスタ待ち
    （測定リスト: docs/MPI_GUIDE.md §クラスタ）。
+
+## PM 回答（2026-07-05 深夜）— レビューセッション判断依頼 4 件 + M-F 統合
+
+- **(a) 仕様書の main 取込**: PM 実施済み（コミット 5cf7a97）。SOLVER_IMPROVEMENT_SPEC.md
+  冒頭に main 用パス翻訳注記を追加。scripts/spec-experiments はパス翻訳
+  （lbm_core2→lbm_core、V1→compat）のうえ **E2/E7 が改名後 main で仕様書の数値と
+  厳密一致再現**することを確認済み。R-Phase 1 セッション側での取込作業は不要。
+- **(b) R-Phase 2 の発注時期**: R-Phase 1 着地直後に発注する。M-E 前提に加え、
+  M-F（REQ-M-F-STR rev.1b）の構造前提 = **複数分布セット（相場 g・スカラー h）・
+  per-cell 物性場・Lagrangian バッファ**を B-1 の設計要求に追加した（PLAN.md 現行キュー参照）。
+- **(c) D-6**: PM 直轄で適用済み — COMPETITIVE_SPEC R1/R3 を改定履歴付きで更新
+  （球 ±10%・D_h 正規化、弱スケ n≤4 局所線）、PLAN の「R1/R3 達成」表記に注記、
+  VALIDATION T15 の ±25%/±15% 不整合も解消（= A-10(c) の文書側は処理済み。
+  R-Phase 1 エージェントはコード側の t15_3d.rs コメントのみ対処すればよい）。
+- **(d) codex D-8（T14/T15 敵対発注）**: R-Phase 1 着地後に発注（入口ガードで
+  不正構成の挙動が Err に変わるため、ガード後の仕様で攻撃させるのが正しい）。
+  T15.5（3D キャビティ A&K 2005）は別途 codex order #7 として実行中。
+- **R-Phase 1 の起動**: チップ task_f890716a の押下は不要 — PM が worktree
+  `/Users/taku/projects/lbmflow-wt-rphase1`（ブランチ r-phase1、main 5cf7a97 ベース）で
+  Opus に発注済み。スコープ A-2〜A-10（D-6/D-7 除外、A-1 残作業は現地判断）。
+- **CpuSimd 切替**: 引き続き保留（B-1/B-2 の同期点契約整理後に判断）— 貴見解と一致。
+- **M-F 統合完了**: REQ rev.1b（表題中立化・コア改名追随・§7 メモリ予算表・T17 配線）、
+  VALIDATION.md に T13/T14 節（D-7）+ T16 プレースホルダ + **T17（VR-STR-01〜07）**新設、
+  PLAN.md に R-Phase キューと MF-α〜ζ 実装トラック表を制定。
+  残仕様詰め: active スカラー帰還式はリサーチ委任中（→ docs/proposals/）、
+  REQ 第 2 次 codex 検証は rev.1b に対し発注。
+
+### 進行中プロセスの注意（2026-07-05 深夜時点）
+- codex #7 が main ツリーで実行中。副作用として `cargo fmt` がソース 17 ファイルに
+  整形のみの diff を生成している（lattice.rs / kernels.rs を目視確認 — 意味変更なし）。
+  codex 完了時に PM が triage（テスト成果物以外の整形 diff は revert 予定）。
