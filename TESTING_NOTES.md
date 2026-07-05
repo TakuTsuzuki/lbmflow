@@ -707,3 +707,47 @@ Gates (all green): `cargo test --workspace --release` exit 0 (all suites ok) ·
 Leftover check: `grep -rn '[kana/kanji]' . --exclude-dir=target,node_modules,.git,pkg,dist`
 returns empty (source tree fully English). The committed wasm binary carries the
 English JsError strings.
+
+## Whitepaper benchmark track — machine-window notice (2026-07-05, sales-paper session)
+
+The sales technical-paper session is running the public-grade OSS benchmark
+(WHITEPAPER_PLAN.md §4/§5): Family A = OpenLB + Palabos (native, CPU MLUPS),
+Family B = OpenFOAM via Colima (cylinder Re=20 Cd time-to-solution).
+
+- **Now (build phase, contention-tolerant)**: downloading + compiling the competitor
+  codes under `~/projects/cfd-bench` (OUTSIDE this repo). Does NOT need an idle
+  window and can overlap the codex fleet. PM: no need to hold dispatches yet.
+- **Later (measurement phase, needs strict idle window)**: I will post a START/END
+  here and request PM hold heavy dispatches. NB the strict window also needs NON-LBM
+  heavy jobs quiet (currently: shogi strength_bench ~99%, trading python, syogi
+  codex) — a user-level coordination, flagged to Taku.
+- MPI note: Palabos uses the arm64 `~/.local/openmpi` wrapper, NOT the x86_64
+  `/usr/local` Homebrew mpicxx (the documented rsmpi arch trap).
+
+### MEASUREMENT WINDOW **OPEN** — 2026-07-05 23:11 JST (sales-paper session)
+PM: please HOLD all heavy dispatches until I post END below. User has stopped the
+non-LBM heavy jobs (shogi strength_bench, syogi codex). Machine verified: load1≈4.
+Measuring in this window: (1) roofline memory bandwidth, (2) LBMFlow CPU sweep
+(bench_backends, 2D D2Q9 + 3D D3Q19, f32/f64, 1T + all-core), (3) LBMFlow GPU
+(gpu-proto), (4) OpenLB cavity3dBenchmark sweep — all same clean window.
+Roofline captured: native arm64 triad BW = 344 GB/s (STREAM 24B/elem) /
+459–464 GB/s (write-allocate 32B/elem), 18 threads; ~546 GB/s nominal.
+
+## Viewer QA hand-off triage (F1-F7 → queue mapping, 2026-07-06 00:0x)
+
+All seven items are CORE physics per the user's boundary ruling; mapping:
+F1 Lagrangian particles + grounded dispersion → MF-ε / W-PART (FR-PART-01/-03 —
+   the Langevin/eddy-interaction-from-resolved-TKE requirement is already spec'd;
+   the viewer's removed "uniform random kick" is the exact anti-pattern FR-PART-03
+   exists to prevent). F2 turbulence for resuspension/realistic Re → MF-β / W-LES
+   (adds a physical motivation to the demo session's tau≈0.504 divergence data).
+F3 resolved rotating boundary → MF-δ (FR-ROT-01/02; penalization stays sanctioned
+   interim). **F4 NEW: penalization interim hardening** — spin-up ramp + f_cap are
+   empirical band-aids; if the interim outlives MF-δ kickoff, provide implicit
+   (Brinkman-type) forcing with documented stability bounds → added to MF-δ seeds.
+**F5 partially NEW**: strain/shear = landed (order A) + ε channel in flight;
+   ADD 3D vorticity + Q-criterion as first-class FieldKinds → folded into the
+   reactor-demo session's order C scope. F6 units-in-viewer → W-UNIT
+   (SPEC_UNIT_CONVERTER; ADD the effective-viscosity regime caveat to the
+   echo-back: report the Re_physical/Re_effective matching ratio explicitly).
+F7 stirred-tank validation → VR-STR-01/T17, post-MF-δ.
