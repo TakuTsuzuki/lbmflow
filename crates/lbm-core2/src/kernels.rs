@@ -57,6 +57,17 @@ impl<T: Copy> RawSlice<T> {
         debug_assert!(i < self.len);
         unsafe { *self.ptr.add(i) = v }
     }
+
+    /// Bulk copy `src` into the buffer starting at `dst_start`.
+    ///
+    /// # Safety
+    /// `dst_start + src.len() <= len`, `src` does not overlap the target
+    /// range, and this call is the only concurrent accessor of that range.
+    #[inline(always)]
+    pub(crate) unsafe fn copy_from(self, dst_start: usize, src: &[T]) {
+        debug_assert!(dst_start + src.len() <= self.len);
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr.add(dst_start), src.len()) }
+    }
 }
 
 /// Equilibrium distribution in deviation form (`feq_q - w_q`), written in
