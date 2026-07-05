@@ -71,7 +71,10 @@ fn t15_1_tgv_z_invariant_degenerates_to_d2q9() {
     let init = move |x: usize, y: usize| {
         let (xf, yf) = (k * x as f64, k * y as f64);
         let rho = 1.0 - 3.0 * u0 * u0 / 4.0 * ((2.0 * xf).cos() + (2.0 * yf).cos());
-        (rho, [-u0 * xf.cos() * yf.sin(), u0 * xf.sin() * yf.cos(), 0.0])
+        (
+            rho,
+            [-u0 * xf.cos() * yf.sin(), u0 * xf.sin() * yf.cos(), 0.0],
+        )
     };
     let steps = (1.0 / (2.0 * nu * k * k)).round() as usize; // T1's t*
 
@@ -81,7 +84,14 @@ fn t15_1_tgv_z_invariant_degenerates_to_d2q9() {
         periodic: [true, true, false],
         ..Default::default()
     };
-    let mut s2: S2 = Solver::new(&spec2, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s2: S2 = Solver::new(
+        &spec2,
+        &[],
+        &[],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     s2.init_with(move |x, y, _| init(x, y));
     s2.run(steps);
 
@@ -91,12 +101,24 @@ fn t15_1_tgv_z_invariant_degenerates_to_d2q9() {
         periodic: [true, true, true],
         ..Default::default()
     };
-    let mut s3: S3 = Solver::new(&spec3, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s3: S3 = Solver::new(
+        &spec3,
+        &[],
+        &[],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     s3.init_with(move |x, y, _| init(x, y));
     s3.run(steps);
 
     let (r2, x2, y2) = (s2.gather_rho(), s2.gather_ux(), s2.gather_uy());
-    let (r3, x3, y3, z3) = (s3.gather_rho(), s3.gather_ux(), s3.gather_uy(), s3.gather_uz());
+    let (r3, x3, y3, z3) = (
+        s3.gather_rho(),
+        s3.gather_ux(),
+        s3.gather_uy(),
+        s3.gather_uz(),
+    );
     let mut dmax = 0.0f64;
     for z in 0..nz {
         dmax = dmax.max(max_abs_diff(zslice(&r3, n, n, z), &r2));
@@ -105,7 +127,10 @@ fn t15_1_tgv_z_invariant_degenerates_to_d2q9() {
     }
     let uzmax = z3.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     println!("TGV degeneracy over {steps} steps: max field diff {dmax:.3e}, max |uz| {uzmax:.3e}");
-    assert!(dmax <= 1e-12, "D3Q19 z-invariant TGV drifted from D2Q9: {dmax:.3e}");
+    assert!(
+        dmax <= 1e-12,
+        "D3Q19 z-invariant TGV drifted from D2Q9: {dmax:.3e}"
+    );
     assert!(uzmax <= 1e-13, "z-invariant flow grew uz = {uzmax:.3e}");
 }
 
@@ -142,7 +167,14 @@ fn t15_1b_zou_he_channel_degenerates_to_d2q9() {
         ..Default::default()
     };
     let (solid2, wu2) = build_wall_rims(2, spec2.dims, &walls);
-    let mut s2: S2 = Solver::new(&spec2, &solid2, &wu2, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s2: S2 = Solver::new(
+        &spec2,
+        &solid2,
+        &wu2,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     s2.set_inlet_profile_with(Face::XNeg, |y, _| parabola(y));
     s2.run(steps);
 
@@ -154,12 +186,24 @@ fn t15_1b_zou_he_channel_degenerates_to_d2q9() {
         ..Default::default()
     };
     let (solid3, wu3) = build_wall_rims(3, spec3.dims, &walls);
-    let mut s3: S3 = Solver::new(&spec3, &solid3, &wu3, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s3: S3 = Solver::new(
+        &spec3,
+        &solid3,
+        &wu3,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     s3.set_inlet_profile_with(Face::XNeg, |y, _| parabola(y));
     s3.run(steps);
 
     let (r2, x2, y2) = (s2.gather_rho(), s2.gather_ux(), s2.gather_uy());
-    let (r3, x3, y3, z3) = (s3.gather_rho(), s3.gather_ux(), s3.gather_uy(), s3.gather_uz());
+    let (r3, x3, y3, z3) = (
+        s3.gather_rho(),
+        s3.gather_ux(),
+        s3.gather_uy(),
+        s3.gather_uz(),
+    );
     let mut dmax = 0.0f64;
     for z in 0..nz {
         dmax = dmax.max(max_abs_diff(zslice(&r3, nx, ny, z), &r2));
@@ -168,7 +212,10 @@ fn t15_1b_zou_he_channel_degenerates_to_d2q9() {
     }
     let uzmax = z3.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     println!("Zou-He degeneracy over {steps} steps: max diff {dmax:.3e}, max |uz| {uzmax:.3e}");
-    assert!(dmax <= 1e-12, "3D Zou-He channel drifted from D2Q9: {dmax:.3e}");
+    assert!(
+        dmax <= 1e-12,
+        "3D Zou-He channel drifted from D2Q9: {dmax:.3e}"
+    );
     assert!(uzmax <= 1e-13, "channel grew uz = {uzmax:.3e}");
 }
 
@@ -190,7 +237,14 @@ fn t15_1c_zou_he_3d_enforces_prescribed_moments() {
         faces,
         ..Default::default()
     };
-    let mut s: S3 = Solver::new(&spec, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s: S3 = Solver::new(
+        &spec,
+        &[],
+        &[],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     s.run(3);
     let mut du = 0.0f64;
     let mut drho = 0.0f64;
@@ -203,9 +257,17 @@ fn t15_1c_zou_he_3d_enforces_prescribed_moments() {
             drho = drho.max((s.rho(nx - 1, y, z) - 1.0).abs());
         }
     }
-    println!("Zou-He 3D moment enforcement: max |u - u_bc| = {du:.3e}, max |rho - rho_bc| = {drho:.3e}");
-    assert!(du <= 1e-14, "velocity face violates prescribed u by {du:.3e}");
-    assert!(drho <= 1e-14, "pressure face violates prescribed rho by {drho:.3e}");
+    println!(
+        "Zou-He 3D moment enforcement: max |u - u_bc| = {du:.3e}, max |rho - rho_bc| = {drho:.3e}"
+    );
+    assert!(
+        du <= 1e-14,
+        "velocity face violates prescribed u by {du:.3e}"
+    );
+    assert!(
+        drho <= 1e-14,
+        "pressure face violates prescribed rho by {drho:.3e}"
+    );
 }
 
 // ===========================================================================
@@ -228,8 +290,8 @@ fn duct_series(y: f64, zt: f64, a: f64, b: f64, g: f64, nu: f64, nmax: usize) ->
         let nf = n as f64;
         let kn = nf * PI / (2.0 * a);
         // cosh ratio computed as exp differences to avoid overflow for large n.
-        let ratio = ((kn * zt.abs()).exp() + (-kn * zt.abs()).exp())
-            / ((kn * b).exp() + (-kn * b).exp());
+        let ratio =
+            ((kn * zt.abs()).exp() + (-kn * zt.abs()).exp()) / ((kn * b).exp() + (-kn * b).exp());
         sum += (1.0 - ratio) * (kn * y).sin() / (nf * nf * nf);
         n += 2;
     }
@@ -272,7 +334,14 @@ fn t15_2_rectangular_duct_poiseuille_matches_series() {
         ..Default::default()
     };
     let (solid, wall_u) = build_wall_rims(3, spec.dims, &walls);
-    let mut s: S3 = Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s: S3 = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     let steady = run_to_steady3(&mut s, 500, 1e-11, 100_000);
     assert!(steady, "duct flow did not reach steady state");
 
@@ -284,8 +353,9 @@ fn t15_2_rectangular_duct_poiseuille_matches_series() {
         for kz in 1..=(nz - 2) {
             let y = j as f64 - 0.5;
             let zt = kz as f64 - 0.5 - b;
-            trunc = trunc
-                .max((duct_series(y, zt, a, b, g, nu, 99) - duct_series(y, zt, a, b, g, nu, 399)).abs());
+            trunc = trunc.max(
+                (duct_series(y, zt, a, b, g, nu, 99) - duct_series(y, zt, a, b, g, nu, 399)).abs(),
+            );
         }
     }
     let trunc_rel = trunc / umax_ref;
@@ -316,7 +386,9 @@ fn t15_2_rectangular_duct_poiseuille_matches_series() {
             u /= nx as f64;
             err = err.max((u - ana).abs());
             q_meas += u;
-            cross = cross.max(uy[idx(0, j, kz)].abs()).max(uz[idx(0, j, kz)].abs());
+            cross = cross
+                .max(uy[idx(0, j, kz)].abs())
+                .max(uz[idx(0, j, kz)].abs());
         }
     }
     let linf_rel = err / umax_ref;
@@ -393,7 +465,14 @@ fn sphere_drag(c: &SphereCase) -> f64 {
         faces,
         ..Default::default()
     };
-    let mut s: S3 = Solver::new(&spec, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s: S3 = Solver::new(
+        &spec,
+        &[],
+        &[],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     // Sphere centred 2.5 D downstream, laterally centred on the (odd)
     // half-integer grid centre so the staircase mask is mirror-symmetric.
     let cx = 2.5 * c.d as f64;
@@ -522,7 +601,14 @@ fn tgv3d_short(n: usize, nu: f64, u0_coef: f64) -> (f64, f64) {
         periodic: [true, true, true],
         ..Default::default()
     };
-    let mut s: S3 = Solver::new(&spec, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+    let mut s: S3 = Solver::new(
+        &spec,
+        &[],
+        &[],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
     let vel = move |x: usize, y: usize, z: usize| -> [f64; 3] {
         let (xf, yf, zf) = (k * x as f64, k * y as f64, k * z as f64);
         [

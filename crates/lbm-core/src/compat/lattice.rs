@@ -12,7 +12,7 @@
 //! the facade can never drift from the V2 core tables (which are themselves
 //! locked to V1 by test).
 
-use crate::lattice::{D2Q9, Lattice as _};
+use crate::lattice::{Lattice as _, D2Q9};
 
 /// Number of discrete velocities.
 pub const Q: usize = 9;

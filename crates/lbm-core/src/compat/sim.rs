@@ -90,9 +90,7 @@ impl<T: Real> Simulation<T> {
                         u: [u[0], u[1], T::zero()],
                     }
                 }
-                EdgeBC::PressureOutlet { rho } => {
-                    faces[face.index()] = FaceBC::Pressure { rho }
-                }
+                EdgeBC::PressureOutlet { rho } => faces[face.index()] = FaceBC::Pressure { rho },
                 EdgeBC::Outflow => faces[face.index()] = FaceBC::Outflow,
                 EdgeBC::ConvectiveOutflow { u_conv } => {
                     faces[face.index()] = FaceBC::Convective { u_conv }
@@ -267,8 +265,7 @@ impl<T: Real> Simulation<T> {
     /// step by multiphase models (see `multiphase::ShanChen::update_force`).
     pub fn force_field_mut(&mut self) -> &mut [[T; 2]] {
         let n = self.nx() * self.ny();
-        self.force2
-            .get_or_insert_with(|| vec![[T::zero(); 2]; n])
+        self.force2.get_or_insert_with(|| vec![[T::zero(); 2]; n])
     }
 
     /// Remove the per-cell force field (reverts to the uniform force only).

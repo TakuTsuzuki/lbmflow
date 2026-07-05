@@ -18,7 +18,14 @@ fn build<L: Lattice, H: HaloExchange<f64>>(
     two_pass: bool,
 ) -> Sol<L, H> {
     let (solid, wall_u) = build_wall_rims(L::D, spec.dims, walls);
-    let mut s = Solver::new(spec, &solid, &wall_u, decomp, CpuScalar::default(), exchange);
+    let mut s = Solver::new(
+        spec,
+        &solid,
+        &wall_u,
+        decomp,
+        CpuScalar::default(),
+        exchange,
+    );
     s.set_two_pass(two_pass);
     s
 }
@@ -266,7 +273,13 @@ fn t13_uneven_311_split_and_min_width_guard() {
         base.step();
         split.step();
         if t <= 3 || t % 35 == 0 || t == 140 {
-            assert_close(&base, &split, 1e-12, 1e-11, &format!("uneven [3,1,1] t={t}"));
+            assert_close(
+                &base,
+                &split,
+                1e-12,
+                1e-11,
+                &format!("uneven [3,1,1] t={t}"),
+            );
         }
     }
 
@@ -279,7 +292,10 @@ fn t13_uneven_311_split_and_min_width_guard() {
         let _: Sol<D2Q9, InProcess> =
             build::<D2Q9, _>(&spec, &WallSpec::default(), [3, 1, 1], InProcess, false);
     }));
-    assert!(bad.is_err(), "expected min-width guard to reject 5 cells split over 3 parts");
+    assert!(
+        bad.is_err(),
+        "expected min-width guard to reject 5 cells split over 3 parts"
+    );
 }
 
 fn set_force_field<L: Lattice, H: HaloExchange<f64>>(
@@ -374,7 +390,8 @@ fn d3q19_lattice_properties_from_all_angles() {
                                 * (D3Q19::C[q][a] as i32
                                     * D3Q19::C[q][b] as i32
                                     * D3Q19::C[q][c] as i32
-                                    * D3Q19::C[q][d] as i32) as f64
+                                    * D3Q19::C[q][d] as i32)
+                                    as f64
                         })
                         .sum();
                     let want = D3Q19::CS2
@@ -438,11 +455,7 @@ fn d3q19_lattice_properties_from_all_angles() {
                 "rotation {perm:?}: weight changed q={q} -> {r}"
             );
             assert_eq!(
-                D3Q19::dir_index([
-                    -mapped[0],
-                    -mapped[1],
-                    -mapped[2],
-                ]),
+                D3Q19::dir_index([-mapped[0], -mapped[1], -mapped[2],]),
                 D3Q19::OPP[r],
                 "rotation {perm:?}: opposite closure failed q={q}"
             );
@@ -476,7 +489,10 @@ fn t13_long_run_cavity_2x2_matches_after_20k_steps() {
         .chain(split.gather_ux())
         .chain(split.gather_uy())
     {
-        assert!(v.is_finite(), "long-run split field contains non-finite value {v}");
+        assert!(
+            v.is_finite(),
+            "long-run split field contains non-finite value {v}"
+        );
     }
     assert_close(&base, &split, 1e-10, 1e-10, "20k cavity 2x2");
 }

@@ -429,7 +429,11 @@ fn cell_force_2d<T: Real>() {
         pair.a.step();
         pair.b.step();
         if s % 25 == 0 || s == 249 {
-            worst = worst.max(compare_state(&pair.a, &pair.b, &format!("cell-force t={s}")));
+            worst = worst.max(compare_state(
+                &pair.a,
+                &pair.b,
+                &format!("cell-force t={s}"),
+            ));
         }
     }
     eprintln!("cell-force-2d: worst |Δ| = {worst:e} (tol {lim:e})");
@@ -498,7 +502,9 @@ fn tgv_3d<T: Real>() {
         let (xf, yf, zf) = (k * x as f64, k * y as f64, k * z as f64);
         let u0 = 0.04;
         let rho = 1.0
-            + 3.0 * u0 * u0 / 16.0 * ((2.0 * xf).cos() + (2.0 * yf).cos()) * ((2.0 * zf).cos() + 2.0);
+            + 3.0 * u0 * u0 / 16.0
+                * ((2.0 * xf).cos() + (2.0 * yf).cos())
+                * ((2.0 * zf).cos() + 2.0);
         (
             T::r(rho),
             [

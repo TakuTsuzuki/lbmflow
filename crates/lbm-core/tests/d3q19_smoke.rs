@@ -55,10 +55,7 @@ fn d3q19_tgv_conserves_mass_and_momentum() {
     let p1 = s.total_momentum();
     let e1 = kinetic_energy(&s);
     let n3 = (24.0f64).powi(3);
-    assert!(
-        (m1 - m0).abs() / n3 < 1e-14,
-        "mass drift: {m0} -> {m1}"
-    );
+    assert!((m1 - m0).abs() / n3 < 1e-14, "mass drift: {m0} -> {m1}");
     for a in 0..3 {
         assert!(
             (p1[a] - p0[a]).abs() / n3 < 1e-14,
@@ -70,7 +67,10 @@ fn d3q19_tgv_conserves_mass_and_momentum() {
     // Viscous decay: energy strictly drops, and everything stays finite.
     assert!(e1 < e0, "kinetic energy must decay: {e0} -> {e1}");
     assert!(e1 > 0.0 && e1.is_finite());
-    println!("TGV3D: E {e0:.6e} -> {e1:.6e}, mass drift {:.2e}", (m1 - m0).abs());
+    println!(
+        "TGV3D: E {e0:.6e} -> {e1:.6e}, mass drift {:.2e}",
+        (m1 - m0).abs()
+    );
 }
 
 #[test]
@@ -92,9 +92,7 @@ fn d3q19_tgv_decay_rate_tracks_viscosity() {
     let rate_expect = 2.0 * nu * 3.0 * k * k;
     let rate_measured = -(e1 / e0).ln() / steps as f64;
     let rel = (rate_measured - rate_expect).abs() / rate_expect;
-    println!(
-        "TGV3D decay: measured {rate_measured:.4e}, analytic {rate_expect:.4e}, rel {rel:.3}"
-    );
+    println!("TGV3D decay: measured {rate_measured:.4e}, analytic {rate_expect:.4e}, rel {rel:.3}");
     assert!(
         rel < 0.15,
         "decay rate off by {rel:.3} (measured {rate_measured:e}, expect {rate_expect:e})"
@@ -141,5 +139,8 @@ fn d3q19_moving_lid_box_is_stable_and_conserves_mass() {
     let f = s.probed_force();
     assert!(f[0] < 0.0, "drag on moving lid must be -x, got {:?}", f);
     assert!(f.iter().all(|c| c.is_finite()));
-    println!("3D lid box: ux(below lid) = {:.3e}, lid force = {:?}", u[0], f);
+    println!(
+        "3D lid box: ux(below lid) = {:.3e}, lid force = {:?}",
+        u[0], f
+    );
 }

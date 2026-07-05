@@ -127,14 +127,22 @@ pub enum Precision {
 pub enum EdgeSpec {
     Periodic,
     BounceBack,
-    MovingWall { u: [f64; 2] },
-    VelocityInlet { u: [f64; 2] },
-    PressureOutlet { rho: f64 },
+    MovingWall {
+        u: [f64; 2],
+    },
+    VelocityInlet {
+        u: [f64; 2],
+    },
+    PressureOutlet {
+        rho: f64,
+    },
     Outflow,
     /// Convective (radiation) outflow: far less pressure-reflective than
     /// `Outflow`. `uConv` is the expected mean outflow speed, in (0, 1].
     #[serde(rename_all = "camelCase")]
-    ConvectiveOutflow { u_conv: f64 },
+    ConvectiveOutflow {
+        u_conv: f64,
+    },
 }
 
 impl EdgeSpec {
@@ -211,11 +219,7 @@ pub enum ProfileKind {
 #[serde(tag = "shape", rename_all = "camelCase")]
 pub enum Obstacle {
     /// 2D: a disk. 3D: extruded along z (a cylinder through the domain).
-    Circle {
-        cx: f64,
-        cy: f64,
-        r: f64,
-    },
+    Circle { cx: f64, cy: f64, r: f64 },
     /// 2D: a rectangle. 3D: extruded along z (a box through the domain).
     Rect {
         x0: usize,
@@ -224,12 +228,7 @@ pub enum Obstacle {
         y1: usize,
     },
     /// 3D only: a solid ball (staircase approximation).
-    Sphere {
-        cx: f64,
-        cy: f64,
-        cz: f64,
-        r: f64,
-    },
+    Sphere { cx: f64, cy: f64, cz: f64, r: f64 },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -560,8 +559,8 @@ pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
 
 fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build3Error> {
     use lbm_core::prelude::{
-        build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic,
-        Solver, WallSpec,
+        build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic, Solver,
+        WallSpec,
     };
 
     assert!(sc.is_3d(), "build3d requires grid.nz > 1");
@@ -796,16 +795,13 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         // Probe all obstacle solids (cells strictly inside the domain box,
         // rims excluded) — 2D convention lifted to 3D.
         let solid: Vec<bool> = (0..dims[2])
-            .flat_map(|z| {
-                (0..dims[1]).flat_map(move |y| (0..dims[0]).map(move |x| (x, y, z)))
-            })
+            .flat_map(|z| (0..dims[1]).flat_map(move |y| (0..dims[0]).map(move |x| (x, y, z))))
             .map(|(x, y, z)| s.is_solid(x, y, z))
             .collect();
         let (nx, ny) = (dims[0], dims[1]);
         let rim = move |c: usize, n: usize| c == 0 || c == n - 1;
         s.set_force_probe(move |x, y, z| {
-            !rim(x, dims[0]) && !rim(y, dims[1]) && !rim(z, dims[2])
-                && solid[(z * ny + y) * nx + x]
+            !rim(x, dims[0]) && !rim(y, dims[1]) && !rim(z, dims[2]) && solid[(z * ny + y) * nx + x]
         });
     }
 
@@ -961,7 +957,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let cavity = Scenario {
         version: 0,
         name: "cavity".into(),
-        grid: Grid { nx: 128, ny: 128, nz: 1 },
+        grid: Grid {
+            nx: 128,
+            ny: 128,
+            nz: 1,
+        },
         physics: Physics {
             nu: 0.02,
             collision: CollisionSpec::Trt,
@@ -998,7 +998,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let cylinder = Scenario {
         version: 0,
         name: "cylinder-karman".into(),
-        grid: Grid { nx: 440, ny: 164, nz: 1 },
+        grid: Grid {
+            nx: 440,
+            ny: 164,
+            nz: 1,
+        },
         physics: Physics {
             nu: 0.04,
             collision: CollisionSpec::Trt,
@@ -1047,7 +1051,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let droplet = Scenario {
         version: 0,
         name: "two-phase-droplet".into(),
-        grid: Grid { nx: 128, ny: 128, nz: 1 },
+        grid: Grid {
+            nx: 128,
+            ny: 128,
+            nz: 1,
+        },
         physics: Physics {
             nu: 1.0 / 6.0,
             collision: CollisionSpec::Trt,
@@ -1093,7 +1101,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let droplet_on_wall = Scenario {
         version: 0,
         name: "droplet-on-wall".into(),
-        grid: Grid { nx: 160, ny: 100, nz: 1 },
+        grid: Grid {
+            nx: 160,
+            ny: 100,
+            nz: 1,
+        },
         physics: Physics {
             nu: 1.0 / 6.0,
             collision: CollisionSpec::Trt,
@@ -1196,7 +1208,10 @@ mod tests {
         // New fields stay invisible on serialisation of 2D scenarios.
         let json = serde_json::to_string(&sc).unwrap();
         for key in ["\"nz\"", "\"front\"", "\"back\"", "\"compute\"", "\"z\""] {
-            assert!(!json.contains(key), "2D JSON must not contain {key}: {json}");
+            assert!(
+                !json.contains(key),
+                "2D JSON must not contain {key}: {json}"
+            );
         }
         // deny_unknown_fields still rejects typos.
         assert!(serde_json::from_str::<Scenario>(
@@ -1264,7 +1279,9 @@ mod tests {
         unpaired.edges.back = Some(EdgeSpec::Periodic);
         assert!(matches!(
             build3d(&unpaired),
-            Err(Build3Error::Core(ConfigError::UnpairedPeriodic { axis: "z" }))
+            Err(Build3Error::Core(ConfigError::UnpairedPeriodic {
+                axis: "z"
+            }))
         ));
         // Open faces on two axes violate the corner rule.
         let mut cross = duct3d();

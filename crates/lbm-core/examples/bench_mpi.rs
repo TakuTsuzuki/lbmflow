@@ -29,10 +29,7 @@ fn main() {
     let n = world.size() as usize;
     let rank = world.rank() as usize;
     let mut args = std::env::args().skip(1);
-    let local: usize = args
-        .next()
-        .and_then(|a| a.parse().ok())
-        .unwrap_or(512);
+    let local: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(512);
     let steps: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(200);
     let warmup = 20usize;
 

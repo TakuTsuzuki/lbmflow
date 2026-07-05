@@ -39,10 +39,8 @@ use std::sync::{Arc, OnceLock};
 
 fn ctx() -> Arc<GpuContext> {
     static CTX: OnceLock<Arc<GpuContext>> = OnceLock::new();
-    CTX.get_or_init(|| {
-        GpuContext::new().expect("T14 requires a GPU adapter (run on a GPU host)")
-    })
-    .clone()
+    CTX.get_or_init(|| GpuContext::new().expect("T14 requires a GPU adapter (run on a GPU host)"))
+        .clone()
 }
 
 type Cpu = Solver<D2Q9, f32, CpuScalar, LocalPeriodic>;
@@ -67,7 +65,10 @@ fn linf_rel(a: &[f32], b: &[f32], floor: f64) -> f64 {
 fn assert_rel(a: f64, b: f64, floor: f64, what: &str) {
     let d = (a - b).abs();
     let lim = DIAG_TOL * a.abs().max(floor);
-    assert!(d <= lim, "{what}: |Δ| = {d:e} > {lim:e} (cpu {a:e}, gpu {b:e})");
+    assert!(
+        d <= lim,
+        "{what}: |Δ| = {d:e} > {lim:e} (cpu {a:e}, gpu {b:e})"
+    );
 }
 
 struct Pair {
@@ -430,11 +431,7 @@ fn t14_cell_force_bgk() {
         .map(|i| {
             let (x, y) = (i % n, i / n);
             let (xf, yf) = (k * x as f64, k * y as f64);
-            [
-                (2e-5 * yf.sin()) as f32,
-                (-2e-5 * xf.sin()) as f32,
-                0.0,
-            ]
+            [(2e-5 * yf.sin()) as f32, (-2e-5 * xf.sin()) as f32, 0.0]
         })
         .collect();
     pair.cpu.fields_mut(0).force_field = Some(field.clone());
@@ -443,11 +440,7 @@ fn t14_cell_force_bgk() {
         let (xf, yf) = (k * x as f64, k * y as f64);
         (
             1.0,
-            [
-                (0.02 * yf.sin()) as f32,
-                (0.02 * xf.sin()) as f32,
-                0.0,
-            ],
+            [(0.02 * yf.sin()) as f32, (0.02 * xf.sin()) as f32, 0.0],
         )
     });
     for _ in 0..3 {

@@ -183,7 +183,10 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
         unsafe {
             let i0 = L::REST * np + i;
             let f0 = f.get(i0);
-            f.set(i0, f0 - p.omega_p * (f0 - feq[L::REST]) + p.cp * src[L::REST]);
+            f.set(
+                i0,
+                f0 - p.omega_p * (f0 - feq[L::REST]) + p.cp * src[L::REST],
+            );
             for &(a, b) in L::PAIRS {
                 let (ia, ib) = (a * np + i, b * np + i);
                 let (fa, fb) = (f.get(ia), f.get(ib));
@@ -360,7 +363,11 @@ pub(crate) enum ZhKind<T: Real> {
 /// `side_cells` order (`y` ascending on X faces, `x` ascending on Y faces).
 /// The along-face index passed to the callback enumerates cells in this
 /// order (2D: the single tangent coordinate — V1's profile coordinate).
-pub(crate) fn for_face_cells(geom: &LocalGeom, face: Face, mut body: impl FnMut(usize, [usize; 3])) {
+pub(crate) fn for_face_cells(
+    geom: &LocalGeom,
+    face: Face,
+    mut body: impl FnMut(usize, [usize; 3]),
+) {
     let a = face.axis();
     let fixed = if face.is_neg() { 0 } else { geom.core[a] - 1 };
     let (t1, t2) = face.tangents();
@@ -467,8 +474,7 @@ pub(crate) fn zou_he_face<L: Lattice, T: Real>(
             return;
         }
         let s0 = f[L::REST * np + i] + f[q_t * np + i] + f[q_mt * np + i];
-        let sneg =
-            f[L::OPP[q_n] * np + i] + f[L::OPP[q_d1] * np + i] + f[L::OPP[q_d2] * np + i];
+        let sneg = f[L::OPP[q_n] * np + i] + f[L::OPP[q_d1] * np + i] + f[L::OPP[q_d2] * np + i];
         let closure = s0 + two * sneg + T::one();
         let (r, un, ut) = match *kind {
             ZhKind::Velocity(u) => {

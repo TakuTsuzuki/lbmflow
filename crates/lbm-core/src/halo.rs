@@ -103,10 +103,10 @@ pub(crate) fn layer_indices(
     // Unpack writes the receiver's halo layer; pack reads the sender's
     // opposite core boundary layer.
     let fixed: isize = match (unpack, recv_face.is_neg()) {
-        (true, true) => -h,                              // receiver low halo
-        (true, false) => geom.core[a] as isize,          // receiver high halo
-        (false, true) => geom.core[a] as isize - 1,      // sender high core
-        (false, false) => 0,                             // sender low core
+        (true, true) => -h,                         // receiver low halo
+        (true, false) => geom.core[a] as isize,     // receiver high halo
+        (false, true) => geom.core[a] as isize - 1, // sender high core
+        (false, false) => 0,                        // sender low core
     };
     let range = |t: usize| -> (isize, isize) {
         if t < phase_axis && t < geom.d {
@@ -341,13 +341,16 @@ mod tests {
         for q in 0..9 {
             for y in 0..4 {
                 for x in 0..5 {
-                    fields.f[q * np + sub.geom.pidx(x, y, 0)] =
-                        (q * 100 + y * 10 + x) as f64;
+                    fields.f[q * np + sub.geom.pidx(x, y, 0)] = (q * 100 + y * 10 + x) as f64;
                 }
             }
         }
         let ex = LocalPeriodic;
-        HaloExchange::<f64>::exchange_f::<D2Q9>(&ex, &[sub.clone()], std::slice::from_mut(&mut fields));
+        HaloExchange::<f64>::exchange_f::<D2Q9>(
+            &ex,
+            &[sub.clone()],
+            std::slice::from_mut(&mut fields),
+        );
         let g = &sub.geom;
         let wrap = |v: isize, n: usize| ((v + n as isize) % n as isize) as usize;
         // Streaming reads halo cell s with direction q iff s + c_q is a core

@@ -173,8 +173,16 @@ fn emit_cell_prologue<L: Lattice>(s: &mut String) {
     let _ = writeln!(s, "    let dr = {};", sum_expr::<L>("f", "", |_| 1));
     *s += "    let rho = 1.0f + dr;\n";
     *s += "    let inv = 1.0f / rho;\n";
-    let _ = writeln!(s, "    let mx = {};", sum_expr::<L>("f", "", |q| L::C[q][0]));
-    let _ = writeln!(s, "    let my = {};", sum_expr::<L>("f", "", |q| L::C[q][1]));
+    let _ = writeln!(
+        s,
+        "    let mx = {};",
+        sum_expr::<L>("f", "", |q| L::C[q][0])
+    );
+    let _ = writeln!(
+        s,
+        "    let my = {};",
+        sum_expr::<L>("f", "", |q| L::C[q][1])
+    );
     // moments_row: u = (m + f/2) / rho — this is the value collide reads.
     *s += "    let ux = (mx + 0.5f * fvx) * inv;\n";
     *s += "    let uy = (my + 0.5f * fvy) * inv;\n";
@@ -425,7 +433,10 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "    let n = P.nx * P.ny;\n";
     s += "    let i = B.base + t * B.stride;\n";
     s += "    if ((mask[i] & 1u) != 0u) { return; }\n";
-    let _ = writeln!(s, "    if (B.kind == {BC_VELOCITY}u || B.kind == {BC_PRESSURE}u) {{");
+    let _ = writeln!(
+        s,
+        "    if (B.kind == {BC_VELOCITY}u || B.kind == {BC_PRESSURE}u) {{"
+    );
     s += "        let ft = f_out[B.q_t * n + i];\n";
     s += "        let fmt = f_out[B.q_mt * n + i];\n";
     let _ = writeln!(s, "        let s0 = f_out[{rest}u * n + i] + ft + fmt;");
@@ -451,7 +462,10 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "            ut = 0.0f;\n";
     s += "        }\n";
     s += "        let tcorr = 0.5f * (r * ut - (ft - fmt));\n";
-    let _ = writeln!(s, "        f_out[B.q_n * n + i] = f_out[B.o_n * n + i] + {c23} * r * un;");
+    let _ = writeln!(
+        s,
+        "        f_out[B.q_n * n + i] = f_out[B.o_n * n + i] + {c23} * r * un;"
+    );
     let _ = writeln!(
         s,
         "        f_out[B.q_d1 * n + i] = f_out[B.o_d1 * n + i] + {c16} * r * un + tcorr;"
@@ -480,12 +494,8 @@ pub(crate) fn generate<L: Lattice>() -> String {
     }
     // Mass pinning: rho(edge) := rho(neighbour), deficit spread over the
     // unknowns by weight (convective_face, q-ascending sums).
-    let di: Vec<String> = (0..L::Q)
-        .map(|q| format!("f_out[{q}u * n + i]"))
-        .collect();
-    let dj: Vec<String> = (0..L::Q)
-        .map(|q| format!("f_out[{q}u * n + j]"))
-        .collect();
+    let di: Vec<String> = (0..L::Q).map(|q| format!("f_out[{q}u * n + i]")).collect();
+    let dj: Vec<String> = (0..L::Q).map(|q| format!("f_out[{q}u * n + j]")).collect();
     let _ = writeln!(s, "        let di = {};", di.join(" + "));
     let _ = writeln!(s, "        let dj = {};", dj.join(" + "));
     s += "        let corr = dj - di;\n";
@@ -522,7 +532,7 @@ mod tests {
             "fn bc(",
             "fn clear_probe(",
             "atomicCompareExchangeWeak",
-            "0.11111111f", // 1/9 weight
+            "0.11111111f",  // 1/9 weight
             "0.027777778f", // 1/36 weight
         ] {
             assert!(src.contains(needle), "missing {needle:?} in generated WGSL");
@@ -539,7 +549,13 @@ mod tests {
 
     #[test]
     fn literals_roundtrip() {
-        for v in [4.5f32, 1.0 / 9.0, 1.0 / 36.0, 6.0 * (1.0f32 / 9.0), 2.0 / 3.0] {
+        for v in [
+            4.5f32,
+            1.0 / 9.0,
+            1.0 / 36.0,
+            6.0 * (1.0f32 / 9.0),
+            2.0 / 3.0,
+        ] {
             let l = lit(v);
             let parsed: f32 = l.trim_end_matches('f').parse().unwrap();
             assert_eq!(parsed, v, "literal {l} does not roundtrip");

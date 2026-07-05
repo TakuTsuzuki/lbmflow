@@ -130,33 +130,49 @@ impl MpiExchange {
             // Receives first, then sends; all are posted before any wait, so
             // the phase cannot deadlock regardless of the neighbour graph.
             if let (Some(r), Some(buf)) = (nb[0], rb_lo.as_mut()) {
-                reqs.push(self.comm.process_at_rank(r as Rank).immediate_receive_into_with_tag(
-                    sc,
-                    as_bytes_mut(buf.as_mut_slice()),
-                    tag_base + faces[0].index() as Tag,
-                ));
+                reqs.push(
+                    self.comm
+                        .process_at_rank(r as Rank)
+                        .immediate_receive_into_with_tag(
+                            sc,
+                            as_bytes_mut(buf.as_mut_slice()),
+                            tag_base + faces[0].index() as Tag,
+                        ),
+                );
             }
             if let (Some(r), Some(buf)) = (nb[1], rb_hi.as_mut()) {
-                reqs.push(self.comm.process_at_rank(r as Rank).immediate_receive_into_with_tag(
-                    sc,
-                    as_bytes_mut(buf.as_mut_slice()),
-                    tag_base + faces[1].index() as Tag,
-                ));
+                reqs.push(
+                    self.comm
+                        .process_at_rank(r as Rank)
+                        .immediate_receive_into_with_tag(
+                            sc,
+                            as_bytes_mut(buf.as_mut_slice()),
+                            tag_base + faces[1].index() as Tag,
+                        ),
+                );
             }
             if let Some(r) = nb[1] {
                 // The +side neighbour unpacks this at its low face.
-                reqs.push(self.comm.process_at_rank(r as Rank).immediate_send_with_tag(
-                    sc,
-                    as_bytes(pay_lo.as_slice()),
-                    tag_base + faces[0].index() as Tag,
-                ));
+                reqs.push(
+                    self.comm
+                        .process_at_rank(r as Rank)
+                        .immediate_send_with_tag(
+                            sc,
+                            as_bytes(pay_lo.as_slice()),
+                            tag_base + faces[0].index() as Tag,
+                        ),
+                );
             }
             if let Some(r) = nb[0] {
-                reqs.push(self.comm.process_at_rank(r as Rank).immediate_send_with_tag(
-                    sc,
-                    as_bytes(pay_hi.as_slice()),
-                    tag_base + faces[1].index() as Tag,
-                ));
+                reqs.push(
+                    self.comm
+                        .process_at_rank(r as Rank)
+                        .immediate_send_with_tag(
+                            sc,
+                            as_bytes(pay_hi.as_slice()),
+                            tag_base + faces[1].index() as Tag,
+                        ),
+                );
             }
             for req in reqs {
                 req.wait();
