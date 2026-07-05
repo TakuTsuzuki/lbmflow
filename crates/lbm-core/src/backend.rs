@@ -17,7 +17,10 @@
 //! of the fused backend and compare velocity fields 1:1 (frozen as the
 //! T14 regression recipe).
 
+#[cfg(feature = "gpu")]
+use crate::fields::LocalGeom;
 use crate::fields::SoaFields;
+use crate::halo::HaloExchange;
 use crate::kernels::{
     collide_row, convective_face, moments_row, outflow_face, stream_row, zou_he_face, RawSlice,
     ZhKind,
@@ -79,11 +82,58 @@ impl CellRange {
 /// `collide` → halo exchange → `stream` (interior, then boundary) → `swap`
 /// → `apply_open_faces` → `update_moments`.
 pub trait Backend<L: Lattice, T: Real> {
-    /// Device-resident field storage.
+    /// Backend-owned field storage.
+    ///
+    /// This is intentionally a composite storage boundary owned by the
+    /// backend, not an alias for the hydrodynamic `f` populations. Today the
+    /// first member is the single distribution set (`f`, plus its ping-pong
+    /// partner and moment/mask side fields). Future multiphase/scalar work can
+    /// add additional distribution sets (`g`, `h`), per-cell properties, and
+    /// Lagrangian buffers to this associated type while the solver continues
+    /// to transfer through the host staging object at edit/read boundaries.
     type Fields;
 
     /// Allocate quiescent fields for a subdomain.
     fn alloc(&self, sub: &Subdomain) -> Self::Fields;
+
+    /// Copy the host staging state into backend-owned storage.
+    ///
+    /// CPU backends use the same SoA layout on both sides, so this is a
+    /// straight copy. Device backends strip/pack the host halo layout into
+    /// their native composite storage.
+    fn stage_in(&self, sub: &Subdomain, fields: &mut Self::Fields, host: &SoaFields<T>);
+
+    /// Copy backend-owned storage back into host staging.
+    ///
+    /// This is the synchronization point used by setup shims and diagnostics
+    /// that need population access. Moment-only diagnostics should prefer
+    /// [`Backend::read_moments`], and scalar reductions should prefer
+    /// [`Backend::reduce`], so device backends avoid unnecessary population
+    /// readbacks.
+    fn stage_out(&self, sub: &Subdomain, fields: &Self::Fields, host: &mut SoaFields<T>);
+
+    /// Whether this backend's streaming kernel handles the single-part
+    /// periodic halo itself. Transitional B-1 hook: stage 4 will make
+    /// `HaloExchange` generic over `Backend::Fields`; until then this lets the
+    /// monolithic GPU path use the common orchestrator without forcing a
+    /// host-mediated halo copy between collide and stream.
+    fn handles_single_part_periodic_halo(&self) -> bool {
+        false
+    }
+
+    /// Exchange post-collision population halos for backend-owned fields.
+    ///
+    /// CPU backends delegate to the current `HaloExchange<SoaFields>`
+    /// implementation. The monolithic GPU backend handles wrap/open-boundary
+    /// inputs in-kernel. B-1 stage 4 will move the halo trait itself to
+    /// `Backend::Fields`; this hook avoids host-mediated copies in the
+    /// meantime.
+    fn exchange_f<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [Self::Fields],
+    );
 
     /// TRT/BGK collision with Guo forcing over all core cells (in place).
     fn collide(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
@@ -152,6 +202,23 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
 
     fn alloc(&self, sub: &Subdomain) -> SoaFields<T> {
         SoaFields::new(L::Q, sub.geom)
+    }
+
+    fn stage_in(&self, _sub: &Subdomain, fields: &mut SoaFields<T>, host: &SoaFields<T>) {
+        *fields = host.clone();
+    }
+
+    fn stage_out(&self, _sub: &Subdomain, fields: &SoaFields<T>, host: &mut SoaFields<T>) {
+        *host = fields.clone();
+    }
+
+    fn exchange_f<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [SoaFields<T>],
+    ) {
+        exchange.exchange_f::<L>(subs, fields);
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
@@ -448,4 +515,27 @@ pub(crate) fn read_moments_impl<T: Real>(fields: &SoaFields<T>, out: &mut HostMo
     out.uy.extend_from_slice(&fields.uy);
     out.uz.clear();
     out.uz.extend_from_slice(&fields.uz);
+}
+
+/// Copy compact-core host moments into the corresponding part of a padded
+/// [`SoaFields`] host-staging object.
+#[cfg(feature = "gpu")]
+pub(crate) fn write_host_moments<T: Real>(
+    geom: LocalGeom,
+    moments: &HostMoments<T>,
+    host: &mut SoaFields<T>,
+) {
+    let mut c = 0usize;
+    for z in 0..geom.core[2] {
+        for y in 0..geom.core[1] {
+            for x in 0..geom.core[0] {
+                let ci = geom.cidx(x, y, z);
+                host.rho[ci] = moments.rho[c];
+                host.ux[ci] = moments.ux[c];
+                host.uy[ci] = moments.uy[c];
+                host.uz[ci] = moments.uz[c];
+                c += 1;
+            }
+        }
+    }
 }

@@ -40,8 +40,9 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::backend::{Backend, CellRange, HostMoments};
+use crate::backend::{write_host_moments, Backend, CellRange, HostMoments};
 use crate::fields::SoaFields;
+use crate::halo::HaloExchange;
 use crate::lattice::{Face, Lattice};
 use crate::params::{FaceBC, Reduction, StepParams};
 use crate::subdomain::Subdomain;
@@ -248,11 +249,23 @@ impl GpuContext {
     /// Create a context on the highest-performance adapter.
     pub fn new() -> Result<Arc<Self>, GpuInitError> {
         let instance = wgpu::Instance::default();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        }))
-        .map_err(|_| GpuInitError::NoAdapter)?;
+        let mut adapter = None;
+        for power_preference in [
+            wgpu::PowerPreference::HighPerformance,
+            wgpu::PowerPreference::LowPower,
+            wgpu::PowerPreference::None,
+        ] {
+            if let Ok(found) =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference,
+                    ..Default::default()
+                }))
+            {
+                adapter = Some(found);
+                break;
+            }
+        }
+        let adapter = adapter.ok_or(GpuInitError::NoAdapter)?;
         let adapter_info = adapter.get_info();
         let al = adapter.limits();
         let mut limits = wgpu::Limits::default();
@@ -1187,6 +1200,51 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
 
     fn alloc(&self, sub: &Subdomain) -> GpuFields {
         self.try_alloc(sub).expect("GPU field allocation failed")
+    }
+
+    fn stage_in(&self, sub: &Subdomain, fields: &mut GpuFields, host: &SoaFields<f32>) {
+        self.upload(sub, fields, host);
+    }
+
+    fn stage_out(&self, sub: &Subdomain, fields: &GpuFields, host: &mut SoaFields<f32>) {
+        let mut hm = HostMoments::default();
+        let (f, _) = self
+            .try_read_sync(fields, &mut hm)
+            .expect("GPU stage-out readback failed");
+        let g = host.geom;
+        debug_assert_eq!(sub.geom, g);
+        let (nx, ny, np) = (g.core[0], g.core[1], g.n_padded());
+        let n = nx * ny;
+        for q in 0..L::Q {
+            for y in 0..ny {
+                for x in 0..nx {
+                    host.f[q * np + g.pidx(x, y, 0)] = f[q * n + y * nx + x];
+                }
+            }
+        }
+        write_host_moments(g, &hm, host);
+    }
+
+    fn handles_single_part_periodic_halo(&self) -> bool {
+        true
+    }
+
+    fn exchange_f<H: HaloExchange<f32>>(
+        &mut self,
+        _exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [GpuFields],
+    ) {
+        assert_eq!(
+            fields.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic part"
+        );
+        assert_eq!(
+            subs.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic subdomain"
+        );
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
