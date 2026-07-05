@@ -8,6 +8,14 @@ use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
 use serde::{Deserialize, Serialize};
 
+mod units;
+pub use units::{
+    report as unit_report, resolve, ConversionFactors, DimensionlessNumbers, FlowParams,
+    LatticeUnits, UnitConstructor, UnitDiagnostic, UnitInputsEcho, UnitReport, UnitSuggestion,
+    UnitVerdict, GRID_RE_WARN_THRESHOLD, LATTICE_SPEED_WARN_THRESHOLD, TAU_HIGH_WARN_THRESHOLD,
+    TAU_LOW_WARN_THRESHOLD,
+};
+
 // ---------------------------------------------------------------- schema
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,6 +26,8 @@ pub struct Scenario {
     pub name: String,
     pub grid: Grid,
     pub physics: Physics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units: Option<FlowParams>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<ComputeSpec>,
     pub edges: EdgesSpec,
@@ -359,26 +369,26 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         });
     };
     let tau = 3.0 * sc.physics.nu + 0.5;
-    if tau < 0.55 {
+    if tau < TAU_LOW_WARN_THRESHOLD {
         warn(
             "physics.nu",
-            format!("tau = {tau:.3} is close to the stability limit (below 0.55). Increase the viscosity or the resolution"),
+            format!("tau = {tau:.3} is close to the stability limit (below {TAU_LOW_WARN_THRESHOLD}). Increase the viscosity or the resolution"),
         );
     }
     let max_edge_speed = edge_speeds(&sc.edges).into_iter().fold(0.0, f64::max);
-    if max_edge_speed > 0.15 {
+    if max_edge_speed > LATTICE_SPEED_WARN_THRESHOLD {
         warn(
             "edges",
-            format!("inlet/wall velocity {max_edge_speed:.3} is at a level where compressibility error is noticeable (above 0.15)"),
+            format!("inlet/wall velocity {max_edge_speed:.3} is at a level where compressibility error is noticeable (above {LATTICE_SPEED_WARN_THRESHOLD})"),
         );
     }
     if max_edge_speed > 0.0 && sc.physics.nu > 0.0 {
         let grid_re = max_edge_speed / sc.physics.nu;
-        if grid_re > 15.0 {
+        if grid_re > GRID_RE_WARN_THRESHOLD {
             warn(
                 "physics",
                 format!(
-                    "grid Reynolds number U/ν = {grid_re:.1} > 15: risk of divergence (see PHYSICS.md)"
+                    "grid Reynolds number U/ν = {grid_re:.1} > {GRID_RE_WARN_THRESHOLD}: risk of divergence (see PHYSICS.md)"
                 ),
             );
         }
@@ -386,7 +396,8 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
     if sc.multiphase.is_some() && sc.physics.precision == Precision::F32 {
         warn(
             "physics.precision",
-            "f64 is recommended for multiphase flow (headroom for the steep interface gradient)".to_string(),
+            "f64 is recommended for multiphase flow (headroom for the steep interface gradient)"
+                .to_string(),
         );
     }
     if let Some(mp) = &sc.multiphase {
@@ -404,7 +415,8 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         if sc.multiphase.is_some() {
             warn(
                 "multiphase",
-                "3D (nz > 1) does not support multiphase flow (will error at build time)".to_string(),
+                "3D (nz > 1) does not support multiphase flow (will error at build time)"
+                    .to_string(),
             );
         }
         if matches!(
@@ -459,6 +471,10 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
     warnings
 }
 
+pub fn unit_report_for(sc: &Scenario) -> Result<Option<UnitReport>, String> {
+    sc.units.as_ref().map(unit_report).transpose()
+}
+
 fn edge_speeds(e: &EdgesSpec) -> [f64; 6] {
     [
         e.left,
@@ -490,6 +506,8 @@ pub enum SimHandle {
 pub enum BuildError {
     /// Invalid physical/boundary configuration.
     Core(ConfigError),
+    /// Invalid SI unit conversion at the scenario boundary.
+    Units(String),
     /// Feature not available on the 2D scenario path (message is user-facing).
     Unsupported(&'static str),
 }
@@ -498,6 +516,7 @@ impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuildError::Core(e) => write!(f, "{e}"),
+            BuildError::Units(e) => write!(f, "{e}"),
             BuildError::Unsupported(what) => write!(f, "{what}"),
         }
     }
@@ -540,6 +559,8 @@ pub enum Build3Error {
     /// Invalid native `GlobalSpec`, as reported by `GlobalSpec::validate`
     /// (A-4): uncovered face, ν ≤ 0, periodic × open, out-of-range BC, …
     Spec(lbm_core::solver::SpecError),
+    /// Invalid SI unit conversion at the scenario boundary.
+    Units(String),
     /// Explicit backend request that this scenario path cannot honor.
     BackendUnavailable(&'static str),
     /// Feature not available on the 3D engine (message is user-facing).
@@ -551,6 +572,7 @@ impl std::fmt::Display for Build3Error {
         match self {
             Build3Error::Core(e) => write!(f, "{e}"),
             Build3Error::Spec(e) => write!(f, "{e}"),
+            Build3Error::Units(e) => write!(f, "{e}"),
             Build3Error::BackendUnavailable(what) => write!(f, "{what}"),
             Build3Error::Unsupported(what) => write!(f, "unsupported in 3D (nz > 1): {what}"),
         }
@@ -575,6 +597,12 @@ impl From<lbm_core::solver::SpecError> for Build3Error {
 /// `validate_scenario`): construct the simulation the same way `run` would
 /// (2D or 3D) and report the error text, discarding the handle.
 pub fn build_check(sc: &Scenario) -> Result<(), String> {
+    let resolved = match resolve(sc) {
+        Ok(Some(r)) => r.scenario,
+        Ok(None) => sc.clone(),
+        Err(e) => return Err(e),
+    };
+    let sc = &resolved;
     if sc.is_3d() {
         build3d(sc).map(|_| ()).map_err(|e| e.to_string())
     } else {
@@ -602,6 +630,15 @@ fn face_specs(e: &EdgesSpec) -> [EdgeSpec; 6] {
 /// walls are one-cell solid rims (half-way bounce-back), periodic faces must
 /// pair, open faces (Zou–He / outflow / convective) must all lie on one axis.
 pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
+    let resolved;
+    let sc = match resolve(sc) {
+        Ok(Some(r)) => {
+            resolved = r.scenario;
+            &resolved
+        }
+        Ok(None) => sc,
+        Err(e) => return Err(Build3Error::Units(e)),
+    };
     Ok(match sc.physics.precision {
         Precision::F32 => Sim3Handle::F32(build3d_t::<f32>(sc)?),
         Precision::F64 => Sim3Handle::F64(build3d_t::<f64>(sc)?),
@@ -836,6 +873,15 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
 /// Build the 2D simulation (+ optional multiphase driver) from a scenario.
 /// Scenarios with `grid.nz > 1` must go through [`build3d`] instead.
 pub fn build(sc: &Scenario) -> Result<SimHandle, BuildError> {
+    let resolved;
+    let sc = match resolve(sc) {
+        Ok(Some(r)) => {
+            resolved = r.scenario;
+            &resolved
+        }
+        Ok(None) => sc,
+        Err(e) => return Err(BuildError::Units(e)),
+    };
     if sc.is_3d() {
         return Err(ConfigError::InvalidParameter {
             what: "grid.nz (2D build requires nz == 1; the runner dispatches 3D to build3d)",
@@ -1002,6 +1048,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             force: [0.0, 0.0],
             precision: Precision::F64,
         },
+        units: None,
         compute: None,
         edges: EdgesSpec {
             left: EdgeSpec::BounceBack,
@@ -1043,6 +1090,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             force: [0.0, 0.0],
             precision: Precision::F64,
         },
+        units: None,
         compute: None,
         edges: EdgesSpec {
             left: EdgeSpec::VelocityInlet { u: [0.1, 0.0] },
@@ -1096,6 +1144,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             force: [0.0, 0.0],
             precision: Precision::F64,
         },
+        units: None,
         compute: None,
         edges: EdgesSpec {
             left: EdgeSpec::Periodic,
@@ -1146,6 +1195,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             force: [0.0, 0.0],
             precision: Precision::F64,
         },
+        units: None,
         compute: None,
         edges: EdgesSpec {
             left: EdgeSpec::Periodic,
@@ -1188,13 +1238,21 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         ],
     };
     vec![
-        ("cavity", "lid-driven cavity (with steady-state detection)", cavity),
+        (
+            "cavity",
+            "lid-driven cavity (with steady-state detection)",
+            cavity,
+        ),
         (
             "cylinder-karman",
             "Kármán vortex street around a cylinder + drag probe",
             cylinder,
         ),
-        ("two-phase-droplet", "equilibration of a Shan-Chen two-phase droplet", droplet),
+        (
+            "two-phase-droplet",
+            "equilibration of a Shan-Chen two-phase droplet",
+            droplet,
+        ),
         (
             "droplet-on-wall",
             "contact-angle demo of a droplet on a wall (virtual wall density wallRho=1.0 → θ≈63°)",

@@ -127,14 +127,37 @@ fn main() -> Result<()> {
         }
         Command::Validate { scenario } => {
             let sc = load_scenario(&scenario)?;
-            let warnings = lbm_scenario::validate(&sc);
+            let units = match lbm_scenario::unit_report_for(&sc) {
+                Ok(units) => units,
+                Err(e) => {
+                    let report = serde_json::json!({
+                        "ok": false,
+                        "error": e,
+                        "warnings": lbm_scenario::validate(&sc),
+                        "units": null,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                    std::process::exit(1);
+                }
+            };
+            let resolved = lbm_scenario::resolve(&sc);
+            let sc_for_warnings = match &resolved {
+                Ok(Some(r)) => &r.scenario,
+                _ => &sc,
+            };
+            let warnings = lbm_scenario::validate(sc_for_warnings);
             let build_result = lbm_scenario::build_check(&sc);
+            let ok = build_result.is_ok();
             let report = serde_json::json!({
-                "ok": build_result.is_ok(),
+                "ok": ok,
                 "error": build_result.err(),
                 "warnings": warnings,
+                "units": units,
             });
             println!("{}", serde_json::to_string_pretty(&report)?);
+            if !ok {
+                std::process::exit(1);
+            }
         }
         Command::Presets { action } => match action {
             PresetAction::List => {
@@ -187,6 +210,15 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
     "force": [0.0, 0.0],                   // uniform body force (e.g. gravity; z component 0 in 3D)
     "precision": "f64"                     // "f32" | "f64"
   },
+  "units": {                               // optional SI boundary converter; omitted = raw lattice units
+    "constructor": "FromResolutionAndLatticeVelocity",
+    "characteristicLength": 0.1,           // m
+    "characteristicVelocity": 1.0,         // m/s
+    "kinematicViscosity": 1.0e-6,          // m^2/s
+    "density": 998.2,                      // kg/m^3, required when units is present
+    "resolution": 200,                     // N
+    "latticeVelocity": 0.1                 // or use relaxationTime; third constructor derives N
+  },
   "compute": { "backend": "auto" },        // optional: "auto" | "cpu" | "gpu" (gpu not available yet)
   "edges": {                               // boundary conditions on the 4 edges
     "left":   { "type": "velocityInlet", "u": [0.1, 0.0] },
@@ -238,8 +270,14 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
 3D (nz > 1) restrictions: single-phase only (no multiphase), init must be rest,
 compute.backend must be cpu/auto (gpu not available yet). Engine is the V2 core (D3Q19).
 
-Results: <out>/manifest.json (status/steps/mlups/diagnostics/warnings/file list)
+Results: <out>/manifest.json (status/steps/mlups/diagnostics/warnings/units/file list)
 status: completed | steady (early stop on steady-state detection) | diverged (NaN detected)
+Units constructors:
+- FromResolutionAndRelaxationTime: resolution + relaxationTime; derives latticeVelocity.
+- FromResolutionAndLatticeVelocity: resolution + latticeVelocity; derives relaxationTime.
+- FromRelaxationTimeAndLatticeVelocity: relaxationTime + latticeVelocity; derives resolution.
+`lbm validate` and MCP validate_scenario echo units{lattice,conversionFactors,dimensionless,diagnostics}.
+Unit diagnostics use verdict "ok" | "warn" | "error"; validate exits non-zero on error.
 Examples: lbm presets show cavity | cylinder-karman | two-phase-droplet | droplet-on-wall
 Batch run: lbm gallery --out DIR (all presets + self-contained HTML gallery)
 

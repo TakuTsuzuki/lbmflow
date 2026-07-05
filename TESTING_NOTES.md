@@ -771,3 +771,17 @@ LBM-native non-equilibrium stress evaluation (FR-STRESS-01 / order A) over
 post-hoc FD — paper-grade datum (claims ledger GREEN list candidate once the
 CLI channel ships). Viewer now consumes gather_shear_rate; vorticity/Q swap
 pending the FieldKind channel.
+
+## R-Phase 2 W-UNIT - SI UnitConverter boundary work (2026-07-05)
+
+Implemented the scenario-boundary SI converter in `lbm-scenario`; no physical
+units enter `lbm-core`. The adversarial unit matrix covers conversion-factor
+round trips, three-constructor equivalence, Schaefer-Turek and Poiseuille
+anchors, exact threshold boundaries for all unit diagnostic codes,
+missing-density rejection, rounding drift, suggestion feedback, effective
+viscosity echo, and no-units legacy serialization.
+
+Gates run in this session before the full workspace gate:
+`cargo test -p lbm-scenario --release units::tests -- --nocapture` passed
+9/9. `cargo test -p lbm-cli --release --test mcp_async_e2e -- --nocapture`
+passed 1/1. `cargo test --workspace --release` passed.

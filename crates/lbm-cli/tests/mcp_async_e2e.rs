@@ -298,6 +298,30 @@ fn mcp_async_job_lifecycle() {
     );
     assert_eq!(tool_json(&res)["ok"], true);
 
+    let mut units_warn = cavity_scenario("units-warn", 16, 10);
+    units_warn["units"] = json!({
+        "constructor": "FromResolutionAndLatticeVelocity",
+        "characteristicLength": 0.1,
+        "characteristicVelocity": 1.0,
+        "kinematicViscosity": 1.0e-6,
+        "density": 998.2,
+        "resolution": 200,
+        "latticeVelocity": 0.1
+    });
+    let res = mcp.call_tool("validate_scenario", json!({ "scenario": units_warn }));
+    let report = tool_json(&res);
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["units"]["verdict"], "warn", "{report}");
+    let ids: Vec<&str> = report["units"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"TAU_LOW"), "{report}");
+    assert!(ids.contains(&"GRID_RE_HIGH"), "{report}");
+    assert_eq!(report["units"]["conversionFactors"]["density_kg_m3"], 998.2);
+
     let mut gpu_2d = cavity_scenario("gpu-2d", 16, 10);
     gpu_2d["compute"] = json!({ "backend": "gpu" });
     let res = mcp.call_tool("validate_scenario", json!({ "scenario": gpu_2d }));
