@@ -165,6 +165,20 @@ total_momentum to be aggregated in f64 regardless of T.
   ρ_w 0.3→~180°, 0.6→107°, **1.0→63° (θ<90° achieved for the first time)**, 1.6→complete wetting (film formation).
 - Resolves the limitation of the old g_wall scheme (which could only produce θ≥133°). The two schemes can coexist.
 
+### 2026-07-06: Per-mass gravity for buoyancy-capable forcing
+- Added a per-mass gravity term with semantics `F_g(x) = rho(x) * g` on fluid cells only. This is distinct from the
+  existing uniform body force, which remains a constant force density and preserves T6's `N_fluid * F` momentum-growth
+  contract in a periodic uniform-density box.
+- Composition rule: the uniform force, caller-owned per-cell body-force field, Shan-Chen force overwrite, and gravity are additive.
+  Gravity is staged after the caller's per-cell overwrite and before collision, then the caller-owned field is restored so the
+  `rho*g` term does not accumulate across steps. Velocity diagnostics remain the physical Guo half-force-corrected velocity.
+- Reason: a constant force density is exactly balanced by a hydrostatic pressure gradient and cannot express buoyancy of phases
+  with different local density. The per-mass form creates the required imbalance: light Shan-Chen bubbles rise and heavy blobs sink
+  under the same downward gravity.
+- Closed single-phase box characterization: 48×48, all bounce-back walls, TRT `Λ=3/16`, `nu=1/6`, `g=[0,-1e-6]`, 20,000 release
+  steps from rest. Measured residual `max|u| = 5.377754647296416e-15`; the regression test freezes the band at `6e-14`
+  (~10× headroom) and separately checks that the bottom-quarter mean density exceeds the top-quarter mean density.
+
 ### 2026-07-04: Confirmed the Poiseuille exactness of TRT magic 3/16
 - Measured L∞ relative error < 1e-10 for H=8, τ=0.8, body-force driven (as theory predicts).
 - BGK has finite error under the same conditions due to τ-dependent slip → only 2nd-order convergence is required (T2).

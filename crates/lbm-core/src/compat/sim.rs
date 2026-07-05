@@ -52,6 +52,7 @@ pub struct Simulation<T: Real> {
     /// at the start of every step. Diagnostics read this live copy directly,
     /// exactly like V1.
     force2: Option<Vec<[T; 2]>>,
+    gravity: Option<[T; 2]>,
 }
 
 impl<T: Real> std::fmt::Debug for Simulation<T> {
@@ -123,6 +124,7 @@ impl<T: Real> Simulation<T> {
             force: cfg.force,
             solid_mirror: solid,
             force2: None,
+            gravity: None,
         }
     }
 
@@ -154,6 +156,9 @@ impl<T: Real> Simulation<T> {
     /// Advance the simulation by one time step.
     pub fn step(&mut self) {
         self.sync_force_field();
+        if let Some(g) = self.gravity {
+            self.solver.set_gravity([g[0], g[1], T::zero()]);
+        }
         self.solver.step();
     }
 
@@ -326,6 +331,17 @@ impl<T: Real> Simulation<T> {
         self.solver.fields_mut(0).force_field = None;
     }
 
+    /// Set per-mass gravity `g`; each step adds `rho(x) * g` on fluid cells
+    /// after the caller has had a chance to rewrite the per-cell force field.
+    pub fn set_gravity(&mut self, g: [T; 2]) {
+        self.gravity = Some(g);
+    }
+
+    /// Current per-mass gravity, or `None` when disabled.
+    pub fn gravity(&self) -> Option<[T; 2]> {
+        self.gravity
+    }
+
     /// Select the set of solid cells whose momentum-exchange force is
     /// accumulated each step (e.g. an obstacle for drag/lift measurement).
     pub fn set_force_probe(&mut self, pred: impl Fn(usize, usize) -> bool) {
@@ -458,10 +474,15 @@ impl<T: Real> Simulation<T> {
                     mx += CX[q] as f64 * fq;
                     my += CY[q] as f64 * fq;
                 }
-                let (fx, fy) = match ff {
+                let (mut fx, mut fy) = match ff {
                     Some(field) => (ufx + field[i][0].as_f64(), ufy + field[i][1].as_f64()),
                     None => (ufx, ufy),
                 };
+                if let Some(g) = self.gravity {
+                    let rho = f.rho[i].as_f64();
+                    fx += rho * g[0].as_f64();
+                    fy += rho * g[1].as_f64();
+                }
                 px += mx + 0.5 * fx;
                 py += my + 0.5 * fy;
             }

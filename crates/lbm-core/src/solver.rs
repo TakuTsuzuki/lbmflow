@@ -528,6 +528,7 @@ where
     probed_force: [T; 3],
     masks_dirty: bool,
     psi_planes: Vec<Vec<T>>,
+    gravity: Option<[T; 3]>,
     /// Split streaming into interior + boundary-shell passes (the overlap
     /// seam for asynchronous exchanges). Off by default: the single full
     /// pass reproduces V1's probe summation order bit-for-bit.
@@ -662,6 +663,7 @@ where
             probed_force: [T::zero(); 3],
             masks_dirty: true,
             psi_planes: Vec::new(),
+            gravity: None,
             two_pass: false,
             _lattice: std::marker::PhantomData,
         };
@@ -695,6 +697,7 @@ where
     /// open faces → moments).
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
+        let gravity_stage = self.stage_gravity();
         for i in 0..self.parts.len() {
             self.backend
                 .collide(&self.subs[i], &mut self.parts[i], &self.params);
@@ -717,7 +720,63 @@ where
             self.backend
                 .update_moments(&self.subs[i], &mut self.parts[i], &self.params);
         }
+        self.unstage_gravity(gravity_stage);
         self.time += 1;
+    }
+
+    fn stage_gravity(&mut self) -> Option<Vec<(bool, Vec<[T; 3]>)>> {
+        let gvec = self.gravity?;
+        let mut staged = Vec::with_capacity(self.parts.len());
+        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+            let geo = sub.geom;
+            let n_core = geo.n_core();
+            let was_none = fields.force_field.is_none();
+            let ff = fields
+                .force_field
+                .get_or_insert_with(|| vec![[T::zero(); 3]; n_core]);
+            if ff.len() != n_core {
+                ff.clear();
+                ff.resize(n_core, [T::zero(); 3]);
+            }
+            let mut added = vec![[T::zero(); 3]; n_core];
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        if fields.solid[pi] {
+                            continue;
+                        }
+                        let c = geo.cidx(x, y, z);
+                        let rho = fields.rho[c];
+                        for a in 0..3 {
+                            added[c][a] = rho * gvec[a];
+                            ff[c][a] = ff[c][a] + added[c][a];
+                        }
+                    }
+                }
+            }
+            staged.push((was_none, added));
+        }
+        Some(staged)
+    }
+
+    fn unstage_gravity(&mut self, staged: Option<Vec<(bool, Vec<[T; 3]>)>>) {
+        let Some(staged) = staged else {
+            return;
+        };
+        for ((was_none, added), fields) in staged.into_iter().zip(self.parts.iter_mut()) {
+            let Some(ff) = fields.force_field.as_mut() else {
+                continue;
+            };
+            for (dst, add) in ff.iter_mut().zip(added.iter()) {
+                for a in 0..3 {
+                    dst[a] = dst[a] - add[a];
+                }
+            }
+            if was_none {
+                fields.force_field = None;
+            }
+        }
     }
 
     fn stream_part(&mut self, i: usize) -> [T; 3] {
@@ -1020,6 +1079,12 @@ where
         for fields in self.parts.iter_mut() {
             fields.force_field = None;
         }
+    }
+
+    /// Set per-mass gravity `g`; at the start of each step, `rho(x) * g` is
+    /// added to the per-cell force on fluid cells only.
+    pub fn set_gravity(&mut self, g: [T; 3]) {
+        self.gravity = Some(g);
     }
 
     /// Prescribe a per-node inlet profile on a `Velocity` face, `values`
@@ -1325,6 +1390,13 @@ where
                 *pa += self
                     .backend
                     .reduce(sub, fields, &self.params, Reduction::Momentum(a));
+            }
+        }
+        if let Some(g) = self.gravity {
+            let mass = self.local_mass_partials();
+            let total_mass = mass.0 + mass.1;
+            for a in 0..3 {
+                p[a] += 0.5 * total_mass * g[a].as_f64();
             }
         }
         p
