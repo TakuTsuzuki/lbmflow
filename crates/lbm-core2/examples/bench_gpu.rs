@@ -12,10 +12,12 @@
 //! other agents' suites; on unified memory a saturated CPU eats the DRAM
 //! bandwidth the (bandwidth-bound) GPU kernel needs, so compare against a
 //! *same-window* proto run (`cd crates/lbm-gpu-proto && cargo run --release
-//! -- --gpu-only`), not only the frozen table. Same-window measurement
-//! 2026-07-05 (load avg ~38 from a concurrent 3D suite; proto run minutes
-//! apart): 512² 10,581 vs 11,307 (−6.4%) / 1024² 5,435 vs 6,086 (−10.7%) /
-//! 2048² 4,623 vs 5,349 (−13.6%) — within the ±20% line. The residual gap
+//! -- --gpu-only`), not only the frozen table. Measurements 2026-07-05:
+//! quieter window (load ~13-16): 11,365 / 6,808 / 5,857 MLUPS = −6.5% /
+//! −10.2% / −16.0% vs the *frozen* proto table (−8.9% / −7.9% vs proto run
+//! back-to-back, which itself hit 12,478 / 7,395). Heavily loaded window
+//! (load ~38): 10,581 vs proto-same-window 11,307 (−6.4%) / 5,435 vs 6,086
+//! (−10.7%) / 4,623 vs 5,349 (−13.6%). Both inside ±20%. The residual gap
 //! is the push-form fused kernel's scatter writes (vs the proto's gather
 //! reads) — the deliberate trade that preserves the CPU's S∘C operator
 //! order and makes the boundary-condition set + direct T14 equivalence
