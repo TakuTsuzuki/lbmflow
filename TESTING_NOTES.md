@@ -391,3 +391,30 @@ reviewer had not seen). Dispositions:
 
 Net: 13 adopted (1 adapted), 1 already-fixed-and-strengthened. REQ is now rev.4.
 Reviewer read rev.1a — overlaps with rev.2/rev.3 noted above to avoid double-fixing.
+
+## D-11 wasm smoke record (2026-07-05, branch cx-wasm-smoke)
+
+- Added a wasm-bindgen-test smoke in `crates/lbm-wasm` using a test-only
+  Taylor-Green JSON initializer on the existing `WasmSim::init` JSON path:
+  32x32, nu=0.02, BGK, periodic edges, u0=1.28/32, 100 steps.
+- Native f32 characterization for the same compat path:
+  - rho-view mass sum before: 1023.999993563
+  - rho-view mass sum after 100 steps: 1023.999934435
+  - relative mass drift: 5.7741999989150555e-8
+  - frozen probe at (7, 11) after 100 steps:
+    rho bits 0x3f8025b6, ux bits 0xbbb62bd2, uy bits 0xbc98d05a.
+- `wasm-pack test --node crates/lbm-wasm` result: PASS
+  (`tests::wasm::wasm_tgv_smoke_matches_compat_f32` passed; wasm rho/ux/uy
+  views matched the compat f32 run bit-for-bit, and velocity views had no NaN).
+- `wasm-pack build crates/lbm-wasm --target web --release --out-dir ../../web/src/engine/pkg`
+  initially failed after Rust wasm compilation at wasm-pack's external optimizer/helper install
+  step with: `Operation not permitted (os error 1)` and wasm-pack's hint
+  `To disable wasm-opt, add wasm-opt = false to your package metadata in your Cargo.toml`.
+  The crate now sets `[package.metadata.wasm-pack.profile.release] wasm-opt = false`.
+  With `XDG_CACHE_HOME=/private/tmp/lbmflow-wasm-pack-cache`, the same build command passed.
+- Cargo registry/network note: this sandbox cannot resolve crates.io/static.crates.io. The current
+  `wasm-bindgen-test` release has a target-gated `minicov` coverage dependency in its lock graph;
+  a local `minicov` stub is patched in under `crates/lbm-wasm/test-support/` so metadata resolves
+  offline. The stub is not compiled for the normal wasm smoke.
+- Added a Rust-only `lbm-scenario` test for the GUI-exported scenario JSON shape; it parses, builds,
+  reserializes, reparses, and serializes byte-stably without node/web tooling.
