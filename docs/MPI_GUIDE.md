@@ -167,3 +167,12 @@ n≤4 は R3 のローカル合格線 ≥85% を満たす（97-99%）。
   `Solver` を直接使う場合は `mark_masks_dirty()` を全ランクで呼ぶこと。
 - **プローブの Allreduce タイミング**: probed_force は step 毎の Allreduce。
   プローブ未設定時は省略される（ベンチに余計な collective を入れない）。
+
+## run_guarded (R-Phase 1, A-9)
+
+`MpiSolver::run_guarded(steps, check_every)` is a **collective** call: every rank
+must invoke it with the same arguments. Each check is a 2-double Allreduce over the
+mass partials (NaN propagates through the sum), and the divergence branch —
+`Err(Diverged{step})` — is taken uniformly on all ranks, so there is no
+divergence-induced deadlock. Overhead at 512²/rank with check_every=100 is <0.5%.
+The trajectory is bit-identical to plain `run`.

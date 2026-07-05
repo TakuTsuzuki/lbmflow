@@ -67,6 +67,13 @@ pub trait HaloExchange {
     fn exchange(&mut self, field: &mut BackendField, plan: &HaloPlan);
 }
 impl: LocalPeriodic（単一領域=現行動作） / InProcess（スレッド間, T13用） / Mpi（rsmpi）
+- (R-Phase 1) `HaloExchange::SCOPE: ExchangeScope { Local, Remote }` — building a
+  single-part owner (`only=Some(part)`) with a Local exchange is a construction
+  error (silent self-wrap prevention, spec A-5).
+- (R-Phase 1) `Backend::stream` contract, pinned by tests/stream_contract.rs:
+  streaming must NOT write open-face unknown slots (ConvectiveOutflow memory
+  depends on it; GPU realizes it via the edge stash). Any in-place streaming
+  (M-E candidate) must preserve this contract or replace the mechanism.
 ```
 - ステップ構造を**内部→境界の2パス**に分け、halo 通信と内部計算をオーバーラップ
   （V1 の行分割ループはこの分割と親和的）
