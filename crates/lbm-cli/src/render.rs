@@ -38,6 +38,25 @@ const RDBU: [[u8; 3]; 9] = [
     [103, 0, 31],
 ];
 
+/// 16-anchor inferno (sequential, for magnitude fields like shear / dissipation).
+const INFERNO: [[u8; 3]; 16] = [
+    [0, 0, 4], [12, 8, 38], [36, 12, 79], [66, 10, 104],
+    [93, 18, 110], [120, 28, 109], [147, 38, 103], [174, 48, 92],
+    [199, 62, 76], [220, 81, 57], [237, 105, 37], [246, 133, 17],
+    [251, 163, 12], [249, 195, 41], [240, 226, 96], [252, 255, 164],
+];
+
+/// Colormap selector for the shared PNG writer.
+#[derive(Clone, Copy, Debug)]
+pub enum Colormap {
+    /// Sequential blue→yellow (`0..max`).
+    Viridis,
+    /// Sequential black→yellow (`0..max`) — magnitude fields (shear, speed).
+    Inferno,
+    /// Diverging blue↔red on a symmetric range — signed fields.
+    RdBu,
+}
+
 fn lut(anchors: &[[u8; 3]], t: f64) -> [u8; 3] {
     let t = t.clamp(0.0, 1.0) * (anchors.len() - 1) as f64;
     let i = (t as usize).min(anchors.len() - 2);
@@ -50,47 +69,71 @@ fn lut(anchors: &[[u8; 3]], t: f64) -> [u8; 3] {
     ]
 }
 
-/// Write a scalar field (row-major, y=0 at the bottom) as PNG.
-/// `diverging` uses RdBu with symmetric range; otherwise viridis 0..max.
-pub fn write_png(
+/// Shared scalar-field PNG writer — the one raster surface for the runner and
+/// examples (so examples stop re-implementing it). `cmap` picks the colormap;
+/// `vmax` fixes the range (`Some(v)` → `[0,v]` sequential or `[-v,v]` diverging;
+/// `None` → auto-range over finite non-solid cells); `scale` supersamples each
+/// cell into a `scale × scale` block (`1` = native). Solids render grey; the
+/// image is flipped vertically (y up) for PNG.
+#[allow(clippy::too_many_arguments)]
+pub fn write_png_scaled(
     path: &Path,
     field: &[f64],
     solid: &[bool],
     nx: usize,
     ny: usize,
-    diverging: bool,
+    cmap: Colormap,
+    vmax: Option<f64>,
+    scale: usize,
 ) -> Result<()> {
-    let mut lo = f64::INFINITY;
-    let mut hi = f64::NEG_INFINITY;
-    for (v, s) in field.iter().zip(solid) {
-        if !s && v.is_finite() {
-            lo = lo.min(*v);
-            hi = hi.max(*v);
+    let anchors: &[[u8; 3]] = match cmap {
+        Colormap::Viridis => &VIRIDIS,
+        Colormap::Inferno => &INFERNO,
+        Colormap::RdBu => &RDBU,
+    };
+    let diverging = matches!(cmap, Colormap::RdBu);
+    let (lo, hi) = match vmax {
+        Some(v) if diverging => (-v.abs(), v.abs()),
+        Some(v) => (0.0, v.abs()),
+        None => {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for (v, s) in field.iter().zip(solid) {
+                if !s && v.is_finite() {
+                    lo = lo.min(*v);
+                    hi = hi.max(*v);
+                }
+            }
+            if !lo.is_finite() || !hi.is_finite() {
+                (0.0, 1.0)
+            } else {
+                (lo, hi)
+            }
         }
-    }
-    if !lo.is_finite() || !hi.is_finite() {
-        lo = 0.0;
-        hi = 1.0;
-    }
-    let mut buf = vec![0u8; nx * ny * 3];
-    for y in 0..ny {
-        for x in 0..nx {
+    };
+    let sc = scale.max(1);
+    let (ow, oh) = (nx * sc, ny * sc);
+    let mut buf = vec![0u8; ow * oh * 3];
+    for oy in 0..oh {
+        let y = oy / sc;
+        for ox in 0..ow {
+            let x = ox / sc;
             let i = y * nx + x;
-            let px = ((ny - 1 - y) * nx + x) * 3; // flip vertically for PNG
+            let px = ((oh - 1 - oy) * ow + ox) * 3; // flip vertically for PNG
             let rgb = if solid[i] {
                 [90u8, 94, 100]
             } else if diverging {
                 let m = lo.abs().max(hi.abs()).max(1e-30);
-                lut(&RDBU, 0.5 + 0.5 * field[i] / m)
+                lut(anchors, 0.5 + 0.5 * field[i] / m)
             } else {
                 let span = (hi - lo).max(1e-30);
-                lut(&VIRIDIS, (field[i] - lo) / span)
+                lut(anchors, (field[i] - lo) / span)
             };
             buf[px..px + 3].copy_from_slice(&rgb);
         }
     }
     let file = File::create(path)?;
-    let mut enc = png::Encoder::new(BufWriter::new(file), nx as u32, ny as u32);
+    let mut enc = png::Encoder::new(BufWriter::new(file), ow as u32, oh as u32);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header()?;
