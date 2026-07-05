@@ -287,11 +287,12 @@ Cd = 2Fx/(ρ U_mean² D)、Cl = 2Fy/(ρ U_mean² D)。
      1.2e-16, symmetry-plane max|v|/U ≈ 2e-15, extrema signs/locations qualitative).
    - `#[ignore]` N=72 spec profiles (1477 s): centerline **profile RMS passes**
      (u: 0.0153 vs limit 0.030U; w: 0.0255 vs 0.035U); midplane symmetry 1.7e-15;
-     anti-2D guard passes. **Extremum u_min is 10.5% shallow** (−0.25084 @ z=0.129 vs
-     A&K −0.28038 @ z=0.124; band was 6%) — vortex-core intensity sits on the
-     numerical-diffusion side at this resolution. Band freeze pending the
-     N=64→72 convergence-tendency run (in progress); disposition will be recorded
-     in PHYSICS.md before any band change.
+     anti-2D guard passes. Extrema sit 9.1–10.5% shallow of the spectral reference
+     (numerical-diffusion side; positions within half a cell).
+     **Extremum band frozen at 0.13** after the N=64→72 convergence-tendency test
+     PASSED (2257 s, error decreases toward A&K with N — resolution, not an engine
+     bug; full rationale in PHYSICS.md "T15.5 extremum band", 2026-07-05).
+     RMS and position bands unchanged. Tightening candidate: after MF-α cumulant.
    - N=48 diverges (NaN) — consistent with the documented stability constraint
      Re/(N−2) ≲ 15; N ≥ 72 for spec-grade profiles.
    - Re=100/400: on hold (original tables not yet obtained).
