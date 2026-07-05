@@ -3,8 +3,8 @@
 
 use crate::render::write_png;
 use anyhow::{Context, Result};
-use lbm_core::multiphase::ShanChen;
-use lbm_core::prelude::*;
+use lbm_core2::compat::multiphase::ShanChen;
+use lbm_core2::compat::prelude::*;
 use lbm_scenario::{
     FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, Sim3Handle, SimHandle, Solver3,
 };

@@ -4,8 +4,8 @@
 //! See `docs/AGENT_MODE_DESIGN.md` for the schema rationale. Field names are
 //! camelCase in JSON.
 
-use lbm_core::multiphase::ShanChen;
-use lbm_core::prelude::*;
+use lbm_core2::compat::multiphase::ShanChen;
+use lbm_core2::compat::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------- schema

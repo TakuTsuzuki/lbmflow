@@ -10,7 +10,6 @@ name = "lbm"
 path = "src/main.rs"
 
 [dependencies]
-lbm-core = { path = "../lbm-core" }
 lbm-core2 = { path = "../lbm-core2" }
 lbm-scenario = { path = "../lbm-scenario" }
 serde = { version = "1", features = ["derive"] }

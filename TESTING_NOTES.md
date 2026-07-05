@@ -226,7 +226,16 @@ order #2 の 5 件の dispositions:
    （M-A の「56+ テストが compat 経由で緑」は未検証状態だった）。perl 置換に修正して
    再同期し、compat 実経由で全複製スイート緑を実測確認（T11b/T11c 含む）。
    結果として compat ファサードの欠陥は見つからず — 事後的に主張は正しかった。
-2. **Shan-Chen 壁吸着の V2 ネイティブ配線完了**（M-D 申し送りの解消）:
+2. **compat 切替で 2D 実行経路は CpuScalar になり V1 比で遅くなる**（要 triage）:
+   compat ファサードは `Solver<D2Q9, T, CpuScalar, LocalPeriodic>` 固定
+   （V1 ビット一致の根拠）。CLI/GUI の 2D は V1 融合カーネル → CpuScalar への
+   置換になり、実測 `lbm presets run cavity` は 140 → 52 MLUPS（2.7x 減）。
+   wasm も同様（V1 シリアル融合 → シリアル CpuScalar、俯瞰値で ~5x 減の見込み）。
+   対処はファサードの backend を CpuSimd に差し替える 1 行だが、これは軌道を
+   ulp レベルで変える挙動変更（backend_simd_equiv のゲートは f64 1e-11 /
+   f32 1e-6）なので、本引退作業では**行わず**現状維持。複製スイート緑のまま
+   差し替え可能なことは backend_simd_equiv が示唆しており、別途サインオフで。
+3. **Shan-Chen 壁吸着の V2 ネイティブ配線完了**（M-D 申し送りの解消）:
    `Solver::update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi)` を追加
    （`MpiSolver` にも同名ラッパ）。solid 隣接は cohesion 和に ψ_wall を寄与し
    `g_wall` の吸着項を加算、非周期域外は無寄与 — V1 と演算子順まで同一。
