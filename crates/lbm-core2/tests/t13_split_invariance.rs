@@ -420,6 +420,130 @@ fn t13_shan_chen_droplet_native_split_invariant() {
 }
 
 #[test]
+fn t13_shan_chen_wall_adhesion_native_matches_compat_and_split() {
+    // Wall-adhesion Shan–Chen (g_wall and virtual wall density wall_rho):
+    // the native Solver::update_shan_chen_force_with_walls must
+    //   (a) reproduce the facade compat::ShanChen::update_force bit-exactly
+    //       on a monolithic domain (the facade carries the V1 wetting
+    //       numerics that T11b/T11c freeze), and
+    //   (b) stay bit-exact under decomposition (solid rims cross the seams,
+    //       so halo-solid adhesion is exercised).
+    use lbm_core2::compat::multiphase::ShanChen as CompatShanChen;
+    use lbm_core2::compat::prelude::{
+        EdgeBC as CEdgeBC, Edges as CEdges, SimConfig as CSimConfig, Simulation as CompatSim,
+    };
+
+    let (nx, ny) = (64usize, 40usize);
+    let g = -5.0f64;
+    let psi = |rho: f64| 1.0 - (-rho).exp();
+    // Droplet resting on the bottom wall rim (T11b geometry, shrunk).
+    let (cx, cy, r0) = (nx as f64 / 2.0, 9.0, 11.0);
+    let init2 = move |x: usize, y: usize| {
+        if y == 0 || y + 1 == ny {
+            return (0.15, 0.0, 0.0);
+        }
+        let d = ((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt();
+        (if d < r0 { 2.0 } else { 0.15 }, 0.0, 0.0)
+    };
+    let steps = 150usize;
+
+    // (g_wall, wall_rho): wetting, de-wetting, virtual-wall-density control.
+    for (g_wall, wall_rho) in [(-1.5f64, None), (0.9, None), (0.0, Some(1.2f64))] {
+        let psi_wall = wall_rho.map_or(0.0, psi);
+        let what = format!("g_wall={g_wall} wall_rho={wall_rho:?}");
+
+        // Facade reference (V1 numerics, proven by the synced T11 suite).
+        let mut sim: CompatSim<f64> = CSimConfig {
+            nx,
+            ny,
+            nu: 1.0 / 6.0,
+            edges: CEdges {
+                left: CEdgeBC::Periodic,
+                right: CEdgeBC::Periodic,
+                bottom: CEdgeBC::BounceBack,
+                top: CEdgeBC::BounceBack,
+            },
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        sim.init_with(init2);
+        let mut sc = CompatShanChen::new(g).with_wall(g_wall);
+        if let Some(r) = wall_rho {
+            sc = sc.with_wall_rho(r);
+        }
+
+        // Native monolithic + split runs of the same scenario.
+        let case = Case {
+            spec: GlobalSpec {
+                dims: [nx, ny, 1],
+                nu: 1.0 / 6.0,
+                periodic: [true, false, false],
+                ..Default::default()
+            },
+            walls: WallSpec {
+                is_wall: {
+                    let mut w = [false; 6];
+                    w[Face::YNeg.index()] = true;
+                    w[Face::YPos.index()] = true;
+                    w
+                },
+                ..Default::default()
+            },
+        };
+        let mut mono = build(&case, [1, 1, 1], LocalPeriodic, false);
+        mono.init_with(|x, y, _| {
+            let (r, ux, uy) = init2(x, y);
+            (r, [ux, uy, 0.0])
+        });
+        let mut splits: Vec<S<InProcess>> = DECOMPS
+            .iter()
+            .map(|&d| {
+                let mut s = build(&case, d, InProcess, false);
+                s.init_with(|x, y, _| {
+                    let (r, ux, uy) = init2(x, y);
+                    (r, [ux, uy, 0.0])
+                });
+                s
+            })
+            .collect();
+
+        for t in 0..steps {
+            sc.update_force(&mut sim);
+            sim.step();
+            mono.update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi);
+            mono.step();
+            for s in splits.iter_mut() {
+                s.update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi);
+                s.step();
+            }
+            if t < 3 || t % 50 == 49 || t + 1 == steps {
+                // (a) native == facade, bit-exact.
+                let pairs = [
+                    ("rho", sim.rho_field().to_vec(), mono.gather_rho()),
+                    ("ux", sim.ux_field().to_vec(), mono.gather_ux()),
+                    ("uy", sim.uy_field().to_vec(), mono.gather_uy()),
+                ];
+                for (name, va, vb) in pairs {
+                    let d = va
+                        .iter()
+                        .zip(&vb)
+                        .map(|(x, y)| (x - y).abs())
+                        .fold(0.0f64, f64::max);
+                    assert_eq!(d, 0.0, "{what} t={}: native vs compat {name}", t + 1);
+                }
+                // (b) split-invariant.
+                for (s, d) in splits.iter().zip(DECOMPS.iter()) {
+                    assert_fields_equal(&mono, s, &format!("{what} {d:?} t={}", t + 1));
+                    assert_diagnostics_close(&mono, s, 1e-12, &format!("{what} {d:?} t={}", t + 1));
+                }
+            }
+        }
+    }
+    println!("Shan-Chen wall adhesion (g_wall/wall_rho): native == compat bit-exact, split-invariant");
+}
+
+#[test]
 fn t13_uneven_split_and_deeper_decomp() {
     // Remainder handling: 50 cells over 3 parts (17/17/16) and a 4x1 strip
     // decomposition, against the monolithic baseline.

@@ -226,6 +226,14 @@ order #2 の 5 件の dispositions:
    （M-A の「56+ テストが compat 経由で緑」は未検証状態だった）。perl 置換に修正して
    再同期し、compat 実経由で全複製スイート緑を実測確認（T11b/T11c 含む）。
    結果として compat ファサードの欠陥は見つからず — 事後的に主張は正しかった。
+2. **Shan-Chen 壁吸着の V2 ネイティブ配線完了**（M-D 申し送りの解消）:
+   `Solver::update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi)` を追加
+   （`MpiSolver` にも同名ラッパ）。solid 隣接は cohesion 和に ψ_wall を寄与し
+   `g_wall` の吸着項を加算、非周期域外は無寄与 — V1 と演算子順まで同一。
+   受入: `t13_shan_chen_wall_adhesion_native_matches_compat_and_split`
+   （3 ケース g_wall=-1.5/+0.9/wall_rho=1.2 × 150 step、native vs compat
+   ビット一致 + 2x1/1x2/2x2 分割不変ビット一致）。中立壁の既存呼び出しは
+   歴史的式を保持（ビット同一）。
 
 ## 新規（2026-07-05 M-D MPI 分散実装）
 

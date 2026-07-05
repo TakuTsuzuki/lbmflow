@@ -425,6 +425,19 @@ where
         self.inner.update_shan_chen_force(g, psi);
     }
 
+    /// Wall-adhesion Shan–Chen refresh (collective); see
+    /// [`Solver::update_shan_chen_force_with_walls`].
+    pub fn update_shan_chen_force_with_walls(
+        &mut self,
+        g: T,
+        g_wall: T,
+        psi_wall: T,
+        psi: impl Fn(T) -> T,
+    ) {
+        self.inner
+            .update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi);
+    }
+
     /// Toggle two-pass streaming on the local part.
     pub fn set_two_pass(&mut self, on: bool) {
         self.inner.set_two_pass(on);

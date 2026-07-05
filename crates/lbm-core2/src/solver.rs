@@ -684,6 +684,30 @@ where
     /// order (V1 convention). Call before each [`Solver::step`]; collective
     /// over all owners of the decomposition.
     pub fn update_shan_chen_force(&mut self, g: T, psi: impl Fn(T) -> T) {
+        self.update_shan_chen_force_with_walls(g, T::zero(), T::zero(), psi);
+    }
+
+    /// Wall-adhesion variant of [`Solver::update_shan_chen_force`] — the
+    /// native port of V1 `ShanChen::with_wall` (`g_wall`) and
+    /// `ShanChen::with_wall_rho` (virtual wall density; pass the
+    /// pre-evaluated `psi_wall = ψ(wall_rho)`, or zero to disable):
+    ///
+    /// `F(x) = -ψ(x) [ G ( Σ_{q:fluid} w_q ψ(x+c_q) c_q + Σ_{q:solid} w_q ψ_wall c_q )
+    ///                 + G_w Σ_{q:solid} w_q c_q ]`
+    ///
+    /// Solid neighbours feed the cohesion sum with `psi_wall` (contact-angle
+    /// control) plus the legacy `g_wall` adhesion term; out-of-domain
+    /// neighbours on non-periodic global edges contribute nothing to either
+    /// sum (zero-gradient approximation). Operand order is V1-identical, so
+    /// a monolithic run reproduces `compat::ShanChen::update_force`
+    /// bit-exactly; halo solids are covered by the mask exchange.
+    pub fn update_shan_chen_force_with_walls(
+        &mut self,
+        g: T,
+        g_wall: T,
+        psi_wall: T,
+        psi: impl Fn(T) -> T,
+    ) {
         self.sync_masks_if_dirty();
         // ψ planes, padded: core = ψ(rho) (0 on solids), halo = 0 until the
         // exchange fills it (stays 0 outside non-periodic global edges,
@@ -710,6 +734,9 @@ where
             .collect();
         let mut refs: Vec<&mut [T]> = planes.iter_mut().map(|p| p.as_mut_slice()).collect();
         self.exchange.exchange_scalar(&self.subs, &mut refs);
+        // Neutral walls keep the exact historical expression (no adhesion
+        // term appended), so pre-walls callers stay bit-identical.
+        let wet = g_wall != T::zero() || psi_wall != T::zero();
         for (i, (sub, fields)) in self.subs.iter().zip(self.parts.iter_mut()).enumerate() {
             let geo = sub.geom;
             let plane = &planes[i];
@@ -726,20 +753,38 @@ where
                             continue;
                         }
                         let mut s = [T::zero(); 3];
+                        let mut adh = [T::zero(); 3];
                         for q in 1..L::Q {
                             let cq = L::C[q];
-                            let pj = plane[geo.pidx_i(
+                            let pi = geo.pidx_i(
                                 x as isize + cq[0] as isize,
                                 y as isize + cq[1] as isize,
                                 z as isize + cq[2] as isize,
-                            )];
+                            );
                             let w = T::r(L::W[q]);
-                            for a in 0..L::D {
-                                s[a] = s[a] + w * pj * T::r(cq[a] as f64);
+                            if wet && fields.solid[pi] {
+                                // V1: the virtual wall density feeds the
+                                // cohesion sum; g_wall adds the legacy
+                                // adhesion term on top. (Halo solids are
+                                // synced; non-periodic out-of-domain halos
+                                // are never solid, hence contribute nothing.)
+                                for a in 0..L::D {
+                                    s[a] = s[a] + w * psi_wall * T::r(cq[a] as f64);
+                                    adh[a] = adh[a] + w * T::r(cq[a] as f64);
+                                }
+                            } else {
+                                let pj = plane[pi];
+                                for a in 0..L::D {
+                                    s[a] = s[a] + w * pj * T::r(cq[a] as f64);
+                                }
                             }
                         }
                         for a in 0..3 {
-                            ff[c][a] = -(psi_i * (g * s[a]));
+                            ff[c][a] = if wet {
+                                -(psi_i * (g * s[a] + g_wall * adh[a]))
+                            } else {
+                                -(psi_i * (g * s[a]))
+                            };
                         }
                     }
                 }
