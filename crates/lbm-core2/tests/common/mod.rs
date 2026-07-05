@@ -2,7 +2,7 @@
 //! Shared helpers for validation tests.
 #![allow(dead_code)]
 
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 
 /// Relative L2 norm of the error between `actual` and `reference`.
 pub fn l2_rel(actual: &[f64], reference: &[f64]) -> f64 {

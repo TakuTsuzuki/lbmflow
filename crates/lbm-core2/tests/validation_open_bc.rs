@@ -7,8 +7,8 @@
 mod common;
 
 use common::{l2_rel, run_to_steady};
-use lbm_core::lattice::CS2;
-use lbm_core::prelude::*;
+use lbm_core2::compat::lattice::CS2;
+use lbm_core2::compat::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
 enum Orientation {

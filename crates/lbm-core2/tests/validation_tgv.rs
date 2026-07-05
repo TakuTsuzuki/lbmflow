@@ -5,7 +5,7 @@
 mod common;
 
 use common::l2_rel;
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy)]

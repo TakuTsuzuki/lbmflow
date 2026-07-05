@@ -4,7 +4,7 @@
 mod common;
 
 use common::run_to_steady;
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 
 fn linf_rel(actual: &[f64], reference: &[f64]) -> f64 {
     let den = reference.iter().map(|v| v.abs()).fold(0.0f64, f64::max);

@@ -39,7 +39,9 @@ while IFS= read -r -d '' src; do
     mkdir -p "$(dirname "$dst")"
     {
         echo "// $MARKER — DO NOT EDIT (source: crates/lbm-core/tests/$rel)"
-        sed -E 's/\blbm_core\b/lbm_core2::compat/g' "$src"
+        # perl, not sed: BSD sed has no \b word boundary and silently copies
+        # the file unmodified (which left the "synced" suite running on V1).
+        perl -pe 's/\blbm_core\b/lbm_core2::compat/g' "$src"
     } > "$dst"
     count=$((count + 1))
 done < <(find "$SRC" -name '*.rs' -print0)

@@ -4,7 +4,7 @@
 mod common;
 
 use common::run_to_steady;
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 
 const N: usize = 129;
 const L: f64 = (N - 2) as f64;

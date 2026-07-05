@@ -3,7 +3,7 @@
 
 mod common;
 
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 use std::f64::consts::PI;
 
 fn smooth_init(n: usize) -> impl Fn(usize, usize) -> (f64, f64, f64) {

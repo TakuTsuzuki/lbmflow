@@ -2,7 +2,7 @@
 //! Validation T10: configuration errors, near-limit TRT stability, and
 //! unsupported solid placement on open edges.
 
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 
 fn expect_err(cfg: SimConfig<f64>, want: fn(&ConfigError) -> bool, label: &str) {
     match cfg.build() {

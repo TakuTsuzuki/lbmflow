@@ -6,7 +6,7 @@
 mod common;
 use common::run_to_steady;
 
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 
 /// Returns (simulated profile, analytical profile) over the fluid rows.
 fn poiseuille(ny: usize, collision: Collision) -> (Vec<f64>, Vec<f64>) {

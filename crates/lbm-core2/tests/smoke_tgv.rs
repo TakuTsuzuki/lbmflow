@@ -6,7 +6,7 @@
 
 mod common;
 
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 use std::f64::consts::PI;
 
 fn tgv_l2(n: usize, collision: Collision) -> f64 {

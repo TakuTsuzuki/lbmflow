@@ -6,7 +6,7 @@
 mod common;
 use common::run_to_steady;
 
-use lbm_core::prelude::*;
+use lbm_core2::compat::prelude::*;
 
 fn couette(tau: f64, collision: Collision) -> Simulation<f64> {
     let nu = (tau - 0.5) / 3.0;
