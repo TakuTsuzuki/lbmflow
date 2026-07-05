@@ -472,3 +472,14 @@ dependency from core tests to the scenario crate.
   Robust invocation: write the order to a file and pass "$(cat <file>)" — the
   substituted string is NOT re-parsed. The Skill's invocation section should make
   file-passing the default for any order containing backticks/code spans.
+
+## Parity harness smoke SM-1 (2026-07-05 late) — harness defect found and fixed
+
+CD-HO-01 on Sonnet: evaluee REFUSED — flagged the external fixture-file trust hop as a
+prompt-injection pattern (defensible) and noted the hypothetical task IDs don't exist
+in the repo. Meanwhile it had read lbmflow-codex-dispatch and cited the CD-3 same-file
+bundling rule correctly — the Skill content reached the model; the harness framing
+failed. Protocol amended (runner preamble v2 on branch skills/a-pilot-eval-tasks):
+fixtures inlined into the prompt, exercise declared self-contained/hypothetical,
+refusal-handling rule added. Full 96-run parity batch deferred to a dedicated
+orchestration session with the v2 preamble; smoke rerun first.
