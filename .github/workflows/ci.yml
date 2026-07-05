@@ -1,0 +1,52 @@
+# LBMFlow CI — リモートリポジトリ設定後に自動で有効化される
+# （ホスティング先は未決定。GitHub 以外なら同等の内容で移植する）
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # LBM は debug だと ~50x 遅い。CI も必ず --release（CLAUDE.md）
+      - name: Test (default features)
+        run: cargo test --workspace --release
+      - name: Build (gpu feature, compile-only — no GPU on runners)
+        run: cargo build -p lbm-core --release --features gpu || cargo build -p lbm-core2 --release --features gpu
+      - name: MPI feature
+        run: |
+          sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin
+          (cargo build -p lbm-core --release --features mpi || cargo build -p lbm-core2 --release --features mpi)
+          bash scripts/test_mpi.sh
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build GUI (tsc strict + vite)
+        working-directory: web
+        run: npm ci && npm run build
+
+  heavy-validation:
+    # 重い検証（--include-ignored）は夜間のみ
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --release -- --include-ignored
