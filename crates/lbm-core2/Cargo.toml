@@ -42,7 +42,4 @@ name = "bench_mpi"
 required-features = ["mpi"]
 
 [dev-dependencies]
-# V1 reference implementation, used only by equivalence tests (never a
-# build dependency of the V2 engine itself).
-lbm-core = { path = "../lbm-core" }
 approx = "0.5"

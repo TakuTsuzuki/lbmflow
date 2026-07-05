@@ -512,21 +512,33 @@ mod tests {
         check_face_unknowns::<D3Q19>();
     }
 
-    /// Lock the D2Q9 tables to V1's (`lbm_core::lattice`) — the direction
-    /// ordering is project-wide load-bearing and must never drift.
+    /// Lock the D2Q9 tables to the retired V1 engine's (`lbm_core::lattice`,
+    /// deleted 2026-07-05; constants embedded verbatim from its source) —
+    /// the direction ordering is project-wide load-bearing and must never
+    /// drift.
     #[test]
     fn d2q9_matches_v1_tables() {
-        use lbm_core::lattice as v1;
-        assert_eq!(D2Q9::Q, v1::Q);
-        assert_eq!(D2Q9::CS2, v1::CS2);
-        for q in 0..v1::Q {
-            assert_eq!(D2Q9::C[q][0] as i32, v1::CX[q]);
-            assert_eq!(D2Q9::C[q][1] as i32, v1::CY[q]);
+        const V1_CX: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+        const V1_CY: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+        #[rustfmt::skip]
+        const V1_W: [f64; 9] = [
+            4.0 / 9.0,
+            1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0,
+            1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0,
+        ];
+        const V1_OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+        const V1_CS2: f64 = 1.0 / 3.0;
+        const V1_PAIRS: [(usize, usize); 4] = [(1, 3), (2, 4), (5, 7), (6, 8)];
+        assert_eq!(D2Q9::Q, 9);
+        assert_eq!(D2Q9::CS2, V1_CS2);
+        for q in 0..9 {
+            assert_eq!(D2Q9::C[q][0] as i32, V1_CX[q]);
+            assert_eq!(D2Q9::C[q][1] as i32, V1_CY[q]);
             assert_eq!(D2Q9::C[q][2], 0);
-            assert_eq!(D2Q9::W[q], v1::W[q]);
-            assert_eq!(D2Q9::OPP[q], v1::OPP[q]);
+            assert_eq!(D2Q9::W[q], V1_W[q]);
+            assert_eq!(D2Q9::OPP[q], V1_OPP[q]);
         }
-        assert_eq!(D2Q9::PAIRS, &v1::PAIRS);
+        assert_eq!(D2Q9::PAIRS, &V1_PAIRS);
         assert_eq!(D2Q9::REST, 0);
     }
 

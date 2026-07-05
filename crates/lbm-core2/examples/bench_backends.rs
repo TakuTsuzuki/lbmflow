@@ -1,14 +1,19 @@
-//! MLUPS benchmark: `CpuScalar` vs `CpuSimd` vs the live V1 fused kernel
-//! (`lbm-core`, dev-dependency), on the same TGV-style periodic scenario.
-//! Prints a markdown table for docs/PERFORMANCE.md.
+//! MLUPS benchmark: `CpuScalar` vs `CpuSimd` on the same TGV-style periodic
+//! scenario. Prints a markdown table for docs/PERFORMANCE.md.
 //!
 //! Run: `cargo run --release -p lbm-core2 --example bench_backends`
 //!
 //! Single-config mode (for A/B comparisons under varying machine load —
 //! alternate the runs in the same time window, best-of-N):
-//! `bench_backends <v1|scalar|simd> <f32|f64> <n> <threads> <steps> [nz]`
+//! `bench_backends <scalar|simd> <f32|f64> <n> <threads> <steps> [nz]`
 //! prints one MLUPS value. `nz` > 1 selects the 3D (D3Q19) `n x n x nz`
-//! grid (v1 is 2D-only).
+//! grid.
+//!
+//! V1 comparison: the live V1 column was retired with `crates/lbm-core`
+//! (2026-07-05). The frozen same-window measurements against the V1 fused
+//! kernel are documented in docs/PERFORMANCE.md ("V2 CpuSimd バックエンド"
+//! table: e.g. 2D 512²/1T f32 V1 232 vs CpuSimd 273 MLUPS, 1024²/12T f32
+//! V1 1084 vs 1183; target "V1 − 10% 以内" met on all configurations).
 
 use lbm_core2::lattice::{D2Q9, D3Q19};
 use lbm_core2::prelude::*;
@@ -64,34 +69,8 @@ fn bench_v2<L: Lattice, T: Real, B: Backend<L, T, Fields = SoaFields<T>>>(
     (cells * steps) as f64 / t0.elapsed().as_secs_f64() / 1e6
 }
 
-fn bench_v1<T: lbm_core::real::Real>(n: usize, steps: usize) -> f64 {
-    let mut sim: lbm_core::prelude::Simulation<T> = lbm_core::prelude::SimConfig {
-        nx: n,
-        ny: n,
-        nu: 0.02,
-        ..Default::default()
-    }
-    .build()
-    .unwrap();
-    let k = 2.0 * PI / n as f64;
-    sim.init_with(|x, y| {
-        let (xf, yf) = (k * x as f64, k * y as f64);
-        (
-            T::one(),
-            T::r(0.03 * yf.sin()),
-            T::r(0.03 * (2.0 * xf).sin()),
-        )
-    });
-    sim.run(10);
-    let t0 = Instant::now();
-    sim.run(steps);
-    (n * n * steps) as f64 / t0.elapsed().as_secs_f64() / 1e6
-}
-
 fn run_one(engine: &str, prec: &str, n: usize, steps: usize, nz: usize) -> f64 {
     match (engine, prec, nz > 1) {
-        ("v1", "f32", false) => bench_v1::<f32>(n, steps),
-        ("v1", "f64", false) => bench_v1::<f64>(n, steps),
         ("scalar", "f32", false) => {
             bench_v2::<D2Q9, f32, _>(&spec2d(n), CpuScalar::default(), steps)
         }
@@ -139,17 +118,19 @@ fn main() {
 
     // Full table. Interleave the engines per configuration so shared-machine
     // load shifts hit all engines alike (PERFORMANCE.md measurement note).
+    // V1-fused reference values are frozen in docs/PERFORMANCE.md (the live
+    // column left with crates/lbm-core, 2026-07-05).
     println!("## 2D D2Q9 (TGV-style periodic, TRT) — MLUPS, best of 3\n");
-    println!("| grid | threads | prec | V1 fused | CpuScalar | CpuSimd | Simd/V1 | Simd/Scalar |");
-    println!("|---|---|---|---|---|---|---|---|");
+    println!("| grid | threads | prec | CpuScalar | CpuSimd | Simd/Scalar |");
+    println!("|---|---|---|---|---|---|");
     for &n in &[512usize, 1024] {
         for &threads in &[1usize, 12] {
             for prec in ["f32", "f64"] {
                 let steps = ((100_000_000 / (n * n)) * threads.min(4)).max(30);
                 let p = pool(threads);
-                let mut best = [0.0f64; 3];
+                let mut best = [0.0f64; 2];
                 for _ in 0..3 {
-                    for (i, engine) in ["v1", "scalar", "simd"].iter().enumerate() {
+                    for (i, engine) in ["scalar", "simd"].iter().enumerate() {
                         let m = p.install(|| run_one(engine, prec, n, steps, 1));
                         if m > best[i] {
                             best[i] = m;
@@ -157,12 +138,10 @@ fn main() {
                     }
                 }
                 println!(
-                    "| {n}² | {threads} | {prec} | {:.0} | {:.0} | {:.0} | {:.2} | {:.2} |",
+                    "| {n}² | {threads} | {prec} | {:.0} | {:.0} | {:.2} |",
                     best[0],
                     best[1],
-                    best[2],
-                    best[2] / best[0],
-                    best[2] / best[1],
+                    best[1] / best[0],
                 );
             }
         }

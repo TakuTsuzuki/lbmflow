@@ -87,16 +87,23 @@ pub fn dir_index(cx: i32, cy: i32) -> usize {
 mod tests {
     use super::*;
 
+    /// Retired-V1 (`lbm_core::lattice`, deleted 2026-07-05) constants,
+    /// embedded verbatim from its source.
     #[test]
     fn facade_tables_match_v1() {
-        use lbm_core::lattice as v1;
-        assert_eq!(Q, v1::Q);
-        assert_eq!(CX, v1::CX);
-        assert_eq!(CY, v1::CY);
-        assert_eq!(W, v1::W);
-        assert_eq!(OPP, v1::OPP);
-        assert_eq!(CS2, v1::CS2);
-        assert_eq!(PAIRS, v1::PAIRS);
+        #[rustfmt::skip]
+        const V1_W: [f64; 9] = [
+            4.0 / 9.0,
+            1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0,
+            1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0,
+        ];
+        assert_eq!(Q, 9);
+        assert_eq!(CX, [0, 1, 0, -1, 0, 1, -1, -1, 1]);
+        assert_eq!(CY, [0, 0, 1, 0, -1, 1, 1, -1, -1]);
+        assert_eq!(W, V1_W);
+        assert_eq!(OPP, [0, 3, 4, 1, 2, 7, 8, 5, 6]);
+        assert_eq!(CS2, 1.0 / 3.0);
+        assert_eq!(PAIRS, [(1, 3), (2, 4), (5, 7), (6, 8)]);
         for q in 0..Q {
             assert_eq!(dir_index(CX[q], CY[q]), q);
         }

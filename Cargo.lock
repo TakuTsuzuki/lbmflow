@@ -755,7 +755,6 @@ dependencies = [
  "approx",
  "bytemuck",
  "futures-intrusive",
- "lbm-core",
  "mpi",
  "num-traits",
  "pollster",
