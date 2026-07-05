@@ -90,14 +90,6 @@ impl<'a, T> PlaneRows<'a, T> {
         std::slice::from_raw_parts_mut(self.ptr.add(q * self.n + y * self.nx), self.nx)
     }
 
-    /// All nine plane rows at `y`.
-    ///
-    /// # Safety
-    /// As [`PlaneRows::row`], for all nine `(q, y)` rows at once.
-    #[inline]
-    unsafe fn rows(&self, y: usize) -> [&'a mut [T]; Q] {
-        std::array::from_fn(|q| self.row(q, y))
-    }
 }
 
 /// Row-sliced mutable access to a single `[y][x]` field, shared across
@@ -146,6 +138,23 @@ pub struct Simulation<T: Real> {
     rho: Vec<T>,
     ux: Vec<T>,
     uy: Vec<T>,
+    /// Double buffers for the fused pass: the moments of step k are written
+    /// here while the in-flight collide stage still reads step k-1's moments
+    /// from `rho/ux/uy`; the pairs are swapped right after the pass. Solid
+    /// cells are never written by the pass, so both buffers keep their
+    /// values in sync via `init_with`/`set_solid`.
+    rho2: Vec<T>,
+    ux2: Vec<T>,
+    uy2: Vec<T>,
+    /// `ConvectiveOutflow` memory term: the post-collide unknown populations
+    /// of the previous step at each edge cell (`[coord*3 + slot]`, slots
+    /// ordered `[n, n+t, n-t]`). The fused pass no longer materialises
+    /// post-collide populations, so this is captured explicitly
+    /// (`capture_conv_stale`) into `conv_stale_next` and swapped in after
+    /// the BC pass. Zero-initialised, matching the pre-fusion behaviour of
+    /// reading the build-time all-zero deviation buffer on the first step.
+    conv_stale: [Option<Vec<T>>; 4],
+    conv_stale_next: [Option<Vec<T>>; 4],
     solid: Vec<bool>,
     /// Per-row maximal runs of consecutive solid cells, `[start, end)` in x.
     /// Lets the hot loops process the solid-free spans branch-free.
@@ -168,6 +177,9 @@ pub struct Simulation<T: Real> {
     /// multiphase models; rewritten every step by the caller).
     force_field: Option<Vec<[T; 2]>>,
     time: u64,
+    /// Only consulted by the parallel dispatch (serial builds always run one
+    /// band).
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
     use_parallel: bool,
 }
 
@@ -199,6 +211,20 @@ impl<T: Real> Simulation<T> {
         // small fluctuations, which lifts the effective precision of f32
         // runs by orders of magnitude (docs/PHYSICS.md).
         let f = vec![T::zero(); n * Q];
+        let conv_len = |edge: Edge| match edge {
+            Edge::Left | Edge::Right => cfg.ny,
+            Edge::Bottom | Edge::Top => cfg.nx,
+        };
+        let conv_buf = |bc: EdgeBC<T>, edge: Edge| {
+            matches!(bc, EdgeBC::ConvectiveOutflow { .. })
+                .then(|| vec![T::zero(); 3 * conv_len(edge)])
+        };
+        let conv_stale = [
+            conv_buf(cfg.edges.left, Edge::Left),
+            conv_buf(cfg.edges.right, Edge::Right),
+            conv_buf(cfg.edges.bottom, Edge::Bottom),
+            conv_buf(cfg.edges.top, Edge::Top),
+        ];
         let mut sim = Self {
             nx: cfg.nx,
             ny: cfg.ny,
@@ -207,6 +233,11 @@ impl<T: Real> Simulation<T> {
             rho: vec![T::one(); n],
             ux: vec![T::zero(); n],
             uy: vec![T::zero(); n],
+            rho2: vec![T::one(); n],
+            ux2: vec![T::zero(); n],
+            uy2: vec![T::zero(); n],
+            conv_stale_next: conv_stale.clone(),
+            conv_stale,
             solid: vec![false; n],
             solid_runs: Vec::new(),
             solid_dirty: true,
@@ -328,15 +359,25 @@ impl<T: Real> Simulation<T> {
     // ------------------------------------------------------------------
 
     /// Advance the simulation by one time step.
+    ///
+    /// The whole collide -> stream -> moments update runs as a single fused
+    /// pass over the grid ([`step_band`]); the open-edge BC pass and the
+    /// boundary-line moment fix then touch only edge cells. Results are
+    /// step-for-step identical to the classic separate-pass formulation
+    /// (see `probe_state_hash`).
     pub fn step(&mut self) {
         if self.solid_dirty {
             self.rebuild_solid_runs();
         }
-        self.collide();
-        let pf = self.stream();
+        let pf = self.fused_pass();
+        self.capture_conv_stale();
         std::mem::swap(&mut self.f, &mut self.ftmp);
+        std::mem::swap(&mut self.rho, &mut self.rho2);
+        std::mem::swap(&mut self.ux, &mut self.ux2);
+        std::mem::swap(&mut self.uy, &mut self.uy2);
         self.probed_force = pf;
         self.apply_open_edges();
+        std::mem::swap(&mut self.conv_stale, &mut self.conv_stale_next);
         self.fix_boundary_moments();
         self.time += 1;
     }
@@ -348,65 +389,53 @@ impl<T: Real> Simulation<T> {
         }
     }
 
-    fn collide(&mut self) {
-        let p = self.params();
-        let (nx, ny) = (self.nx, self.ny);
-        let planes = PlaneRows::new(&mut self.f, nx, ny);
-        let (rho, ux, uy) = (&self.rho, &self.ux, &self.uy);
-        let runs = &self.solid_runs;
-        let ff = self.force_field.as_deref();
-        let force_on = p.fx != T::zero() || p.fy != T::zero() || ff.is_some();
-        let body = |y: usize| {
-            let mut fq = unsafe { planes.rows(y) };
-            let r = y * nx..(y + 1) * nx;
-            let (rho, ux, uy) = (&rho[r.clone()], &ux[r.clone()], &uy[r.clone()]);
-            let ff = ff.map(|f| &f[r]);
-            if force_on {
-                collide_row::<T, true>(&mut fq, rho, ux, uy, ff, &runs[y], &p);
-            } else {
-                collide_row::<T, false>(&mut fq, rho, ux, uy, ff, &runs[y], &p);
-            }
-        };
-        #[cfg(feature = "parallel")]
-        if self.use_parallel {
-            (0..ny).into_par_iter().for_each(body);
-            return;
-        }
-        (0..ny).for_each(body);
-    }
-
-    /// Pull-stream `f` into `ftmp` and recompute each row's macroscopic
-    /// moments from the freshly streamed (cache-resident) populations in the
-    /// same pass. Boundary-line moments are provisional at this point —
-    /// open-edge cells still hold stale unknown slots — and are re-fixed
-    /// after the BC pass by [`Simulation::fix_boundary_moments`].
-    fn stream(&mut self) -> [T; 2] {
+    /// The fused collide+stream+moments pass: one sweep over the grid per
+    /// step. Rows are processed in bands; each band collides its source rows
+    /// just-in-time into a cache-resident ring, streams destinations from
+    /// the ring, and writes moments into the double buffers (`rho2/ux2/uy2`)
+    /// while the collide stage keeps reading the previous step's moments.
+    fn fused_pass(&mut self) -> [T; 2] {
         let p = self.params();
         let g = self.geom();
-        let nx = g.nx;
-        let planes = PlaneRows::new(&mut self.ftmp, nx, g.ny);
-        let rho_rows = FieldRows::new(&mut self.rho, nx, g.ny);
-        let ux_rows = FieldRows::new(&mut self.ux, nx, g.ny);
-        let uy_rows = FieldRows::new(&mut self.uy, nx, g.ny);
+        let (nx, ny) = (g.nx, g.ny);
+        let planes = PlaneRows::new(&mut self.ftmp, nx, ny);
+        let rho_new = FieldRows::new(&mut self.rho2, nx, ny);
+        let ux_new = FieldRows::new(&mut self.ux2, nx, ny);
+        let uy_new = FieldRows::new(&mut self.uy2, nx, ny);
         let (f, solid, wall_u) = (&self.f, &self.solid, &self.wall_u);
+        let (rho_old, ux_old, uy_old) = (&self.rho, &self.ux, &self.uy);
         let runs = &self.solid_runs;
         let probe = self.probe.as_deref();
         let ff = self.force_field.as_deref();
-        let body = |y: usize| -> [T; 2] {
-            // SAFETY: each task owns exactly the rows of its own `y`.
-            let (rrow, uxrow, uyrow) =
-                unsafe { (rho_rows.row(y), ux_rows.row(y), uy_rows.row(y)) };
-            stream_row(
-                y,
-                &planes,
+        let force_on = p.fx != T::zero() || p.fy != T::zero() || ff.is_some();
+        #[cfg(feature = "parallel")]
+        let nbands = if self.use_parallel {
+            rayon::current_num_threads().clamp(1, (ny / 16).max(1))
+        } else {
+            1
+        };
+        #[cfg(not(feature = "parallel"))]
+        let nbands = 1;
+        let band_size = ny.div_ceil(nbands);
+        let body = |band: usize| -> [T; 2] {
+            let y0 = band * band_size;
+            let y1 = ((band + 1) * band_size).min(ny);
+            step_band(
+                y0,
+                y1,
                 f,
+                &planes,
+                rho_old,
+                ux_old,
+                uy_old,
+                &rho_new,
+                &ux_new,
+                &uy_new,
                 solid,
                 runs,
                 wall_u,
-                rrow,
-                uxrow,
-                uyrow,
-                ff.map(|field| &field[y * nx..(y + 1) * nx]),
+                ff,
+                force_on,
                 probe,
                 &g,
                 &p,
@@ -415,12 +444,77 @@ impl<T: Real> Simulation<T> {
         let add = |a: [T; 2], b: [T; 2]| [a[0] + b[0], a[1] + b[1]];
         #[cfg(feature = "parallel")]
         if self.use_parallel {
-            return (0..g.ny)
+            return (0..nbands)
                 .into_par_iter()
                 .map(body)
                 .reduce(|| [T::zero(); 2], add);
         }
-        (0..g.ny).map(body).fold([T::zero(); 2], add)
+        (0..nbands).map(body).fold([T::zero(); 2], add)
+    }
+
+    /// Save the post-collide unknown populations of every `ConvectiveOutflow`
+    /// edge cell into `conv_stale_next` — the BC's "previous step" memory
+    /// term for the *next* step. The fused pass discards post-collide
+    /// populations, so the affected edge cells (a handful per step) are
+    /// re-collided here from the still-untouched `f` and previous moments;
+    /// this reproduces the ring's values bit-for-bit.
+    fn capture_conv_stale(&mut self) {
+        let p = self.params();
+        let (nx, ny) = (self.nx, self.ny);
+        let n = nx * ny;
+        let ff = self.force_field.as_deref();
+        let force_on = p.fx != T::zero() || p.fy != T::zero() || ff.is_some();
+        for edge in Edge::ALL {
+            if self.conv_stale_next[edge.index()].is_none() {
+                continue;
+            }
+            let (nxi, nyi) = edge.n_in();
+            let (tx, ty) = (-nyi, nxi);
+            let unknowns = [
+                dir_index(nxi, nyi),
+                dir_index(nxi + tx, nyi + ty),
+                dir_index(nxi - tx, nyi - ty),
+            ];
+            let cells = self.side_cells(edge);
+            let stale = self.conv_stale_next[edge.index()]
+                .as_mut()
+                .expect("checked above");
+            for (coord, (x, y)) in cells.into_iter().enumerate() {
+                let i = y * nx + x;
+                if self.solid[i] {
+                    continue;
+                }
+                let mut cell = [T::zero(); Q];
+                for (q, v) in cell.iter_mut().enumerate() {
+                    *v = self.f[q * n + i];
+                }
+                let mut it = cell.chunks_mut(1);
+                let mut fq: [&mut [T]; Q] =
+                    std::array::from_fn(|_| it.next().expect("Q chunks"));
+                let (r1, ux1, uy1) = ([self.rho[i]], [self.ux[i]], [self.uy[i]]);
+                match (force_on, ff) {
+                    (true, Some(field)) => collide_span::<T, true, true>(
+                        &mut fq,
+                        &r1,
+                        &ux1,
+                        &uy1,
+                        &field[i..i + 1],
+                        0,
+                        1,
+                        &p,
+                    ),
+                    (true, None) => {
+                        collide_span::<T, true, false>(&mut fq, &r1, &ux1, &uy1, &[], 0, 1, &p)
+                    }
+                    (false, _) => {
+                        collide_span::<T, false, false>(&mut fq, &r1, &ux1, &uy1, &[], 0, 1, &p)
+                    }
+                }
+                for (s, &q) in unknowns.iter().enumerate() {
+                    stale[coord * 3 + s] = cell[q];
+                }
+            }
+        }
     }
 
     /// Recompute rho/u on the four boundary lines from the post-BC
@@ -546,10 +640,11 @@ impl<T: Real> Simulation<T> {
         }
     }
 
-    /// Convective outflow. In the pull scheme the unknown slots at the edge
-    /// still hold the *previous step's* populations after streaming, so
-    /// `f(edge,t+1) = (f(edge,t) + Uc f(interior,t+1)) / (1 + Uc)` needs no
-    /// extra storage.
+    /// Convective outflow: `f(edge,t+1) = (f(edge,t) + Uc f(interior,t+1)))
+    /// / (1 + Uc)`. The memory term `f(edge,t)` — the previous step's
+    /// post-collide populations, which the pre-fusion implementation read
+    /// from the stale unknown slots left by streaming — is now supplied by
+    /// the explicitly captured `conv_stale` buffer (bit-identical values).
     fn convective_outflow(&mut self, edge: Edge, u_conv: T) {
         let (nxi, nyi) = edge.n_in();
         let (tx, ty) = (-nyi, nxi);
@@ -562,16 +657,19 @@ impl<T: Real> Simulation<T> {
         let inv = T::one() / (T::one() + lam);
         let nx = self.nx;
         let n = self.nx * self.ny;
+        let stale = self.conv_stale[edge.index()]
+            .take()
+            .expect("conv_stale allocated for ConvectiveOutflow edges at build");
         // weight share for the mass correction over the 3 unknown links
         let wsum = T::r(W[unknowns[0]] + W[unknowns[1]] + W[unknowns[2]]);
-        for (x, y) in self.side_cells(edge) {
+        for (coord, (x, y)) in self.side_cells(edge).into_iter().enumerate() {
             let i = y * nx + x;
             let j = ((y as i32 + nyi) as usize) * nx + (x as i32 + nxi) as usize;
             if self.solid[i] || self.solid[j] {
                 continue;
             }
-            for q in unknowns {
-                let prev = self.f[q * n + i];
+            for (s, &q) in unknowns.iter().enumerate() {
+                let prev = stale[coord * 3 + s];
                 self.f[q * n + i] = (prev + lam * self.f[q * n + j]) * inv;
             }
             // Mass-consistency correction: without it the independent
@@ -589,6 +687,7 @@ impl<T: Real> Simulation<T> {
                 self.f[q * n + i] = self.f[q * n + i] + corr * T::r(W[q]) / wsum;
             }
         }
+        self.conv_stale[edge.index()] = Some(stale);
     }
 
     /// Zou–He boundary parameterised by the face normal.
@@ -696,8 +795,15 @@ impl<T: Real> Simulation<T> {
             !self.on_open_edge(x, y),
             "cannot place solid cells on an open (inlet/outlet/outflow) edge"
         );
-        self.solid[y * self.nx + x] = true;
+        let i = y * self.nx + x;
+        self.solid[i] = true;
         self.solid_dirty = true;
+        // Freeze the cell's moments in both double buffers: solid cells are
+        // never rewritten by the fused pass, and multiphase wall adhesion
+        // reads rho at solids (virtual wall density).
+        self.rho2[i] = self.rho[i];
+        self.ux2[i] = self.ux[i];
+        self.uy2[i] = self.uy[i];
     }
 
     /// Mark every cell for which `pred(x, y)` returns true as solid.
@@ -796,6 +902,11 @@ impl<T: Real> Simulation<T> {
             }
         }
         self.update_moments();
+        // Keep the double buffers coherent at cells the fused pass never
+        // writes (solids, incl. init-prescribed virtual wall densities).
+        self.rho2.copy_from_slice(&self.rho);
+        self.ux2.copy_from_slice(&self.ux);
+        self.uy2.copy_from_slice(&self.uy);
     }
 
     /// Prescribe a per-node velocity profile for a `VelocityInlet` edge,
@@ -1006,7 +1117,8 @@ fn equilibrium<T: Real>(p: &Params<T>, r: T, vx: T, vy: T) -> [T; Q] {
 
 /// TRT collision (BGK when `omega_m == omega_p`) with Guo forcing over the
 /// solid-free spans of one row. `ff` optionally supplies a per-cell force
-/// added to the uniform one.
+/// added to the uniform one; the option is dispatched here, outside the hot
+/// loops, so both force flavours stay branch-free and vectorizable.
 fn collide_row<T: Real, const FORCE: bool>(
     fq: &mut [&mut [T]; Q],
     rho: &[T],
@@ -1019,7 +1131,12 @@ fn collide_row<T: Real, const FORCE: bool>(
     let nx = rho.len();
     let mut cursor = 0usize;
     for &(a, b) in runs.iter().chain(std::iter::once(&(nx as u32, nx as u32))) {
-        collide_span::<T, FORCE>(fq, rho, ux, uy, ff, cursor, a as usize, p);
+        match ff {
+            Some(field) => {
+                collide_span::<T, FORCE, true>(fq, rho, ux, uy, field, cursor, a as usize, p)
+            }
+            None => collide_span::<T, FORCE, false>(fq, rho, ux, uy, &[], cursor, a as usize, p),
+        }
         cursor = b as usize;
     }
 }
@@ -1029,13 +1146,17 @@ fn collide_row<T: Real, const FORCE: bool>(
 /// `ep = (feq_a + feq_b)/2` and `em = (feq_a - feq_b)/2`, halving the
 /// equilibrium arithmetic and keeping x/y expressions mirror-symmetric so
 /// lattice equivariance is preserved bit-for-bit.
+///
+/// `FORCE` compiles Guo forcing in or out; `FF` selects the per-cell force
+/// field (`field`, ignored and empty when false) over the uniform force.
+/// Both are const so every flavour of the inner loop is branch-free.
 #[allow(clippy::too_many_arguments)]
-fn collide_span<T: Real, const FORCE: bool>(
+fn collide_span<T: Real, const FORCE: bool, const FF: bool>(
     fq: &mut [&mut [T]; Q],
     rho: &[T],
     ux: &[T],
     uy: &[T],
-    ff: Option<&[[T; 2]]>,
+    field: &[[T; 2]],
     x0: usize,
     x1: usize,
     p: &Params<T>,
@@ -1059,7 +1180,7 @@ fn collide_span<T: Real, const FORCE: bool>(
     let rho = &rho[x0..x1];
     let ux = &ux[x0..x1];
     let uy = &uy[x0..x1];
-    let ff = ff.map(|f| &f[x0..x1]);
+    let field = if FF { &field[x0..x1] } else { field };
     let len = x1 - x0;
     assert!(
         f0.len() == len
@@ -1074,6 +1195,7 @@ fn collide_span<T: Real, const FORCE: bool>(
             && rho.len() == len
             && ux.len() == len
             && uy.len() == len
+            && (!FF || field.len() == len)
     );
     for x in 0..len {
         let (r, vx, vy) = (rho[x], ux[x], uy[x]);
@@ -1084,9 +1206,10 @@ fn collide_span<T: Real, const FORCE: bool>(
         let r45 = f45 * r;
         // Forcing pieces (compiled out when FORCE is false).
         let (fx, fy, uf3) = if FORCE {
-            let (fx, fy) = match ff {
-                Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
-                None => (p.fx, p.fy),
+            let (fx, fy) = if FF {
+                (p.fx + field[x][0], p.fy + field[x][1])
+            } else {
+                (p.fx, p.fy)
             };
             (fx, fy, three * (vx * fx + vy * fy))
         } else {
@@ -1130,24 +1253,87 @@ fn collide_span<T: Real, const FORCE: bool>(
     }
 }
 
-/// Pull-scheme streaming for one destination row, source-side decomposed:
-/// solid-free source spans become plain shifted copies, solid runs become
-/// half-way bounce-back. Ends by recomputing the row's macroscopic moments
-/// from the freshly streamed populations (`rho/ux/uy` are this row's slices:
-/// read for the moving-wall term, then overwritten). Returns the
-/// momentum-exchange force accumulated over probed solid links.
+/// Collide global source row `s` into a ring slot, unless already resident.
+/// The evicted slot is one whose tag is not in `needed` (`usize::MAX`
+/// entries mark unused sources). The ring stores rows as `Q` consecutive
+/// `nx`-slices per slot.
 #[allow(clippy::too_many_arguments)]
-fn stream_row<T: Real>(
-    y: usize,
-    out: &PlaneRows<'_, T>,
+fn ensure_collided<T: Real>(
+    s: usize,
+    needed: &[usize; 3],
+    ring: &mut [T],
+    tags: &mut [usize; 3],
+    nx: usize,
+    n: usize,
     f: &[T],
-    solid: &[bool],
-    solid_runs: &[Vec<(u32, u32)>],
-    wall_u: &[[T; 2]],
-    rho: &mut [T],
-    ux: &mut [T],
-    uy: &mut [T],
+    rho_old: &[T],
+    ux_old: &[T],
+    uy_old: &[T],
     ff: Option<&[[T; 2]]>,
+    force_on: bool,
+    runs: &[Vec<(u32, u32)>],
+    p: &Params<T>,
+) {
+    if tags.contains(&s) {
+        return;
+    }
+    // A slot is free if it is empty or holds a row not needed for the
+    // current destination row. (`usize::MAX` doubles as the "missing row"
+    // marker in `needed`, so empty slots must be tested first.)
+    let slot = (0..3)
+        .find(|&k| tags[k] == usize::MAX || !needed.contains(&tags[k]))
+        .expect("three ring slots cover at most two other needed rows");
+    tags[slot] = s;
+    let region = &mut ring[slot * Q * nx..(slot + 1) * Q * nx];
+    let row = s * nx;
+    let mut it = region.chunks_mut(nx);
+    let mut fq: [&mut [T]; Q] = std::array::from_fn(|_| it.next().expect("Q chunks"));
+    for (q, dst) in fq.iter_mut().enumerate() {
+        dst.copy_from_slice(&f[q * n + row..][..nx]);
+    }
+    let (r, ux, uy) = (
+        &rho_old[row..row + nx],
+        &ux_old[row..row + nx],
+        &uy_old[row..row + nx],
+    );
+    let ffrow = ff.map(|field| &field[row..row + nx]);
+    if force_on {
+        collide_row::<T, true>(&mut fq, r, ux, uy, ffrow, &runs[s], p);
+    } else {
+        collide_row::<T, false>(&mut fq, r, ux, uy, ffrow, &runs[s], p);
+    }
+}
+
+/// One fused collide+stream+moments band: the complete time-step kernel for
+/// destination rows `[y0, y1)` in a single sweep. This is the portable
+/// reference kernel for the V2 `CpuSimd` backend — it reads `f` and the old
+/// moments once, writes `out` and the new moments once, and keeps all
+/// intermediate (post-collide) state in a 3-row cache-resident ring.
+///
+/// Source rows are collided just-in-time: streaming destination row `y`
+/// pulls from the collided rows `y-1, y, y+1` held in the ring. The band's
+/// outermost halo rows are collided redundantly by the neighbouring band
+/// (same inputs, same results, no synchronisation). Solid-free source spans
+/// stream as plain shifted copies; solid runs bounce back with momentum
+/// injection for moving walls. Returns the momentum-exchange force over
+/// probed solid links.
+#[allow(clippy::too_many_arguments)]
+fn step_band<T: Real>(
+    y0: usize,
+    y1: usize,
+    f: &[T],
+    out: &PlaneRows<'_, T>,
+    rho_old: &[T],
+    ux_old: &[T],
+    uy_old: &[T],
+    rho_new: &FieldRows<'_, T>,
+    ux_new: &FieldRows<'_, T>,
+    uy_new: &FieldRows<'_, T>,
+    solid: &[bool],
+    runs: &[Vec<(u32, u32)>],
+    wall_u: &[[T; 2]],
+    ff: Option<&[[T; 2]]>,
+    force_on: bool,
     probe: Option<&[bool]>,
     g: &Geom,
     p: &Params<T>,
@@ -1155,82 +1341,128 @@ fn stream_row<T: Real>(
     let six = T::r(6.0);
     let two = T::r(2.0);
     let nx = g.nx;
-    let n = nx * g.ny;
+    let ny = g.ny;
+    let n = nx * ny;
     let mut pf = [T::zero(); 2];
-    for q in 0..Q {
-        let mut sy = y as isize - CY[q] as isize;
-        if sy < 0 || sy >= g.ny as isize {
-            if g.per_y {
-                sy = (sy + g.ny as isize) % g.ny as isize;
+    if y0 >= y1 {
+        return pf;
+    }
+    // Ring of collided source rows, tagged with global row indices.
+    let mut ring = vec![T::zero(); 3 * Q * nx];
+    let mut tags = [usize::MAX; 3];
+    for y in y0..y1 {
+        // Per-row partial sum, added to the band total at the end of the
+        // row: keeps the same floating-point grouping as the pre-fusion
+        // row-parallel reduction.
+        let mut pf_row = [T::zero(); 2];
+        // Global source rows feeding this destination row: sy = y - cy.
+        let src_y = |cy: i32| -> usize {
+            let sy = y as isize - cy as isize;
+            if sy < 0 || sy >= ny as isize {
+                if g.per_y {
+                    ((sy + ny as isize) % ny as isize) as usize
+                } else {
+                    usize::MAX // open/wall edge: unknown slots stay stale
+                }
             } else {
-                // Unknown populations on an open edge; filled by the
-                // open-edge pass right after streaming.
+                sy as usize
+            }
+        };
+        let needed = [src_y(1), src_y(0), src_y(-1)];
+        for &s in &needed {
+            if s != usize::MAX {
+                ensure_collided(
+                    s, &needed, &mut ring, &mut tags, nx, n, f, rho_old, ux_old, uy_old, ff,
+                    force_on, runs, p,
+                );
+            }
+        }
+        let ring_row = |s: usize, q: usize| -> &[T] {
+            let slot = tags.iter().position(|&t| t == s).expect("resident row");
+            &ring[(slot * Q + q) * nx..][..nx]
+        };
+        for q in 0..Q {
+            let sy = src_y(CY[q]);
+            if sy == usize::MAX {
                 continue;
             }
-        }
-        let sy = sy as usize;
-        let cx = CX[q] as isize;
-        let src = &f[q * n + sy * nx..][..nx];
-        // SAFETY: this task is the only writer of row `y`.
-        let dst = unsafe { out.row(q, y) };
-        let mut cursor = 0usize;
-        for &(a, b) in solid_runs[sy]
-            .iter()
-            .chain(std::iter::once(&(nx as u32, nx as u32)))
-        {
-            let (a, b) = (a as usize, b as usize);
-            // Fluid span [cursor, a): shifted copy src -> dst.
-            copy_span(dst, src, cursor, a, cx, g.per_x);
-            // Solid run [a, b): half-way bounce-back into the destination
-            // cells, with momentum injection for moving walls.
-            for sx in a..b {
-                let mut x = sx as isize + cx;
-                if x < 0 || x >= nx as isize {
-                    if g.per_x {
-                        x = (x + nx as isize) % nx as isize;
-                    } else {
+            let cx = CX[q] as isize;
+            let src = ring_row(sy, q);
+            // SAFETY: this band is the only writer of rows in [y0, y1).
+            let dst = unsafe { out.row(q, y) };
+            let mut cursor = 0usize;
+            for &(a, b) in runs[sy]
+                .iter()
+                .chain(std::iter::once(&(nx as u32, nx as u32)))
+            {
+                let (a, b) = (a as usize, b as usize);
+                // Fluid span [cursor, a): shifted copy ring -> dst.
+                copy_span(dst, src, cursor, a, cx, g.per_x);
+                // Solid run [a, b): half-way bounce-back into the
+                // destination cells (reflected populations come from the
+                // destination cell's own collided row, which is resident).
+                for sx in a..b {
+                    let mut x = sx as isize + cx;
+                    if x < 0 || x >= nx as isize {
+                        if g.per_x {
+                            x = (x + nx as isize) % nx as isize;
+                        } else {
+                            continue;
+                        }
+                    }
+                    let x = x as usize;
+                    let i = y * nx + x;
+                    if solid[i] {
                         continue;
                     }
-                }
-                let x = x as usize;
-                let i = y * nx + x;
-                if solid[i] {
-                    continue;
-                }
-                let s = sy * nx + sx;
-                // In deviation storage the formula is unchanged
-                // (w_q == w_opp(q)).
-                let fout = f[OPP[q] * n + i];
-                let wu = wall_u[s];
-                let cu = p.cxr[q] * wu[0] + p.cyr[q] * wu[1];
-                let fin = fout + six * p.wr[q] * rho[x] * cu;
-                dst[x] = fin;
-                if let Some(mask) = probe {
-                    if mask[s] {
-                        // Momentum given to the wall through this link, using
-                        // physical populations (deviation + weight) so the
-                        // static-pressure contribution on open surfaces (e.g.
-                        // rims) is retained; for closed bodies the weight
-                        // terms sum to exactly zero.
-                        let ftot = fout + fin + two * p.wr[q];
-                        pf[0] = pf[0] - p.cxr[q] * ftot;
-                        pf[1] = pf[1] - p.cyr[q] * ftot;
+                    let s = sy * nx + sx;
+                    // In deviation storage the formula is unchanged
+                    // (w_q == w_opp(q)).
+                    let fout = ring_row(y, OPP[q])[x];
+                    let wu = wall_u[s];
+                    let cu = p.cxr[q] * wu[0] + p.cyr[q] * wu[1];
+                    let fin = fout + six * p.wr[q] * rho_old[i] * cu;
+                    dst[x] = fin;
+                    if let Some(mask) = probe {
+                        if mask[s] {
+                            // Momentum given to the wall through this link,
+                            // using physical populations (deviation + weight)
+                            // so the static-pressure contribution on open
+                            // surfaces (e.g. rims) is retained; for closed
+                            // bodies the weight terms sum to exactly zero.
+                            let ftot = fout + fin + two * p.wr[q];
+                            pf_row[0] = pf_row[0] - p.cxr[q] * ftot;
+                            pf_row[1] = pf_row[1] - p.cyr[q] * ftot;
+                        }
                     }
                 }
+                cursor = b;
             }
-            cursor = b;
         }
+        // Fused moments: the nine destination rows just written are still
+        // cache-resident. Written to the double buffers so in-flight collides
+        // of other rows keep reading the previous step's moments.
+        let fq: [&[T]; Q] = std::array::from_fn(|q| {
+            // SAFETY: this band is the only holder of row `y`, and the
+            // mutable borrows from the streaming loop above have ended.
+            let row: &mut [T] = unsafe { out.row(q, y) };
+            &*row
+        });
+        // SAFETY: rows [y0, y1) of the new-moment buffers belong to this band.
+        let (rrow, uxrow, uyrow) =
+            unsafe { (rho_new.row(y), ux_new.row(y), uy_new.row(y)) };
+        moments_row(
+            &fq,
+            rrow,
+            uxrow,
+            uyrow,
+            ff.map(|field| &field[y * nx..(y + 1) * nx]),
+            &runs[y],
+            p,
+        );
+        pf[0] = pf[0] + pf_row[0];
+        pf[1] = pf[1] + pf_row[1];
     }
-    // Fused moments: the nine destination rows just written are still
-    // cache-resident, so recomputing rho/u here saves the separate
-    // full-field moments pass.
-    let fq: [&[T]; Q] = std::array::from_fn(|q| {
-        // SAFETY: this task is the only holder of row `y`, and the mutable
-        // borrows from the streaming loop above have all ended.
-        let row: &mut [T] = unsafe { out.row(q, y) };
-        &*row
-    });
-    moments_row(&fq, rho, ux, uy, ff, &solid_runs[y], p);
     pf
 }
 
@@ -1269,7 +1501,8 @@ fn copy_span<T: Copy>(dst: &mut [T], src: &[T], s0: usize, s1: usize, cx: isize,
 }
 
 /// Recompute macroscopic fields from the populations over the solid-free
-/// spans of one row.
+/// spans of one row. The per-cell force-field option is dispatched here,
+/// outside the hot loops.
 fn moments_row<T: Real>(
     fq: &[&[T]; Q],
     rho: &mut [T],
@@ -1282,20 +1515,24 @@ fn moments_row<T: Real>(
     let nx = rho.len();
     let mut cursor = 0usize;
     for &(a, b) in runs.iter().chain(std::iter::once(&(nx as u32, nx as u32))) {
-        moments_span(fq, rho, ux, uy, ff, cursor, a as usize, p);
+        match ff {
+            Some(field) => moments_span::<T, true>(fq, rho, ux, uy, field, cursor, a as usize, p),
+            None => moments_span::<T, false>(fq, rho, ux, uy, &[], cursor, a as usize, p),
+        }
         cursor = b as usize;
     }
 }
 
 /// Branch-free moment update over `[x0, x1)` of one row. The signed sums are
 /// grouped pairwise (axis, then diagonals) to stay mirror-symmetric in x/y.
+/// `FF` selects the per-cell force field (`field`, empty when false).
 #[allow(clippy::too_many_arguments)]
-fn moments_span<T: Real>(
+fn moments_span<T: Real, const FF: bool>(
     fq: &[&[T]; Q],
     rho: &mut [T],
     ux: &mut [T],
     uy: &mut [T],
-    ff: Option<&[[T; 2]]>,
+    field: &[[T; 2]],
     x0: usize,
     x1: usize,
     p: &Params<T>,
@@ -1311,7 +1548,7 @@ fn moments_span<T: Real>(
     let rho = &mut rho[x0..x1];
     let ux = &mut ux[x0..x1];
     let uy = &mut uy[x0..x1];
-    let ff = ff.map(|f| &f[x0..x1]);
+    let field = if FF { &field[x0..x1] } else { field };
     let len = x1 - x0;
     assert!(
         f0.len() == len
@@ -1326,6 +1563,7 @@ fn moments_span<T: Real>(
             && rho.len() == len
             && ux.len() == len
             && uy.len() == len
+            && (!FF || field.len() == len)
     );
     for x in 0..len {
         // Deviation storage: rho = 1 + sum(f_dev); sum(w c) = 0 so the
@@ -1335,9 +1573,10 @@ fn moments_span<T: Real>(
         let b = f8[x] - f6[x];
         let mx = (f1[x] - f3[x]) + (a + b);
         let my = (f2[x] - f4[x]) + (a - b);
-        let (fx, fy) = match ff {
-            Some(field) => (p.fx + field[x][0], p.fy + field[x][1]),
-            None => (p.fx, p.fy),
+        let (fx, fy) = if FF {
+            (p.fx + field[x][0], p.fy + field[x][1])
+        } else {
+            (p.fx, p.fy)
         };
         let r = T::one() + dr;
         rho[x] = r;
@@ -1439,16 +1678,7 @@ mod tests {
             std::array::from_fn(|_| it.next().unwrap().as_mut_slice())
         };
         let ffield = [[fx - p.fx, fy - p.fy]; 1];
-        super::collide_span::<f64, true>(
-            &mut fq,
-            &[r],
-            &[vx],
-            &[vy],
-            Some(&ffield),
-            0,
-            1,
-            &p,
-        );
+        super::collide_span::<f64, true, true>(&mut fq, &[r], &[vx], &[vy], &ffield, 0, 1, &p);
         for q in 0..Q {
             assert!(
                 (cell[q][0] - want[q]).abs() < 1e-15,
