@@ -278,11 +278,27 @@ Cd = 2Fx/(ρ U_mean² D)、Cl = 2Fy/(ρ U_mean² D)。
    になる（実測 L2rel ≈ 0.13·u0/(νk)。u0=1.28/N では 0.165 で収束次数を潰す）。
    係数は空間誤差フロア（e32=1.29e-3, e64=3.44e-4）より十分小さくなる
    u0 = 1.28e-4/N を凍結（オフセット ~2e-5、f64 の余裕 6 桁以上）。
-5. **3D キャビティ = T15.5**: 参照データは [T15_5_CAVITY3D_REFERENCE.md](T15_5_CAVITY3D_REFERENCE.md)
-   （Albensoeder & Kuhlmann 2005、Re=1000、来歴検証・7桁相互照合・滑らかさ監査済み。
-   **Ghia 誤植事件の教訓を適用済み**）。受入帯: 中央線 RMS ≤ 0.030U ほか同文書の帯。
-   安定性制約 Re/(N−2) ≲ 15 により N ≥ 72。テスト実体 `t15_5_cavity3d.rs` は
-   codex order #7 で敵対作成（2026-07-05 発注済み）。Re=100/400 は原本未入手のため保留。
+5. **3D cavity = T15.5** (adversarially authored by codex order #7, landed 2026-07-05):
+   reference data [T15_5_CAVITY3D_REFERENCE.md](T15_5_CAVITY3D_REFERENCE.md)
+   (Albensoeder & Kuhlmann 2005, Re=1000; provenance-verified, 7-digit cross-checked,
+   smoothness-audited — the Ghia-typo lesson applied). Test: `t15_5_cavity3d.rs`.
+   **Measured status (2026-07-05)**:
+   - Default suite = N=64 qualitative sentinel, **green** (47 s solo; mass drift
+     1.2e-16, symmetry-plane max|v|/U ≈ 2e-15, extrema signs/locations qualitative).
+   - `#[ignore]` N=72 spec profiles (1477 s): centerline **profile RMS passes**
+     (u: 0.0153 vs limit 0.030U; w: 0.0255 vs 0.035U); midplane symmetry 1.7e-15;
+     anti-2D guard passes. **Extremum u_min is 10.5% shallow** (−0.25084 @ z=0.129 vs
+     A&K −0.28038 @ z=0.124; band was 6%) — vortex-core intensity sits on the
+     numerical-diffusion side at this resolution. Band freeze pending the
+     N=64→72 convergence-tendency run (in progress); disposition will be recorded
+     in PHYSICS.md before any band change.
+   - N=48 diverges (NaN) — consistent with the documented stability constraint
+     Re/(N−2) ≲ 15; N ≥ 72 for spec-grade profiles.
+   - Re=100/400: on hold (original tables not yet obtained).
+   - Endpoint rule (from #7): table endpoints are boundary values themselves —
+     sampler returns u(z=0)=0, u(z=1)=U, w(x=0)=w(x=1)=0 directly; using adjacent
+     fluid cells conflates the half-way moving-wall layer with reference endpoints
+     (u-line RMS degrades to 0.0374 at N=72 if you get this wrong).
 
 ---
 
