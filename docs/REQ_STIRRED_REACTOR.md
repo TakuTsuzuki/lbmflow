@@ -1,6 +1,6 @@
 # 要求定義書（完成版）：回転境界・高密度比二相・LES 連成 3D マルチフィジックス LBM ソルバ
 
-**文書ID**: REQ-M-F-STR / **改訂**: rev.3（rev.1=codex 敵対的レビュー全48件反映／rev.1a=PM 決定「既定は忠実度最優先・緩和は後付け拡張点」を反映／rev.1b=PM 統合: 表題のドメイン中立化・コア改名追随・§7 メモリ予算表追加・VALIDATION T17 配線／rev.2=codex 第2次レビュー 11 件全採択: 緩和同等性検証 VR-STR-RELAX 新設・スコープ語の明確化・変数 σ 表面張力規約・F_b^scalar 追加・予算表算術修正ほか — docs/proposals/req-round2-findings.md 参照／**rev.3** = competitive-review triage diff merged (authored as "rev.1c" against rev.1b, layered here onto rev.2): P1 population balance, P2 §4.8 extension contracts, P3 FR-IO-05/06, P4 reference datasets, P5 product-layer scope note, §11 implementation dependency DAG. New content in English per the 2026-07-05 language directive; full translation of this document is delegated to the translation session.）
+**文書ID**: REQ-M-F-STR / **改訂**: rev.3（rev.1=codex 敵対的レビュー全48件反映／rev.1a=PM 決定「既定は忠実度最優先・緩和は後付け拡張点」を反映／rev.1b=PM 統合: 表題のドメイン中立化・コア改名追随・§7 メモリ予算表追加・VALIDATION T17 配線／rev.2=codex 第2次レビュー 11 件全採択: 緩和同等性検証 VR-STR-RELAX 新設・スコープ語の明確化・変数 σ 表面張力規約・F_b^scalar 追加・予算表算術修正ほか — docs/proposals/req-round2-findings.md 参照／**rev.3** = competitive-review triage diff merged (authored as "rev.1c" against rev.1b, layered here onto rev.2): P1 population balance, P2 §4.8 extension contracts, P3 FR-IO-05/06, P4 reference datasets, P5 product-layer scope note, §11 implementation dependency DAG. New content in English per the 2026-07-05 language directive.／**rev.4** = external numerical-physics review (REV-CFD-*, filed against rev.1a) triaged and merged: all 4 Critical fixes (sparger phase inversion, Allen–Cahn/continuity mass-flux consistency, non-equilibrium stress stage convention, forcing second-moment single-definition), Ca_spurious dimensional fix, Pe_N/Pe_tip split, active-scalar predictor–corrector dataflow, precision-profile enum, conservative scalar forms, four-way contact contract (extension-gated), viscosity-interpolation & σ(κ,β) freeze, ε_g processing definitions, and **provisional numeric acceptance bands** under a band-governance rule. Disposition table in TESTING_NOTES.md; MJ-008 was already fixed in rev.2. This file is PM-owned for translation — excluded from the bulk translation session.）
 **位置づけ**: `docs/PLAN.md` の M-F（垂直機能）／ `ARCHITECTURE_V2.md` への上位要求。
 検証受入は [VALIDATION.md](VALIDATION.md) **T17**（VR-STR-01〜07 を配線）。
 **対象コア**: `lbm-core`（旧 lbm-core2。D3Q19/D3Q27, CpuScalar/CpuSimd/wgpu, MPI 分割）
@@ -11,7 +11,16 @@
 
 - Critical/Major の式・符号・定義バグ（非平衡応力評価、`τ_eff`、MRF 見かけ力、表面張力、保存型 Allen-Cahn、Np/N_Q、無次元数）を全て修正・係数固定した。
 - 欠落物理（上部脱気、静水圧 well-balanced、乱流 Schmidt 数 SGS スカラー、粒子 SGS 分散、気泡誘起乱流 BIT、接触角、初期化・助走、メモリ予算）を新規要求として追加した。
-- **納品スコープ（rev.2 で明確化）**: **忠実度既定のサブシステム群（§1 表の「既定」列）を一括同時実装**する。緩和拡張（MRF・point-bubble・one-way・block-AMR・積極的 f32）は初版では **trait 境界・設定スキーマ・検証項目（VR-STR-RELAX）を予約するのみ**とし、実装は後付け。codex の「モード分割」は納品フェーズではなく **実行時モードの相互排他制約** として §1 の構成マトリクスに落とす。同一計算内で物理的に競合するモード（MRF＋IBM 同一ゾーン、位相平均＋MRF 等）はコンフィグ検証で棄却する。
+- **納品スコープ（rev.2 で明確化、rev.4 で列挙を確定）**: **忠実度既定のサブシステム群（§1 表の「既定」列）を一括同時実装**する。緩和拡張（MRF・point-bubble・one-way・block-AMR・積極的 f32）は初版では **trait 境界・設定スキーマ・検証項目（VR-STR-RELAX）を予約するのみ**とし、実装は後付け。codex の「モード分割」は納品フェーズではなく **実行時モードの相互排他制約** として §1 の構成マトリクスに落とす。同一計算内で物理的に競合するモード（MRF＋IBM 同一ゾーン、位相平均＋MRF 等）はコンフィグ検証で棄却する。
+  **Initial delivery (release gate)**: IBM-inertial, resolved-phasefield, active scalar
+  (predictor–corrector coupling, §5), two-way particles, uniform grid, fidelity
+  precision profile (`mixed_safe`, §7). **Phase 2 (API-reserved now, implemented
+  later, accepted via VR-STR-RELAX)**: MRF-frozen-rotor, point-bubble (+PBM),
+  one-way particles, four-way particle contact (FR-PART-04..06), block-AMR,
+  aggressive f32 (`mixed_fast`), hybrid interface, thermal axis.
+  "All subsystems simultaneously" means all physics axes exist in the initial
+  delivery — not all modes of each axis. (REV-CFD-MJ-008; same substance as the
+  rev.2 fix, list made explicit.)
 - 検証不能語（「保証」「自然に許容」「安定に積分」）を測定可能な誤差・保存則・適用範囲へ置換した。
 - AMR は「初期版は一様格子基準、AMR は上位オプション（coarse-fine 保存補間・時間ステップ比・検証問題を定義した上で有効化）」へ降格（#29）。
 
@@ -52,7 +61,10 @@ We   = ρ_l N² D³ / σ
 Eo   = Δρ g d_b² / σ                  (=Bond, 気泡スケール)
 Mo   = g μ_l⁴ Δρ / (ρ_l² σ³)
 Ca   = μ_l U / σ
-Sc   = ν_l / D_m,   Pe = U L / D_m = Re·Sc
+Sc   = ν_l / D_m
+Pe_N   = N D² / D_m = Re·Sc          (impeller velocity scale ND — REV-CFD-MJ-006)
+Pe_tip = U_tip D / D_m = π·Re·Sc     (tip speed U_tip = πND; each use site must
+                                      state which Pe it means — no bare "Pe")
 Da_n = k C_ref^{n-1} · (L/U)          (反応 n 次, k は速度定数; 次数ごとに別記)
 St   = τ_p / τ_f,   τ_p = ρ_p d_p² / (18 μ_l)
 Np   = P / (ρ_l N³ D⁵),  P = 2π N T_q = Ω T_q   (T_q=トルク; N は rev/s, ρ は液相基準)
@@ -72,24 +84,42 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 ## 3. 支配方程式系（修正版）
 
 ```
-連続相（低 Mach LBM で回収, 相別密度で well-balanced 重力）:
-  ∂ρ/∂t + ∇·(ρu) = 0
-  ∂(ρu)/∂t + ∇·(ρuu) = -∇p + ∇·[ (μ(γ̇)+μ_t)(∇u+∇uᵀ) ]
+連続相（低 Mach LBM で回収, 相別密度で well-balanced 重力。
+rev.4 / REV-CFD-CR-002: mass-flux consistency with the phase-field diffusion —
+with ρ=ρ(φ) and a diffusive phase flux J_φ, the naive ∂ρ/∂t+∇·(ρu)=0 cannot hold;
+the density flux J_ρ = (ρ_l−ρ_g) J_φ must appear in BOTH the continuity identity
+and the momentum advection (consistent/AGG-type formulation — mandatory at
+ρ_l/ρ_g ≈ 10³)）:
+  ∂ρ/∂t + ∇·(ρu + J_ρ) = 0,        J_ρ = (ρ_l−ρ_g) J_φ
+  ∂(ρu)/∂t + ∇·[(ρu + J_ρ) u] = -∇p + ∇·[ (μ(γ̇)+μ_t)(∇u+∇uᵀ) ]
                         + F_s + ρ g + F_b^{scalar} + F_g^{disp} + F_p + F_rot
+  ・The SAME discrete J_ρ is used in both equations (single code path — verified
+    by code review and the advected-droplet conservation test, §8 VR-STR-03/05).
+  ・If a quasi-incompressible / pressure-evolution formulation is adopted instead,
+    its continuity statement, divergence condition, and conservation checks must
+    replace the above explicitly — silence is not an option.
   ・重力は全相に ρg を課し、静水圧 ∇p_hydro = ρg を well-balanced に離散化（#34）。
   ・F_b^{scalar}（rev.2, active 密度帰還）: 溶質浮力 F_b = ρ_0 β_C (C−C_0) g の
     Boussinesq 摂動力。C≡C_0 で厳密に 0 とし、ρ(φ)g の well-balanced 静水圧相殺とは
     **混ぜない**（独立の力源として合成。詳細は docs/proposals/active-scalar-feedback.md）。
   ・F_rot は MRF モードのみ（§4.3）。μ(γ̇) と μ_t の合成は §4.7 の陰的整合。
 
-二相界面（保存型 Allen–Cahn 相場, Fakhari 2017 系に固定, #8）:
-  ∂φ/∂t + ∇·(φu) = ∇·[ M ( ∇φ − (4/W) φ(1−φ) n̂ ) ]
-  n̂ = ∇φ / (|∇φ| + ε),  φ∈[0,1] (φ=1:液, φ=0:気),  M[length²/time]
-  密度・粘性補間: ρ(φ)=ρ_g+φ(ρ_l−ρ_g),  1/μ or μ は指定補間則で固定。
+二相界面（保存型 Allen–Cahn 相場, Fakhari 2017 系に固定, #8。
+rev.4: written in explicit conservative-flux form so J_φ is a first-class object）:
+  ∂φ/∂t + ∇·(φu + J_φ) = 0,   J_φ = −M [ ∇φ − (4/W) φ(1−φ) n̂ ]
+  n̂ = ∇φ / (|∇φ| + ε),  φ∈[0,1] (φ=1: liquid, φ=0: gas),  M[length²/time]
+  Density interpolation: ρ(φ) = ρ_g + φ(ρ_l−ρ_g).
+  Viscosity interpolation (rev.4 / REV-CFD-MJ-013 — default frozen):
+    **harmonic in μ**:  1/μ(φ) = φ/μ_l + (1−φ)/μ_g
+  Alternatives (linear-in-μ, linear-in-ν) are explicit config options, logged in
+  run metadata, and are NOT covered by the default validation bands.
 
 表面張力（化学ポテンシャル形式を基準に、σ 可変時は規約分岐。rev.2, #7）:
   μ_φ = 4β φ(φ−1)(φ−1/2) − κ ∇²φ
-  σ = √(2κβ)/6·(係数はモデル定義), W = 4√(κ/(2β)) の関係で (σ,W)↔(κ,β) を確定
+  σ = √(2κβ)/6,   W = 4√(κ/(2β))    ← these ARE the definitions for the adopted
+  double-well free energy (rev.4 / REV-CFD-MJ-013: the "coefficients are
+  model-defined" hedge is removed; internal consistency of {σ, W, κ, β, μ_φ} was
+  verified in the codex round-2 review; the (σ,W) ↔ (κ,β) inversion is unique)
   ・σ 一定時（基準形）: F_s = μ_φ ∇φ （CSF 等価 σκn̂δ_s は検証項へ）
   ・σ が C_k / 温度に依存する active 時: F_s = μ_φ∇φ は直接使用せず、Marangoni 接線力
     との二重計上を避ける well-balanced CSF/化学ポテンシャル併用形に一本化する
@@ -106,10 +136,23 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
                + [高精度時] F_Saffman + F_Basset + F_Faxen
   two/four-way 時は反力を正則化カーネルで散布し運動量保存を検証
 
-スカラー・反応（成分 k, active/passive 明示, #13, #14）:
-  ∂C_k/∂t + u·∇C_k = ∇·[ (D_k + ν_t/Sc_t) ∇C_k ] + R_k(C) + Ṡ_k^{if}
+スカラー・反応（成分 k, active/passive 明示, #13, #14。
+rev.4 / REV-CFD-MJ-011: conservative forms are normative for two-phase and
+active-density cases — the non-conservative single-phase form is a special case）:
+  Single-phase passive (simplified form, valid only when ρ, α uniform):
+    ∂C_k/∂t + u·∇C_k = ∇·[ (D_k + ν_t/Sc_t) ∇C_k ] + R_k(C) + Ṡ_k^{if}
+  Two-phase, phase-wise conservative (normative for gas–liquid scalars,
+  q ∈ {gas, liquid}, α_liq = φ, α_gas = 1−φ):
+    ∂(α_q C_{k,q})/∂t + ∇·(α_q u C_{k,q})
+      = ∇·[ α_q (D_{k,q} + ν_t/Sc_t) ∇C_{k,q} ] + α_q R_{k,q}(C) + S_{k,q}^{if}
+  Density-based active scalar (when the scalar feeds back into ρ):
+    ∂(ρY_k)/∂t + ∇·(ρ u Y_k + J_k) = R_k + S_k^{if}
   ・SGS スカラー流束は乱流 Schmidt 数 Sc_t で閉じる（既定 Sc_t=0.7, 可変）。
-  ・Ṡ_k^{if}: 解像界面は法線ジャンプ＋分配係数、point-bubble は k_L a(C*−C)（#35）。
+  ・S^{if}: 解像界面は法線ジャンプ＋分配係数（Henry partition — the sign convention
+    is: S_{k,liq}^{if} = −S_{k,gas}^{if}, interfacial flux positive into liquid）、
+    point-bubble は k_L a(C*−C)（#35）。
+  ・Conservation statement: Σ_q ∫ α_q C_{k,q} dV changes only by boundary fluxes
+    and reactions — this is the quantity tested in VR-STR-05 scalar drift.
 
 渦粘性（SGS, Smagorinsky と WALE を分離, #4）:
   Smagorinsky: ν_t = (C_s Δ)² |S̄|,  |S̄|=√(2 S̄:S̄)
@@ -124,7 +167,10 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 ### 4.1 基盤 LBM コア
 - **FR-CORE-01**: D3Q19/D3Q27 選択可。**D3Q27 を既定とする条件を「多相 or 強 forcing or cumulant 使用時」と限定**（#30）。各格子で保持する平衡分布の Hermite 次数と回収精度を分けて定義（D3Q19 は 3 次等方性に制限あり）。**M-F 忠実度既定シナリオは多相・強 forcing 条件に該当するため常に D3Q27**。単相・弱 forcing の派生シナリオ（例: VR-STR-01 単相撹拌）では D3Q19 を許可（rev.2, 所見11）。
 - **FR-CORE-02**: 中心モーメント（cascaded）／cumulant を実装。安定性は「保証」ではなく **対象ベンチでの許容緩和率範囲・positivity・regularization/filtering/entropic limiter の有無** で規定（#31）。
-- **FR-CORE-03**: Guo forcing。速度モーメントは `ρu = Σ c_i f_i + Δt F/2`。**応力評価では forcing 二次モーメント補正を差し引く**（§4.6, #2）。
+- **FR-CORE-03**: Guo forcing。速度モーメントは `ρu = Σ c_i f_i + Δt F/2`。
+  Stress evaluation uses the forcing second-moment correction **as defined by the
+  single equation in FR-STRESS-01** — prose words like "subtract"/"add" are banned
+  from this topic; the equation is the only definition (rev.4 / REV-CFD-CR-004).
 - **FR-CORE-04**: `Ma_lattice ≤ 0.1`、圧縮性誤差 `O(Ma²)` 制御。音響スケーリングと非圧縮性の整合を単位変換 feasibility に含める（#25）。
 
 ### 4.2 乱流モデル（LES-LBM）
@@ -142,8 +188,29 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 
 ### 4.4 高密度比二相流
 - **FR-VOF-01**: 保存型 Allen-Cahn（§3 に固定）。質量保存誤差はベンチ別に規定 — **閉じた静止液滴 / 上昇単一気泡 / スパージャ開境界** で時間・格子解像度・流出入量込みの許容誤差を設定（#9）。Shan-Chen は本用途非採用。
-- **FR-VOF-02**: 寄生流は静止液滴で `|u|_spurious·L/(σ/μ) = Ca_spurious < 10⁻³`（対象 We→0、解像度明記）。well-balanced 化学ポテンシャル形式（#7 の係数関係を実装）。
-- **FR-VOF-03**（スパージャ）: 「気相体積流量境界 / 確率的気泡注入 / 解像オリフィス」から選択（単純 `φ=1`＋速度 Dirichlet 単独は禁止）。流量保存・圧力境界・接触角・`d_b/W`・`d_b/Δx` 下限を明記（#10）。分裂・合体は「数値的に許容」までに弱め、実薄膜排液は解かない旨明記（#11）。
+- **FR-VOF-02** (rev.4 / REV-CFD-MJ-005 — dimensional fix): spurious currents on a
+  static droplet are bounded by the (dimensionless) capillary number
+  `Ca_spurious = μ_l |u|_spurious / σ < 10⁻³` (target We→0, resolution stated).
+  The old `|u|·L/(σ/μ)` form carried a stray length dimension and is void. A
+  length-bearing indicator, if wanted, is `Re_spurious = |u|_spurious L/ν_l` —
+  a separate metric, never called Ca. well-balanced 化学ポテンシャル形式（#7 の係数関係を実装）。
+- **FR-VOF-03**（スパージャ, rev.4 / REV-CFD-CR-001 — **phase-inversion fix**）:
+  the sparger injects GAS; under the §3 definition (φ=1: liquid, φ=0: gas) the
+  injected phase value is **φ=0**. The rev.1 text banned "plain `φ=1` + velocity
+  Dirichlet" — that read as a liquid-injection ban and inverted the phase BC.
+  Corrected requirements:
+  - Choose from 気相体積流量境界 / 確率的気泡注入 / 解像オリフィス. A plain
+    **`φ=0` + velocity Dirichlet alone is banned** — the injection model must
+    simultaneously satisfy gas volumetric-flow conservation, pressure consistency,
+    contact angle, and the `d_b/W`, `d_b/Δx` lower bounds（#10）.
+  - **The scenario schema/API never exposes raw φ for inlets**: config says
+    `inlet_phase: gas | liquid` and the core maps it (gas→φ=0, liquid→φ=1) —
+    enforced by config validation (A-4 style). Outputs report `φ_liquid` and
+    `α_g = 1−φ` with explicit names.
+  - Acceptance: gas-inlet setting injects φ=0 (unit test); a sparger-only case
+    balances injected gas volume vs. domain gas-volume increase within tolerance
+    (VR-STR-02c precursor); no schema field accepts a raw φ boundary value.
+  分裂・合体は「数値的に許容」までに弱め、実薄膜排液は解かない旨明記（#11）。
 - **FR-VOF-04**（point-bubble）: 切替条件に `d_b/W, Eo, Re_b, α_g, We_b, 物質移動一貫性` を含める。hybrid 混在時の相間 質量・運動量・スカラー保存則を定義（#12）。
   **(rev.3, P1)** Population balance modelling (PBM) of the bubble-size distribution is
   required on the point-bubble path (breakup/coalescence kernels, e.g. Luo–Svendsen /
@@ -159,15 +226,48 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 - **FR-PART-01**: `α_p`/mass-loading で one/two/four-way 切替（閾値明示）。Schiller-Naumann の `Re_p` 適用範囲、反力散布カーネル、運動量保存検証を要求（#16）。中立浮力微粒子では Saffman/Basset/Faxen の要否を `d_p/Δx`・`St` で判定。
 - **FR-PART-02**: 解像粒子法（PSM/Noble-Torczynski, Ladd/Aidun-Lu）へ切替可。
 - **FR-PART-03**: 軌跡沿い `∫γ̇dt`・`max γ̇` を記録。**LES 追跡時は SGS 乱流分散（stochastic dispersion）を有効化**、または resolved-only を明記（曝露 PDF/CDF の格子依存を回避, #17）。
+- **FR-PART-04 (rev.4 / REV-CFD-MJ-012 — four-way contact contract; Phase-2
+  extension, API-reserved in v1)**: four-way coupling requires a soft-sphere
+  normal-collision model with explicit parameters: restitution `e_n`, collision
+  time `T_col`, spring `k`, dashpot `η`, max overlap `δ_max`, particle substep
+  `Δt_p` (with `Δt_p ≲ T_col/10`).
+- **FR-PART-05 (rev.4)**: when `d_p/Δx` does not resolve the lubrication gap, a
+  lubrication correction (or calibrated implicit lubrication) is required; the
+  applicability condition is stated with the model.
+- **FR-PART-06 (rev.4 — config guard, initial delivery)**: while four-way is
+  unimplemented/unvalidated, runs exceeding the `α_p` / mass-loading threshold of
+  the two-way regime are **rejected at config validation** (A-4 style), with the
+  threshold and its source stated in the error message. Initial delivery ships
+  two-way + this guard; contact benches (particle–particle, particle–wall,
+  settling, sheared suspension, overlap ≤ δ_max) gate the Phase-2 extension.
 
 ### 4.6 応力場評価（規約固定, #1, #2, #18, #19, #20）
-- **FR-STRESS-01**: ひずみ速度は非平衡分布から局所評価。**規約を固定**:
+- **FR-STRESS-01** (rev.4 / REV-CFD-CR-003, CR-004 — stage convention and forcing
+  correction fixed by equations, not prose): strain rate is evaluated locally from
+  non-equilibrium distributions. **The default stage is pre-collision /
+  post-streaming** (the distribution as it arrives, before collide — the stage the
+  standard coefficient below is derived for):
   ```
-  f_i^{neq} = f_i − f_i^{eq}（post-collision, pre-streaming; u は F/2 補正込み）
-  Q_αβ = Σ_i c_iα c_iβ f_i^{neq} + (Δt/2)(u_α F_β + u_β F_α)   ← forcing 二次モーメント補正
-  S_αβ = − Q_αβ / (2 ρ c_s² τ_eff Δt)
+  f_i^{neq,pre} = f_i^{pre} − f_i^{eq}(ρ, u)        (u includes the F/2 correction)
+  Π_neq_raw     = Σ_i c_iα c_iβ f_i^{neq,pre}
+  Π_force       = −(Δt/2)(u_α F_β + u_β F_α)         (Guo forcing second moment,
+                                                      for THIS engine's u/f_eq defs)
+  Π_neq_corr    = Π_neq_raw − Π_force  =  Π_neq_raw + (Δt/2)(uF + Fu)
+  S_αβ          = − Π_neq_corr / (2 ρ c_s² τ_eff Δt)
   ```
-  cumulant/MRT ではせん断モーメント緩和率で係数補正。Smagorinsky 閉包の循環依存は **代数閉形式**で解く（`|Q|` から `τ_eff` を陽に求める; Hou et al. 型二次式）。
+  `Π_neq_corr` is the ONLY normative definition; natural-language sign words are
+  non-normative. The exact sign of Π_force is derivation-frozen against this
+  engine's Guo discretisation **before implementation** and locked by a negative
+  test (body-force Poiseuille must FAIL with the sign flipped — §8 VR-STR-03).
+  **If the post-collision / pre-streaming stage is used instead** (e.g. inside a
+  fused kernel where it is cheaper), the stage transform is mandatory:
+  BGK: `Π_neq,pre = Π_neq,post / (1 − 1/τ_eff)`; MRT/cumulant: apply the inverse
+  shear-moment relaxation `R(τ_shear)⁻¹` — then proceed with the equations above.
+  The stress-evaluation API takes a required `neq_stage` enum
+  (`PreCollision | PostCollision`) — no default-by-silence, misuse is a compile-
+  or construct-time error (same philosophy as A-4/A-5 guards).
+  cumulant/MRT ではせん断モーメント緩和率で係数補正。Smagorinsky 閉包の循環依存は
+  **代数閉形式**で解く（`|Q|` から `τ_eff` を陽に求める; Hou et al. 型二次式）。
 - **FR-STRESS-02**: 出力応力を **`resolved viscous` / `SGS` / `capillary` / `particle`** に分離定義。`γ̇=√(2S:S)`、第二不変量 `II_S`、von Mises は算出元テンソルを限定（#19）。
 - **FR-STRESS-03**: 壁せん断はモード別に定義（**接線速度勾配再構成 / IBM forcing 積分 / MEM**）。内挿境界近傍の非平衡量が壁勾配を表さない場合の扱いを明記。検証は曲面移動壁を含む（#20）。
 - **FR-STRESS-04**: 非 Newton `μ(γ̇)`（Carreau-Yasuda/Casson/power-law）と `μ_t` の合成則・反復手順・収束基準・`τ_min/τ_max`・LES 適用範囲を明示（二重計上・発散回避, #18）。
@@ -201,7 +301,23 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 
 ## 5. 連成・時間積分（#28）
 
-- **FR-COUP-01**: 既定データフロー「相場更新 → ρ/μ 場更新 → 力源合成(`F_s+ρg+F_b^{scalar}+F_g+F_p+F_rot`) → 融合 collide-stream-moments → 境界 → スカラー ADE → 反応(split) → 粒子積分」。**強連成・剛直反応・表面張力波では演算子分割誤差・サブサイクリング・反復強連成を要求**。capillary time step `Δt_σ ≤ √(ρ̄ Δx³/(2πσ))`、粒子 `Δt_p`、反応 ODE `Δt_r` の各制約を課す。
+- **FR-COUP-01** (rev.4 / REV-CFD-MJ-007 — the dataflow is split by scalar mode so
+  "active" is not silently one step lagged):
+  **passive scalar**: 相場更新 → ρ/μ 場更新 → 力源合成(`F_s+ρg+F_g+F_p+F_rot`) →
+  融合 collide-stream-moments → 境界 → スカラー ADE → 反応(split) → 粒子積分。
+  **active scalar (fidelity default — predictor–corrector)**:
+  scalar/reaction predictor → property update `ρ(C), μ(C), σ(C)[, T]` →
+  力源合成(incl. `F_b^{scalar}`, Marangoni) → flow step → scalar ADE corrector →
+  reaction corrector → property re-evaluation (→ optional flow–scalar iteration
+  for stiff coupling). Time-lagged explicit feedback is allowed only as the
+  flagged relaxation `active_scalar_lagged=true`, with stated applicability
+  (weak feedback, non-stiff), stability conditions, and a lag-error benchmark —
+  accepted via VR-STR-RELAX. Mode (coupled/lagged) is logged in run metadata.
+  **強連成・剛直反応・表面張力波では演算子分割誤差・サブサイクリング・反復強連成を要求**。
+  capillary time step `Δt_σ ≤ √(ρ̄ Δx³/(2πσ))`、粒子 `Δt_p`、反応 ODE `Δt_r` の各制約を課す。
+  Acceptance: on the active-scalar standard bench (Marangoni or
+  concentration-dependent viscosity), the feedback error converges under
+  time-step halving (§8 VR-STR-06+/RELAX).
 - **FR-COUP-02**: 反応ソルバは陽/陰/Rosenbrock-BDF を剛直性判定で切替。**負濃度制限・元素保存誤差・split 誤差の受入基準**を定義（#15）。
 - **FR-COUP-03**: 無次元マッチングは §2.2 の優先順位＋feasibility check（#25）。
 - **FR-COUP-04**: `probe_state_hash` ビット等価は**単一バックエンドの実装回帰限定**。物理妥当性・保存則は別基準（§8, #28, #42）。
@@ -211,7 +327,17 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 
 ## 6. 入出力・可視化
 
-- **FR-IO-01**: 3D フィールド出力は **一様格子=VTI、構造曲線=VTS、非構造/AMR=VTU/AMR**（#43）。`ε_g` は解像相場・point-bubble・hybrid ごとに定義（体積平均窓・フィルタ幅明記; `φ` は拡散界面指標であってボイド率ではない, #36）。
+- **FR-IO-01**: 3D フィールド出力は **一様格子=VTI、構造曲線=VTS、非構造/AMR=VTU/AMR**（#43）。`φ` は拡散界面指標であってボイド率ではない（#36）。
+  **ε_g processing definitions (rev.4 / REV-CFD-MN-014)** — every ε_g output
+  carries filter width, averaging volume, and time window as metadata:
+  - resolved-phasefield: `ε_g_raw = ⟨1−φ⟩_V` and
+    `ε_g_thresholded(φ_c) = volume(φ<φ_c)/V`, default `φ_c = 0.5` — both output.
+  - point-bubble: `ε_g_bubble = Σ_b V_b W_kernel(x−x_b) / V_filter`
+    (kernel-smoothed void fraction).
+  - hybrid: `ε_g_total = ε_g_resolved + ε_g_bubble` with double-count exclusion
+    over the resolved region.
+  Any ε_g indicator must be recomputable from a snapshot; experiment comparisons
+  state which definition was used.
 - **FR-IO-02**: 時間平均／位相平均統計（平均場・RMS・レイノルズ応力）。**位相平均は IBM/overset 非定常モードのみ**。MRF は回転座標平均/疑似定常として別出力（#37）。
 - **FR-IO-03**: Web GUI に 3D 表示（スライス・等値面・せん断ヒートマップ・時系列プローブ）。既存 2D canvas を WebGL/WebGPU 拡張。
 - **FR-IO-04**: 粒子累積せん断曝露のヒストグラム/CDF（SGS 分散の有無を明記）。
@@ -257,7 +383,24 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
   1e9 格子は **40–80 枚のマルチ GPU or CPU クラスタ MPI が必須**（単 GPU では不成立）。
   結論: 忠実度既定での 1e9 はクラスタ専用。開発・検証は ≤256³（1.7e7 セル ≈ 10 GB）を
   標準とし、スケール実測は R3 クラスタ計画（CLUSTER_OPTIONS.md）に統合する。
-- **NFR-02（精度ポリシー, #32, rev.2 語彙整理）**: **既定は忠実度プロファイル** = `f32-bulk` ＋ **界面近傍・保存量・トルク・界面曲率・縮約は f64**（§1 と同一）。**積極的 f32（緩和拡張）の適用範囲を「単相/弱連成」に限定**し、相対劣化は VR-STR-RELAX-f32 で検証。`ρ_l/ρ_g≈10³`・`Ca_spurious<10⁻³`・質量保存要求と整合させる。
+- **NFR-02（精度ポリシー, #32, rev.2 語彙整理, rev.4 / REV-CFD-MJ-009 —
+  enumerated so array design / GPU kernels / memory budget can bind to it）**:
+  `precision_profile ∈ { full_f64, mixed_safe (default), mixed_fast }`:
+  - **full_f64** (reference tier): all distributions, phase field, scalars,
+    particle statistics, reductions in f64. High-density-ratio reference
+    validations also run here.
+  - **mixed_safe** (fidelity default = §1 profile): bulk distributions f32;
+    **f64 fixed for**: `φ, ∇φ, κ(curvature), μ_φ, F_s, ρ(φ), μ(φ)`,
+    distributions inside the interface band, all global reductions, torque,
+    `Np`, `N_Q`, mass/volume counters, particle cumulative exposure.
+    **interface_band = max(3W, 6Δx)** — provisional default; the band width is
+    re-frozen by the W-VOF characterization (§10) and recorded in PHYSICS.md.
+  - **mixed_fast** (relaxation extension): single-phase / weak-coupling only;
+    permitted only when density ratio ≤ stated limit AND the Ca_spurious and
+    mass-drift validations pass; config validation rejects out-of-range use.
+    Accepted via VR-STR-RELAX-f32.
+  Each profile has an array-type table and memory-budget column (§7).
+  `ρ_l/ρ_g≈10³`・`Ca_spurious<10⁻³`・質量保存要求と整合させる。
 - **NFR-03（性能）**: 融合 `step_band` に相場・スカラー・forcing 統合、リング二重化・SoA plane-major の 3D 拡張維持。
 - **NFR-04（決定性）**: 縮約は決定的順序。GPU/MPI は許容誤差ベース回帰（ビット等価は単一バックエンド限定, #42）。
 
@@ -265,9 +408,43 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 
 ## 8. 検証・受入基準（定量化, VALIDATION.md **T17** として配線済み。閾値付き, #38–#42）
 
-検証テストは codex/Opus が本仕様から敵対的に作成し実装と分離。未固定の許容帯
-（「±許容%」表記）は既存プロトコル（実装 → characterization 実測 → PHYSICS.md に
-根拠記録 → 凍結）で数値化し、凍結値を VALIDATION.md T17 に記載する。
+検証テストは codex/Opus が本仕様から敵対的に作成し実装と分離。
+
+**Band governance (rev.4 / REV-CFD-MJ-010 — reconciling "numbers now" with the
+experiment-driven freeze protocol)**: every VR-STR item carries a **provisional
+numeric band from day one** (table below — these are the MVP gate). Bands are
+finalized by the established protocol (implement → characterize → record rationale
+in PHYSICS.md → freeze in VALIDATION.md T17) under one asymmetric rule:
+**tightening a band is always allowed; loosening a provisional band requires a
+recorded physical rationale in PHYSICS.md** (reference uncertainty, method order,
+resolution limit — as exercised for T15.5). This removes both failure modes:
+un-testable placeholder specs AND post-hoc self-serving thresholds.
+Each test is specified with: metric / target·reference / tolerance / resolution /
+time window / backend / pass-fail rule (the T17 row format).
+
+**Provisional bands (MVP gate; supersede the "±許容%" placeholders)**:
+- Rushton `Np` vs experimental correlation: **±10%**
+- PIV/LDA velocity profiles (VR-STR-01): **L2_rel < 15%, L∞_rel < 30%** per line
+- static droplet mass drift: **< 0.1% / 1000 steps**; advected droplet (one period,
+  periodic box): total mass drift **< 0.1%** (CR-002 acceptance)
+- single-bubble terminal velocity vs Grace (02a): **±10%**
+- `k_L a` vs correlation (02c): **±25%**
+- well-balanced static stratification (VR-STR-06): **max|u| < 10⁻⁶ (lattice units)**
+  at ρ ratio 10³ — provisional; retighten after discretisation freeze
+- GPU/MPI cross-backend drift (VR-STR-05): mean quantities **< 2%**, higher-order
+  statistics **< 5%** (bit-equality stays single-backend-only)
+- `Ca_spurious < 10⁻³` (already fixed, dimensionally corrected FR-VOF-02)
+
+**Mandatory negative/consistency tests added by rev.4**:
+- forcing-moment sign negative test: body-force Poiseuille FAILS with Π_force sign
+  flipped (CR-004);
+- stress stage-convention cross-check: pre-collision evaluation vs post-collision+
+  transform agree within tolerance on Couette/Poiseuille/Taylor–Couette (CR-003);
+- J_ρ consistency code-path check + droplet advection conservation (CR-002);
+- sparger phase unit test: gas inlet injects φ=0, gas-volume balance closes
+  (CR-001);
+- scalar total-mass conservation in the phase-wise form (MJ-011);
+- active-scalar dt-halving convergence (MJ-007).
 
 - **VR-STR-01（単相撹拌）**: 標準 baffled tank（`D/T`, `C/T`, blade geometry, バッフル数を固定）、指定 Re 範囲・非通気。Rushton `Np`＝実験相関±許容%、翼吐出速度プロファイルを PIV/LDA 基準測線で `L2/L∞rel` 閾値照合（#38）。
   **(rev.3, P4) Reference datasets**: Wu & Patterson (1989) LDA; Deen et al. (2002)

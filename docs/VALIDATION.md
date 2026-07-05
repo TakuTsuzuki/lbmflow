@@ -331,9 +331,20 @@ Cd = 2Fx/(ρ U_mean² D)、Cl = 2Fy/(ρ U_mean² D)。
   偏差格納（f−w）が前提。実装は改善仕様書 C-12 → M-E 本体。
 
 ### T17.（M-F: 連成マルチフィジックス）VR-STR 受入マトリクス — **仕様配線済み・実装待ち**
-原典: [REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md) §8（rev.1b）。
+原典: [REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md) §8（**rev.4**）。
 テストは codex/Opus が REQ から敵対的に作成し実装と分離（従来プロトコル）。
-「実装後凍結」= 実装 → characterization 実測 → PHYSICS.md 記録 → 本表に凍結値記載。
+**Band governance (rev.4)**: every item has a **provisional numeric band** (REQ §8
+table: Np ±10%, PIV L2<15%/L∞<30%, droplet mass drift <0.1%/1000 steps, U_t ±10%,
+k_La ±25%, stratification max|u|<1e-6 l.u., GPU/MPI mean <2% / higher-order <5%,
+Ca_spurious = μ_l|u|/σ < 1e-3 — dimensionally corrected). Tightening bands is
+always allowed; **loosening requires recorded rationale in PHYSICS.md**
+(reference uncertainty / method order / resolution limit — the T15.5 precedent).
+Mandatory negative/consistency tests (rev.4): forcing-moment sign negative test,
+stress stage cross-check, J_ρ consistency + advected-droplet conservation,
+sparger gas-phase (φ=0) unit test, phase-wise scalar total-mass conservation,
+active-scalar dt-halving convergence. Each test row records:
+metric / target·reference / tolerance / resolution / time window / backend /
+pass-fail rule.
 
 | ID | 対象 | 受入基準（REQ で固定済みの分） | 帯の状態 |
 |---|---|---|---|
