@@ -131,6 +131,11 @@ pub struct SoaFields<T: Real> {
     pub probe: Option<Vec<bool>>,
     /// Per-cell body force added to the uniform force, compact core.
     pub force_field: Option<Vec<[T; 3]>>,
+    /// Per-face inlet velocity profiles ([`crate::lattice::Face::index`]
+    /// order), overriding a `Velocity` face's uniform value. Indexed by this
+    /// part's local along-face coordinate (2D: the single tangent axis;
+    /// 3D: `t2 * extent(t1) + t1`, tangent axes ascending).
+    pub inlet_profiles: [Option<Vec<[T; 3]>>; 6],
 }
 
 impl<T: Real> SoaFields<T> {
@@ -152,6 +157,7 @@ impl<T: Real> SoaFields<T> {
             wall_u: vec![[T::zero(); 3]; np],
             probe: None,
             force_field: None,
+            inlet_profiles: [None, None, None, None, None, None],
         }
     }
 
