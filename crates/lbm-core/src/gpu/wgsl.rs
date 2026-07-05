@@ -184,7 +184,7 @@ fn sum_expr<L: Lattice>(prefix: &str, suffix: &str, coef: impl Fn(usize) -> i8) 
 
 /// Shared prologue of `step` / `moments`: bounds check, solid skip,
 /// population loads (`f0..`), force vector and V1-order moments.
-fn emit_cell_prologue<L: Lattice>(s: &mut String) {
+fn emit_cell_prologue<L: Lattice>(s: &mut String, allow_cached_moments: bool) {
     *s += "    let nx = P.nx;\n";
     *s += "    let ny = P.ny;\n";
     *s += "    let x = gid.x;\n";
@@ -224,27 +224,29 @@ fn emit_cell_prologue<L: Lattice>(s: &mut String) {
     // moments_row: u = (m + f/2) / rho — this is the value collide reads.
     *s += "    var ux = (mx + 0.5f * fvx) * inv;\n";
     *s += "    var uy = (my + 0.5f * fvy) * inv;\n";
-    *s += "    var use_cached_moments = (P.flags & 1024u) != 0u;\n";
-    for face in &Face::ALL[..4] {
-        let cond = match face {
-            Face::XNeg => "x == 0u",
-            Face::XPos => "x == nx - 1u",
-            Face::YNeg => "y == 0u",
-            Face::YPos => "y == ny - 1u",
-            _ => unreachable!(),
-        };
-        let flag = FLAG_OPEN_FACE[face.index()];
-        let _ = writeln!(
-            s,
-            "    if ({cond} && (P.flags & {flag}u) != 0u) {{ use_cached_moments = true; }}"
-        );
+    if allow_cached_moments {
+        *s += "    var use_cached_moments = (P.flags & 1024u) != 0u;\n";
+        for face in &Face::ALL[..4] {
+            let cond = match face {
+                Face::XNeg => "x == 0u",
+                Face::XPos => "x == nx - 1u",
+                Face::YNeg => "y == 0u",
+                Face::YPos => "y == ny - 1u",
+                _ => unreachable!(),
+            };
+            let flag = FLAG_OPEN_FACE[face.index()];
+            let _ = writeln!(
+                s,
+                "    if ({cond} && (P.flags & {flag}u) != 0u) {{ use_cached_moments = true; }}"
+            );
+        }
+        *s += "    if (use_cached_moments) {\n";
+        *s += "        rho = rho_out[i];\n";
+        *s += "        ux = ux_out[i];\n";
+        *s += "        uy = uy_out[i];\n";
+        *s += "        inv = 1.0f / rho;\n";
+        *s += "    }\n";
     }
-    *s += "    if (use_cached_moments) {\n";
-    *s += "        rho = rho_out[i];\n";
-    *s += "        ux = ux_out[i];\n";
-    *s += "        uy = uy_out[i];\n";
-    *s += "        inv = 1.0f / rho;\n";
-    *s += "    }\n";
 }
 
 /// Wrap-or-skip destination coordinate for one axis of a push (the scatter
@@ -334,7 +336,7 @@ pub(crate) fn generate<L: Lattice>() -> String {
     // ------------------------------------------------------------- step
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
     s += "fn step(@builtin(global_invocation_id) gid: vec3<u32>) {\n";
-    emit_cell_prologue::<L>(&mut s);
+    emit_cell_prologue::<L>(&mut s, true);
     // Collide (collide_row): equilibria + Guo sources per direction, then
     // TRT pair relaxation. cu/cf per q with V1's seeded-dot association.
     s += "    let usq = ux * ux + uy * uy;\n";
@@ -470,7 +472,7 @@ pub(crate) fn generate<L: Lattice>() -> String {
     // ---------------------------------------------------------- moments
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
     s += "fn moments(@builtin(global_invocation_id) gid: vec3<u32>) {\n";
-    emit_cell_prologue::<L>(&mut s);
+    emit_cell_prologue::<L>(&mut s, false);
     s += "    rho_out[i] = rho;\n";
     s += "    ux_out[i] = ux;\n";
     s += "    uy_out[i] = uy;\n";

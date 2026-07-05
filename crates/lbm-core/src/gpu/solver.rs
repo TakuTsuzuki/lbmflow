@@ -51,6 +51,11 @@ impl<L: Lattice> GpuSolver<L> {
         self.inner.backend_mut().set_submit_chunk(chunk);
     }
 
+    /// Number of queue submissions issued by the underlying backend.
+    pub fn submissions(&self) -> u64 {
+        self.inner.backend().submissions()
+    }
+
     /// Second-order consistent initialisation.
     pub fn init_with(&mut self, init: impl Fn(usize, usize, usize) -> (f32, [f32; 3])) {
         self.inner.init_with(init);

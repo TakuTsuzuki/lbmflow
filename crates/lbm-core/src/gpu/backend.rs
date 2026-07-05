@@ -35,7 +35,7 @@
 //! Multi-part GPU decompositions (device-side halo exchange) are out of
 //! scope here (M-D).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -425,6 +425,7 @@ impl GpuFields {
 pub struct WgpuBackend<L: Lattice> {
     ctx: Arc<GpuContext>,
     pipelines: Arc<Pipelines>,
+    submissions: Cell<u64>,
     /// Steps per queue submit during batched runs (no waits in between).
     /// The proto measured 7.3–7.4 GLUPS for 10–100 dispatches/submit vs
     /// 0.8 GLUPS with a wait per step; anything ≥ ~10 is on the plateau.
@@ -468,6 +469,7 @@ impl<L: Lattice> WgpuBackend<L> {
         Self {
             ctx,
             pipelines,
+            submissions: Cell::new(0),
             submit_chunk: 200,
             submit_chunk_calibrated: false,
             _l: PhantomData,
@@ -477,6 +479,16 @@ impl<L: Lattice> WgpuBackend<L> {
     /// The shared device context.
     pub fn context(&self) -> &Arc<GpuContext> {
         &self.ctx
+    }
+
+    /// Number of queue submissions issued by this backend instance.
+    pub fn submissions(&self) -> u64 {
+        self.submissions.get()
+    }
+
+    fn submit(&self, command_buffer: wgpu::CommandBuffer) {
+        self.ctx.queue.submit(Some(command_buffer));
+        self.submissions.set(self.submissions.get() + 1);
     }
 
     fn workgroups(&self, fields: &GpuFields) -> (u32, u32) {
@@ -545,7 +557,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 }
             }
         }
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         st.ops.clear();
         st.steps_recorded = 0;
         Ok(())
@@ -612,7 +624,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 label: Some("read-f"),
             });
         enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, staging, 0, bytes);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
         let data = Arc::new(bytemuck::cast_slice(&raw).to_vec());
         let mut st = fields.state.borrow_mut();
@@ -641,7 +653,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 label: Some("read-probe"),
             });
         enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, 0, 12);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, 12)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
         Ok([v[0], v[1], v[2]])
@@ -1348,12 +1360,19 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         }
     }
 
-    fn update_moments(&mut self, _sub: &Subdomain, fields: &mut GpuFields, _p: &StepParams<f32>) {
-        // Lazy: the fused kernel re-derives (rho, u) from the identical
-        // pre-collide state, so the device moment buffers are refreshed only
-        // by read_moments. This call marks the end of a step — the chunked
-        // submit hook.
-        fields.state.borrow_mut().steps_recorded += 1;
+    fn update_moments(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
+        let has_uniform_force = p.force[0] != 0.0 || p.force[1] != 0.0 || p.force[2] != 0.0;
+        if has_uniform_force {
+            self.ensure_params(sub, fields, p);
+            let mut st = fields.state.borrow_mut();
+            let cur = st.cur;
+            st.ops.push(Op::Moments { bg: cur });
+            st.steps_recorded += 1;
+        } else {
+            // Lazy: the fused kernel re-derives (rho, u) from the identical
+            // pre-collide state, so no device moment refresh is needed.
+            fields.state.borrow_mut().steps_recorded += 1;
+        }
     }
 
     fn run_span<H: HaloExchange<f32>>(
@@ -1385,12 +1404,12 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         );
         let sub = &subs[0];
         let field = &mut fields[0];
-        self.ensure_params(sub, field, p);
-        self.ensure_bc(sub, field, p);
         let open_faces = std::array::from_fn::<_, 6, _>(|fi| {
             let face = Face::ALL[fi];
             face.axis() < L::D && sub.touches_global_face(face) && p.faces[fi].is_open()
         });
+        self.ensure_params(sub, field, p);
+        self.ensure_bc(sub, field, p);
         let mut st = field.state.borrow_mut();
         assert!(
             !st.pending_collide,
@@ -1532,7 +1551,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.rho, 0, staging, 0, plane);
         enc.copy_buffer_to_buffer(&fields.ux, 0, staging, plane, plane);
         enc.copy_buffer_to_buffer(&fields.uy, 0, staging, 2 * plane, plane);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
         out.rho.clear();
@@ -1581,7 +1600,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.ux, 0, staging, moments_offset + plane, plane);
         enc.copy_buffer_to_buffer(&fields.uy, 0, staging, moments_offset + 2 * plane, plane);
         enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, probe_offset, 12);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
 
         let f_count = L::Q * n;
