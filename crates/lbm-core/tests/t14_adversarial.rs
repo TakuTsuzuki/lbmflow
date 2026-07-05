@@ -153,63 +153,109 @@ fn t14_initial_discontinuity_on_velocity_boundary_face() {
 
 #[test]
 fn t14_probe_solid_touches_domain_face() {
-    fn run_case() -> bool {
-        let (nx, ny) = (112usize, 56usize);
-        let mut walls = WallSpec::<f32>::default();
-        walls.is_wall[Face::YNeg.index()] = true;
-        walls.is_wall[Face::YPos.index()] = true;
-        let mut faces = [FaceBC::Closed; 6];
-        faces[Face::XNeg.index()] = FaceBC::Velocity {
-            u: [0.055, 0.0, 0.0],
-        };
-        faces[Face::XPos.index()] = FaceBC::Outflow;
-        let spec = GlobalSpec {
-            dims: [nx, ny, 1],
-            nu: 0.035,
-            periodic: [false, false, false],
-            faces,
-            ..Default::default()
-        };
-        let Some(mut pair) = Pair::new(&spec, &walls, 0.07) else {
-            return true;
-        };
-        let touches_bottom = |x: usize, y: usize, _: usize| (30..42).contains(&x) && y <= 6;
-        for y in 0..ny {
-            for x in 0..nx {
-                if touches_bottom(x, y, 0) {
-                    pair.cpu.set_solid(x, y, 0);
-                    pair.gpu.set_solid(x, y, 0);
-                }
-            }
-        }
-        pair.cpu.set_force_probe(touches_bottom);
-        pair.gpu.set_force_probe(touches_bottom);
-        for _ in 0..4 {
-            pair.cpu.run(75);
-            pair.gpu.run(75);
-            let (fa, fb) = (pair.cpu.probed_force(), pair.gpu.probed_force());
-            for c in 0..2 {
-                let cpu = fa[c] as f64;
-                let gpu = fb[c] as f64;
-                let d = (cpu - gpu).abs();
-                let lim = DIAG_TOL * cpu.abs().max(1e-6);
-                if d > lim {
-                    eprintln!(
-                        "face-touching probe force[{c}]: |delta|={d:.3e} > {lim:.3e} \
-                     (cpu={cpu:.9e}, gpu={gpu:.9e}); retrying strict probe comparison"
-                    );
-                    return false;
-                }
-            }
-            pair.run_and_check(0, "face-touching probe", FIELD_TOL);
-        }
-        true
+    let Some(mut pair) = face_touching_probe_pair() else {
+        return;
+    };
+    for _ in 0..4 {
+        pair.cpu.run(75);
+        pair.gpu.run(75);
+        assert_probe_close(
+            &pair.cpu.probed_force(),
+            &pair.gpu.probed_force(),
+            "face-touching probe",
+        );
+        pair.run_and_check(0, "face-touching probe", FIELD_TOL);
     }
+}
 
-    assert!(
-        run_case() || run_case(),
-        "face-touching probe exceeded the strict force threshold on retry"
-    );
+fn face_touching_probe_pair() -> Option<Pair> {
+    let (nx, ny) = (112usize, 56usize);
+    let mut walls = WallSpec::<f32>::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    let mut faces = [FaceBC::Closed; 6];
+    faces[Face::XNeg.index()] = FaceBC::Velocity {
+        u: [0.055, 0.0, 0.0],
+    };
+    faces[Face::XPos.index()] = FaceBC::Outflow;
+    let spec = GlobalSpec {
+        dims: [nx, ny, 1],
+        nu: 0.035,
+        periodic: [false, false, false],
+        faces,
+        ..Default::default()
+    };
+    let mut pair = Pair::new(&spec, &walls, 0.07)?;
+    let touches_bottom = |x: usize, y: usize, _: usize| (30..42).contains(&x) && y <= 6;
+    for y in 0..ny {
+        for x in 0..nx {
+            if touches_bottom(x, y, 0) {
+                pair.cpu.set_solid(x, y, 0);
+                pair.gpu.set_solid(x, y, 0);
+            }
+        }
+    }
+    pair.cpu.set_force_probe(touches_bottom);
+    pair.gpu.set_force_probe(touches_bottom);
+    Some(pair)
+}
+
+fn assert_probe_close(cpu_force: &[f32; 3], gpu_force: &[f32; 3], what: &str) {
+    for c in 0..2 {
+        let cpu = cpu_force[c] as f64;
+        let gpu = gpu_force[c] as f64;
+        let d = (cpu - gpu).abs();
+        let lim = DIAG_TOL * cpu.abs().max(1e-6);
+        assert!(
+            d <= lim,
+            "{what} force[{c}]: |delta|={d:.3e} > {lim:.3e} (cpu={cpu:.9e}, gpu={gpu:.9e})"
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual GPU diagnostic for the B-1 face-touching probe bias"]
+fn diag_t14_probe_solid_touches_domain_face_chunks() {
+    let Some(mut pair) = face_touching_probe_pair() else {
+        panic!("diagnostic requires a usable GPU adapter");
+    };
+    let mut cpu_sum = [0.0f64; 3];
+    let mut gpu_sum = [0.0f64; 3];
+    for chunk in 1..=4 {
+        pair.cpu.run(75);
+        pair.gpu.run(75);
+        let cpu = pair.cpu.probed_force();
+        let gpu = pair.gpu.probed_force();
+        for c in 0..3 {
+            cpu_sum[c] += cpu[c] as f64;
+            gpu_sum[c] += gpu[c] as f64;
+        }
+        eprintln!(
+            "chunk {chunk} t={}: cpu=[{:.9e},{:.9e},{:.9e}] gpu=[{:.9e},{:.9e},{:.9e}] \
+             delta=[{:.3e},{:.3e},{:.3e}] cumulative_cpu=[{:.9e},{:.9e},{:.9e}] \
+             cumulative_gpu=[{:.9e},{:.9e},{:.9e}] cumulative_delta=[{:.3e},{:.3e},{:.3e}]",
+            pair.cpu.time(),
+            cpu[0] as f64,
+            cpu[1] as f64,
+            cpu[2] as f64,
+            gpu[0] as f64,
+            gpu[1] as f64,
+            gpu[2] as f64,
+            cpu[0] as f64 - gpu[0] as f64,
+            cpu[1] as f64 - gpu[1] as f64,
+            cpu[2] as f64 - gpu[2] as f64,
+            cpu_sum[0],
+            cpu_sum[1],
+            cpu_sum[2],
+            gpu_sum[0],
+            gpu_sum[1],
+            gpu_sum[2],
+            cpu_sum[0] - gpu_sum[0],
+            cpu_sum[1] - gpu_sum[1],
+            cpu_sum[2] - gpu_sum[2],
+        );
+        pair.run_and_check(0, "face-touching probe diagnostic", FIELD_TOL);
+    }
 }
 
 #[test]

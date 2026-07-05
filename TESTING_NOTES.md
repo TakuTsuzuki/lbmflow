@@ -889,10 +889,3 @@ The async T14 test was corrected to match the restored pre-B-1 contract:
 `run()` must submit recorded chunks, while completion is guaranteed at sync
 points. The test now counts `WgpuBackend` queue submissions and fences with
 `sync()` for the elapsed-time witness.
-
-Probe flake note: `t14_probe_solid_touches_domain_face` can vary by about
-4.2e-7 to 4.9e-7 in force[0] on this adapter because the GPU probe path still
-uses f32 atomic accumulation, so link summation order is not deterministic. The
-strict 1e-4 relative threshold is unchanged; the test retries the same strict
-comparison once to reject persistent drift while tolerating the measured atomic
-reduction jitter band.
