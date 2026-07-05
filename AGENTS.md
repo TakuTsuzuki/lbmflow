@@ -1,10 +1,12 @@
 # LBMFlow — Lattice Boltzmann Method Fluid Simulator
 
+Agent instructions for this repository (read by codex and any non-Claude coding
+agent; Claude agents receive the same invariants via CLAUDE.md — keep the two
+files in sync when editing either).
+
 Commercial-grade LBM simulator. Rust core + TypeScript GUI + Agent mode.
 **Required reading**: [docs/PLAN.md](docs/PLAN.md) (phase plan / team structure),
 [docs/VALIDATION.md](docs/VALIDATION.md) (validation test specs = acceptance criteria).
-Keep this file in sync with AGENTS.md (English mirror read by codex and other
-non-Claude agents).
 
 ## Build & test
 
@@ -69,16 +71,10 @@ cd web && npm run build                   # GUI (tsc strict + vite)
   Opus/Sonnet from the spec (VALIDATION.md)**, kept separate from the
   implementation (a test order and an implementation order never share a
   worktree).
-- codex invocation example:
-  `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
-  (model gpt-5.5. **`< /dev/null` is mandatory** — with a pipe as stdin, codex
-  waits for EOF and hangs forever. Progress can be monitored via updates to
-  `~/.codex/sessions/<date>/rollout-*.jsonl`.)
-- **Language policy (user directive 2026-07-05): ALL artifacts in English** — code,
-  identifiers, commit messages, documentation, and user-facing strings (docs / GUI /
-  CLI / error messages). Legacy Japanese content is being translated by a dedicated
-  session; write new content in English only. (Conversation with the user may remain
-  Japanese — the user is a Japanese speaker; the product is English.)
+- **Language policy (user directive 2026-07-05): ALL artifacts in English** —
+  code, identifiers, commit messages, documentation, and user-facing strings
+  (docs / GUI / CLI / error messages). Legacy Japanese content is being
+  translated by a dedicated session; write new content in English only.
 - When you change the physics spec, record the rationale and experimental
   results in docs/PHYSICS.md.
 - Commit at each phase completion. Never commit with red tests (WIP is the

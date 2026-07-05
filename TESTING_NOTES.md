@@ -272,6 +272,31 @@ order #2 の 5 件の dispositions:
    n≤4（均質コア内）は R3 ローカル線 ≥85% を満たす。真の測定はクラスタ待ち
    （測定リスト: docs/MPI_GUIDE.md §クラスタ）。
 
+## 新規（2026-07-05 T15.5 3D cavity Re=1000）
+
+1. **T15.5 既定スイートは N=64 qualitative sentinel に固定**:
+   `cargo test -p lbm-core --release --test t15_5_cavity3d` は 47.32s wall で
+   green（2 passed / 2 ignored）。N=48 は Re/(N-2)=21.7 で 20k step 内に NaN
+   発散し、docs/T15_5_CAVITY3D_REFERENCE.md の Re/(N-2) ≲ 15 安定性警告と整合。
+   N=64 は同制約をわずかに超えるが、20k step で mass_rel=1.2e-16、
+   symmetry-plane max|v|/U≈2e-15、定性的 extrema signs/locations は通るため、
+   default では profile 数値帯を要求しない。
+2. **T15.5 N=72 spec-profile は red のまま凍結**:
+   `cargo test -p lbm-core --release --test t15_5_cavity3d \
+   t15_5_cavity3d_re1000_profiles_n72 -- --ignored --nocapture` は 1477.27s wall。
+   steady=true at 324500 step、mass_rel=2.546e-15、midplane max|v|/U=1.700e-15、
+   anti-2D RMS/U=0.1031、profile RMS/U は u=0.0153（limit 0.030）、
+   w=0.0255（limit 0.035）で通過。失敗点は extremum band:
+   u_min=-0.25084 at z=0.12925 vs A&K -0.2803833 at z=0.12419、rel=0.105
+   （limit 0.06）。w_min=-0.39537 at x=0.90383、w_max=0.22148 at x=0.11181
+   も A&K より浅い傾向。従って N=72 の中心線形状は合うが、渦強度は
+   A&K/Ben Beya band より数値拡散側で、ignored validation は red evidence として保持。
+3. **Endpoint sampling correction**:
+   A&K/Ghia 型 17 点表の端点は境界条件値そのものなので、T15.5 sampler は
+   u(z=0)=0, u(z=1)=U, w(x=0)=w(x=1)=0 を直接返す。隣接流体セルを端点として
+   使うと N=72 で u-line RMS/U が 0.0374 まで悪化し、half-way moving-wall
+   境界層を参照端点と混同する。
+
 ## PM 回答（2026-07-05 深夜）— レビューセッション判断依頼 4 件 + M-F 統合
 
 - **(a) 仕様書の main 取込**: PM 実施済み（コミット 5cf7a97）。SOLVER_IMPROVEMENT_SPEC.md
@@ -341,3 +366,28 @@ order #2 の 5 件の dispositions:
   content of yours was dropped; scope-alignment notes were added where rev.2's
   "fidelity-default = initial delivery, relaxations = API-reserved" decision
   interacts with P1/W-BUB.
+
+## External review (REV-CFD-*, filed vs rev.1a) — PM triage → REQ rev.4 (2026-07-05)
+
+All 14 findings critically verified against the CURRENT document (rev.3, which the
+reviewer had not seen). Dispositions:
+
+| ID | Verdict | Disposition |
+|---|---|---|
+| CR-001 sparger phase inversion | **valid bug** (φ=1 ban read as liquid-injection ban) | ADOPTED: FR-VOF-03 rewritten — gas inlet = φ=0, `inlet_phase: gas\|liquid` in schema (raw φ never exposed), volume-balance acceptance |
+| CR-002 AC/continuity mass-flux inconsistency | **valid** — with ρ=ρ(φ) and diffusive J_φ, naive continuity fails at ratio 10³ | ADOPTED: consistent/AGG-type formulation normative (J_ρ=(ρ_l−ρ_g)J_φ in continuity AND momentum advection, same discrete path), droplet advection test |
+| CR-003 neq stress stage/coefficient mismatch | **valid residual** of codex round-1 #2 fix — post-collision stage stated with pre-collision coefficient | ADOPTED: default = pre-collision/post-streaming; explicit BGK (1−1/τ) / MRT R(τ)⁻¹ transforms; required `neq_stage` enum; stage cross-check test |
+| CR-004 forcing 2nd-moment sign contradiction | **valid** (prose "subtract" vs formula "+") | ADOPTED: Π_neq_raw/Π_force/Π_neq_corr single-equation definition; prose sign words banned; sign derivation-frozen pre-implementation + negative test (body-force Poiseuille) |
+| MJ-005 Ca_spurious dimensional | **valid** (stray L) | ADOPTED: Ca_spurious = μ_l\|u\|/σ; Re_spurious separate. VALIDATION T17 synced |
+| MJ-006 Pe vs U_tip | **valid** (π ambiguity) | ADOPTED: Pe_N = Re·Sc / Pe_tip = π·Re·Sc split; bare "Pe" banned |
+| MJ-007 active scalar 1-step lag | **valid** vs fidelity-default principle | ADOPTED: dataflow split passive/active; predictor–corrector default; `active_scalar_lagged` = flagged relaxation via VR-STR-RELAX; dt-halving acceptance |
+| MJ-008 一括 vs 後日 | already fixed in rev.2 (codex round-2 #2) | STRENGTHENED: explicit Initial-delivery / Phase-2 lists added to §0 |
+| MJ-009 f32/f64 boundary undefined | **valid** (needed for array/GPU design now) | ADOPTED: precision_profile enum {full_f64, mixed_safe(default), mixed_fast}; interface_band = max(3W,6Δx) provisional, re-frozen at W-VOF |
+| MJ-010 no numeric thresholds | conflicts with characterize→freeze protocol; concern (post-hoc band-fitting) legitimate | **ADAPTED**: provisional numeric bands added NOW (Np ±10% etc.) + asymmetric governance — tighten freely, loosen only with PHYSICS.md rationale (T15.5 precedent). Reviewer's per-test metadata format adopted for T17 rows |
+| MJ-011 scalar non-conservative form | **valid** for two-phase/active | ADOPTED: phase-wise conservative + ρY forms normative; Henry flux sign convention; total-mass conservation test |
+| MJ-012 four-way contact undefined | **valid gap** | ADOPTED as Phase-2 contract: FR-PART-04 (soft-sphere params), -05 (lubrication), -06 (config rejection beyond two-way regime — ships in initial delivery) |
+| MJ-013 viscosity interp / σ coefficient hedges | **valid** ("固定版" claim violated) | ADOPTED: harmonic-in-μ default frozen (alternatives = logged options outside default bands); "(係数はモデル定義)" hedge removed — σ=√(2κβ)/6, W=4√(κ/(2β)) are THE definitions (internal consistency was verified by codex round-2) |
+| MN-014 ε_g processing units | **valid refinement** | ADOPTED: ε_g_raw / ε_g_thresholded(φ_c=0.5) / kernel-smoothed / hybrid-dedup definitions + mandatory metadata |
+
+Net: 13 adopted (1 adapted), 1 already-fixed-and-strengthened. REQ is now rev.4.
+Reviewer read rev.1a — overlaps with rev.2/rev.3 noted above to avoid double-fixing.
