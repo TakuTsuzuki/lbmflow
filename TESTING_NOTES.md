@@ -217,6 +217,29 @@ The 5 dispositions of order #2:
    fused 5.2x). Improvement candidates: sharing the band-edge collision (requires synchronization),
    or a dynamic band size that straddles nz.
 
+## GPU ops bundle (2026-07-05 cx-gpu-ops)
+
+1. **GPU adapter availability in this sandbox**: both the pre-change baseline
+   attempt and the post-change benchmark attempt failed before measurement
+   because wgpu could not acquire an adapter:
+   `bench_gpu requires a usable GPU adapter: no usable GPU adapter was found`.
+   Command used:
+   `cargo run -p lbm-core --release --features gpu --example bench_gpu -- --gpu-only`.
+   Therefore the requested 1024² MLUPS regression, 2048² sync+diagnostics
+   speedup, and no-force/no-solid live allocation measurement are not
+   available from this sandbox run.
+
+2. **Implemented non-GPU-verifiable checks**:
+   `cargo test -p lbm-core --release --features gpu gpu:: --lib` passed
+   10 GPU module unit tests, covering submit-chunk calibration, poll-error
+   conversion, resource-limit rejection, naga parse+validate of generated WGSL,
+   and `BcParams` field-order consistency.
+
+3. **Release gates**:
+   `cargo test --workspace --release` passed.
+   `cargo test --workspace --release --features gpu` passed, including all
+   8 T14 GPU backend-equivalence tests.
+
 ## New (2026-07-05 V1 retirement work)
 
 1. **sync-tests.sh's substitution was ineffective on macOS**: the `\b` in `sed -E 's/\blbm_core\b/…/'`
@@ -554,6 +577,35 @@ untouched T13/T14/backend_simd gates.
    A-10a/b: not applicable on main (V1 deleted; facade carries neither the
    unused_mut nor the misleading solid-rho comment).
 
+## Triage record — "flickering particles" report (2026-07-05, viewer session)
+
+Reported visual artifact in the 3D stirred-tank viewer investigated by that session:
+**NOT a solver defect, no core change**. Field evidence (60^3 subsampled export from
+the D3Q19 n=80 TRT baffled-tank run, volume-penalization impeller on
+set_body_force_field): no NaN/Inf; |u| decays smoothly from the impeller plane
+(mean 0.021 / max 0.075 at simZ~27) to a near-quiescent headspace (mean ~1e-4,
+max ~4e-3 at simZ>55); the small top-layer residual is the shaft's swirl sheath
+(penalization region runs full height) — physical. Root cause was viewer tracer
+reseeding + hard cull threshold; fixed viewer-side. Optional modeling note recorded:
+cap shaft forcing a few cells below the lid if a dead headspace is ever wanted.
+Value for MF-δ: first end-to-end field-sanity pass of the penalization-impeller
+pipeline on the new body-force API.
+## W-STRESS strain-rate observable (2026-07-05, branch cx-strain-rate)
+
+- Implemented native `Solver::gather_strain_rate()` and `Solver::gather_shear_rate()` for CPU-backed D2Q9/D3Q19 solvers, plus MPI rank-0 gather wrappers and GPU CPU-readback facade wrappers.
+- Verified FR-STRESS-01 rev.4 force correction sign in the native body-force Poiseuille check: `Pi_force = -0.5 * (uF + Fu)`, so `Pi_neq_corr = Pi_neq_raw + 0.5 * (uF + Fu)` for this engine's physical velocity and deviation-form equilibrium. Measured interior `gamma_dot(y)` max absolute error: `1.528708800171974e-14`.
+- Plane Couette half-way-wall check: analytic `S_xy = 0.5 * U / H` with `U=0.1`, `H=8`; measured max absolute `S_xy` error: `1.3877787807814457e-16`. `gather_shear_rate()` matched `sqrt(2 S:S)` from the returned tensor exactly in this fixture.
+- InProcess decomposition check `[1,1,1]` vs `[2,2,1]`: `gather_strain_rate()` and `gather_shear_rate()` matched bit-for-bit after 25 forced BGK steps with a spatial body-force field.
+
+## Attribution correction (2026-07-05, per the requirements session / Taku)
+
+docs/REQ_STIRRED_REACTOR.md + the orders A/B/C derivation = the requirements session
+(correct as recorded). Commit b74298e (body-force field API) + the primary-checkout
+switch to feat/body-force-field-api = a DIFFERENT worker (earlier PM notes attributed
+both to one session — corrected). The stirred-tank demo is now owned by the
+requirements session: builds against trunk (R-Phase 1 guards active), demo example
+stays untracked, volume-penalization interim, measured behavior lands here in
+English for the MF-δ record; no primary-checkout branch switches.
 
 ## Translation session — completion note (2026-07-05)
 

@@ -368,3 +368,16 @@ pass-fail rule.
   (e.g. `assert!(err < 5e-3, "L2rel = {err}")`).
 - Adding external crates is allowed only for `approx` (anything else requires consultation).
 - Embed the Ghia reference data as a constant table inside the test file (with a source comment).
+
+## Construction-rejection semantics (R-Phase 1, A-2..A-7 — merged 2026-07-05)
+
+Invalid configurations now fail loudly at build/placement time instead of running
+silently non-physically (the E2/E4/E5b/E6/E7 pathologies are all construction
+errors now). New public surface: `SpecError` (native `GlobalSpec::validate`,
+enforced in `Solver::build`; scenario 3D routes through it), `ExchangeScope`
+(HaloExchange scope guard), `Diverged` + `run_guarded` (runtime NaN watchdog,
+CPU/GPU/MPI), `Simulation::set_solid_allowed` (non-panicking placement probe;
+wasm paint uses it), `params::MAX_SPEED` relocation (compat re-exports).
+Guard suites: 163 tests green at merge; t13/backend_simd_equiv unmodified.
+Native `Solver::init_with`/GPU seed validation is deliberately still open (S2) —
+scheduled into R-Phase 2.

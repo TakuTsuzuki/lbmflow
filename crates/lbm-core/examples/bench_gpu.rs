@@ -115,9 +115,12 @@ fn bench_cpu(n: usize, target_s: f64) -> f64 {
 
 fn main() {
     let gpu_only = std::env::args().any(|a| a == "--gpu-only");
-    let Some(ctx) = GpuContext::new() else {
-        eprintln!("no usable GPU adapter; bench_gpu requires one");
-        std::process::exit(2);
+    let ctx = match GpuContext::new() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("bench_gpu requires a usable GPU adapter: {e}");
+            std::process::exit(2);
+        }
     };
     println!("# lbm-core Wgpu backend benchmark\n");
     println!(

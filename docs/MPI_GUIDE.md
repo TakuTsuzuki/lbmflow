@@ -199,3 +199,12 @@ measurements** (see below).
 - **Allreduce timing for probes**: probed_force is an Allreduce on every
   step. It is omitted when no probe is configured (so as not to add
   extraneous collectives to the benchmark).
+
+## run_guarded (R-Phase 1, A-9)
+
+`MpiSolver::run_guarded(steps, check_every)` is a **collective** call: every rank
+must invoke it with the same arguments. Each check is a 2-double Allreduce over the
+mass partials (NaN propagates through the sum), and the divergence branch —
+`Err(Diverged{step})` — is taken uniformly on all ranks, so there is no
+divergence-induced deadlock. Overhead at 512²/rank with check_every=100 is <0.5%.
+The trajectory is bit-identical to plain `run`.

@@ -77,6 +77,13 @@ pub trait HaloExchange {
 }
 impl: LocalPeriodic (single domain = current behavior) / InProcess (inter-thread,
       for T13) / Mpi (rsmpi)
+- (R-Phase 1) `HaloExchange::SCOPE: ExchangeScope { Local, Remote }` — building a
+  single-part owner (`only=Some(part)`) with a Local exchange is a construction
+  error (silent self-wrap prevention, spec A-5).
+- (R-Phase 1) `Backend::stream` contract, pinned by tests/stream_contract.rs:
+  streaming must NOT write open-face unknown slots (ConvectiveOutflow memory
+  depends on it; GPU realizes it via the edge stash). Any in-place streaming
+  (M-E candidate) must preserve this contract or replace the mechanism.
 ```
 - Split the step structure into a **2-pass internal→boundary** structure, so halo
   communication and internal computation can be overlapped (V1's row-partitioned loop
