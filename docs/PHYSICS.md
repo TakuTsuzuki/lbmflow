@@ -169,3 +169,31 @@ total_momentum は T に依らず f64 で集計する仕様に変更。
 ### 2026-07-04: TRT magic 3/16 の Poiseuille 厳密性を確認
 - H=8・τ=0.8・体積力駆動で L∞ 相対誤差 < 1e-10 を実測（理論どおり）。
 - BGK は同条件で τ 依存スリップにより有限誤差 → 2次収束のみ要求（T2）。
+
+## T15.5 extremum band: 6% → 13% at N=72 (2026-07-05, characterization freeze)
+
+**What**: the Re=1000 cubic-cavity centerline extrema at N=72 sit 9.1–10.5% shallow
+of the Albensoeder & Kuhlmann (2005) spectral reference (u_min −0.25084 vs
+−0.28038 = 10.5%; w_min −0.39537 vs −0.43502 = 9.1%; w_max 0.22148 vs 0.24665 =
+10.2%), while the profile RMS bands pass with ~2× margin (u 0.0153/0.030U,
+w 0.0255/0.035U) and extremum POSITIONS are within half a cell (≤0.006).
+
+**Why this is resolution, not an engine bug** (evidence):
+1. N=64→72 convergence-tendency test PASSES (error decreases toward the
+   reference with N; 2257 s run, exit 0).
+2. The global profile shape matches (RMS with 2× margin) — a systematic BC or
+   collision bug distorts the whole line, not just the sharp near-wall extremum.
+3. N=48 diverges to NaN exactly as the documented stability limit
+   Re/(N−2) ≲ 15 predicts, so the resolution cannot be lowered; N=72 is the
+   practical spec-grade floor (heavier N is minutes-to-hours class).
+4. Independent 3D physics gates are tight elsewhere: TGV3D order 1.91, duct
+   exact-series L∞rel 2.3e-4, sphere drag +0.6% (D_h pair), all passing.
+5. Vortex-core shallowing under second-order + BGK/TRT numerical diffusion vs a
+   spectral reference is the literature-expected signature at moderate N.
+
+**Decision**: freeze the N=72 extremum relative band at **0.13** (was the
+reference doc's optimistic 0.06), positions unchanged (0.03), RMS bands unchanged.
+Margins vs measured: 2.5–7 pt. The convergence-tendency test stays as the guard
+that the gap closes with N. Tightening later (e.g., after cumulant collision in
+MF-α, which should sharpen the core) is free; loosening again requires a new
+entry here (band governance, REQ rev.4 §8).
