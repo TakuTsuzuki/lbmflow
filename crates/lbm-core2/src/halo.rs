@@ -137,6 +137,9 @@ pub(crate) fn layer_indices(
 /// Number of cells in one exchange layer behind `recv_face`. Pack and unpack
 /// sides agree by the Cartesian invariant (tangent extents match), so the
 /// receiver can size an incoming message from its own geometry alone.
+/// (Receive-buffer sizing is inherently a remote-exchange concern, hence
+/// only the `mpi` feature consumes this.)
+#[cfg_attr(not(feature = "mpi"), allow(dead_code))]
 pub(crate) fn layer_cell_count(geom: &LocalGeom, recv_face: Face) -> usize {
     let a = recv_face.axis();
     let h = 2 * geom.halo;
