@@ -232,4 +232,13 @@ const SCHEMA_DOC: &str = r#"シナリオ JSON (v0) — lbm run <file.json>
 status: completed | steady（定常判定で早期終了）| diverged（NaN 検出）
 実例: lbm presets show cavity | cylinder-karman | two-phase-droplet | droplet-on-wall
 一括実行: lbm gallery --out DIR（全プリセット + 自己完結 HTML ギャラリー）
+
+MCP: lbm mcp で MCP サーバー（stdio）。run_scenario は同期実行（完了までブロック）。
+長時間ランやスイープは非同期 API を使う:
+  start_run { scenario, outDir? } -> { runId }   … 即応答、バックグラウンド実行
+  run_status { runId } -> { state: running|completed|failed, manifest?, error? }
+  list_runs {} -> 全ランの一覧
+runId は "run-<連番>-<シナリオ名>"（決定論）。同時実行は最大 4 ラン
+（超過は "failed: too many concurrent runs" で即時拒否）。ランはサーバー
+プロセス内で動くため、完了確認まで MCP 接続を維持すること。
 "#;
