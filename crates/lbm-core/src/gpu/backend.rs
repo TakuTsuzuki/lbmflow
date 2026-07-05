@@ -360,6 +360,7 @@ struct RecState {
     ops: Vec<Op>,
     steps_recorded: usize,
     pending_collide: bool,
+    use_cached_moments_once: bool,
     /// Written Params uniform (asserts step-parameter stability per run).
     params_words: Option<[u32; 12]>,
     /// Written per-face BC uniforms.
@@ -674,6 +675,7 @@ impl<L: Lattice> WgpuBackend<L> {
     fn ensure_params(&self, sub: &Subdomain, fields: &GpuFields, p: &StepParams<f32>) {
         // Relaxation constants exactly as KParams::new builds them: f64
         // parameters converted to f32 once.
+        let use_cached_moments = fields.state.borrow().use_cached_moments_once;
         let words: [u32; 12] = [
             fields.nx,
             fields.ny,
@@ -696,6 +698,14 @@ impl<L: Lattice> WgpuBackend<L> {
                 }
                 if fields.has_probe {
                     flags |= wgsl::FLAG_PROBE;
+                }
+                if use_cached_moments {
+                    flags |= wgsl::FLAG_CACHED_MOMENTS;
+                }
+                for face in &Face::ALL[..4] {
+                    if p.faces[face.index()].is_open() {
+                        flags |= wgsl::FLAG_OPEN_FACE[face.index()];
+                    }
                 }
                 flags
             },
@@ -854,6 +864,9 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(6, &fields.stash[p]),
                     e(7, &fields.stash[1 - p]),
                     e(8, &fields.probe_acc),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
                 ],
             })
         });
@@ -871,6 +884,26 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(10, &fields.ux),
                     e(11, &fields.uy),
                 ],
+            })
+        });
+        let bc_layout = self.pipelines.bc.get_bind_group_layout(0);
+        fields.bc_bg = std::array::from_fn(|face| {
+            [0usize, 1].map(|p| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bc"),
+                    layout: &bc_layout,
+                    entries: &[
+                        e(0, &fields.params_ub),
+                        e(2, &fields.f[p]),
+                        e(3, &fields.mask),
+                        e(5, &fields.force_field),
+                        e(9, &fields.rho),
+                        e(10, &fields.ux),
+                        e(11, &fields.uy),
+                        e(12, &fields.bc_ub[face]),
+                        e(13, &fields.profiles[face]),
+                    ],
+                })
             })
         });
     }
@@ -896,6 +929,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 "upload with recorded but unsubmitted steps"
             );
         }
+        fields.state.borrow_mut().use_cached_moments_once = true;
         // Populations: current -> f[cur], ping-pong partner -> f[1-cur].
         let cur = fields.cur();
         let mut buf = vec![0f32; L::Q * n];
@@ -1112,6 +1146,9 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(6, &stash[p]),
                     e(7, &stash[1 - p]),
                     e(8, &probe_acc),
+                    e(9, &rho),
+                    e(10, &ux),
+                    e(11, &uy),
                 ],
             })
         });
@@ -1141,6 +1178,10 @@ impl<L: Lattice> WgpuBackend<L> {
                         e(0, &params_ub),
                         e(2, &f[p]),
                         e(3, &mask),
+                        e(5, &force_field),
+                        e(9, &rho),
+                        e(10, &ux),
+                        e(11, &uy),
                         e(12, &bc_ub[face]),
                         e(13, &profiles[face]),
                     ],
@@ -1182,6 +1223,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 ops: Vec::new(),
                 steps_recorded: 0,
                 pending_collide: false,
+                use_cached_moments_once: false,
                 params_words: None,
                 bc_words: None,
                 generation: 0,
@@ -1314,7 +1356,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         fields.state.borrow_mut().steps_recorded += 1;
     }
 
-    fn run_chunk_size(&self) -> usize {
+    fn run_chunk_size(&self, fields: &[GpuFields]) -> usize {
+        if fields
+            .iter()
+            .any(|field| field.state.borrow().use_cached_moments_once)
+        {
+            return 1;
+        }
         self.submit_chunk.max(1)
     }
 
@@ -1324,6 +1372,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             self.flush(field);
         }
         self.ctx.wait_idle();
+        for field in fields {
+            let mut st = field.state.borrow_mut();
+            if st.use_cached_moments_once {
+                st.use_cached_moments_once = false;
+                st.params_words = None;
+            }
+        }
         if !self.submit_chunk_calibrated {
             self.calibrate_submit_chunk(steps, start.elapsed());
         }

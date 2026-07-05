@@ -282,7 +282,6 @@ fn gpu_run_submits_and_waits_for_recorded_chunks() {
 }
 
 #[test]
-#[ignore = "known D-8 T14 defect: mixed force field + moving wall + convective open exceeds 1e-5 CPU/GPU equivalence"]
 fn t14_mixed_force_field_moving_wall_and_open_faces() {
     let (nx, ny) = (128usize, 54usize);
     let mut walls = WallSpec::<f32>::default();

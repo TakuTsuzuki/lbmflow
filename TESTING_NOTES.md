@@ -771,3 +771,38 @@ LBM-native non-equilibrium stress evaluation (FR-STRESS-01 / order A) over
 post-hoc FD — paper-grade datum (claims ledger GREEN list candidate once the
 CLI channel ships). Viewer now consumes gather_shear_rate; vorticity/Q swap
 pending the FieldKind channel.
+
+## B-1 rescue + T14 mixed-BC GPU fix (2026-07-06)
+
+Stage 1 restored GPU `run(n)` execution semantics in the unified solver:
+`Solver::run` now chunks through a backend hook, and `WgpuBackend` flushes and
+waits at each calibrated C-9 chunk boundary. The deprecated `GpuSolver` wrapper
+inherits the same path. A GPU regression test was added to
+`t14_adversarial.rs` to require `run(k)` to spend wall time consistent with
+executed device work instead of merely recording dispatches.
+
+Stage 2 restored the trunk T14 adversarial file and un-ignored
+`t14_mixed_force_field_moving_wall_and_open_faces`. Reproduction in this sandbox
+was adapter-dependent: one direct run reproduced the defect at t=75 with
+rho=4.341e-6, ux=8.885e-5, uy=8.587e-5 against the 1e-5 velocity gate; later
+GPU invocations reported `no usable GPU adapter was found`, so a reliable
+per-pass dump could not be collected here. The root cause found from the code
+path was GPU-side staging semantics: when a per-cell force field is installed
+after initialization, the CPU reference's first collide consumes the staged
+host moments, while the GPU fused prologue immediately re-derived moments with
+the new Guo F/2 force-field correction. The GPU now marks host uploads as a
+one-shot cached-moment step, submits that first step as its own chunk, clears
+the flag, then returns to the fast population-derived path. The open-face BC
+shader also refreshes cached face moments after Zou-He/outflow/convective edits,
+matching the CPU boundary-moments correction for open cells.
+
+Gates run in this worktree:
+`cargo test --workspace --release` green;
+`cargo test -p lbm-core --release --features gpu --no-run` green;
+`cargo test -p lbm-core --release --features gpu generated_wgsl_parses_and_validates_with_naga`
+green; `cargo test -p lbm-core --release --features gpu
+t14_mixed_force_field_moving_wall_and_open_faces -- --nocapture` executed the
+now-unignored test but skipped the GPU comparison on the final run because the
+sandbox denied the adapter. `bench_gpu` built; `bench_gpu --gpu-only` returned
+`no usable GPU adapter was found`, so bench evidence is **BENCH-PENDING
+(sandbox adapter)** for PM measurement outside the sandbox.

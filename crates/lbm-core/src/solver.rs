@@ -806,7 +806,11 @@ where
     pub fn run(&mut self, steps: usize) {
         let mut remaining = steps;
         while remaining > 0 {
-            let chunk = self.backend.run_chunk_size().max(1).min(remaining);
+            let chunk = self
+                .backend
+                .run_chunk_size(&self.parts)
+                .max(1)
+                .min(remaining);
             for _ in 0..chunk {
                 self.step();
             }

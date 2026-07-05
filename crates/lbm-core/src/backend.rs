@@ -162,7 +162,7 @@ pub trait Backend<L: Lattice, T: Real> {
     /// Maximum number of steps the orchestrator should record before calling
     /// [`Backend::finish_run_chunk`]. CPU backends execute immediately, so the
     /// default runs the requested span as one chunk.
-    fn run_chunk_size(&self) -> usize {
+    fn run_chunk_size(&self, _fields: &[Self::Fields]) -> usize {
         usize::MAX
     }
 

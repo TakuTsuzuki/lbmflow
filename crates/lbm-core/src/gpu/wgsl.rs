@@ -58,6 +58,8 @@ pub(crate) const WG_BC: u32 = 64;
 pub(crate) const FLAG_HALO: [u32; 4] = [1, 2, 4, 8];
 pub(crate) const FLAG_FORCE_FIELD: u32 = 16;
 pub(crate) const FLAG_PROBE: u32 = 32;
+pub(crate) const FLAG_OPEN_FACE: [u32; 4] = [64, 128, 256, 512];
+pub(crate) const FLAG_CACHED_MOMENTS: u32 = 1024;
 
 /// BC kind codes of `BcParams.kind` (0 = inactive face).
 pub(crate) const BC_VELOCITY: u32 = 1;
@@ -207,8 +209,8 @@ fn emit_cell_prologue<L: Lattice>(s: &mut String) {
     *s += "        fvy = fvy + ffv.y;\n";
     *s += "    }\n";
     let _ = writeln!(s, "    let dr = {};", sum_expr::<L>("f", "", |_| 1));
-    *s += "    let rho = 1.0f + dr;\n";
-    *s += "    let inv = 1.0f / rho;\n";
+    *s += "    var rho = 1.0f + dr;\n";
+    *s += "    var inv = 1.0f / rho;\n";
     let _ = writeln!(
         s,
         "    let mx = {};",
@@ -220,8 +222,29 @@ fn emit_cell_prologue<L: Lattice>(s: &mut String) {
         sum_expr::<L>("f", "", |q| L::C[q][1])
     );
     // moments_row: u = (m + f/2) / rho — this is the value collide reads.
-    *s += "    let ux = (mx + 0.5f * fvx) * inv;\n";
-    *s += "    let uy = (my + 0.5f * fvy) * inv;\n";
+    *s += "    var ux = (mx + 0.5f * fvx) * inv;\n";
+    *s += "    var uy = (my + 0.5f * fvy) * inv;\n";
+    *s += "    var use_cached_moments = (P.flags & 1024u) != 0u;\n";
+    for face in &Face::ALL[..4] {
+        let cond = match face {
+            Face::XNeg => "x == 0u",
+            Face::XPos => "x == nx - 1u",
+            Face::YNeg => "y == 0u",
+            Face::YPos => "y == ny - 1u",
+            _ => unreachable!(),
+        };
+        let flag = FLAG_OPEN_FACE[face.index()];
+        let _ = writeln!(
+            s,
+            "    if ({cond} && (P.flags & {flag}u) != 0u) {{ use_cached_moments = true; }}"
+        );
+    }
+    *s += "    if (use_cached_moments) {\n";
+    *s += "        rho = rho_out[i];\n";
+    *s += "        ux = ux_out[i];\n";
+    *s += "        uy = uy_out[i];\n";
+    *s += "        inv = 1.0f / rho;\n";
+    *s += "    }\n";
 }
 
 /// Wrap-or-skip destination coordinate for one axis of a push (the scatter
@@ -453,6 +476,58 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "    uy_out[i] = uy;\n";
     s += "}\n\n";
 
+    // --------------------------------------------- open-face moment fixup
+    s += "fn fix_bc_moments(i: u32, n: u32) {\n";
+    let terms: Vec<String> = (0..L::Q).map(|q| format!("f_out[{q}u * n + i]")).collect();
+    let mx_terms: Vec<String> = (0..L::Q)
+        .filter_map(|q| match L::C[q][0] {
+            1 => Some(format!("f_out[{q}u * n + i]")),
+            -1 => Some(format!("-f_out[{q}u * n + i]")),
+            0 => None,
+            _ => unreachable!(),
+        })
+        .collect();
+    let my_terms: Vec<String> = (0..L::Q)
+        .filter_map(|q| match L::C[q][1] {
+            1 => Some(format!("f_out[{q}u * n + i]")),
+            -1 => Some(format!("-f_out[{q}u * n + i]")),
+            0 => None,
+            _ => unreachable!(),
+        })
+        .collect();
+    let _ = writeln!(s, "    let dr = {};", terms.join(" + "));
+    let _ = writeln!(
+        s,
+        "    let mx = {};",
+        if mx_terms.is_empty() {
+            "0.0f".to_string()
+        } else {
+            mx_terms.join(" + ")
+        }
+    );
+    let _ = writeln!(
+        s,
+        "    let my = {};",
+        if my_terms.is_empty() {
+            "0.0f".to_string()
+        } else {
+            my_terms.join(" + ")
+        }
+    );
+    s += "    var fvx = P.fx;\n";
+    s += "    var fvy = P.fy;\n";
+    s += "    if ((P.flags & FLAG_FF) != 0u) {\n";
+    s += "        let ffv = force_field[i];\n";
+    s += "        fvx = fvx + ffv.x;\n";
+    s += "        fvy = fvy + ffv.y;\n";
+    s += "    }\n";
+    s += "    let r = 1.0f + dr;\n";
+    s += "    let inv = 1.0f / r;\n";
+    s += "    rho_out[i] = r;\n";
+    s += "    ux_out[i] = (mx + 0.5f * fvx) * inv;\n";
+    s += "    uy_out[i] = (my + 0.5f * fvy) * inv;\n";
+    s += "}\n\n";
+
     // --------------------------------------------------------------- bc
     let c23 = lit((2.0f64 / 3.0) as f32);
     let c16 = lit((1.0f64 / 6.0) as f32);
@@ -504,14 +579,19 @@ pub(crate) fn generate<L: Lattice>() -> String {
         s,
         "        f_out[B.q_d2 * n + i] = f_out[B.o_d2 * n + i] + {c16} * r * un - tcorr;"
     );
+    s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
     s += "    }\n";
     s += "    let j = u32(i32(i) + B.joff);\n";
-    s += "    if ((mask[j] & 1u) != 0u) { return; }\n";
+    s += "    if ((mask[j] & 1u) != 0u) {\n";
+    s += "        fix_bc_moments(i, n);\n";
+    s += "        return;\n";
+    s += "    }\n";
     let _ = writeln!(s, "    if (B.kind == {BC_OUTFLOW}u) {{");
     s += "        f_out[B.unk0 * n + i] = f_out[B.unk0 * n + j];\n";
     s += "        f_out[B.unk1 * n + i] = f_out[B.unk1 * n + j];\n";
     s += "        f_out[B.unk2 * n + i] = f_out[B.unk2 * n + j];\n";
+    s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
     s += "    }\n";
     let _ = writeln!(s, "    if (B.kind == {BC_CONVECTIVE}u) {{");
@@ -535,6 +615,7 @@ pub(crate) fn generate<L: Lattice>() -> String {
             "        f_out[B.unk{k} * n + i] = f_out[B.unk{k} * n + i] + corr * B.cw{k} / B.wsum;"
         );
     }
+    s += "        fix_bc_moments(i, n);\n";
     s += "    }\n";
     s += "}\n\n";
 
