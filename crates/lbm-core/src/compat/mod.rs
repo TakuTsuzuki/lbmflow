@@ -17,6 +17,7 @@ pub mod domain;
 pub mod lattice;
 pub mod multiphase;
 pub mod real;
+pub mod rotor;
 pub mod sim;
 
 /// Convenient glob import: `use lbm_core::compat::prelude::*;`.

@@ -325,6 +325,23 @@ impl<T: Real> Simulation<T> {
         self.force2.get_or_insert_with(|| vec![[T::zero(); 2]; n])
     }
 
+    /// Bare first-moment velocity, without the Guo half-force correction.
+    pub(crate) fn bare_velocity(&self, x: usize, y: usize) -> [T; 2] {
+        let f = self.fields();
+        let g = f.geom;
+        let pi = g.pidx(x, y, 0);
+        let np = g.n_padded();
+        let mut mx = T::zero();
+        let mut my = T::zero();
+        for q in 0..Q {
+            let fq = f.f[q * np + pi];
+            mx = mx + T::r(CX[q] as f64) * fq;
+            my = my + T::r(CY[q] as f64) * fq;
+        }
+        let inv_rho = T::one() / self.rho(x, y);
+        [mx * inv_rho, my * inv_rho]
+    }
+
     /// Remove the per-cell force field (reverts to the uniform force only).
     pub fn clear_force_field(&mut self) {
         self.force2 = None;
