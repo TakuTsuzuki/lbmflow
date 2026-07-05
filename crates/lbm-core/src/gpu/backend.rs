@@ -37,7 +37,8 @@
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::backend::{Backend, CellRange, HostMoments};
 use crate::fields::SoaFields;
@@ -58,23 +59,206 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
     /// Adapter description (diagnostics).
     pub adapter_info: wgpu::AdapterInfo,
+    device_lost: Arc<Mutex<Option<String>>>,
+}
+
+/// Runtime GPU failure reported by wgpu operations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GpuError {
+    /// Device polling failed before queued work completed.
+    Poll(String),
+    /// Staging-buffer mapping failed or did not invoke its callback.
+    Map(String),
+    /// wgpu reported that the device was lost.
+    DeviceLost(String),
+    /// Requested grid exceeds the selected adapter/device resource limits.
+    ResourceLimit(String),
+}
+
+impl std::fmt::Display for GpuError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Poll(msg) => write!(f, "GPU device poll failed: {msg}"),
+            Self::Map(msg) => write!(f, "GPU staging buffer map failed: {msg}"),
+            Self::DeviceLost(msg) => write!(f, "GPU device was lost: {msg}"),
+            Self::ResourceLimit(msg) => write!(f, "GPU resource limit exceeded: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuError {}
+
+/// GPU context initialization failure with enough adapter detail for fallback logs.
+#[derive(Clone, Debug)]
+pub enum GpuInitError {
+    /// No adapter matched the requested power preference.
+    NoAdapter,
+    /// Adapter was found but device creation failed.
+    RequestDevice {
+        /// Adapter selected before the request failed.
+        adapter_info: wgpu::AdapterInfo,
+        /// wgpu's device-request failure text.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for GpuInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoAdapter => write!(f, "no usable GPU adapter was found"),
+            Self::RequestDevice {
+                adapter_info,
+                message,
+            } => write!(
+                f,
+                "failed to create GPU device for adapter '{}' ({:?}): {message}",
+                adapter_info.name, adapter_info.backend
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GpuInitError {}
+
+/// Pick the next submit size from one measured submit.
+pub(crate) fn calibrate_submit_chunk(
+    measured_steps: usize,
+    elapsed: Duration,
+    current: usize,
+) -> usize {
+    const MAX_CHUNK: usize = 200;
+    const TARGET_MS: f64 = 175.0;
+    if measured_steps == 0 {
+        return current.clamp(1, MAX_CHUNK);
+    }
+    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+    if !(elapsed_ms.is_finite() && elapsed_ms > 0.0) {
+        return current.clamp(1, MAX_CHUNK);
+    }
+    ((measured_steps as f64 * TARGET_MS / elapsed_ms).round() as usize).clamp(1, MAX_CHUNK)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GpuResourcePlan {
+    n: usize,
+    fbytes: u64,
+    stash_bytes: u64,
+    mask_bytes: u64,
+    vec2_bytes: u64,
+    moments_bytes: u64,
+    staging_bytes: u64,
+    gx: u32,
+    gy: u32,
+    max_bc_groups: u32,
+}
+
+impl GpuResourcePlan {
+    fn for_grid<L: Lattice>(nx: usize, ny: usize) -> Result<Self, GpuError> {
+        let n = nx
+            .checked_mul(ny)
+            .ok_or_else(|| GpuError::ResourceLimit(format!("grid {nx}x{ny} overflows usize")))?;
+        let qn = L::Q.checked_mul(n).ok_or_else(|| {
+            GpuError::ResourceLimit(format!(
+                "Q*n overflows usize for D{}Q{} on {nx}x{ny}",
+                L::D,
+                L::Q
+            ))
+        })?;
+        if qn > u32::MAX as usize {
+            return Err(GpuError::ResourceLimit(format!(
+                "Q*n = {qn} exceeds u32::MAX; split the domain or reduce grid size"
+            )));
+        }
+        let bytes = |items: usize, item_bytes: u64, what: &str| -> Result<u64, GpuError> {
+            (items as u64)
+                .checked_mul(item_bytes)
+                .ok_or_else(|| GpuError::ResourceLimit(format!("{what} byte count overflows u64")))
+        };
+        let nx_u32 = u32::try_from(nx).map_err(|_| {
+            GpuError::ResourceLimit(format!("nx = {nx} exceeds u32::MAX for WGSL indexing"))
+        })?;
+        let ny_u32 = u32::try_from(ny).map_err(|_| {
+            GpuError::ResourceLimit(format!("ny = {ny} exceeds u32::MAX for WGSL indexing"))
+        })?;
+        let max_ext = nx_u32.max(ny_u32);
+        Ok(Self {
+            n,
+            fbytes: bytes(qn, 4, "population buffer")?,
+            stash_bytes: bytes(wgsl::stash_len::<L>(nx, ny), 4, "edge stash")?,
+            mask_bytes: bytes(n, 4, "solid mask")?,
+            vec2_bytes: bytes(n, 8, "vec2 field")?,
+            moments_bytes: bytes(n, 4, "moment buffer")?,
+            staging_bytes: bytes(qn, 4, "population staging")?,
+            gx: nx_u32.div_ceil(wgsl::WG.0),
+            gy: ny_u32.div_ceil(wgsl::WG.1),
+            max_bc_groups: max_ext.div_ceil(wgsl::WG_BC),
+        })
+    }
+
+    fn validate(&self, limits: &wgpu::Limits) -> Result<(), GpuError> {
+        let check_buffer = |label: &str, bytes: u64| -> Result<(), GpuError> {
+            if bytes > limits.max_buffer_size {
+                return Err(GpuError::ResourceLimit(format!(
+                    "{label} requires {bytes} bytes, above max_buffer_size {}",
+                    limits.max_buffer_size
+                )));
+            }
+            Ok(())
+        };
+        let check_storage = |label: &str, bytes: u64| -> Result<(), GpuError> {
+            check_buffer(label, bytes)?;
+            if bytes > limits.max_storage_buffer_binding_size as u64 {
+                return Err(GpuError::ResourceLimit(format!(
+                    "{label} requires {bytes} bytes, above max_storage_buffer_binding_size {}",
+                    limits.max_storage_buffer_binding_size
+                )));
+            }
+            Ok(())
+        };
+        for (label, bytes) in [
+            ("population f0/f1", self.fbytes),
+            ("edge stash", self.stash_bytes),
+            ("solid mask", self.mask_bytes),
+            ("wall velocity", self.vec2_bytes),
+            ("force field", self.vec2_bytes),
+            ("rho moment", self.moments_bytes),
+            ("ux moment", self.moments_bytes),
+            ("uy moment", self.moments_bytes),
+        ] {
+            check_storage(label, bytes)?;
+        }
+        check_buffer("population staging", self.staging_bytes)?;
+        let max_groups = limits.max_compute_workgroups_per_dimension.min(65_535);
+        for (axis, groups) in [
+            ("x", self.gx),
+            ("y", self.gy),
+            ("boundary", self.max_bc_groups),
+        ] {
+            if groups > max_groups {
+                return Err(GpuError::ResourceLimit(format!(
+                    "dispatch {axis} workgroup count {groups} exceeds limit {max_groups}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl GpuContext {
-    /// Create a context on the highest-performance adapter, or `None` when
-    /// no usable GPU exists.
-    pub fn new() -> Option<Arc<Self>> {
+    /// Create a context on the highest-performance adapter.
+    pub fn new() -> Result<Arc<Self>, GpuInitError> {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()
         }))
-        .ok()?;
+        .map_err(|_| GpuInitError::NoAdapter)?;
         let adapter_info = adapter.get_info();
         let al = adapter.limits();
         let mut limits = wgpu::Limits::default();
         limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
         limits.max_buffer_size = al.max_buffer_size;
+        limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("lbm-core-gpu"),
             required_features: wgpu::Features::empty(),
@@ -82,19 +266,52 @@ impl GpuContext {
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
         }))
-        .ok()?;
-        Some(Arc::new(Self {
+        .map_err(|e| GpuInitError::RequestDevice {
+            adapter_info: adapter_info.clone(),
+            message: e.to_string(),
+        })?;
+        let device_lost = Arc::new(Mutex::new(None));
+        let lost_slot = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |reason, message| {
+            let text = if message.is_empty() {
+                format!("{reason:?}")
+            } else {
+                format!("{reason:?}: {message}")
+            };
+            *lost_slot.lock().expect("device lost mutex poisoned") = Some(text);
+        });
+        Ok(Arc::new(Self {
             device,
             queue,
             adapter_info,
+            device_lost,
         }))
     }
 
     /// Block until all submitted work completed.
     pub fn wait_idle(&self) {
+        self.try_wait_idle().expect("device poll failed");
+    }
+
+    /// Block until all submitted work completed, propagating poll/device loss.
+    pub fn try_wait_idle(&self) -> Result<(), GpuError> {
         self.device
             .poll(wgpu::PollType::Wait)
-            .expect("device poll failed");
+            .map(|_| ())
+            .map_err(|e| GpuError::Poll(e.to_string()))?;
+        self.check_device_lost()
+    }
+
+    fn check_device_lost(&self) -> Result<(), GpuError> {
+        match self
+            .device_lost
+            .lock()
+            .expect("device lost mutex poisoned")
+            .clone()
+        {
+            Some(reason) => Err(GpuError::DeviceLost(reason)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -136,8 +353,13 @@ struct RecState {
     bc_words: Option<[[u32; 32]; 6]>,
     /// Bumped per fused dispatch; invalidates the readback cache.
     generation: u64,
-    /// Cached population readback (generation, data).
-    f_cache: Option<(u64, Vec<f32>)>,
+    /// Cached population readback (generation, shared data).
+    f_cache: Option<(u64, Arc<Vec<f32>>)>,
+}
+
+struct StagingBuffer {
+    buffer: wgpu::Buffer,
+    size: u64,
 }
 
 /// Device-resident fields of one (monolithic) subdomain.
@@ -150,6 +372,8 @@ pub struct GpuFields {
     mask: wgpu::Buffer,
     wall_u: wgpu::Buffer,
     force_field: wgpu::Buffer,
+    wall_u_full: bool,
+    force_field_full: bool,
     rho: wgpu::Buffer,
     ux: wgpu::Buffer,
     uy: wgpu::Buffer,
@@ -157,8 +381,7 @@ pub struct GpuFields {
     params_ub: wgpu::Buffer,
     bc_ub: [wgpu::Buffer; 6],
     profiles: [wgpu::Buffer; 6],
-    staging: wgpu::Buffer,
-    staging_small: wgpu::Buffer,
+    staging: RefCell<Option<StagingBuffer>>,
     fused_bg: [wgpu::BindGroup; 2],
     moments_bg: [wgpu::BindGroup; 2],
     bc_bg: [[wgpu::BindGroup; 2]; 6],
@@ -192,6 +415,7 @@ pub struct WgpuBackend<L: Lattice> {
     /// The proto measured 7.3–7.4 GLUPS for 10–100 dispatches/submit vs
     /// 0.8 GLUPS with a wait per step; anything ≥ ~10 is on the plateau.
     pub submit_chunk: usize,
+    submit_chunk_calibrated: bool,
     _l: PhantomData<L>,
 }
 
@@ -231,6 +455,7 @@ impl<L: Lattice> WgpuBackend<L> {
             ctx,
             pipelines,
             submit_chunk: 200,
+            submit_chunk_calibrated: false,
             _l: PhantomData,
         }
     }
@@ -258,9 +483,15 @@ impl<L: Lattice> WgpuBackend<L> {
     /// Materialise recorded ops into one encoder/pass and submit — without
     /// waiting (waits only happen in the readback paths).
     pub fn flush(&self, fields: &GpuFields) {
+        self.try_flush(fields).expect("GPU submit failed");
+    }
+
+    /// Materialise recorded ops and submit them, propagating prior device loss.
+    pub fn try_flush(&self, fields: &GpuFields) -> Result<(), GpuError> {
+        self.ctx.check_device_lost()?;
         let mut st = fields.state.borrow_mut();
         if st.ops.is_empty() {
-            return;
+            return Ok(());
         }
         let (gx, gy) = self.workgroups(fields);
         let mut enc = self
@@ -303,67 +534,125 @@ impl<L: Lattice> WgpuBackend<L> {
         self.ctx.queue.submit(Some(enc.finish()));
         st.ops.clear();
         st.steps_recorded = 0;
+        Ok(())
     }
 
-    fn map_staging(&self, staging: &wgpu::Buffer, bytes: u64) -> Vec<u8> {
+    fn ensure_staging(&self, fields: &GpuFields, bytes: u64) {
+        let mut staging = fields.staging.borrow_mut();
+        if staging.as_ref().is_some_and(|s| s.size >= bytes) {
+            return;
+        }
+        let size = bytes.max(4);
+        let buffer = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        *staging = Some(StagingBuffer { buffer, size });
+    }
+
+    fn map_staging(&self, staging: &wgpu::Buffer, bytes: u64) -> Result<Vec<u8>, GpuError> {
         let slice = staging.slice(..bytes);
         let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
         slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = tx.send(res);
         });
-        self.ctx.wait_idle();
+        self.ctx.try_wait_idle()?;
         pollster::block_on(rx.receive())
-            .expect("map_async callback dropped")
-            .expect("staging buffer map failed");
+            .ok_or_else(|| GpuError::Map("map_async callback dropped".to_string()))?
+            .map_err(|e| GpuError::Map(e.to_string()))?;
         let out = slice.get_mapped_range().to_vec();
         staging.unmap();
-        out
+        Ok(out)
     }
 
     /// Explicit readback of the current deviation populations, compact SoA
     /// layout `f[q*n + y*nx + x]`. Cached until the next recorded step.
     pub fn read_f(&self, fields: &GpuFields) -> Vec<f32> {
+        self.try_read_f(fields)
+            .expect("GPU population readback failed")
+            .as_ref()
+            .clone()
+    }
+
+    /// Fallible variant of [`Self::read_f`].
+    pub fn try_read_f(&self, fields: &GpuFields) -> Result<Arc<Vec<f32>>, GpuError> {
         {
             let st = fields.state.borrow();
             if let Some((gen, data)) = &st.f_cache {
                 if *gen == st.generation && st.ops.is_empty() {
-                    return data.clone();
+                    return Ok(Arc::clone(data));
                 }
             }
         }
-        self.flush(fields);
+        self.try_flush(fields)?;
         let bytes = (L::Q * fields.n * 4) as u64;
+        self.ensure_staging(fields, bytes);
+        let staging_ref = fields.staging.borrow();
+        let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
         let mut enc = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("read-f"),
             });
-        enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, &fields.staging, 0, bytes);
+        enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, staging, 0, bytes);
         self.ctx.queue.submit(Some(enc.finish()));
-        let raw = self.map_staging(&fields.staging, bytes);
-        let data: Vec<f32> = bytemuck::cast_slice(&raw).to_vec();
+        let raw = self.map_staging(staging, bytes)?;
+        let data = Arc::new(bytemuck::cast_slice(&raw).to_vec());
         let mut st = fields.state.borrow_mut();
         let generation = st.generation;
-        st.f_cache = Some((generation, data.clone()));
-        data
+        st.f_cache = Some((generation, Arc::clone(&data)));
+        Ok(data)
     }
 
     /// Explicit readback of the momentum-exchange probe force accumulated
     /// during the most recent executed step (V1 `probed_force` semantics).
     pub fn read_probed_force(&self, fields: &GpuFields) -> [f32; 3] {
-        self.flush(fields);
+        self.try_read_probed_force(fields)
+            .expect("GPU probe-force readback failed")
+    }
+
+    /// Fallible variant of [`Self::read_probed_force`].
+    pub fn try_read_probed_force(&self, fields: &GpuFields) -> Result<[f32; 3], GpuError> {
+        self.try_flush(fields)?;
+        self.ensure_staging(fields, 12);
+        let staging_ref = fields.staging.borrow();
+        let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
         let mut enc = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("read-probe"),
             });
-        enc.copy_buffer_to_buffer(&fields.probe_acc, 0, &fields.staging_small, 0, 12);
+        enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, 0, 12);
         self.ctx.queue.submit(Some(enc.finish()));
-        let raw = self.map_staging(&fields.staging_small, 12);
+        let raw = self.map_staging(staging, 12)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
-        [v[0], v[1], v[2]]
+        Ok([v[0], v[1], v[2]])
+    }
+
+    /// Current submit chunk after any runtime calibration.
+    pub fn submit_chunk(&self) -> usize {
+        self.submit_chunk
+    }
+
+    /// Force a submit chunk and mark it calibrated by the caller.
+    pub fn set_submit_chunk(&mut self, chunk: usize) {
+        self.submit_chunk = chunk.clamp(1, 200);
+        self.submit_chunk_calibrated = true;
+    }
+
+    /// Whether the first measured submit has already calibrated chunk size.
+    pub fn submit_chunk_calibrated(&self) -> bool {
+        self.submit_chunk_calibrated
+    }
+
+    /// Update chunk size from one measured submit.
+    pub fn calibrate_submit_chunk(&mut self, measured_steps: usize, elapsed: Duration) {
+        self.submit_chunk = calibrate_submit_chunk(measured_steps, elapsed, self.submit_chunk);
+        self.submit_chunk_calibrated = true;
     }
 
     /// Write the global Params uniform once; assert the step parameters do
@@ -516,6 +805,63 @@ impl<L: Lattice> WgpuBackend<L> {
         out
     }
 
+    fn storage_buffer(&self, label: &str, size: u64, copy_dst: bool) -> wgpu::Buffer {
+        let mut usage = wgpu::BufferUsages::STORAGE;
+        if copy_dst {
+            usage |= wgpu::BufferUsages::COPY_DST;
+        }
+        self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: size.max(8),
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn rebuild_field_bind_groups(&self, fields: &mut GpuFields) {
+        fn e(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: b.as_entire_binding(),
+            }
+        }
+        let device = &self.ctx.device;
+        let step_layout = self.pipelines.step.get_bind_group_layout(0);
+        fields.fused_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fused"),
+                layout: &step_layout,
+                entries: &[
+                    e(0, &fields.params_ub),
+                    e(1, &fields.f[p]),
+                    e(2, &fields.f[1 - p]),
+                    e(3, &fields.mask),
+                    e(4, &fields.wall_u),
+                    e(5, &fields.force_field),
+                    e(6, &fields.stash[p]),
+                    e(7, &fields.stash[1 - p]),
+                    e(8, &fields.probe_acc),
+                ],
+            })
+        });
+        let moments_layout = self.pipelines.moments.get_bind_group_layout(0);
+        fields.moments_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("moments"),
+                layout: &moments_layout,
+                entries: &[
+                    e(0, &fields.params_ub),
+                    e(1, &fields.f[p]),
+                    e(3, &fields.mask),
+                    e(5, &fields.force_field),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
+                ],
+            })
+        });
+    }
+
     /// Upload host-staged fields (populations, masks, moments, profiles)
     /// into the device buffers. `fields_host` is the monolithic subdomain's
     /// SoA state; halo rings are stripped (the kernel wraps in-place).
@@ -601,16 +947,34 @@ impl<L: Lattice> WgpuBackend<L> {
         q.write_buffer(&fields.mask, 0, bytemuck::cast_slice(&mask));
         fields.host_solid = host_solid;
         fields.has_probe = host.probe.is_some();
-        // Wall velocities (read only at solid neighbours).
-        let mut wu = vec![0f32; 2 * n];
-        for y in 0..ny {
-            for x in 0..nx {
-                let v = host.wall_u[g.pidx(x, y, 0)];
-                wu[2 * (y * nx + x)] = v[0];
-                wu[2 * (y * nx + x) + 1] = v[1];
-            }
+        let needs_wall_u = fields.host_solid.iter().any(|&solid| solid);
+        let needs_force_field = host.force_field.is_some();
+        let mut rebuild_bgs = false;
+        if needs_wall_u && !fields.wall_u_full {
+            fields.wall_u = self.storage_buffer("wall_u", (n * 8) as u64, true);
+            fields.wall_u_full = true;
+            rebuild_bgs = true;
         }
-        q.write_buffer(&fields.wall_u, 0, bytemuck::cast_slice(&wu));
+        if needs_force_field && !fields.force_field_full {
+            fields.force_field = self.storage_buffer("force_field", (n * 8) as u64, true);
+            fields.force_field_full = true;
+            rebuild_bgs = true;
+        }
+        if rebuild_bgs {
+            self.rebuild_field_bind_groups(fields);
+        }
+        // Wall velocities (read only at solid neighbours).
+        if fields.wall_u_full {
+            let mut wu = vec![0f32; 2 * n];
+            for y in 0..ny {
+                for x in 0..nx {
+                    let v = host.wall_u[g.pidx(x, y, 0)];
+                    wu[2 * (y * nx + x)] = v[0];
+                    wu[2 * (y * nx + x) + 1] = v[1];
+                }
+            }
+            q.write_buffer(&fields.wall_u, 0, bytemuck::cast_slice(&wu));
+        }
         // Per-cell force field (compact already).
         fields.host_ff = host.force_field.clone();
         if let Some(ff) = &host.force_field {
@@ -651,15 +1015,26 @@ impl<L: Lattice> WgpuBackend<L> {
     }
 }
 
-impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
-    type Fields = GpuFields;
+impl<L: Lattice> WgpuBackend<L> {
+    /// Allocate device fields after validating adapter/device resource limits.
+    pub fn try_alloc(&self, sub: &Subdomain) -> Result<GpuFields, GpuError> {
+        self.try_alloc_with_options(sub, true, true)
+    }
 
-    fn alloc(&self, sub: &Subdomain) -> GpuFields {
+    /// Allocate fields with optional dummy wall/force buffers for known-absent features.
+    pub fn try_alloc_with_options(
+        &self,
+        sub: &Subdomain,
+        full_wall_u: bool,
+        full_force_field: bool,
+    ) -> Result<GpuFields, GpuError> {
         let g = sub.geom;
         assert_eq!(g.d, 2, "WgpuBackend fields are 2D (D2Q9)");
         assert_eq!(g.core[2], 1);
         let (nx, ny) = (g.core[0] as u32, g.core[1] as u32);
         let n = (nx as usize) * (ny as usize);
+        let plan = GpuResourcePlan::for_grid::<L>(nx as usize, ny as usize)?;
+        plan.validate(&self.ctx.device.limits())?;
         let device = &self.ctx.device;
         use wgpu::BufferUsages as U;
         let buf = |label: &str, size: u64, usage: wgpu::BufferUsages| {
@@ -681,8 +1056,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             buf("stash1", slen, U::STORAGE | U::COPY_DST),
         ];
         let mask = buf("mask", (n * 4) as u64, U::STORAGE | U::COPY_DST);
-        let wall_u = buf("wall_u", (n * 8) as u64, U::STORAGE | U::COPY_DST);
-        let force_field = buf("force_field", (n * 8) as u64, U::STORAGE | U::COPY_DST);
+        let wall_u_size = if full_wall_u { (n * 8) as u64 } else { 8 };
+        let force_field_size = if full_force_field { (n * 8) as u64 } else { 8 };
+        let wall_u = buf("wall_u", wall_u_size, U::STORAGE | U::COPY_DST);
+        let force_field = buf("force_field", force_field_size, U::STORAGE | U::COPY_DST);
         let rho = buf(
             "rho",
             (n * 4) as u64,
@@ -701,9 +1078,6 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
                 U::STORAGE | U::COPY_DST,
             )
         });
-        let staging = buf("staging", fbytes, U::MAP_READ | U::COPY_DST);
-        let staging_small = buf("staging-small", 12, U::MAP_READ | U::COPY_DST);
-
         fn e(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry {
                 binding,
@@ -767,7 +1141,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             entries: &[e(8, &probe_acc)],
         });
 
-        GpuFields {
+        Ok(GpuFields {
             nx,
             ny,
             n,
@@ -776,6 +1150,8 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             mask,
             wall_u,
             force_field,
+            wall_u_full: full_wall_u,
+            force_field_full: full_force_field,
             rho,
             ux,
             uy,
@@ -783,8 +1159,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             params_ub,
             bc_ub,
             profiles,
-            staging,
-            staging_small,
+            staging: RefCell::new(None),
             fused_bg,
             moments_bg,
             bc_bg,
@@ -803,7 +1178,15 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             host_ff: None,
             has_probe: false,
             profile_set: [false; 6],
-        }
+        })
+    }
+}
+
+impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
+    type Fields = GpuFields;
+
+    fn alloc(&self, sub: &Subdomain) -> GpuFields {
+        self.try_alloc(sub).expect("GPU field allocation failed")
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
@@ -870,14 +1253,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         // pre-collide state, so the device moment buffers are refreshed only
         // by read_moments. This call marks the end of a step — the chunked
         // submit hook.
-        let flush_now = {
-            let mut st = fields.state.borrow_mut();
-            st.steps_recorded += 1;
-            st.steps_recorded >= self.submit_chunk
-        };
-        if flush_now {
-            self.flush(fields);
-        }
+        fields.state.borrow_mut().steps_recorded += 1;
     }
 
     fn reduce(
@@ -890,8 +1266,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         // Host-side exact V1 loop over the read-back populations: compact
         // cell order (y, x ascending), q inner, f64 accumulation — the same
         // sequence as CpuScalar::reduce on a monolithic subdomain.
-        let f = self.read_f(fields);
         let (nx, ny, n) = (fields.nx as usize, fields.ny as usize, fields.n);
+        if kind == Reduction::FluidCells {
+            return fields.host_solid.iter().filter(|&&solid| !solid).count() as f64;
+        }
+        let f = self
+            .try_read_f(fields)
+            .expect("GPU population readback failed");
         let mut acc = 0.0f64;
         for y in 0..ny {
             for x in 0..nx {
@@ -900,7 +1281,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
                     continue;
                 }
                 match kind {
-                    Reduction::FluidCells => acc += 1.0,
+                    Reduction::FluidCells => unreachable!("handled before population readback"),
                     Reduction::MassDeviation => {
                         for q in 0..L::Q {
                             acc += f[q * n + c] as f64;
@@ -924,25 +1305,41 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn read_moments(&self, fields: &GpuFields, out: &mut HostMoments<f32>) {
+        self.try_read_moments(fields, out)
+            .expect("GPU moments readback failed");
+    }
+}
+
+impl<L: Lattice> WgpuBackend<L> {
+    /// Fallible moment readback used by [`GpuSolver`](super::solver::GpuSolver).
+    pub fn try_read_moments(
+        &self,
+        fields: &GpuFields,
+        out: &mut HostMoments<f32>,
+    ) -> Result<(), GpuError> {
         {
             let mut st = fields.state.borrow_mut();
             let cur = st.cur;
             st.ops.push(Op::Moments { bg: cur });
         }
-        self.flush(fields);
+        self.try_flush(fields)?;
         let n = fields.n;
         let plane = (n * 4) as u64;
+        let bytes = 3 * plane;
+        self.ensure_staging(fields, bytes);
+        let staging_ref = fields.staging.borrow();
+        let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
         let mut enc = self
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("read-moments"),
             });
-        enc.copy_buffer_to_buffer(&fields.rho, 0, &fields.staging, 0, plane);
-        enc.copy_buffer_to_buffer(&fields.ux, 0, &fields.staging, plane, plane);
-        enc.copy_buffer_to_buffer(&fields.uy, 0, &fields.staging, 2 * plane, plane);
+        enc.copy_buffer_to_buffer(&fields.rho, 0, staging, 0, plane);
+        enc.copy_buffer_to_buffer(&fields.ux, 0, staging, plane, plane);
+        enc.copy_buffer_to_buffer(&fields.uy, 0, staging, 2 * plane, plane);
         self.ctx.queue.submit(Some(enc.finish()));
-        let raw = self.map_staging(&fields.staging, 3 * plane);
+        let raw = self.map_staging(staging, bytes)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
         out.rho.clear();
         out.rho.extend_from_slice(&v[..n]);
@@ -952,5 +1349,126 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         out.uy.extend_from_slice(&v[2 * n..3 * n]);
         out.uz.clear();
         out.uz.resize(n, 0.0);
+        Ok(())
+    }
+
+    /// Read populations, moments, and probe force through one copy encoder
+    /// and one staging-buffer map for `GpuSolver::sync`.
+    pub fn try_read_sync(
+        &self,
+        fields: &GpuFields,
+        out: &mut HostMoments<f32>,
+    ) -> Result<(Arc<Vec<f32>>, [f32; 3]), GpuError> {
+        self.try_flush(fields)?;
+        {
+            let mut st = fields.state.borrow_mut();
+            let cur = st.cur;
+            st.ops.push(Op::Moments { bg: cur });
+        }
+        self.try_flush(fields)?;
+
+        let n = fields.n;
+        let fbytes = (L::Q * n * 4) as u64;
+        let plane = (n * 4) as u64;
+        let moments_offset = fbytes;
+        let probe_offset = moments_offset + 3 * plane;
+        let bytes = probe_offset + 12;
+        self.ensure_staging(fields, bytes);
+        let staging_ref = fields.staging.borrow();
+        let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
+        let mut enc = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("read-sync"),
+            });
+        enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, staging, 0, fbytes);
+        enc.copy_buffer_to_buffer(&fields.rho, 0, staging, moments_offset, plane);
+        enc.copy_buffer_to_buffer(&fields.ux, 0, staging, moments_offset + plane, plane);
+        enc.copy_buffer_to_buffer(&fields.uy, 0, staging, moments_offset + 2 * plane, plane);
+        enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, probe_offset, 12);
+        self.ctx.queue.submit(Some(enc.finish()));
+        let raw = self.map_staging(staging, bytes)?;
+
+        let f_count = L::Q * n;
+        let f = Arc::new(bytemuck::cast_slice::<u8, f32>(&raw[..fbytes as usize]).to_vec());
+        let moments: &[f32] =
+            bytemuck::cast_slice(&raw[moments_offset as usize..probe_offset as usize]);
+        out.rho.clear();
+        out.rho.extend_from_slice(&moments[..n]);
+        out.ux.clear();
+        out.ux.extend_from_slice(&moments[n..2 * n]);
+        out.uy.clear();
+        out.uy.extend_from_slice(&moments[2 * n..3 * n]);
+        out.uz.clear();
+        out.uz.resize(n, 0.0);
+        let probe: &[f32] = bytemuck::cast_slice(&raw[probe_offset as usize..bytes as usize]);
+
+        let mut st = fields.state.borrow_mut();
+        let generation = st.generation;
+        debug_assert_eq!(f.len(), f_count);
+        st.f_cache = Some((generation, Arc::clone(&f)));
+        Ok((f, [probe[0], probe[1], probe[2]]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lattice::{D2Q9, D3Q19};
+
+    #[test]
+    fn submit_chunk_calibration_targets_middle_of_window() {
+        assert_eq!(
+            calibrate_submit_chunk(200, Duration::from_millis(147), 200),
+            200
+        );
+        assert_eq!(
+            calibrate_submit_chunk(200, Duration::from_millis(2_000), 200),
+            18
+        );
+        assert_eq!(
+            calibrate_submit_chunk(10, Duration::from_millis(10), 200),
+            175
+        );
+        assert_eq!(calibrate_submit_chunk(0, Duration::ZERO, 300), 200);
+    }
+
+    #[test]
+    fn poll_failure_is_an_error_value() {
+        let err = GpuError::Poll(wgpu::PollError::Timeout.to_string());
+        assert!(err.to_string().contains("GPU device poll failed"));
+    }
+
+    #[test]
+    fn resource_plan_rejects_qn_overflow() {
+        let err = GpuResourcePlan::for_grid::<D3Q19>(15_050, 15_050).unwrap_err();
+        assert!(err.to_string().contains("Q*n"));
+        assert!(err.to_string().contains("u32::MAX"));
+    }
+
+    #[test]
+    fn resource_plan_rejects_storage_binding_limit() {
+        let plan = GpuResourcePlan::for_grid::<D2Q9>(64, 64).unwrap();
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: 1024,
+            max_buffer_size: u64::MAX,
+            ..wgpu::Limits::default()
+        };
+        let err = plan.validate(&limits).unwrap_err();
+        assert!(err.to_string().contains("max_storage_buffer_binding_size"));
+    }
+
+    #[test]
+    fn resource_plan_rejects_dispatch_limit() {
+        let plan = GpuResourcePlan::for_grid::<D2Q9>(16_777_216, 1).unwrap();
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: u32::MAX,
+            max_buffer_size: u64::MAX,
+            max_compute_workgroups_per_dimension: 65_535,
+            ..wgpu::Limits::default()
+        };
+        let err = plan.validate(&limits).unwrap_err();
+        assert!(err.to_string().contains("workgroup count"));
     }
 }

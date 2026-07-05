@@ -218,6 +218,29 @@ order #2 の 5 件の dispositions:
    スケール 7.5x、融合 5.2x）。改善候補: バンド端衝突の共有（要同期）、
    または nz を跨ぐ動的バンドサイズ。
 
+## GPU ops bundle (2026-07-05 cx-gpu-ops)
+
+1. **GPU adapter availability in this sandbox**: both the pre-change baseline
+   attempt and the post-change benchmark attempt failed before measurement
+   because wgpu could not acquire an adapter:
+   `bench_gpu requires a usable GPU adapter: no usable GPU adapter was found`.
+   Command used:
+   `cargo run -p lbm-core --release --features gpu --example bench_gpu -- --gpu-only`.
+   Therefore the requested 1024² MLUPS regression, 2048² sync+diagnostics
+   speedup, and no-force/no-solid live allocation measurement are not
+   available from this sandbox run.
+
+2. **Implemented non-GPU-verifiable checks**:
+   `cargo test -p lbm-core --release --features gpu gpu:: --lib` passed
+   10 GPU module unit tests, covering submit-chunk calibration, poll-error
+   conversion, resource-limit rejection, naga parse+validate of generated WGSL,
+   and `BcParams` field-order consistency.
+
+3. **Release gates**:
+   `cargo test --workspace --release` passed.
+   `cargo test --workspace --release --features gpu` passed, including all
+   8 T14 GPU backend-equivalence tests.
+
 ## 新規（2026-07-05 V1 引退作業）
 
 1. **sync-tests.sh の置換が macOS では無効だった**: `sed -E 's/\blbm_core\b/…/'` の

@@ -65,6 +65,42 @@ pub(crate) const BC_PRESSURE: u32 = 2;
 pub(crate) const BC_OUTFLOW: u32 = 3;
 pub(crate) const BC_CONVECTIVE: u32 = 4;
 
+/// `BcParams` field order. Rust writes `bc_words[face][index]` in this order.
+pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 32] = [
+    ("kind", "u32"),
+    ("base", "u32"),
+    ("stride", "u32"),
+    ("extent", "u32"),
+    ("joff", "i32"),
+    ("has_profile", "u32"),
+    ("q_n", "u32"),
+    ("o_n", "u32"),
+    ("q_d1", "u32"),
+    ("o_d1", "u32"),
+    ("q_d2", "u32"),
+    ("o_d2", "u32"),
+    ("q_t", "u32"),
+    ("q_mt", "u32"),
+    ("unk0", "u32"),
+    ("unk1", "u32"),
+    ("unk2", "u32"),
+    ("p0", "f32"),
+    ("p1", "f32"),
+    ("nxr", "f32"),
+    ("nyr", "f32"),
+    ("txr", "f32"),
+    ("tyr", "f32"),
+    ("cw0", "f32"),
+    ("cw1", "f32"),
+    ("cw2", "f32"),
+    ("wsum", "f32"),
+    ("cinv", "f32"),
+    ("pad0", "u32"),
+    ("pad1", "u32"),
+    ("pad2", "u32"),
+    ("pad3", "u32"),
+];
+
 /// Stash slots per buffer: `sum_faces |unknowns(face)| * extent(face)`,
 /// faces in `Face::index` order (the same order the offsets are generated
 /// in). 2D only.
@@ -239,15 +275,9 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "    flags: u32,\n    pad0: u32,\n    pad1: u32,\n    pad2: u32,\n";
     s += "}\n\n";
     s += "struct BcParams {\n";
-    s += "    kind: u32,\n    base: u32,\n    stride: u32,\n    extent: u32,\n";
-    s += "    joff: i32,\n    has_profile: u32,\n";
-    s += "    q_n: u32,\n    o_n: u32,\n    q_d1: u32,\n    o_d1: u32,\n";
-    s += "    q_d2: u32,\n    o_d2: u32,\n    q_t: u32,\n    q_mt: u32,\n";
-    s += "    unk0: u32,\n    unk1: u32,\n    unk2: u32,\n";
-    s += "    p0: f32,\n    p1: f32,\n";
-    s += "    nxr: f32,\n    nyr: f32,\n    txr: f32,\n    tyr: f32,\n";
-    s += "    cw0: f32,\n    cw1: f32,\n    cw2: f32,\n    wsum: f32,\n    cinv: f32,\n";
-    s += "    pad0: u32,\n    pad1: u32,\n    pad2: u32,\n    pad3: u32,\n";
+    for (name, ty) in BC_PARAMS_FIELDS {
+        let _ = writeln!(s, "    {name}: {ty},");
+    }
     s += "}\n\n";
     s += "@group(0) @binding(0) var<uniform> P: Params;\n";
     s += "@group(0) @binding(1) var<storage, read> f_in: array<f32>;\n";
@@ -522,6 +552,57 @@ pub(crate) fn generate<L: Lattice>() -> String {
 mod tests {
     use super::*;
     use crate::lattice::D2Q9;
+
+    #[test]
+    fn generated_wgsl_parses_and_validates_with_naga() {
+        let source = generate::<D2Q9>();
+        let module = wgpu::naga::front::wgsl::parse_str(&source).expect("WGSL parse failed");
+        let mut validator = wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        );
+        validator.validate(&module).expect("WGSL validation failed");
+    }
+
+    #[test]
+    fn bc_params_field_table_matches_rust_word_indices() {
+        let expected = [
+            "kind",
+            "base",
+            "stride",
+            "extent",
+            "joff",
+            "has_profile",
+            "q_n",
+            "o_n",
+            "q_d1",
+            "o_d1",
+            "q_d2",
+            "o_d2",
+            "q_t",
+            "q_mt",
+            "unk0",
+            "unk1",
+            "unk2",
+            "p0",
+            "p1",
+            "nxr",
+            "nyr",
+            "txr",
+            "tyr",
+            "cw0",
+            "cw1",
+            "cw2",
+            "wsum",
+            "cinv",
+            "pad0",
+            "pad1",
+            "pad2",
+            "pad3",
+        ];
+        let actual: Vec<&str> = BC_PARAMS_FIELDS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn d2q9_source_contains_expected_pieces() {

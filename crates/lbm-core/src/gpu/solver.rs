@@ -26,6 +26,7 @@
 //! trajectories match T14-tight.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::backend::{Backend, CellRange, CpuScalar, HostMoments};
 use crate::halo::LocalPeriodic;
@@ -34,7 +35,7 @@ use crate::params::StepParams;
 use crate::solver::{GlobalSpec, Solver};
 use crate::subdomain::Subdomain;
 
-use super::backend::{GpuContext, GpuFields, WgpuBackend};
+use super::backend::{GpuContext, GpuError, GpuFields, WgpuBackend};
 
 /// GPU (wgpu) time-evolution driver over a monolithic domain, f32.
 pub struct GpuSolver<L: Lattice = D2Q9> {
@@ -59,6 +60,16 @@ impl<L: Lattice> GpuSolver<L> {
         wall_u: &[[f32; 3]],
         ctx: Arc<GpuContext>,
     ) -> Self {
+        Self::try_new(spec, solid, wall_u, ctx).expect("GPU solver initialization failed")
+    }
+
+    /// Fallible variant of [`Self::new`].
+    pub fn try_new(
+        spec: &GlobalSpec<f32>,
+        solid: &[bool],
+        wall_u: &[[f32; 3]],
+        ctx: Arc<GpuContext>,
+    ) -> Result<Self, GpuError> {
         let inner = Solver::new(
             spec,
             solid,
@@ -76,8 +87,8 @@ impl<L: Lattice> GpuSolver<L> {
         };
         let backend = WgpuBackend::<L>::new(ctx);
         let sub = inner.sub(0).clone();
-        let fields = backend.alloc(&sub);
-        Self {
+        let fields = backend.try_alloc_with_options(&sub, solid.iter().any(|&s| s), false)?;
+        Ok(Self {
             inner,
             backend,
             fields,
@@ -87,13 +98,13 @@ impl<L: Lattice> GpuSolver<L> {
             probed: [0.0; 3],
             host_dirty: true,
             device_ahead: false,
-        }
+        })
     }
 
     /// Steps per queue submit during `run` (default 200; anything on the
     /// ≥10 plateau of the proto's submit-granularity table is equivalent).
     pub fn set_submit_chunk(&mut self, chunk: usize) {
-        self.backend.submit_chunk = chunk.max(1);
+        self.backend.set_submit_chunk(chunk);
     }
 
     // ------------------------------------------------------------------
@@ -140,15 +151,21 @@ impl<L: Lattice> GpuSolver<L> {
     /// Advance `steps` steps on the GPU: encode everything, submit in
     /// chunks, **no wait** (readback APIs wait when asked).
     pub fn run(&mut self, steps: usize) {
+        self.try_run(steps).expect("GPU run failed");
+    }
+
+    /// Fallible variant of [`Self::run`].
+    pub fn try_run(&mut self, steps: usize) -> Result<(), GpuError> {
         if steps == 0 {
-            return;
+            return Ok(());
         }
         if self.host_dirty {
             self.backend
                 .upload(&self.sub, &mut self.fields, self.inner.fields(0));
             self.host_dirty = false;
         }
-        for _ in 0..steps {
+        let mut submitted_steps = 0usize;
+        for step in 0..steps {
             self.backend
                 .collide(&self.sub, &mut self.fields, &self.params);
             let _ = self.backend.stream(
@@ -162,16 +179,37 @@ impl<L: Lattice> GpuSolver<L> {
                 .apply_open_faces(&self.sub, &mut self.fields, &self.params);
             self.backend
                 .update_moments(&self.sub, &mut self.fields, &self.params);
+            let is_last = step + 1 == steps;
+            let chunk = self.backend.submit_chunk();
+            if submitted_steps + 1 >= chunk || is_last {
+                let measured_steps = submitted_steps + 1;
+                let calibrating = !self.backend.submit_chunk_calibrated();
+                let t = Instant::now();
+                self.backend.try_flush(&self.fields)?;
+                if calibrating {
+                    self.backend.context().try_wait_idle()?;
+                    self.backend
+                        .calibrate_submit_chunk(measured_steps, t.elapsed());
+                }
+                submitted_steps = 0;
+            } else {
+                submitted_steps += 1;
+            }
         }
-        self.backend.flush(&self.fields);
         self.time += steps as u64;
         self.device_ahead = true;
+        Ok(())
     }
 
     /// Block until all submitted GPU work completed (benchmarking hook —
     /// `run` itself never waits).
     pub fn wait_idle(&self) {
-        self.backend.context().wait_idle();
+        self.try_wait_idle().expect("GPU wait failed");
+    }
+
+    /// Fallible variant of [`Self::wait_idle`].
+    pub fn try_wait_idle(&self) -> Result<(), GpuError> {
+        self.backend.context().try_wait_idle()
     }
 
     // ------------------------------------------------------------------
@@ -182,13 +220,17 @@ impl<L: Lattice> GpuSolver<L> {
     /// moments, probe force). All accessors call this lazily; it is a no-op
     /// when the mirror is current.
     pub fn sync(&mut self) {
+        self.try_sync().expect("GPU sync failed");
+    }
+
+    /// Fallible variant of [`Self::sync`].
+    pub fn try_sync(&mut self) -> Result<(), GpuError> {
         if !self.device_ahead {
-            return;
+            return Ok(());
         }
-        let f = self.backend.read_f(&self.fields);
         let mut hm = HostMoments::default();
-        Backend::<L, f32>::read_moments(&self.backend, &self.fields, &mut hm);
-        self.probed = self.backend.read_probed_force(&self.fields);
+        let (f, probed) = self.backend.try_read_sync(&self.fields, &mut hm)?;
+        self.probed = probed;
         let host = self.inner.fields_mut(0);
         let g = host.geom;
         let (nx, ny, np) = (g.core[0], g.core[1], g.n_padded());
@@ -204,6 +246,7 @@ impl<L: Lattice> GpuSolver<L> {
         host.ux.copy_from_slice(&hm.ux);
         host.uy.copy_from_slice(&hm.uy);
         self.device_ahead = false;
+        Ok(())
     }
 
     // ------------------------------------------------------------------
