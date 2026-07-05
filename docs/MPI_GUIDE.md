@@ -1,6 +1,6 @@
 # MPI 分散ガイド（M-D, 2026-07-05）
 
-lbm-core2 の feature `mpi` は HaloExchange の MPI 実装（`dist::MpiExchange`）と
+lbm-core の feature `mpi` は HaloExchange の MPI 実装（`dist::MpiExchange`）と
 1ランク=1サブドメインのドライバ（`dist::MpiSolver`）を提供する。
 設計は docs/ARCHITECTURE_V2.md §2.3 / docs/HPC_SCALING.md 段階計画 3 に対応。
 
@@ -30,7 +30,7 @@ PATH 順で事故る。`file $(which mpirun)` で arm64 を確認すること）
 export PATH=$HOME/.local/openmpi/bin:$PATH
 file $(which mpirun)   # → Mach-O 64-bit executable arm64 を確認
 
-cargo build -p lbm-core2 --release --features mpi
+cargo build -p lbm-core --release --features mpi
 ```
 
 Open MPI のソースビルド手順（参考。5.0.9 / arm64、Fortran 無効で ~15分）:
@@ -59,8 +59,8 @@ make -j$(sysctl -n hw.ncpu) && make install
 API 最小例（1ランク=1パート。デカルト分割はランク数と一致させる）:
 
 ```rust
-use lbm_core2::dist::MpiSolver;
-use lbm_core2::prelude::*;
+use lbm_core::dist::MpiSolver;
+use lbm_core::prelude::*;
 
 let universe = mpi::initialize().unwrap();
 let world = universe.world();
