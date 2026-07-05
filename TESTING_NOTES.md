@@ -806,3 +806,21 @@ or its mechanism replaced — pinned in ARCHITECTURE_V2 §2.3) + explicit SIMD.
 Strengths confirmed for the paper: single-thread NEON wins; GPU 2D at bandwidth
 ceiling (7,073 @1024² sustained; 12,205 @512² is SLC-resident, not sustained).
 Repro: ~/projects/cfd-bench/ (sweep scripts + bw_triad).
+
+## G2 analytic-strain gate characterization (g2-strain-tests, 2026-07-06)
+
+Targeted release gates:
+- `cargo test -p lbm-core --release --test g2_analytic_strain -- --nocapture`
+- `cargo test -p lbm-cli --release --test g2_fieldkind -- --nocapture`
+
+Measured and frozen bands:
+- Couette (T3 setup, non-adjacent interior rows): epsilon L_inf_rel = 1.147e-4,
+  volume mean_rel = 5.515e-5, max_abs = 2.987e-9. Frozen bands:
+  L_inf_rel <= 2.0e-4, mean_rel <= 1.0e-4.
+- Body-force Poiseuille (T2 setup, all fluid rows): epsilon profile L_inf_rel =
+  1.836e-8, volume mean_rel vs continuous analytic integral = 9.766e-4,
+  max_abs = 4.412e-17. Frozen bands: profile L_inf_rel <= 1.0e-6,
+  volume mean_rel <= 1.1e-3.
+- Runner FieldKind consistency: `DissipationRate == nu * ShearRate^2` pointwise
+  max_abs = 0.000e0. Frozen band: max_abs <= 1.0e-18.
+- Solid and solid-adjacent channel cells checked finite for shear and epsilon.
