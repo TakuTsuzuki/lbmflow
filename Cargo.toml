@@ -1,10 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/lbm-core"]
+members = ["crates/lbm-core", "crates/lbm-scenario", "crates/lbm-cli"]
 # lbm-wasm builds standalone (wasm-pack, no rayon); excluded so native
-# `cargo test` never depends on the wasm toolchain. scenario/cli are
-# temporarily excluded while under construction (flip to members when green).
-exclude = ["crates/lbm-wasm", "crates/lbm-scenario", "crates/lbm-cli"]
+# `cargo test` never depends on the wasm toolchain.
+exclude = ["crates/lbm-wasm"]
 
 [workspace.package]
 edition = "2021"

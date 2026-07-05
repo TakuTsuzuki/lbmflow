@@ -86,6 +86,11 @@ GUI モードと、エージェントから操作できる Agent モードの両
 
 ## 進捗メモ
 
+- 2026-07-05: **Phase 4a/5/6 完了（三モード統一達成）**。codex #4 の多相検証
+  全緑（共存密度・EOS 圧力平衡・Laplace・接触角回帰 133/160/164°・f32 強化 1e-5）。
+  GUI: WASM 実エンジンでキャビティ/カルマン渦/二相液滴が動作（~600 steps/s）。
+  Agent モード: lbm CLI（run/validate/presets/schema, manifest+PNG/CSV）+
+  MCP サーバー（run_scenario 等 4 ツール）。ワークスペース 56 テスト全緑。
 - 2026-07-04: プロジェクト開始。Phase 0 着手。
 - 2026-07-04: Phase 1 完了。lbm-core（D2Q9, BGK/TRT, Guo力, half-way BB/移動壁,
   Zou-He, Outflow, 力測定, f32/f64, rayon+小格子シリアルフォールバック）実装。

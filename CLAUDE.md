@@ -7,9 +7,14 @@
 ## ビルド・テスト
 
 ```bash
-cargo build --workspace
-cargo test --release                      # 通常スイート（LBM は debug だと ~50x 遅い。必ず --release）
-cargo test --release -- --include-ignored # 重いベンチ含むフル検証
+cargo build --workspace --release
+cargo test --workspace --release          # 通常スイート（LBM は debug だと ~50x 遅い。必ず --release）
+cargo test --release -- --include-ignored # 重いベンチ含むフル検証（~5分）
+# WASM（web GUI 用。lbm-wasm はワークスペース外）:
+wasm-pack build crates/lbm-wasm --target web --release --out-dir ../../web/src/engine/pkg
+#   （生成後 pkg/.gitignore を削除して pkg をコミットする運用）
+cd web && npm run build                   # GUI（tsc strict + vite）
+./target/release/lbm presets run cavity   # CLI スモーク
 ```
 
 ## 体制・規約
