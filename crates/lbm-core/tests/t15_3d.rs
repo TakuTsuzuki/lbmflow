@@ -532,8 +532,10 @@ fn sphere_drag(c: &SphereCase) -> f64 {
 }
 
 /// Light default-suite variant: D = 12 (below the T15 D ≥ 24 resolution
-/// floor, so the band is widened to ±25% — the spec-grade runs are the
-/// #[ignore] tests below). Blockage π(D/2)²/(64·64) = 2.8% ≤ 3%, length 8D.
+/// floor, so the band is widened to ±15%, vs ±10% for the spec-grade
+/// #[ignore] runs below; the assert is the ±15% line — A-10c aligned this
+/// doc with it, measured +2.3% with the hydrodynamic SN pair).
+/// Blockage π(D/2)²/(64·64) = 2.8% ≤ 3%, length 8D.
 #[test]
 fn t15_3_sphere_drag_re20_light() {
     let cd = sphere_drag(&SphereCase {

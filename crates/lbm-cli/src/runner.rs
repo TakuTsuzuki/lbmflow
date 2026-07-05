@@ -275,7 +275,13 @@ fn write_output<T: Real>(
 /// VTK legacy structured points (ASCII), 2D (`nz == 1`) or 3D. Point order
 /// is x-fastest, then y, then z — exactly the compact field layout
 /// `cell = z*(nx*ny) + y*nx + x` (y up, like the sim).
-fn write_vtk(path: &Path, kind_name: &str, step: usize, dims: [usize; 3], values: &[f64]) -> Result<()> {
+fn write_vtk(
+    path: &Path,
+    kind_name: &str,
+    step: usize,
+    dims: [usize; 3],
+    values: &[f64],
+) -> Result<()> {
     let [nx, ny, nz] = dims;
     debug_assert_eq!(values.len(), nx * ny * nz);
     let mut file = std::io::BufWriter::new(fs::File::create(path)?);
@@ -326,13 +332,13 @@ fn field_values3(f: &Fields3, dims: [usize; 3], kind: FieldKind) -> Vec<f64> {
         FieldKind::Ux => f.ux.clone(),
         FieldKind::Uy => f.uy.clone(),
         FieldKind::Rho => f.rho.clone(),
-        FieldKind::Speed => f
-            .ux
-            .iter()
-            .zip(&f.uy)
-            .zip(&f.uz)
-            .map(|((a, b), c)| (a * a + b * b + c * c).sqrt())
-            .collect(),
+        FieldKind::Speed => {
+            f.ux.iter()
+                .zip(&f.uy)
+                .zip(&f.uz)
+                .map(|((a, b), c)| (a * a + b * b + c * c).sqrt())
+                .collect()
+        }
         FieldKind::Vorticity => {
             let mut w = vec![0.0; nx * ny * nz];
             for z in 0..nz {
@@ -491,7 +497,10 @@ fn run3d_t<T: lbm_core::real::Real>(
             }
         }
 
-        let snapshot_due = sc.outputs.iter().any(|o| o.every > 0 && step % o.every == 0);
+        let snapshot_due = sc
+            .outputs
+            .iter()
+            .any(|o| o.every > 0 && step % o.every == 0);
         if snapshot_due {
             let f = gather3(&s);
             for o in sc.outputs.iter() {
@@ -502,10 +511,7 @@ fn run3d_t<T: lbm_core::real::Real>(
         }
 
         if step % 1000 == 0 {
-            let bad = s
-                .gather_rho()
-                .iter()
-                .any(|v| !v.as_f64().is_finite());
+            let bad = s.gather_rho().iter().any(|v| !v.as_f64().is_finite());
             if bad {
                 status = "diverged";
                 break 'main;
@@ -545,13 +551,12 @@ fn run3d_t<T: lbm_core::real::Real>(
 
     let wall = t0.elapsed().as_secs_f64();
     let cells = (nx * ny * nz) as f64;
-    let max_speed = f
-        .ux
-        .iter()
-        .zip(&f.uy)
-        .zip(&f.uz)
-        .map(|((a, b), c)| (a * a + b * b + c * c).sqrt())
-        .fold(0.0f64, f64::max);
+    let max_speed =
+        f.ux.iter()
+            .zip(&f.uy)
+            .zip(&f.uz)
+            .map(|((a, b), c)| (a * a + b * b + c * c).sqrt())
+            .fold(0.0f64, f64::max);
     let manifest = Manifest {
         scenario: sc.name.clone(),
         status: status.to_string(),
@@ -597,7 +602,11 @@ mod tests {
         .unwrap();
         let dir = std::env::temp_dir().join(format!("lbm_vtk_test_{}", std::process::id()));
         let manifest = run(&sc, &dir).unwrap();
-        assert!(manifest.files.contains(&"rho_5.vtk".to_string()), "{:?}", manifest.files);
+        assert!(
+            manifest.files.contains(&"rho_5.vtk".to_string()),
+            "{:?}",
+            manifest.files
+        );
         let text = fs::read_to_string(dir.join("rho_5.vtk")).unwrap();
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some("# vtk DataFile Version 3.0"));
@@ -654,7 +663,12 @@ mod tests {
         let manifest = run(&sc, &dir).unwrap();
         assert_eq!(manifest.status, "completed");
         assert_eq!(manifest.steps_run, 20);
-        for f in ["speed_20.png", "rho_20.vtk", "force.csv", "point_16_6_5.csv"] {
+        for f in [
+            "speed_20.png",
+            "rho_20.vtk",
+            "force.csv",
+            "point_16_6_5.csv",
+        ] {
             assert!(
                 manifest.files.contains(&f.to_string()),
                 "{f} missing from {:?}",

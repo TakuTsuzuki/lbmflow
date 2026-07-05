@@ -9,4 +9,9 @@ dist/
 /out
 *.vtk
 *.png.tmp
-.claude/
+# Ignore local .claude settings but keep committed Skills tracked.
+# (Can't re-include a child of an ignored DIR, so ignore .claude contents
+#  by glob rather than the directory itself, then negate skills/.)
+.claude/*
+!.claude/skills/
+!.claude/skills/**

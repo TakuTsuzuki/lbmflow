@@ -390,3 +390,166 @@ reviewer had not seen). Dispositions:
 
 Net: 13 adopted (1 adapted), 1 already-fixed-and-strengthened. REQ is now rev.4.
 Reviewer read rev.1a — overlaps with rev.2/rev.3 noted above to avoid double-fixing.
+
+## D-5 validation horizon (2026-07-05)
+
+- Added `crates/lbm-core/tests/d5_long_horizon.rs`.
+- Native `Solver<D2Q9, f64, CpuScalar, LocalPeriodic>` TGV convergence, default suite:
+  `cargo test -p lbm-core --release --test d5_long_horizon d5_native_solver_tgv_converges_second_order -- --nocapture`
+  measured `e32=2.622406e-3`, `e64=6.982198e-4`, `order=1.909`.
+- Ignored long-horizon Re=100 cavity compat facade vs native Solver:
+  `cargo test -p lbm-core --release --test d5_long_horizon d5_cavity_re100_compat_matches_native_after_20k_steps -- --ignored --nocapture`
+  measured `rho=0.000000e0`, `ux=0.000000e0`, `uy=0.000000e0`, `worst=0.000000e0`
+  after 20,000 steps on a 129x129 f64 TRT cavity. The frozen assert is `worst <= 1e-12`,
+  below the D-5 `1e-9` ceiling.
+## D-4 f32 x 3D validation measurements (2026-07-05, branch cx-d4)
+
+New default-suite test file: `crates/lbm-core/tests/t15_3d_f32.rs`.
+
+- T15-1 f32 z-invariant TGV degeneracy, D3Q19 `32x32x4` vs D2Q9 `32x32`,
+  `nu=0.02`, `u0=1.28/N`, 648 steps: max relative agreement on the characteristic
+  velocity scale is `4.400e-6` (`rho=5.958e-7`, `ux=4.400e-6`, `uy=3.795e-6`,
+  `|uz|/u0=1.164e-8`). Test gate: `<= 1.0e-5`.
+- T15-4 f32 TGV3D decay rate, D3Q19 `64^3`, `nu=0.02`, frozen scaling
+  `u0=1.28e-4/N=2.000e-6`, 519 steps: measured rate `1.155265e-3`,
+  diffusive reference `1.156594e-3`, relative error `1.149e-3`.
+  Test gate: `<= 2.0e-2`.
+- T15-4 f32 TGV3D mass drift, same `64^3` setup, 1000 steps: `m0=2.621440000e5`,
+  `m1=2.621440000e5`, relative drift per 1000 steps `3.109e-15`.
+  Test gate: `<= 1.0e-5`.
+
+Note: `lbm-scenario::Sim3Handle::F32` is a thin wrapper around
+`Solver<D3Q19, f32, CpuScalar, LocalPeriodic>`. These tests live in `lbm-core`,
+so they pin that product engine type directly without adding a reverse
+dependency from core tests to the scenario crate.
+## D-11 wasm smoke record (2026-07-05, branch cx-wasm-smoke)
+
+- Added a wasm-bindgen-test smoke in `crates/lbm-wasm` using a test-only
+  Taylor-Green JSON initializer on the existing `WasmSim::init` JSON path:
+  32x32, nu=0.02, BGK, periodic edges, u0=1.28/32, 100 steps.
+- Native f32 characterization for the same compat path:
+  - rho-view mass sum before: 1023.999993563
+  - rho-view mass sum after 100 steps: 1023.999934435
+  - relative mass drift: 5.7741999989150555e-8
+  - frozen probe at (7, 11) after 100 steps:
+    rho bits 0x3f8025b6, ux bits 0xbbb62bd2, uy bits 0xbc98d05a.
+- `wasm-pack test --node crates/lbm-wasm` result: PASS
+  (`tests::wasm::wasm_tgv_smoke_matches_compat_f32` passed; wasm rho/ux/uy
+  views matched the compat f32 run bit-for-bit, and velocity views had no NaN).
+- `wasm-pack build crates/lbm-wasm --target web --release --out-dir ../../web/src/engine/pkg`
+  initially failed after Rust wasm compilation at wasm-pack's external optimizer/helper install
+  step with: `Operation not permitted (os error 1)` and wasm-pack's hint
+  `To disable wasm-opt, add wasm-opt = false to your package metadata in your Cargo.toml`.
+  The crate now sets `[package.metadata.wasm-pack.profile.release] wasm-opt = false`.
+  With `XDG_CACHE_HOME=/private/tmp/lbmflow-wasm-pack-cache`, the same build command passed.
+- Cargo registry/network note: this sandbox cannot resolve crates.io/static.crates.io. The current
+  `wasm-bindgen-test` release has a target-gated `minicov` coverage dependency in its lock graph;
+  a local `minicov` stub is patched in under `crates/lbm-wasm/test-support/` so metadata resolves
+  offline. The stub is not compiled for the normal wasm smoke.
+- Added a Rust-only `lbm-scenario` test for the GUI-exported scenario JSON shape; it parses, builds,
+  reserializes, reparses, and serializes byte-stably without node/web tooling.
+
+## PM record — B1 approval, order-A/B/C triage, dispatch lesson (2026-07-05 late)
+
+- **B1 capability map APPROVED and merged** (docs/skills/b1-capability-map.md, one-file
+  branch). Highlights: 7 MCP tools empirically confirmed (async path driven end-to-end);
+  **BUG found: explicit 2D backend:"gpu" silently runs on CPU** (status:completed,
+  validate ok:true, no warning) → fix order dispatched (branch cx-gpu-fallback-guard:
+  honored-or-error for explicit backend requests; "auto" may fall back by design).
+  Other reds: no unit->lattice conversion anywhere; no user-facing accuracy-compare
+  command (validation is cargo-test only); 3D limited to single-phase + init:rest + CPU.
+  B2 session launched on the approved map (branch skills/b2).
+- **Bioreactor session's follow-up orders triaged**: §1 body-force API = already in
+  trunk (guard suites green). Order A (strain-rate observable per FR-STRESS-01) =
+  ACCEPTED, dispatched (branch cx-strain-rate; W-STRESS pulled forward — hard dep is
+  W0 only per REQ §11). Order B (moving no-slip boundary) = DEFERRED to MF-δ; their
+  adversarial test seeds recorded: translating flat-plate drag vs analytic,
+  Taylor-Couette interior azimuthal profile, mass conservation across mask motion,
+  partition invariance. Order C (raster lift) = queued behind A.
+- **Dispatch lesson (feeds lbmflow-codex-dispatch Skill v2)**: an inline codex order
+  containing backticks dies in zsh command substitution (parse error near ')').
+  Robust invocation: write the order to a file and pass "$(cat <file>)" — the
+  substituted string is NOT re-parsed. The Skill's invocation section should make
+  file-passing the default for any order containing backticks/code spans.
+
+## Parity harness smoke SM-1 (2026-07-05 late) — harness defect found and fixed
+
+CD-HO-01 on Sonnet: evaluee REFUSED — flagged the external fixture-file trust hop as a
+prompt-injection pattern (defensible) and noted the hypothetical task IDs don't exist
+in the repo. Meanwhile it had read lbmflow-codex-dispatch and cited the CD-3 same-file
+bundling rule correctly — the Skill content reached the model; the harness framing
+failed. Protocol amended (runner preamble v2 on branch skills/a-pilot-eval-tasks):
+fixtures inlined into the prompt, exercise declared self-contained/hypothetical,
+refusal-handling rule added. Full 96-run parity batch deferred to a dedicated
+orchestration session with the v2 preamble; smoke rerun first.
+
+## PM record — B2 approved & merged (2026-07-05 late)
+
+Five green user Skills merged (.claude/skills/lbmflow-user-{run-preset, author-scenario,
+tune-stability, run-monitor-mcp, postprocess}) + docs/skills/b2-skill-specs.md.
+PM answers to B2's open questions: (1) obstacle-composition FOLD approved, no Y1 order;
+(2) no defensive 2D-gpu warning line — the honored-or-error fix (cx-gpu-fallback-guard)
+lands first and gates the Skill's assumption; (3) unit conversion stays routing-only
+until W-UNIT (REQ §11) delivers the feasibility layer — the user-facing converter is
+spec'd together with it; (4) run-preset / run-monitor-mcp split accepted, no 6th Skill.
+Parity evaluation for user Skills follows the A-pilot protocol once that pipeline is
+validated (runner preamble v2, smoke rerun pending).
+## New (2026-07-05 R-Phase 1: entry guards A-2..A-10, branch r-phase1)
+
+Written in English per the 2026-07-05 language policy (new notes English-only).
+Engine-side changes that alter *rejection* semantics — adversarial tests
+(codex order #7+) should target these seams. No numerical path changed:
+probe_state_hash-equivalent bit invariance of legal configurations is pinned
+by `healthy_run_is_ok_and_bit_identical` (run vs run_guarded) and the
+untouched T13/T14/backend_simd gates.
+
+1. **A-2/A-6 (compat `SimConfig::build`)**: NaN/Inf in edge velocities, body
+   force, or TRT magic now `Err(NonFiniteParameter)` / `InvalidParameter`
+   (speed test reversed to NaN-safe `!(s <= MAX_SPEED)`). A MovingWall with a
+   wall-normal velocity component is rejected (E7: silent -56% mass / 500
+   steps). `MAX_SPEED` moved to `params::MAX_SPEED`; compat re-exports it.
+2. **A-7 (compat `init_with`)**: panics with the offending coordinate on
+   rho <= 0, non-finite rho, or speed > MAX_SPEED. Closure purity documented
+   (re-evaluated up to 5x per cell by the FD stencil).
+3. **A-3 (compat/wasm `set_solid`)**: placing a solid on the cell directly
+   inward of an open edge (x==1 / x==nx-2 / y==1 / y==ny-2 for open
+   left/right/bottom/top) now panics — that neighbour feeds the open-face BC;
+   a solid there froze the unknown slots (E5b: permanent ux=-0.115, no NaN).
+   Non-panicking pre-check: `Simulation::set_solid_allowed(x, y)`. The wasm
+   paint tool refuses such strokes silently.
+4. **A-4 (`GlobalSpec::validate(d, solid) -> Result<(), SpecError>`)**: the
+   V2-native gate. Rejects: non-finite/non-positive nu; bad TRT magic;
+   non-finite force and (2D) force[2] != 0; active axis < 3 cells; periodic x
+   open on one axis; open faces on more than one axis; a non-periodic face
+   that is neither open nor a full solid rim (E2); inlet speed > MAX_SPEED
+   (NaN-safe); outlet rho <= 0; u_conv outside (0,1]; open-face axis < 3.
+   `Solver::build` enforces it (panic, defense-in-depth); lbm-scenario
+   `build3d` calls it and maps `SpecError` -> `Build3Error::Spec`. Scenario
+   keeps only: periodic *pairing* (two EdgeSpecs -> one bool), the
+   `AdjacentOpenEdges` kind its guard test pins, and MovingWall speed (wall
+   velocities live in WallSpec, invisible to GlobalSpec).
+5. **A-5 (`HaloExchange::SCOPE`)**: `Solver::new_local_part` (single-part
+   owner) now requires a `Remote`-scope exchange at construction;
+   LocalPeriodic/InProcess are `Local` and panic (E4: silent self-wrap,
+   rho off by 7.7e-2). MpiExchange declares `Remote`.
+6. **A-8**: `zou_he_face_3d` asserts `unknowns(face).len() == 5` (D3Q27
+   would otherwise silently skip 4 slots). New `tests/stream_contract.rs`
+   pins the ConvectiveOutflow memory-term contract: streaming must not write
+   open-face unknown slots — CPU: sentinel bits unchanged across a full
+   stream pass (D2Q9 4 faces, D3Q19 6 faces); GPU: 200-step channel agrees
+   with CPU on the outflow-face unknowns <= 1e-4 (M5 Max/Metal, green).
+7. **A-9 (`run_guarded(steps, check_every)`)**: standard watchdog on
+   Solver / GpuSolver (readback) / MpiSolver (collective 2-double
+   Allreduce). NaN/Inf caught at the next check with the step number.
+   Overhead at 512^2, check_every=100: 0.45-0.49% (per-check 1.6-1.9 ms vs
+   per-step 3.6-3.9 ms; ignored test asserts the <1% line on the component
+   ratio — end-to-end timing is machine-noise-dominated on a shared box).
+   CLI drivers still use their own rho-scan (behaviour pinned by runner
+   tests); rewiring them onto run_guarded is a PM follow-up.
+8. **A-10f**: `equilibrium()` vs collide's inline feq pinned to bit identity
+   via the fixed-point property (equilibrium state must survive forceless
+   collision bit-exactly), D2Q9/D3Q19 x f32/f64.
+9. **A-1 residual**: not needed — no AUTO-GENERATED headers remain under
+   crates/lbm-core/tests/ (sync-tests.sh deleted; suites are compat-native).
+   A-10a/b: not applicable on main (V1 deleted; facade carries neither the
+   unused_mut nor the misleading solid-rho comment).

@@ -174,6 +174,32 @@ impl<L: Lattice> GpuSolver<L> {
         self.backend.context().wait_idle();
     }
 
+    /// Advance `steps` steps with a periodic non-finite watchdog (A-9): the
+    /// GPU counterpart of `Solver::run_guarded`, via the explicit-readback
+    /// path (interim until the backends share one orchestrator, B-1). Runs in
+    /// chunks of `check_every` and inspects the f64-accumulated total mass
+    /// after each chunk; a NaN/±Inf anywhere in the populations propagates
+    /// into it. Each check costs one device sync + readback, so prefer a
+    /// coarse `check_every` (≥ the submit chunk) for throughput runs.
+    /// `check_every == 0` is treated as 1.
+    pub fn run_guarded(
+        &mut self,
+        steps: usize,
+        check_every: usize,
+    ) -> Result<(), crate::solver::Diverged> {
+        let check_every = check_every.max(1);
+        let mut left = steps;
+        while left > 0 {
+            let chunk = left.min(check_every);
+            self.run(chunk);
+            left -= chunk;
+            if !self.total_mass().is_finite() {
+                return Err(crate::solver::Diverged { step: self.time });
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Explicit readback
     // ------------------------------------------------------------------

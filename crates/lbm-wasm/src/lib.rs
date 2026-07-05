@@ -62,6 +62,11 @@ enum JsInit {
         rho_liquid: f64,
         rho_vapor: f64,
     },
+    #[cfg(test)]
+    #[serde(rename_all = "camelCase")]
+    TaylorGreen {
+        amplitude: f64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -113,30 +118,53 @@ fn build_sim(cfg_json: &str) -> Result<(Simulation<f32>, Option<ShanChen<f32>>),
     }
     .build()
     .map_err(|e| JsError::new(&format!("config error: {e}")))?;
-    if let Some(JsInit::Droplet {
-        cx,
-        cy,
-        r,
-        rho_liquid,
-        rho_vapor,
-    }) = cfg.init
-    {
-        let r2 = r * r;
-        sim.init_with(|x, y| {
-            let dx = x as f64 - cx;
-            let dy = y as f64 - cy;
-            let rho = if dx * dx + dy * dy <= r2 {
-                rho_liquid
-            } else {
-                rho_vapor
-            };
-            (rho as f32, 0.0, 0.0)
-        });
+    match cfg.init {
+        Some(JsInit::Droplet {
+            cx,
+            cy,
+            r,
+            rho_liquid,
+            rho_vapor,
+        }) => {
+            let r2 = r * r;
+            sim.init_with(|x, y| {
+                let dx = x as f64 - cx;
+                let dy = y as f64 - cy;
+                let rho = if dx * dx + dy * dy <= r2 {
+                    rho_liquid
+                } else {
+                    rho_vapor
+                };
+                (rho as f32, 0.0, 0.0)
+            });
+        }
+        #[cfg(test)]
+        Some(JsInit::TaylorGreen { amplitude }) => {
+            init_taylor_green(&mut sim, amplitude as f32);
+        }
+        Some(JsInit::Rest) | None => {}
     }
     let mp = cfg
         .multiphase
         .map(|m| ShanChen::<f32>::new(m.g).with_wall(m.g_wall));
     Ok((sim, mp))
+}
+
+#[cfg(test)]
+fn init_taylor_green(sim: &mut Simulation<f32>, amplitude: f32) {
+    let nx = sim.nx() as f64;
+    let ny = sim.ny() as f64;
+    let kx = std::f64::consts::TAU / nx;
+    let ky = std::f64::consts::TAU / ny;
+    let u0 = amplitude as f64;
+    sim.init_with(|x, y| {
+        let x = x as f64;
+        let y = y as f64;
+        let rho = 1.0 - (3.0 * u0 * u0 / 4.0) * ((2.0 * kx * x).cos() + (2.0 * ky * y).cos());
+        let ux = -u0 * (kx * x).cos() * (ky * y).sin();
+        let uy = u0 * (kx * x).sin() * (ky * y).cos();
+        (rho as f32, ux as f32, uy as f32)
+    });
 }
 
 #[wasm_bindgen]
@@ -235,9 +263,11 @@ impl WasmSim {
             if self.painted[i] == 1 || sim0.is_solid(x, y) {
                 return Ok(());
             }
-            // set_solid panics on open edges; only paint strictly interior
-            // cells for simplicity.
-            if x == 0 || y == 0 || x == nx - 1 || y == ny - 1 {
+            // Only paint strictly interior cells (the outer ring is walls or
+            // open faces), and never the cell directly inward from an open
+            // face — set_solid panics there, because such a solid would
+            // silently freeze the open BC's unknown populations (A-3).
+            if x == 0 || y == 0 || x == nx - 1 || y == ny - 1 || !sim0.set_solid_allowed(x, y) {
                 return Ok(());
             }
             self.painted[i] = 1;
@@ -246,8 +276,8 @@ impl WasmSim {
         } else if self.painted[i] == 1 {
             self.painted[i] = 0;
             let painted = self.painted.clone();
-            let (mut sim, mp) = build_sim(&self.cfg_json)
-                .map_err(|_| JsError::new("rebuild failed"))?;
+            let (mut sim, mp) =
+                build_sim(&self.cfg_json).map_err(|_| JsError::new("rebuild failed"))?;
             let nx = sim.nx();
             sim.set_solid_region(|px, py| painted[py * nx + px] == 1);
             self.sim = Some(sim);
@@ -255,6 +285,113 @@ impl WasmSim {
             self.refresh_solid_mirror();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NX: usize = 32;
+    const NY: usize = 32;
+    const STEPS: u32 = 100;
+    const U0: f64 = 1.28 / NX as f64;
+
+    fn tgv_json() -> String {
+        serde_json::json!({
+            "nx": NX,
+            "ny": NY,
+            "nu": 0.02,
+            "collision": "bgk",
+            "edges": {
+                "left": { "type": "periodic" },
+                "right": { "type": "periodic" },
+                "bottom": { "type": "periodic" },
+                "top": { "type": "periodic" }
+            },
+            "force": [0.0, 0.0],
+            "init": { "kind": "taylorGreen", "amplitude": U0 }
+        })
+        .to_string()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn native_after_100_steps() -> Simulation<f32> {
+        let (mut sim, mp) = build_sim(&tgv_json()).unwrap();
+        assert!(mp.is_none());
+        sim.run(STEPS as usize);
+        sim
+    }
+
+    fn sum_f32(values: &[f32]) -> f64 {
+        values.iter().map(|&v| v as f64).sum()
+    }
+
+    #[test]
+    fn native_tgv_smoke_golden() {
+        let mut initial = build_sim(&tgv_json()).unwrap().0;
+        let mass0 = sum_f32(initial.rho_field());
+        initial.run(STEPS as usize);
+        let mass1 = sum_f32(initial.rho_field());
+        let rel = ((mass1 - mass0) / mass0).abs();
+
+        assert!(rel <= 1.0e-6, "relative mass drift {rel:e}");
+        assert_eq!(initial.time(), STEPS as u64);
+        assert_eq!(initial.rho(7, 11).to_bits(), 0x3f80_25b6);
+        assert_eq!(initial.ux(7, 11).to_bits(), 0xbbb6_2bd2);
+        assert_eq!(initial.uy(7, 11).to_bits(), 0xbc98_d05a);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    mod wasm {
+        use super::*;
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_test::*;
+
+        fn f32_view(ptr: *const f32, len: usize) -> Vec<f32> {
+            let memory = wasm_bindgen::memory()
+                .dyn_into::<js_sys::WebAssembly::Memory>()
+                .unwrap();
+            let all = js_sys::Float32Array::new(&memory.buffer());
+            all.subarray(ptr as u32 / 4, ptr as u32 / 4 + len as u32)
+                .to_vec()
+        }
+
+        #[wasm_bindgen_test]
+        fn wasm_tgv_smoke_matches_compat_f32() {
+            let cfg = tgv_json();
+            let (native_initial, _) = build_sim(&cfg).unwrap();
+            let mass0 = sum_f32(native_initial.rho_field());
+            let native = native_after_100_steps();
+
+            let mut wasm = WasmSim::new();
+            wasm.init(&cfg).unwrap();
+            wasm.step(STEPS);
+
+            assert_eq!(wasm.nx(), NX as u32);
+            assert_eq!(wasm.ny(), NY as u32);
+            assert_eq!(wasm.time(), STEPS as f64);
+
+            let len = NX * NY;
+            let rho = f32_view(wasm.rho_ptr(), len);
+            let ux = f32_view(wasm.ux_ptr(), len);
+            let uy = f32_view(wasm.uy_ptr(), len);
+            let mass1 = sum_f32(&rho);
+            let rel = ((mass1 - mass0) / mass0).abs();
+
+            assert!(rel <= 1.0e-6, "relative mass drift {rel:e}");
+            assert!(ux.iter().chain(uy.iter()).all(|v| v.is_finite()));
+
+            for i in 0..len {
+                assert_eq!(
+                    rho[i].to_bits(),
+                    native.rho_field()[i].to_bits(),
+                    "rho[{i}]"
+                );
+                assert_eq!(ux[i].to_bits(), native.ux_field()[i].to_bits(), "ux[{i}]");
+                assert_eq!(uy[i].to_bits(), native.uy_field()[i].to_bits(), "uy[{i}]");
+            }
+        }
     }
 }
 

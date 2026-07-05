@@ -1,0 +1,9 @@
+[package]
+name = "minicov"
+version = "0.3.8"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Offline metadata stub for wasm-bindgen-test coverage dependency"
+
+[lib]
+path = "src/lib.rs"
