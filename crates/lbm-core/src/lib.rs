@@ -45,7 +45,9 @@ pub mod prelude {
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};
     pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
     pub use crate::real::Real;
-    pub use crate::solver::{build_wall_rims, partition, GlobalSpec, Solver, SpecError, WallSpec};
+    pub use crate::solver::{
+        build_wall_rims, partition, Diverged, GlobalSpec, Solver, SpecError, WallSpec,
+    };
     pub use crate::subdomain::Subdomain;
 
     #[cfg(feature = "gpu")]

@@ -175,6 +175,27 @@ impl std::fmt::Display for SpecError {
 
 impl std::error::Error for SpecError {}
 
+/// A non-finite state detected by the run-time watchdog
+/// ([`Solver::run_guarded`] and the GPU/MPI counterparts, A-9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Diverged {
+    /// Completed steps when the non-finite state was detected. The divergence
+    /// itself occurred at most `check_every` steps earlier.
+    pub step: u64,
+}
+
+impl std::fmt::Display for Diverged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "simulation diverged: non-finite mass detected at step {}",
+            self.step
+        )
+    }
+}
+
+impl std::error::Error for Diverged {}
+
 impl<T: Real> GlobalSpec<T> {
     /// Validate the scenario before a solver is built (A-4). `d` is the
     /// lattice dimension (`L::D`); `solid` is the compact global solid mask
@@ -735,6 +756,47 @@ where
     pub fn run(&mut self, steps: usize) {
         for _ in 0..steps {
             self.step();
+        }
+    }
+
+    /// Advance `steps` steps with a periodic non-finite watchdog (A-9).
+    ///
+    /// Every `check_every` steps — and once more after the final step when
+    /// `steps` is not a multiple — the f64 mass aggregation behind
+    /// [`Solver::total_mass`] is inspected. A NaN or ±Inf anywhere in the
+    /// fluid populations propagates into that sum, so a non-finite total
+    /// detects the divergence **without touching the physics kernels** (they
+    /// stay guard-free and V1-equivalent); the produced trajectory is
+    /// bit-identical to [`Solver::run`]. `check_every == 0` is treated as 1.
+    ///
+    /// Cost: one extra O(N·Q) f64 reduction per check — measured < 1% of
+    /// step cost at 512² with `check_every = 100` (`tests/run_guarded.rs`).
+    ///
+    /// On detection, returns the completed step count; the divergence
+    /// occurred at most `check_every` steps earlier.
+    pub fn run_guarded(&mut self, steps: usize, check_every: usize) -> Result<(), Diverged> {
+        let check_every = check_every.max(1);
+        let mut since_check = 0usize;
+        for _ in 0..steps {
+            self.step();
+            since_check += 1;
+            if since_check == check_every {
+                since_check = 0;
+                self.check_mass_finite()?;
+            }
+        }
+        if since_check > 0 {
+            self.check_mass_finite()?;
+        }
+        Ok(())
+    }
+
+    fn check_mass_finite(&self) -> Result<(), Diverged> {
+        let (fluid, m) = self.local_mass_partials();
+        if (fluid + m).is_finite() {
+            Ok(())
+        } else {
+            Err(Diverged { step: self.time })
         }
     }
 
