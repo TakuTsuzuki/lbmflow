@@ -806,3 +806,42 @@ or its mechanism replaced — pinned in ARCHITECTURE_V2 §2.3) + explicit SIMD.
 Strengths confirmed for the paper: single-thread NEON wins; GPU 2D at bandwidth
 ceiling (7,073 @1024² sustained; 12,205 @512² is SLC-resident, not sustained).
 Repro: ~/projects/cfd-bench/ (sweep scripts + bw_triad).
+
+## D-8 adversarial T14/T15 tests (2026-07-06)
+
+Added `crates/lbm-core/tests/t14_adversarial.rs` and
+`crates/lbm-core/tests/t15_adversarial.rs` from the D-8 order. Default-suite
+light attacks pass except for one intentionally ignored GPU repro below.
+
+T14 CPU-vs-wgpu f32 measured on this machine:
+- Initial discontinuity exactly on a velocity boundary face, 300 steps:
+  max field rel 1.452e-5 under the pressure/open-face 1e-4 line.
+- Solid force probe touching a domain wall face, 300 steps: max field rel
+  1.996e-6 and probe diagnostics inside 1e-4.
+- Near-MAX_SPEED TGV (`u0=0.29`, `MAX_SPEED=0.3`), 300 steps: max field rel
+  1.644e-6.
+- **Known D-8 defect repro, ignored by default**:
+  `cargo test -p lbm-core --release --features gpu --test t14_adversarial \
+  t14_mixed_force_field_moving_wall_and_open_faces -- --ignored --nocapture`
+  mixes a per-cell force field, uniform force, moving wall, velocity inlet, and
+  convective outlet. It exceeds the strict T14 1e-5 field line at t=75:
+  `rho=4.235e-6, ux=8.516e-5, uy=8.418e-5`. This is not the documented
+  pressure-BC exception. Severity: S2 validation gap/possible GPU equivalence
+  defect in the mixed force/open/moving-wall path.
+
+T15 D3Q19/f64 measured:
+- z-degeneracy breaker (`eps=1e-7`) after 120 steps: z-spread 2.864e-8,
+  max|uz| 2.091e-9, so the solver does not silently project the state to 2D.
+- Extreme aspect-ratio ducts, light defaults `64x8x8` and `8x8x64`: both
+  L_inf_rel = 6.616e-3 vs the rectangular-duct series, inside the frozen
+  adversarial light band 1.5e-2. Spec-size `128x8x8` / `8x8x128` variants are
+  present as ignored heavier attacks with the same band.
+- Off-center sphere drag, light D=10/Re=20: Cd=2.4741 after 3600 steps,
+  inside the existing D_h-normalized 15% light sphere band. D=24 spec-size
+  off-center variant is ignored as heavy and keeps the 10% band.
+- Closed six-face 3D box mass conservation, 600 steps: relative drift 0.0.
+- R-Phase guard-boundary probes pass: velocity exactly `MAX_SPEED` is legal
+  while `MAX_SPEED+1e-12` returns `SpecError::VelocityTooHigh`; positive
+  pressure density (`f64::MIN_POSITIVE`) is legal while zero density returns
+  `SpecError::NonPositiveDensity`; convective speed 1.0 is legal while
+  `1.0+1e-12` returns `SpecError::InvalidConvectiveSpeed`.
