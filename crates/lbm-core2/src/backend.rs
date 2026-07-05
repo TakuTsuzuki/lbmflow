@@ -258,99 +258,11 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
     }
 
     fn apply_open_faces(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
-        let g = fields.geom;
-        let np = g.n_padded();
-        for face in Face::ALL {
-            if !sub.touches_global_face(face) {
-                continue;
-            }
-            let bc = &p.faces[face.index()];
-            if !bc.is_open() {
-                continue;
-            }
-            let profiles = &fields.inlet_profiles;
-            match bc {
-                FaceBC::Closed => {}
-                FaceBC::Velocity { u } => zou_he_face::<L, T>(
-                    &mut fields.f,
-                    np,
-                    &g,
-                    &fields.solid,
-                    face,
-                    &ZhKind::Velocity(*u),
-                    profiles[face.index()].as_deref(),
-                ),
-                FaceBC::Pressure { rho } => zou_he_face::<L, T>(
-                    &mut fields.f,
-                    np,
-                    &g,
-                    &fields.solid,
-                    face,
-                    &ZhKind::Pressure(*rho),
-                    None,
-                ),
-                FaceBC::Outflow => {
-                    outflow_face::<L, T>(&mut fields.f, np, &g, &fields.solid, face)
-                }
-                FaceBC::Convective { u_conv } => {
-                    convective_face::<L, T>(&mut fields.f, np, &g, &fields.solid, face, *u_conv)
-                }
-            }
-        }
+        apply_open_faces_impl::<L, T>(sub, fields, p);
     }
 
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
-        let kp = KParams::new::<L>(p);
-        let g = fields.geom;
-        let np = g.n_padded();
-        let nx = g.core[0];
-        let f = &fields.f;
-        let solid = &fields.solid;
-        let ff = fields.force_field.as_deref();
-        let body = |(r, ((rrow, uxrow), (uyrow, uzrow))): (
-            usize,
-            ((&mut [T], &mut [T]), (&mut [T], &mut [T])),
-        )| {
-            let y = r % g.core[1];
-            let z = r / g.core[1];
-            let pb = g.pidx(0, y, z);
-            let c0 = g.cidx(0, y, z);
-            moments_row::<L, T>(
-                f,
-                np,
-                pb,
-                rrow,
-                uxrow,
-                uyrow,
-                uzrow,
-                &solid[pb..pb + nx],
-                ff.map(|v| &v[c0..c0 + nx]),
-                &kp,
-            );
-        };
-        #[cfg(feature = "parallel")]
-        if self.use_parallel(sub) {
-            fields
-                .rho
-                .par_chunks_mut(nx)
-                .zip(fields.ux.par_chunks_mut(nx))
-                .zip(
-                    fields
-                        .uy
-                        .par_chunks_mut(nx)
-                        .zip(fields.uz.par_chunks_mut(nx)),
-                )
-                .enumerate()
-                .for_each(body);
-            return;
-        }
-        fields
-            .rho
-            .chunks_mut(nx)
-            .zip(fields.ux.chunks_mut(nx))
-            .zip(fields.uy.chunks_mut(nx).zip(fields.uz.chunks_mut(nx)))
-            .enumerate()
-            .for_each(body);
+        update_moments_impl::<L, T>(fields, p, self.use_parallel(sub));
     }
 
     fn reduce(
@@ -360,56 +272,180 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
         p: &StepParams<T>,
         kind: Reduction,
     ) -> f64 {
-        let g = fields.geom;
-        let np = g.n_padded();
-        let ff = fields.force_field.as_deref();
-        let mut acc = 0.0f64;
-        // Compact cell order (z, y, x ascending), q inner — V1's exact
-        // f64 accumulation sequence.
-        for z in 0..g.core[2] {
-            for y in 0..g.core[1] {
-                let pb = g.pidx(0, y, z);
-                let c0 = g.cidx(0, y, z);
-                for x in 0..g.core[0] {
-                    if fields.solid[pb + x] {
-                        continue;
+        reduce_impl::<L, T>(sub, fields, p, kind)
+    }
+
+    fn read_moments(&self, fields: &SoaFields<T>, out: &mut HostMoments<T>) {
+        read_moments_impl(fields, out);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared phase bodies (used verbatim by `CpuScalar` and `CpuSimd`, so the
+// backends can never drift on the boundary-condition or diagnostic paths)
+// ---------------------------------------------------------------------------
+
+/// Open-face BC pass on the faces of this subdomain that lie on an open
+/// global face (V1 `apply_open_edges` order: `Face::ALL`).
+pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
+    sub: &Subdomain,
+    fields: &mut SoaFields<T>,
+    p: &StepParams<T>,
+) {
+    let g = fields.geom;
+    let np = g.n_padded();
+    for face in Face::ALL {
+        if !sub.touches_global_face(face) {
+            continue;
+        }
+        let bc = &p.faces[face.index()];
+        if !bc.is_open() {
+            continue;
+        }
+        let profiles = &fields.inlet_profiles;
+        match bc {
+            FaceBC::Closed => {}
+            FaceBC::Velocity { u } => zou_he_face::<L, T>(
+                &mut fields.f,
+                np,
+                &g,
+                &fields.solid,
+                face,
+                &ZhKind::Velocity(*u),
+                profiles[face.index()].as_deref(),
+            ),
+            FaceBC::Pressure { rho } => zou_he_face::<L, T>(
+                &mut fields.f,
+                np,
+                &g,
+                &fields.solid,
+                face,
+                &ZhKind::Pressure(*rho),
+                None,
+            ),
+            FaceBC::Outflow => outflow_face::<L, T>(&mut fields.f, np, &g, &fields.solid, face),
+            FaceBC::Convective { u_conv } => {
+                convective_face::<L, T>(&mut fields.f, np, &g, &fields.solid, face, *u_conv)
+            }
+        }
+    }
+}
+
+/// Full moment recompute over all core rows (V1 `update_moments`).
+pub(crate) fn update_moments_impl<L: Lattice, T: Real>(
+    fields: &mut SoaFields<T>,
+    p: &StepParams<T>,
+    parallel: bool,
+) {
+    let kp = KParams::new::<L>(p);
+    let g = fields.geom;
+    let np = g.n_padded();
+    let nx = g.core[0];
+    let f = &fields.f;
+    let solid = &fields.solid;
+    let ff = fields.force_field.as_deref();
+    let body = |(r, ((rrow, uxrow), (uyrow, uzrow))): (
+        usize,
+        ((&mut [T], &mut [T]), (&mut [T], &mut [T])),
+    )| {
+        let y = r % g.core[1];
+        let z = r / g.core[1];
+        let pb = g.pidx(0, y, z);
+        let c0 = g.cidx(0, y, z);
+        moments_row::<L, T>(
+            f,
+            np,
+            pb,
+            rrow,
+            uxrow,
+            uyrow,
+            uzrow,
+            &solid[pb..pb + nx],
+            ff.map(|v| &v[c0..c0 + nx]),
+            &kp,
+        );
+    };
+    #[cfg(feature = "parallel")]
+    if parallel {
+        fields
+            .rho
+            .par_chunks_mut(nx)
+            .zip(fields.ux.par_chunks_mut(nx))
+            .zip(
+                fields
+                    .uy
+                    .par_chunks_mut(nx)
+                    .zip(fields.uz.par_chunks_mut(nx)),
+            )
+            .enumerate()
+            .for_each(body);
+        return;
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = parallel;
+    fields
+        .rho
+        .chunks_mut(nx)
+        .zip(fields.ux.chunks_mut(nx))
+        .zip(fields.uy.chunks_mut(nx).zip(fields.uz.chunks_mut(nx)))
+        .enumerate()
+        .for_each(body);
+}
+
+/// Backend-side reduction over fluid core cells in compact cell order
+/// (z, y, x ascending, q inner) — V1's exact f64 accumulation sequence.
+pub(crate) fn reduce_impl<L: Lattice, T: Real>(
+    sub: &Subdomain,
+    fields: &SoaFields<T>,
+    p: &StepParams<T>,
+    kind: Reduction,
+) -> f64 {
+    let g = fields.geom;
+    let np = g.n_padded();
+    let ff = fields.force_field.as_deref();
+    let mut acc = 0.0f64;
+    for z in 0..g.core[2] {
+        for y in 0..g.core[1] {
+            let pb = g.pidx(0, y, z);
+            let c0 = g.cidx(0, y, z);
+            for x in 0..g.core[0] {
+                if fields.solid[pb + x] {
+                    continue;
+                }
+                match kind {
+                    Reduction::FluidCells => acc += 1.0,
+                    Reduction::MassDeviation => {
+                        for q in 0..L::Q {
+                            acc += fields.f[q * np + pb + x].as_f64();
+                        }
                     }
-                    match kind {
-                        Reduction::FluidCells => acc += 1.0,
-                        Reduction::MassDeviation => {
-                            for q in 0..L::Q {
-                                acc += fields.f[q * np + pb + x].as_f64();
-                            }
+                    Reduction::Momentum(a) => {
+                        let mut m = 0.0f64;
+                        for q in 0..L::Q {
+                            m += L::C[q][a] as f64 * fields.f[q * np + pb + x].as_f64();
                         }
-                        Reduction::Momentum(a) => {
-                            let mut m = 0.0f64;
-                            for q in 0..L::Q {
-                                m += L::C[q][a] as f64 * fields.f[q * np + pb + x].as_f64();
-                            }
-                            let fa = match ff {
-                                Some(field) => {
-                                    p.force[a].as_f64() + field[c0 + x][a].as_f64()
-                                }
-                                None => p.force[a].as_f64(),
-                            };
-                            acc += m + 0.5 * fa;
-                        }
+                        let fa = match ff {
+                            Some(field) => p.force[a].as_f64() + field[c0 + x][a].as_f64(),
+                            None => p.force[a].as_f64(),
+                        };
+                        acc += m + 0.5 * fa;
                     }
                 }
             }
         }
-        let _ = sub;
-        acc
     }
+    let _ = sub;
+    acc
+}
 
-    fn read_moments(&self, fields: &SoaFields<T>, out: &mut HostMoments<T>) {
-        out.rho.clear();
-        out.rho.extend_from_slice(&fields.rho);
-        out.ux.clear();
-        out.ux.extend_from_slice(&fields.ux);
-        out.uy.clear();
-        out.uy.extend_from_slice(&fields.uy);
-        out.uz.clear();
-        out.uz.extend_from_slice(&fields.uz);
-    }
+/// Explicit readback of the macroscopic fields into host memory.
+pub(crate) fn read_moments_impl<T: Real>(fields: &SoaFields<T>, out: &mut HostMoments<T>) {
+    out.rho.clear();
+    out.rho.extend_from_slice(&fields.rho);
+    out.ux.clear();
+    out.ux.extend_from_slice(&fields.ux);
+    out.uy.clear();
+    out.uy.extend_from_slice(&fields.uy);
+    out.uz.clear();
+    out.uz.extend_from_slice(&fields.uz);
 }

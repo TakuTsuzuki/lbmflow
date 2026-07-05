@@ -102,6 +102,62 @@ impl LocalGeom {
     }
 }
 
+/// Scratch state of the fused `CpuSimd` backend, allocated lazily on the
+/// first fused pass and ignored by `CpuScalar`.
+///
+/// - `rho2/ux2/uy2/uz2` are the moment double buffers (V1 `rho2` mechanics):
+///   the fused pass writes step k's moments here while in-flight collides of
+///   other rows still read step k-1's moments from the primary buffers; the
+///   pairs are swapped in `Backend::swap`. Solid cells are refreshed from the
+///   primary buffers every pass, so both buffers stay in sync at cells the
+///   pass never computes (V1 `set_solid`/`init_with` invariant).
+/// - `stale` reproduces V1's ping-pong stale-slot convention for open faces:
+///   `CpuScalar` collides in place, so the unknown slots streaming skips
+///   retain the *previous step's post-collide* populations, which the open
+///   BCs (Convective in particular) read. The fused pass never materialises
+///   post-collide state in `f`, so it captures those values per open face
+///   (`stale[1]`, this step) and `apply_open_faces` writes the previous
+///   step's capture (`stale[0]`) back into the unknown slots before the BC
+///   pass, then swaps the pair. Zero-initialised: matches the all-zero
+///   deviation ping-pong buffer a `CpuScalar` run reads on its first step.
+/// - `fresh` marks that the fused pass has just written the double buffers,
+///   so the next `update_moments` only needs the open-face boundary fix
+///   (V1 `fix_boundary_moments`) instead of a full recompute.
+#[derive(Clone, Debug)]
+pub struct FusedScratch<T: Real> {
+    /// Density double buffer, compact core layout.
+    pub rho2: Vec<T>,
+    /// x-velocity double buffer, compact core.
+    pub ux2: Vec<T>,
+    /// y-velocity double buffer, compact core.
+    pub uy2: Vec<T>,
+    /// z-velocity double buffer, compact core (untouched for 2D lattices).
+    pub uz2: Vec<T>,
+    /// Stale-slot stash per open face (`Face::index()` order), cell-major
+    /// over the face's canonical cell order, unknown directions innermost.
+    /// `stale[0]` feeds this step's BC pass, `stale[1]` is captured during
+    /// this step's fused pass; swapped after the BC pass.
+    pub stale: [[Option<Vec<T>>; 6]; 2],
+    /// Set by the fused stream pass, consumed by `update_moments`.
+    pub fresh: bool,
+}
+
+impl<T: Real> FusedScratch<T> {
+    /// Allocate for `n_core` cells, moments copied from the primary buffers'
+    /// quiescent state semantics (all zero; the first fused pass rewrites
+    /// every cell before the buffers are ever swapped in).
+    pub fn new(n_core: usize) -> Self {
+        Self {
+            rho2: vec![T::zero(); n_core],
+            ux2: vec![T::zero(); n_core],
+            uy2: vec![T::zero(); n_core],
+            uz2: vec![T::zero(); n_core],
+            stale: Default::default(),
+            fresh: false,
+        }
+    }
+}
+
 /// SoA fields of one subdomain (the `CpuScalar` backend's field storage).
 #[derive(Clone, Debug)]
 pub struct SoaFields<T: Real> {
@@ -136,6 +192,8 @@ pub struct SoaFields<T: Real> {
     /// part's local along-face coordinate (2D: the single tangent axis;
     /// 3D: `t2 * extent(t1) + t1`, tangent axes ascending).
     pub inlet_profiles: [Option<Vec<[T; 3]>>; 6],
+    /// Fused-backend scratch (`CpuSimd`); `None` under `CpuScalar`.
+    pub fused: Option<Box<FusedScratch<T>>>,
 }
 
 impl<T: Real> SoaFields<T> {
@@ -158,6 +216,7 @@ impl<T: Real> SoaFields<T> {
             probe: None,
             force_field: None,
             inlet_profiles: [None, None, None, None, None, None],
+            fused: None,
         }
     }
 

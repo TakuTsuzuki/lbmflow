@@ -330,7 +330,7 @@ pub(crate) enum ZhKind<T: Real> {
 /// `side_cells` order (`y` ascending on X faces, `x` ascending on Y faces).
 /// The along-face index passed to the callback enumerates cells in this
 /// order (2D: the single tangent coordinate — V1's profile coordinate).
-fn for_face_cells(geom: &LocalGeom, face: Face, mut body: impl FnMut(usize, [usize; 3])) {
+pub(crate) fn for_face_cells(geom: &LocalGeom, face: Face, mut body: impl FnMut(usize, [usize; 3])) {
     let a = face.axis();
     let fixed = if face.is_neg() { 0 } else { geom.core[a] - 1 };
     let (t1, t2) = face.tangents();
