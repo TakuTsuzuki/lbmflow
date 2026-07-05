@@ -21,6 +21,39 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 ./target/release/lbm presets run cavity   # CLI smoke test
 ```
 
+## Repository map
+
+- `crates/lbm-core` — the single core (V2): D2Q9/D3Q19 lattices, CPU
+  scalar/SIMD backends, wgpu GPU backend (feature `gpu`), MPI halo exchange
+  (feature `mpi`), legacy 2D facade in `compat/`
+- `crates/lbm-scenario` — JSON scenario schema + runner (2D compat path)
+- `crates/lbm-cli` — `lbm` binary: presets, gallery, schema, scenario run, MCP server
+- `crates/lbm-wasm` — WASM bindings for the web GUI (outside the workspace)
+- `crates/lbm-gpu-proto` — wgpu evaluation prototype (measurement record;
+  superseded by the in-core `gpu` module)
+- `web/` — TypeScript GUI (Vite; engine WASM committed under `web/src/engine/pkg`)
+
+## Docs index (read on demand)
+
+- [PLAN.md](docs/PLAN.md) — milestones M-A…M-F, current queue ·
+  [VALIDATION.md](docs/VALIDATION.md) — acceptance criteria (T1…T15.x)
+- [PHYSICS.md](docs/PHYSICS.md) — physics decisions + experiment log
+  (update whenever you change physics)
+- [ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md) — dimension × lattice ×
+  precision × backend × partition design
+- [SOLVER_IMPROVEMENT_SPEC.md](docs/SOLVER_IMPROVEMENT_SPEC.md) — R-Phase spec ·
+  [REVIEW_2026-07-05.md](docs/REVIEW_2026-07-05.md) (+ `_2`) — solver review findings
+- [REQ_STIRRED_REACTOR.md](docs/REQ_STIRRED_REACTOR.md) — M-F requirements ·
+  [T15_5_CAVITY3D_REFERENCE.md](docs/T15_5_CAVITY3D_REFERENCE.md) — 3D cavity reference data
+- [PERFORMANCE.md](docs/PERFORMANCE.md) / [GPU_EVALUATION.md](docs/GPU_EVALUATION.md) /
+  [BENCH_COMPARISON_DRAFT.md](docs/BENCH_COMPARISON_DRAFT.md) — perf measurements
+- [MPI_GUIDE.md](docs/MPI_GUIDE.md) / [HPC_SCALING.md](docs/HPC_SCALING.md) /
+  [CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md) — distributed runs
+- [MULTIPHASE_DESIGN.md](docs/MULTIPHASE_DESIGN.md) /
+  [WASM_BRIDGE_DESIGN.md](docs/WASM_BRIDGE_DESIGN.md) /
+  [AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md) /
+  [COMPETITIVE_SPEC.md](docs/COMPETITIVE_SPEC.md) — subsystem designs
+
 ## Team & conventions
 
 - Fable is PM. Implementation is delegated to Opus/Sonnet subagents / codex.
