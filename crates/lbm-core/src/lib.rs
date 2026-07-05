@@ -32,6 +32,7 @@ pub mod halo;
 mod kernels;
 pub mod lattice;
 pub mod params;
+pub mod particles;
 pub mod real;
 pub mod solver;
 pub mod subdomain;
