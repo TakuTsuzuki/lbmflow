@@ -100,6 +100,43 @@ impl<'a, T> PlaneRows<'a, T> {
     }
 }
 
+/// Row-sliced mutable access to a single `[y][x]` field, shared across
+/// row-parallel tasks under the same soundness contract as [`PlaneRows`]
+/// (each task touches only its own `y`). A plain range `par_iter` over rows
+/// with these wrappers parallelizes markedly better than rayon's three-way
+/// `zip` of chunk iterators.
+struct FieldRows<'a, T> {
+    ptr: *mut T,
+    nx: usize,
+    ny: usize,
+    _marker: std::marker::PhantomData<&'a mut [T]>,
+}
+
+unsafe impl<T: Send> Send for FieldRows<'_, T> {}
+unsafe impl<T: Send> Sync for FieldRows<'_, T> {}
+
+impl<'a, T> FieldRows<'a, T> {
+    fn new(buf: &'a mut [T], nx: usize, ny: usize) -> Self {
+        debug_assert_eq!(buf.len(), nx * ny);
+        Self {
+            ptr: buf.as_mut_ptr(),
+            nx,
+            ny,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Row `y`.
+    ///
+    /// # Safety
+    /// The caller must guarantee no other live slice overlaps row `y`.
+    #[inline]
+    unsafe fn row(&self, y: usize) -> &'a mut [T] {
+        debug_assert!(y < self.ny);
+        std::slice::from_raw_parts_mut(self.ptr.add(y * self.nx), self.nx)
+    }
+}
+
 /// D2Q9 lattice Boltzmann simulation on a rectangular grid.
 pub struct Simulation<T: Real> {
     nx: usize,
@@ -300,7 +337,7 @@ impl<T: Real> Simulation<T> {
         std::mem::swap(&mut self.f, &mut self.ftmp);
         self.probed_force = pf;
         self.apply_open_edges();
-        self.update_moments();
+        self.fix_boundary_moments();
         self.time += 1;
     }
 
@@ -338,15 +375,42 @@ impl<T: Real> Simulation<T> {
         (0..ny).for_each(body);
     }
 
+    /// Pull-stream `f` into `ftmp` and recompute each row's macroscopic
+    /// moments from the freshly streamed (cache-resident) populations in the
+    /// same pass. Boundary-line moments are provisional at this point —
+    /// open-edge cells still hold stale unknown slots — and are re-fixed
+    /// after the BC pass by [`Simulation::fix_boundary_moments`].
     fn stream(&mut self) -> [T; 2] {
         let p = self.params();
         let g = self.geom();
-        let planes = PlaneRows::new(&mut self.ftmp, g.nx, g.ny);
-        let (f, solid, wall_u, rho) = (&self.f, &self.solid, &self.wall_u, &self.rho);
+        let nx = g.nx;
+        let planes = PlaneRows::new(&mut self.ftmp, nx, g.ny);
+        let rho_rows = FieldRows::new(&mut self.rho, nx, g.ny);
+        let ux_rows = FieldRows::new(&mut self.ux, nx, g.ny);
+        let uy_rows = FieldRows::new(&mut self.uy, nx, g.ny);
+        let (f, solid, wall_u) = (&self.f, &self.solid, &self.wall_u);
         let runs = &self.solid_runs;
         let probe = self.probe.as_deref();
-        let body = move |y: usize| -> [T; 2] {
-            stream_row(y, &planes, f, solid, runs, wall_u, rho, probe, &g, &p)
+        let ff = self.force_field.as_deref();
+        let body = |y: usize| -> [T; 2] {
+            // SAFETY: each task owns exactly the rows of its own `y`.
+            let (rrow, uxrow, uyrow) =
+                unsafe { (rho_rows.row(y), ux_rows.row(y), uy_rows.row(y)) };
+            stream_row(
+                y,
+                &planes,
+                f,
+                solid,
+                runs,
+                wall_u,
+                rrow,
+                uxrow,
+                uyrow,
+                ff.map(|field| &field[y * nx..(y + 1) * nx]),
+                probe,
+                &g,
+                &p,
+            )
         };
         let add = |a: [T; 2], b: [T; 2]| [a[0] + b[0], a[1] + b[1]];
         #[cfg(feature = "parallel")]
@@ -357,6 +421,53 @@ impl<T: Real> Simulation<T> {
                 .reduce(|| [T::zero(); 2], add);
         }
         (0..g.ny).map(body).fold([T::zero(); 2], add)
+    }
+
+    /// Recompute rho/u on the four boundary lines from the post-BC
+    /// populations. The fused in-pass moments saw the pre-BC (stale) unknown
+    /// slots on open edges; every other boundary cell recomputes to the
+    /// identical value (the fix is idempotent there).
+    fn fix_boundary_moments(&mut self) {
+        let p = self.params();
+        let (nx, ny) = (self.nx, self.ny);
+        let n = nx * ny;
+        let half = T::r(0.5);
+        let f = &self.f;
+        let solid = &self.solid;
+        let ff = self.force_field.as_deref();
+        let rho = &mut self.rho;
+        let ux = &mut self.ux;
+        let uy = &mut self.uy;
+        let mut fix = |i: usize| {
+            if solid[i] {
+                return;
+            }
+            let fi: [T; Q] = std::array::from_fn(|q| f[q * n + i]);
+            let dr = fi[0]
+                + ((fi[1] + fi[3]) + (fi[2] + fi[4]))
+                + ((fi[5] + fi[7]) + (fi[6] + fi[8]));
+            let a = fi[5] - fi[7];
+            let b = fi[8] - fi[6];
+            let mx = (fi[1] - fi[3]) + (a + b);
+            let my = (fi[2] - fi[4]) + (a - b);
+            let (fx, fy) = match ff {
+                Some(field) => (p.fx + field[i][0], p.fy + field[i][1]),
+                None => (p.fx, p.fy),
+            };
+            let r = T::one() + dr;
+            rho[i] = r;
+            let inv = T::one() / r;
+            ux[i] = (mx + half * fx) * inv;
+            uy[i] = (my + half * fy) * inv;
+        };
+        for x in 0..nx {
+            fix(x);
+            fix((ny - 1) * nx + x);
+        }
+        for y in 1..ny - 1 {
+            fix(y * nx);
+            fix(y * nx + nx - 1);
+        }
     }
 
     fn update_moments(&mut self) {
@@ -1021,8 +1132,10 @@ fn collide_span<T: Real, const FORCE: bool>(
 
 /// Pull-scheme streaming for one destination row, source-side decomposed:
 /// solid-free source spans become plain shifted copies, solid runs become
-/// half-way bounce-back. Returns the momentum-exchange force accumulated
-/// over probed solid links.
+/// half-way bounce-back. Ends by recomputing the row's macroscopic moments
+/// from the freshly streamed populations (`rho/ux/uy` are this row's slices:
+/// read for the moving-wall term, then overwritten). Returns the
+/// momentum-exchange force accumulated over probed solid links.
 #[allow(clippy::too_many_arguments)]
 fn stream_row<T: Real>(
     y: usize,
@@ -1031,7 +1144,10 @@ fn stream_row<T: Real>(
     solid: &[bool],
     solid_runs: &[Vec<(u32, u32)>],
     wall_u: &[[T; 2]],
-    rho: &[T],
+    rho: &mut [T],
+    ux: &mut [T],
+    uy: &mut [T],
+    ff: Option<&[[T; 2]]>,
     probe: Option<&[bool]>,
     g: &Geom,
     p: &Params<T>,
@@ -1087,7 +1203,7 @@ fn stream_row<T: Real>(
                 let fout = f[OPP[q] * n + i];
                 let wu = wall_u[s];
                 let cu = p.cxr[q] * wu[0] + p.cyr[q] * wu[1];
-                let fin = fout + six * p.wr[q] * rho[i] * cu;
+                let fin = fout + six * p.wr[q] * rho[x] * cu;
                 dst[x] = fin;
                 if let Some(mask) = probe {
                     if mask[s] {
@@ -1105,6 +1221,16 @@ fn stream_row<T: Real>(
             cursor = b;
         }
     }
+    // Fused moments: the nine destination rows just written are still
+    // cache-resident, so recomputing rho/u here saves the separate
+    // full-field moments pass.
+    let fq: [&[T]; Q] = std::array::from_fn(|q| {
+        // SAFETY: this task is the only holder of row `y`, and the mutable
+        // borrows from the streaming loop above have all ended.
+        let row: &mut [T] = unsafe { out.row(q, y) };
+        &*row
+    });
+    moments_row(&fq, rho, ux, uy, ff, &solid_runs[y], p);
     pf
 }
 
