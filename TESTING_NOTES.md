@@ -661,3 +661,22 @@ both to one session — corrected). The stirred-tank demo is now owned by the
 requirements session: builds against trunk (R-Phase 1 guards active), demo example
 stays untracked, volume-penalization interim, measured behavior lands here in
 English for the MF-δ record; no primary-checkout branch switches.
+## Explicit GPU scenario guard (2026-07-05, branch cx-gpu-fallback-guard)
+
+- Added an honor-or-error guard for explicit `compute.backend: "gpu"` requests
+  on the current 2D compat scenario path. `compute.backend: "auto"` remains
+  allowed to choose the CPU path.
+- Regression tests:
+  - `lbm_scenario::tests::explicit_gpu_backend_is_rejected_for_2d`
+  - `lbm_scenario::tests::auto_backend_still_builds_and_runs_for_2d`
+  - `lbm-cli` MCP E2E assertion in `mcp_async_job_lifecycle` for
+    `validate_scenario` returning `ok: false`.
+- Direct CLI smoke:
+  `./target/release/lbm validate /tmp/lbm-gpu-2d.<random>.json` returned
+  `ok: false` with an English error naming requested backend `"gpu"`, the 2D
+  compat path limitation pending R-Phase 2 B-1, and the missing GPU scenario
+  dispatch for this build.
+- Gates:
+  - `cargo test -p lbm-scenario --release`
+  - `cargo test -p lbm-cli --release mcp_async_job_lifecycle -- --nocapture`
+  - `cargo test --workspace --release`
