@@ -162,6 +162,42 @@ fn t13_cylinder_centered_exactly_on_split_line_probe_matches() {
 }
 
 #[test]
+fn t13_bouzidi_cylinder_split_matches() {
+    let (nx, ny) = (72usize, 42usize);
+    let (spec, walls) = channel_spec(nx, ny, FaceBC::Pressure { rho: 1.0 });
+    let profile = parabolic_profile(ny, 0.06);
+    let cx = 34.5;
+    let cy = 20.5;
+    let r = 6.5;
+    let inside = move |x: usize, y: usize| {
+        let dx = x as f64 - cx;
+        let dy = y as f64 - cy;
+        dx * dx + dy * dy <= r * r
+    };
+
+    let mut base = build::<D2Q9, _>(&spec, &walls, [1, 1, 1], LocalPeriodic, false);
+    let mut split = build::<D2Q9, _>(&spec, &walls, [2, 2, 1], InProcess, true);
+    base.set_inlet_profile(Face::XNeg, &profile);
+    split.set_inlet_profile(Face::XNeg, &profile);
+    set_obstacle_pair(&mut base, &mut split, nx, ny, inside);
+    base.set_bouzidi_circle(cx, cy, r);
+    split.set_bouzidi_circle(cx, cy, r);
+    for t in 1..=140 {
+        base.step();
+        split.step();
+        if t <= 3 || t % 35 == 0 || t == 140 {
+            assert_close(
+                &base,
+                &split,
+                1e-12,
+                1e-11,
+                &format!("bouzidi cylinder split t={t}"),
+            );
+        }
+    }
+}
+
+#[test]
 fn t13_l_shaped_obstacle_spanning_three_subdomains_matches() {
     let (nx, ny) = (64usize, 48usize);
     let (spec, walls) = channel_spec(nx, ny, FaceBC::Outflow);

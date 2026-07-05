@@ -806,3 +806,31 @@ or its mechanism replaced — pinned in ARCHITECTURE_V2 §2.3) + explicit SIMD.
 Strengths confirmed for the paper: single-thread NEON wins; GPU 2D at bandwidth
 ceiling (7,073 @1024² sustained; 12,205 @512² is SLC-resident, not sustained).
 Repro: ~/projects/cfd-bench/ (sweep scripts + bw_triad).
+
+## Bouzidi Phase 1 characterization (2026-07-06)
+
+Implemented the analytic circle/sphere Bouzidi record list and CPU post-stream
+pass from the original Bouzidi/Firdaouss/Lallemand 2001 and Guo 2002 formulas
+only; no GPL/AGPL code was used. STL voxelization is deferred.
+
+Validation evidence from this worktree:
+- `cargo test -p lbm-core --release --test bouzidi -- --nocapture`: 3 passed.
+  This covers sorted/nonempty analytic circle records, qd=1/2 bit identity
+  against half-way bounce-back, and CpuScalar/CpuSimd parity on a Bouzidi
+  cylinder.
+- `cargo test -p lbm-core --release --test t13_adversarial -- --nocapture`: 7
+  passed, 1 ignored; includes `t13_bouzidi_cylinder_split_matches`.
+- `cargo test -p lbm-core --release --test t13_split_invariance -- --nocapture`:
+  8 passed.
+- `cargo test -p lbm-core --release --test backend_simd_equiv -- --nocapture`:
+  20 passed; existing SIMD equivalence gate unchanged.
+- `cargo test --workspace --release`: passed (default suite).
+- Explicit T8 Bouzidi characterization:
+  `cargo test -p lbm-core --release --test validation_cylinder
+  t8_bouzidi_2d1_d20_cylinder_steady_drag_lift_characterization -- --ignored
+  --nocapture`: Cd=5.83340474, Cl=0.00867670, Re=20, samples=10000.
+
+The D=20 Bouzidi Cd result is outside the requested tightened target band
+5.41..5.75. Treat the current ignored test as a characterization freeze, not
+acceptance. Convergence slope D={10,20,40} and off-grid Poiseuille were not
+completed in this phase-1 pass.

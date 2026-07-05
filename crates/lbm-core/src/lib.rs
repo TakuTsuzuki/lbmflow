@@ -22,6 +22,7 @@
 
 pub mod backend;
 pub mod backend_simd;
+pub mod bouzidi;
 pub mod compat;
 #[cfg(feature = "mpi")]
 pub mod dist;
@@ -40,6 +41,7 @@ pub mod subdomain;
 pub mod prelude {
     pub use crate::backend::{Backend, CellRange, CpuScalar, HostMoments, PARALLEL_MIN_CELLS};
     pub use crate::backend_simd::CpuSimd;
+    pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
     pub use crate::fields::{LocalGeom, SoaFields};
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};

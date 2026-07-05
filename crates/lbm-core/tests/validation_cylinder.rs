@@ -97,6 +97,10 @@ fn inlet_velocity(case: CylinderCase, y: usize) -> [f64; 2] {
 }
 
 fn build_case(case: CylinderCase) -> Simulation<f64> {
+    build_case_with_wall(case, false)
+}
+
+fn build_case_with_wall(case: CylinderCase, bouzidi: bool) -> Simulation<f64> {
     let mut sim: Simulation<f64> = SimConfig {
         nx: case.nx,
         ny: case.ny,
@@ -128,6 +132,9 @@ fn build_case(case: CylinderCase) -> Simulation<f64> {
         }
     };
     sim.set_solid_region(is_cylinder);
+    if bouzidi {
+        sim.set_bouzidi_circle(case.cx, case.cy, r);
+    }
     sim.set_force_probe(is_cylinder);
     sim.init_with(|x, y| {
         if is_cylinder(x, y) || x == 0 || x == case.nx - 1 || y == 0 || y == case.ny - 1 {
@@ -147,7 +154,11 @@ fn drag_lift(force: [f64; 2], case: CylinderCase) -> (f64, f64) {
 }
 
 fn run_steady_cd_cl(case: CylinderCase) -> (f64, f64, usize) {
-    let mut sim = build_case(case);
+    run_steady_cd_cl_with_wall(case, false)
+}
+
+fn run_steady_cd_cl_with_wall(case: CylinderCase, bouzidi: bool) -> (f64, f64, usize) {
+    let mut sim = build_case_with_wall(case, bouzidi);
     let mut cd_sum = 0.0;
     let mut cl_sum = 0.0;
     let mut n = 0usize;
@@ -176,6 +187,29 @@ fn t8_2d1_d20_cylinder_steady_drag_lift_are_in_reference_bands() {
     assert!(
         (-0.05..=0.08).contains(&cl),
         "T8 2D-1 D=20 Cl = {cl:e}, Cd = {cd:e}, Re = {:e}, steps = {}, samples = {samples}",
+        case.re(),
+        case.steps
+    );
+}
+
+#[test]
+#[ignore = "Bouzidi D=20 characterization: explicit curved-wall run"]
+fn t8_bouzidi_2d1_d20_cylinder_steady_drag_lift_characterization() {
+    let case = schaefer_turek_2d1_d20();
+    let (cd, cl, samples) = run_steady_cd_cl_with_wall(case, true);
+    println!(
+        "T8 Bouzidi 2D-1 D=20 measured Cd={cd:.8}, Cl={cl:.8}, Re={:.8}, samples={samples}",
+        case.re()
+    );
+    assert!(
+        (5.80..=5.87).contains(&cd),
+        "T8 Bouzidi D=20 characterization Cd = {cd:e}, Cl = {cl:e}, Re = {:e}, steps = {}, samples = {samples}",
+        case.re(),
+        case.steps
+    );
+    assert!(
+        (-0.03..=0.05).contains(&cl),
+        "T8 Bouzidi D=20 characterization Cl = {cl:e}, Cd = {cd:e}, Re = {:e}, steps = {}, samples = {samples}",
         case.re(),
         case.steps
     );

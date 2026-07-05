@@ -192,6 +192,9 @@ pub struct SoaFields<T: Real> {
     pub probe: Option<Vec<bool>>,
     /// Per-cell body force added to the uniform force, compact core.
     pub force_field: Option<Vec<[T; 3]>>,
+    /// Optional Bouzidi curved-wall links. `None` preserves the half-way
+    /// bounce-back path exactly and allocates no record storage.
+    pub bouzidi: Option<crate::bouzidi::BouzidiLinks<T>>,
     /// Per-face inlet velocity profiles ([`crate::lattice::Face::index`]
     /// order), overriding a `Velocity` face's uniform value. Indexed by this
     /// part's local along-face coordinate (2D: the single tangent axis;
@@ -220,6 +223,7 @@ impl<T: Real> SoaFields<T> {
             wall_u: vec![[T::zero(); 3]; np],
             probe: None,
             force_field: None,
+            bouzidi: None,
             inlet_profiles: [None, None, None, None, None, None],
             fused: None,
         }
