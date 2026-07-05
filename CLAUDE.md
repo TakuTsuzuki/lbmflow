@@ -32,7 +32,11 @@ cd web && npm run build                   # GUI（tsc strict + vite）
 
 - D2Q9 の方向順序は lattice.rs の定義が唯一の正。0:(0,0), 1:(1,0), 2:(0,1), 3:(-1,0),
   4:(0,-1), 5:(1,1), 6:(-1,1), 7:(-1,-1), 8:(1,-1)。
-- f の配置は cell-major: `f[(y*nx+x)*9 + q]`。
+- f の配置は plane-major SoA: `f[q*(nx*ny) + y*nx + x]`（Phase 9 で cell-major から変更。
+  V2 の GPU コアレッシング前提と同一。sim.rs 内部限定の不変条件で、公開 API には出ない）。
+- 1 ステップ = 融合パス（collide+stream+moments を step_band で一括）→ 開放端 BC →
+  境界線 moments 修正。パス構造・格納順を変える改修は examples/probe_state_hash の
+  ビット一致で等価性を確認してから入れる。
 - 壁エッジは 1 セルのソリッドリム。壁面は half-way（リム中心と流体中心の中間）。
 - 速度モーメントは Guo forcing の F/2 補正込み（`sim.ux()` などは物理速度）。
 - tau = 3*nu + 0.5（cs² = 1/3）。

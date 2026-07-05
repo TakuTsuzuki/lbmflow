@@ -2,6 +2,9 @@
 //! thread count. Prints a markdown table for docs/PERFORMANCE.md.
 //!
 //! Run: `cargo run --release --example bench_mlups`
+//!
+//! Single-config mode (for A/B comparisons between builds):
+//! `bench_mlups <f32|f64> <n> <threads> <steps>` prints one MLUPS value.
 
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
@@ -41,6 +44,25 @@ fn bench<T: Real>(n: usize, collision: Collision, steps: usize) -> f64 {
 fn main() {
     let trt = Collision::default();
     let bgk = Collision::Bgk;
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 4 {
+        let prec = args[0].as_str();
+        let n: usize = args[1].parse().expect("grid size");
+        let threads: usize = args[2].parse().expect("thread count");
+        let steps: usize = args[3].parse().expect("step count");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let mlups = pool.install(|| match prec {
+            "f32" => bench::<f32>(n, trt, steps),
+            "f64" => bench::<f64>(n, trt, steps),
+            other => panic!("unknown precision {other}"),
+        });
+        println!("{mlups:.1}");
+        return;
+    }
 
     println!("## スレッドスケーリング (512^2, TRT)\n");
     println!("| threads | f32 MLUPS | f64 MLUPS |");
