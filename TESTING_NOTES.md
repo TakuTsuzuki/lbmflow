@@ -189,3 +189,31 @@ order #2 の 5 件の dispositions:
   (Cd_h, Re_h) ペアで再正規化すると 3 ケースが +0.6%/+7.1%/+2.3% に収束
   （エンジン正常）。VALIDATION T15.3 を D_h 定義に改定、テストは sn_hydro 化。
   併せて仕様の誤記（Re=20 の SN 値 2.09 → 正しくは 2.6095）も訂正済み。
+
+## 新規（2026-07-05 M-D MPI 分散実装）
+
+1. **T13-MPI 全 PASS（場はビット一致）**: mpirun -n {1,2,4} × {2D TGV/キャビティ
+   （蓋が縫い目跨ぎ）/縫い目上円柱+プローブ+放物線流入/Shan-Chen 液滴（2×2 コーナー、
+   ψ を exchange_scalar 経由）} と -n 8 × {3D TGV 24³ 2×2×2} で、rank-0 gather 場
+   （rho/u/全 f 平面）が単一ランク基準と **max|Δ| = 0.0**。診断（mass/momentum/
+   probed_force/NaN 数）は rank 部分和 → Allreduce の f64 再結合差のみ
+   （≤9.1e-13 abs、液滴 mass は ≤4.5e-11 abs = 相対 ~3e-14）。判定線は T13 流儀
+   atol+rtol 各 1e-12（場）/1e-11（診断）。再現: `./scripts/test_mpi.sh`。
+2. **Shan-Chen V2 ネイティブ API ギャップ解消**（codex order #6 記載分）:
+   `Solver::update_shan_chen_force`（単成分、ψ ハローを exchange_scalar で配線）を
+   追加。InProcess の 2×2 コーナー液滴 T13（`t13_shan_chen_droplet_native_split_
+   invariant`）もビット一致で緑。壁吸着（g_wall/wall_rho）は未配線 — 必要になった
+   時点で compat::ShanChen から移植する。
+3. **rsmpi/Open MPI の罠**（詳細 docs/MPI_GUIDE.md）: (a) x86_64 Homebrew MPI が
+   PATH 先頭だと rsmpi ビルド/実行が壊れる（arm64 版を先頭に）。(b) 複製
+   コミュニケータを持つ MpiSolver を Universe drop（MPI_Finalize）後に drop すると
+   MPI_Comm_free で abort（exit 14）— bench_mpi.rs で実際に踏んだ。(c) マスク編集は
+   collective: set_solid を所有ランクだけで呼ぶと exchange_masks の呼び出し回数が
+   ずれてデッドロック（MpiSolver は非所有ランクも dirty マークを立てて回避）。
+4. **弱スケーリング（単一ノード・共有メモリ経由の参考値）**: 512²/rank 直列
+   バックエンドで n=1: 40.2 / n=2: 79.9 (99.4%) / n=4: 155.9 (97.0%) /
+   n=8: 235.5 MLUPS (73.2%)。n=8 の低下は M5 Max の異種コア（6 Super + 12
+   Performance）+帯域競合が主因: 通信ゼロの対照実験（独立 1 ランク×8 並走）でも
+   84% 相当が天井で、MPI 化の追加損は ~12%（ロックステップのジッタ結合）。
+   n≤4（均質コア内）は R3 ローカル線 ≥85% を満たす。真の測定はクラスタ待ち
+   （測定リスト: docs/MPI_GUIDE.md §クラスタ）。

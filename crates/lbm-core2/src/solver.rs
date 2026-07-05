@@ -256,6 +256,42 @@ where
         backend: B,
         exchange: H,
     ) -> Self {
+        Self::build(spec, solid, wall_u, decomp, None, backend, exchange)
+    }
+
+    /// Build a solver that *owns exactly one part* of the `decomp`
+    /// decomposition (distributed-memory configuration: one process per
+    /// part). Neighbour ids in the subdomain still refer to the global part
+    /// numbering — the exchange implementation defines where those parts
+    /// live (for MPI, part id = rank). `LocalPeriodic` / `InProcess` cannot
+    /// serve such a solver (they index neighbours into the local part list).
+    ///
+    /// `solid` / `wall_u` are still the *global* compact arrays; every owner
+    /// slices out its own core. Cell accessors (`rho`, `u`, `set_solid`, …)
+    /// address global coordinates and must only be called for cells this
+    /// part owns; `gather_*` fills only the owned block (the distributed
+    /// gather assembles rank blocks on the root).
+    pub fn new_local_part(
+        spec: &GlobalSpec<T>,
+        solid: &[bool],
+        wall_u: &[[T; 3]],
+        decomp: [usize; 3],
+        part: usize,
+        backend: B,
+        exchange: H,
+    ) -> Self {
+        Self::build(spec, solid, wall_u, decomp, Some(part), backend, exchange)
+    }
+
+    fn build(
+        spec: &GlobalSpec<T>,
+        solid: &[bool],
+        wall_u: &[[T; 3]],
+        decomp: [usize; 3],
+        only: Option<usize>,
+        backend: B,
+        exchange: H,
+    ) -> Self {
         if L::D == 2 {
             assert_eq!(spec.dims[2], 1, "2D lattice requires nz == 1");
         }
@@ -269,7 +305,11 @@ where
             force: spec.force,
             faces: spec.faces,
         };
-        let subs = partition(L::D, spec.dims, spec.periodic, decomp);
+        let mut subs = partition(L::D, spec.dims, spec.periodic, decomp);
+        if let Some(part) = only {
+            assert!(part < subs.len(), "part {part} out of range for {decomp:?}");
+            subs = vec![subs[part].clone()];
+        }
         let mut parts: Vec<SoaFields<T>> = subs.iter().map(|s| backend.alloc(s)).collect();
         // Distribute the global masks into the parts' padded cores.
         for (sub, fields) in subs.iter().zip(parts.iter_mut()) {
@@ -633,13 +673,89 @@ where
         self.set_inlet_profile(face, &values);
     }
 
+    /// Single-component Shan–Chen cohesion: recompute the per-cell force
+    /// field from the current density via the pseudopotential `psi`,
+    /// exchanging one padded ψ plane per part (`HaloExchange::exchange_scalar`)
+    /// so the force stencil sees remote neighbours — the decomposition-aware
+    /// counterpart of `compat::ShanChen::update_force` (neutral walls: solid
+    /// and out-of-domain neighbours contribute nothing).
+    ///
+    /// `F(x) = -G ψ(x) Σ_q w_q ψ(x + c_q) c_q`, accumulated in ascending-`q`
+    /// order (V1 convention). Call before each [`Solver::step`]; collective
+    /// over all owners of the decomposition.
+    pub fn update_shan_chen_force(&mut self, g: T, psi: impl Fn(T) -> T) {
+        self.sync_masks_if_dirty();
+        // ψ planes, padded: core = ψ(rho) (0 on solids), halo = 0 until the
+        // exchange fills it (stays 0 outside non-periodic global edges,
+        // matching V1's "out-of-domain contributes nothing").
+        let mut planes: Vec<Vec<T>> = self
+            .subs
+            .iter()
+            .zip(self.parts.iter())
+            .map(|(sub, fields)| {
+                let geo = sub.geom;
+                let mut plane = vec![T::zero(); geo.n_padded()];
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let pi = geo.pidx(x, y, z);
+                            if !fields.solid[pi] {
+                                plane[pi] = psi(fields.rho[geo.cidx(x, y, z)]);
+                            }
+                        }
+                    }
+                }
+                plane
+            })
+            .collect();
+        let mut refs: Vec<&mut [T]> = planes.iter_mut().map(|p| p.as_mut_slice()).collect();
+        self.exchange.exchange_scalar(&self.subs, &mut refs);
+        for (i, (sub, fields)) in self.subs.iter().zip(self.parts.iter_mut()).enumerate() {
+            let geo = sub.geom;
+            let plane = &planes[i];
+            let ff = fields
+                .force_field
+                .get_or_insert_with(|| vec![[T::zero(); 3]; geo.n_core()]);
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let c = geo.cidx(x, y, z);
+                        let psi_i = plane[geo.pidx(x, y, z)];
+                        if fields.solid[geo.pidx(x, y, z)] || psi_i == T::zero() {
+                            ff[c] = [T::zero(); 3];
+                            continue;
+                        }
+                        let mut s = [T::zero(); 3];
+                        for q in 1..L::Q {
+                            let cq = L::C[q];
+                            let pj = plane[geo.pidx_i(
+                                x as isize + cq[0] as isize,
+                                y as isize + cq[1] as isize,
+                                z as isize + cq[2] as isize,
+                            )];
+                            let w = T::r(L::W[q]);
+                            for a in 0..L::D {
+                                s[a] = s[a] + w * pj * T::r(cq[a] as f64);
+                            }
+                        }
+                        for a in 0..3 {
+                            ff[c][a] = -(psi_i * (g * s[a]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Accessors / diagnostics
     // ------------------------------------------------------------------
 
     fn locate(&self, x: usize, y: usize, z: usize) -> (usize, usize, usize, usize) {
         debug_assert!(x < self.dims[0] && y < self.dims[1] && z < self.dims[2]);
-        if self.subs.len() == 1 {
+        // Fast path only for a truly monolithic part (a single *local* part
+        // of a wider decomposition has a non-trivial origin).
+        if self.subs.len() == 1 && self.subs[0].geom.core == self.dims {
             return (0, x, y, z);
         }
         for (i, s) in self.subs.iter().enumerate() {
@@ -716,6 +832,15 @@ where
     /// Total mass over fluid cells (V1 `total_mass`: physical mass =
     /// fluid-cell count + deviation sum, both accumulated in `f64`).
     pub fn total_mass(&self) -> T {
+        let (fluid, m) = self.local_mass_partials();
+        T::r(fluid + m)
+    }
+
+    /// Local partial sums behind [`Solver::total_mass`]: `(fluid_cells,
+    /// mass_deviation)` over the parts owned by this process, in `f64`.
+    /// A distributed owner sums these across ranks (order-insensitive up to
+    /// f64 reassociation) before forming `fluid + m`.
+    pub fn local_mass_partials(&self) -> (f64, f64) {
         let mut fluid = 0.0f64;
         let mut m = 0.0f64;
         for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
@@ -726,11 +851,18 @@ where
                 .backend
                 .reduce(sub, fields, &self.params, Reduction::MassDeviation);
         }
-        T::r(fluid + m)
+        (fluid, m)
     }
 
     /// Total physical momentum over fluid cells (V1 `total_momentum`).
     pub fn total_momentum(&self) -> [T; 3] {
+        let p = self.local_momentum_partials();
+        [T::r(p[0]), T::r(p[1]), T::r(p[2])]
+    }
+
+    /// Local partial sums behind [`Solver::total_momentum`] (see
+    /// [`Solver::local_mass_partials`] for the distributed contract).
+    pub fn local_momentum_partials(&self) -> [f64; 3] {
         let mut p = [0.0f64; 3];
         for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
             for (a, pa) in p.iter_mut().enumerate() {
@@ -739,7 +871,30 @@ where
                     .reduce(sub, fields, &self.params, Reduction::Momentum(a));
             }
         }
-        [T::r(p[0]), T::r(p[1]), T::r(p[2])]
+        p
+    }
+
+    /// Number of non-finite (NaN/Inf) values in this process's parts, over
+    /// the populations and the macroscopic moments. `0` on a healthy run;
+    /// a distributed owner sums the counts across ranks.
+    pub fn local_nonfinite_count(&self) -> u64 {
+        let mut n = 0u64;
+        for fields in &self.parts {
+            let finite = |v: &[T]| v.iter().filter(|x| !x.is_finite()).count() as u64;
+            n += finite(&fields.f);
+            n += finite(&fields.rho);
+            n += finite(&fields.ux);
+            n += finite(&fields.uy);
+            n += finite(&fields.uz);
+        }
+        n
+    }
+
+    /// Force a mask-halo refresh before the next step. Distributed owners
+    /// call this on *every* rank when any rank edits masks: the refresh is a
+    /// collective exchange, so the dirty flag must agree globally.
+    pub fn mark_masks_dirty(&mut self) {
+        self.masks_dirty = true;
     }
 
     /// Number of fluid (non-solid) cells.

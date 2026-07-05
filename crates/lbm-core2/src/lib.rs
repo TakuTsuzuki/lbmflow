@@ -21,6 +21,8 @@
 
 pub mod backend;
 pub mod compat;
+#[cfg(feature = "mpi")]
+pub mod dist;
 pub mod fields;
 #[cfg(feature = "gpu")]
 pub mod gpu;
@@ -45,4 +47,7 @@ pub mod prelude {
 
     #[cfg(feature = "gpu")]
     pub use crate::gpu::{GpuContext, GpuSolver, WgpuBackend};
+
+    #[cfg(feature = "mpi")]
+    pub use crate::dist::{MpiExchange, MpiSolver};
 }

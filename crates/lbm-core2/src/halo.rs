@@ -91,7 +91,12 @@ impl<T: Real> HaloExchange<T> for InProcess {
 /// Padded indices of the halo layer behind `recv_face` (unpack side), in
 /// canonical order. Layers of phase `axis` extend over the halos of earlier
 /// axes (< `axis`), which were exchanged in earlier phases.
-fn layer_indices(geom: &LocalGeom, recv_face: Face, phase_axis: usize, unpack: bool) -> Vec<usize> {
+pub(crate) fn layer_indices(
+    geom: &LocalGeom,
+    recv_face: Face,
+    phase_axis: usize,
+    unpack: bool,
+) -> Vec<usize> {
     let a = recv_face.axis();
     debug_assert_eq!(a, phase_axis);
     let h = geom.halo as isize;
@@ -129,6 +134,100 @@ fn layer_indices(geom: &LocalGeom, recv_face: Face, phase_axis: usize, unpack: b
     out
 }
 
+/// Number of cells in one exchange layer behind `recv_face`. Pack and unpack
+/// sides agree by the Cartesian invariant (tangent extents match), so the
+/// receiver can size an incoming message from its own geometry alone.
+/// (Receive-buffer sizing is inherently a remote-exchange concern, hence
+/// only the `mpi` feature consumes this.)
+#[cfg_attr(not(feature = "mpi"), allow(dead_code))]
+pub(crate) fn layer_cell_count(geom: &LocalGeom, recv_face: Face) -> usize {
+    let a = recv_face.axis();
+    let h = 2 * geom.halo;
+    let ext = |t: usize| -> usize {
+        if t < a && t < geom.d {
+            geom.core[t] + h
+        } else {
+            geom.core[t]
+        }
+    };
+    let (t1, t2) = recv_face.tangents();
+    ext(t1) * ext(t2)
+}
+
+// ---------------------------------------------------------------------------
+// Message-shaped pack/unpack (shared verbatim by InProcess and Mpi: the MPI
+// implementation sends `buf` over the wire instead of handing it across)
+// ---------------------------------------------------------------------------
+
+/// Pack the population layer a neighbour behind `recv_face` (on the *other*
+/// side) needs: this part's opposite core boundary layer, canonical cell
+/// order, `L::unknowns(recv_face)` directions innermost.
+pub(crate) fn pack_f_layer<L: Lattice, T: Real>(
+    fields: &SoaFields<T>,
+    recv_face: Face,
+    buf: &mut Vec<T>,
+) {
+    let dirs = L::unknowns(recv_face);
+    let idx = layer_indices(&fields.geom, recv_face, recv_face.axis(), false);
+    let np = fields.plane_len();
+    buf.clear();
+    buf.reserve(idx.len() * dirs.len());
+    for &cell in &idx {
+        for &q in dirs {
+            buf.push(fields.f[q * np + cell]);
+        }
+    }
+}
+
+/// Unpack a population layer received through `recv_face` into this part's
+/// halo behind that face (exact inverse of [`pack_f_layer`]).
+pub(crate) fn unpack_f_layer<L: Lattice, T: Real>(
+    fields: &mut SoaFields<T>,
+    recv_face: Face,
+    buf: &[T],
+) {
+    let dirs = L::unknowns(recv_face);
+    let idx = layer_indices(&fields.geom, recv_face, recv_face.axis(), true);
+    debug_assert_eq!(buf.len(), idx.len() * dirs.len());
+    let np = fields.plane_len();
+    let mut k = 0;
+    for &cell in &idx {
+        for &q in dirs {
+            fields.f[q * np + cell] = buf[k];
+            k += 1;
+        }
+    }
+}
+
+/// Pack one scalar-plane layer for the neighbour behind `recv_face`.
+pub(crate) fn pack_scalar_layer<T: Real>(
+    geom: &LocalGeom,
+    plane: &[T],
+    recv_face: Face,
+    buf: &mut Vec<T>,
+) {
+    let idx = layer_indices(geom, recv_face, recv_face.axis(), false);
+    buf.clear();
+    buf.reserve(idx.len());
+    for &cell in &idx {
+        buf.push(plane[cell]);
+    }
+}
+
+/// Unpack a scalar-plane layer received through `recv_face`.
+pub(crate) fn unpack_scalar_layer<T: Real>(
+    geom: &LocalGeom,
+    plane: &mut [T],
+    recv_face: Face,
+    buf: &[T],
+) {
+    let idx = layer_indices(geom, recv_face, recv_face.axis(), true);
+    debug_assert_eq!(buf.len(), idx.len());
+    for (k, &cell) in idx.iter().enumerate() {
+        plane[cell] = buf[k];
+    }
+}
+
 /// Assert the Cartesian-decomposition invariant: sender and receiver share
 /// tangent extents, so layer cells map 1:1.
 fn check_tangent_match(a: usize, dst: &LocalGeom, src: &LocalGeom) {
@@ -153,33 +252,16 @@ pub(crate) fn exchange_f_generic<L: Lattice, T: Real>(
     for axis in 0..d {
         for side in 0..2 {
             let recv_face = Face::ALL[2 * axis + side];
-            let dirs = L::unknowns(recv_face);
             for di in 0..parts.len() {
                 let Some(si) = subs[di].neighbors[recv_face.index()] else {
                     continue;
                 };
                 check_tangent_match(axis, &subs[di].geom, &subs[si].geom);
-                // pack (sender's opposite core boundary layer)
-                let src_idx = layer_indices(&parts[si].geom, recv_face, axis, false);
-                let np_s = parts[si].plane_len();
-                buf.clear();
-                buf.reserve(src_idx.len() * dirs.len());
-                for &cell in &src_idx {
-                    for &q in dirs {
-                        buf.push(parts[si].f[q * np_s + cell]);
-                    }
-                }
-                // unpack (receiver's halo layer)
-                let dst_idx = layer_indices(&parts[di].geom, recv_face, axis, true);
-                debug_assert_eq!(dst_idx.len(), src_idx.len());
-                let np_d = parts[di].plane_len();
-                let mut k = 0;
-                for &cell in &dst_idx {
-                    for &q in dirs {
-                        parts[di].f[q * np_d + cell] = buf[k];
-                        k += 1;
-                    }
-                }
+                // pack (sender's opposite core boundary layer) …
+                pack_f_layer::<L, T>(&parts[si], recv_face, &mut buf);
+                // … unpack (receiver's halo layer): the buffer hand-off the
+                // MPI implementation replaces with send/recv.
+                unpack_f_layer::<L, T>(&mut parts[di], recv_face, &buf);
             }
         }
     }
@@ -226,6 +308,7 @@ pub(crate) fn exchange_masks_generic<T: Real>(subs: &[Subdomain], parts: &mut [S
 /// Generic scalar-plane exchange (padded planes, full values).
 pub(crate) fn exchange_scalar_generic<T: Real>(subs: &[Subdomain], planes: &mut [&mut [T]]) {
     let d = subs[0].geom.d;
+    let mut buf: Vec<T> = Vec::new();
     for axis in 0..d {
         for side in 0..2 {
             let recv_face = Face::ALL[2 * axis + side];
@@ -234,13 +317,8 @@ pub(crate) fn exchange_scalar_generic<T: Real>(subs: &[Subdomain], planes: &mut 
                     continue;
                 };
                 check_tangent_match(axis, &subs[di].geom, &subs[si].geom);
-                let src_idx = layer_indices(&subs[si].geom, recv_face, axis, false);
-                let dst_idx = layer_indices(&subs[di].geom, recv_face, axis, true);
-                debug_assert_eq!(dst_idx.len(), src_idx.len());
-                let buf: Vec<T> = src_idx.iter().map(|&c| planes[si][c]).collect();
-                for (k, &cell) in dst_idx.iter().enumerate() {
-                    planes[di][cell] = buf[k];
-                }
+                pack_scalar_layer(&subs[si].geom, planes[si], recv_face, &mut buf);
+                unpack_scalar_layer(&subs[di].geom, planes[di], recv_face, &buf);
             }
         }
     }
