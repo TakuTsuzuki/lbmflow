@@ -28,6 +28,7 @@ gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:futures-intrusive"]
 # MPI halo exchange + distributed diagnostics (docs/MPI_GUIDE.md). Off by
 # default: requires a native MPI installation (see scripts/test_mpi.sh).
 mpi = ["dep:mpi"]
+mf-interim = []
 
 [[example]]
 name = "bench_gpu"
