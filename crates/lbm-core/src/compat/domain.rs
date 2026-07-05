@@ -194,6 +194,14 @@ pub enum ConfigError {
         /// Offending value.
         value: f64,
     },
+    /// A parameter that must be finite is NaN or infinite (e.g. a NaN inlet
+    /// velocity that would otherwise slip past a `>`-comparison and corrupt
+    /// the field a few steps in, or silently degrade a `MovingWall` to a
+    /// static wall).
+    NonFiniteParameter {
+        /// Parameter name.
+        what: &'static str,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -228,6 +236,9 @@ impl std::fmt::Display for ConfigError {
             }
             ConfigError::InvalidParameter { what, value } => {
                 write!(f, "parameter {what} = {value} is outside its valid range")
+            }
+            ConfigError::NonFiniteParameter { what } => {
+                write!(f, "parameter {what} must be finite (got NaN or infinity)")
             }
         }
     }
@@ -277,6 +288,29 @@ impl<T: Real> SimConfig<T> {
         if !(self.nu > 0.0) {
             return Err(ConfigError::NonPositiveViscosity { nu: self.nu });
         }
+        // TRT magic must be finite and positive (Λ ≤ 0 or NaN gives a
+        // non-physical or degenerate ω−; the NaN case would otherwise slip
+        // past a bare `>` test).
+        if let Collision::Trt { magic } = self.collision {
+            if !magic.is_finite() {
+                return Err(ConfigError::NonFiniteParameter { what: "magic" });
+            }
+            if !(magic > 0.0) {
+                return Err(ConfigError::InvalidParameter {
+                    what: "magic",
+                    value: magic,
+                });
+            }
+        }
+        // Uniform body force must be finite (a NaN force poisons every
+        // fluid cell on the first collide).
+        for (a, comp) in self.force.iter().enumerate() {
+            if !comp.as_f64().is_finite() {
+                return Err(ConfigError::NonFiniteParameter {
+                    what: if a == 0 { "force[0]" } else { "force[1]" },
+                });
+            }
+        }
         if self.nx < 3 || self.ny < 3 {
             return Err(ConfigError::DomainTooSmall {
                 nx: self.nx,
@@ -295,9 +329,37 @@ impl<T: Real> SimConfig<T> {
         if x_open && y_open {
             return Err(ConfigError::AdjacentOpenEdges);
         }
-        for bc in [&e.left, &e.right, &e.bottom, &e.top] {
+        // `normal_axis`: 0 for the x-facing edges (Left/Right), 1 for the
+        // y-facing edges (Bottom/Top). A MovingWall may only slide
+        // tangentially, so its velocity component along this axis must be 0.
+        for (normal_axis, bc) in [(0, &e.left), (0, &e.right), (1, &e.bottom), (1, &e.top)] {
+            // Prescribed velocities must be finite *before* the magnitude
+            // test: a NaN component makes `max_speed()` NaN, and a bare
+            // `NaN > MAX_SPEED` is false — the exact silent pass-through that
+            // corrupts an inlet field or degrades a MovingWall to a static
+            // wall a few steps in.
+            if let EdgeBC::MovingWall { u } | EdgeBC::VelocityInlet { u } = bc {
+                if !u[0].as_f64().is_finite() || !u[1].as_f64().is_finite() {
+                    return Err(ConfigError::NonFiniteParameter {
+                        what: "edge velocity",
+                    });
+                }
+            }
+            // A-6: a wall-normal MovingWall component injects/removes mass at
+            // the half-way bounce-back without diverging — a silent leak
+            // (E7: −56% mass over 500 steps). Reject it; only tangential
+            // motion is physically representable by BB momentum injection.
+            if let EdgeBC::MovingWall { u } = bc {
+                if u[normal_axis].as_f64() != 0.0 {
+                    return Err(ConfigError::InvalidParameter {
+                        what: "MovingWall normal velocity component (walls may only slide tangentially)",
+                        value: u[normal_axis].as_f64(),
+                    });
+                }
+            }
             let s = bc.max_speed();
-            if s > MAX_SPEED {
+            // NaN-safe: `!(s <= MAX_SPEED)` rejects NaN as well as too-fast.
+            if !(s <= MAX_SPEED) {
                 return Err(ConfigError::VelocityTooHigh { speed: s });
             }
             if let EdgeBC::PressureOutlet { rho } = bc {
@@ -382,5 +444,152 @@ mod tests {
             too_fast.build().unwrap_err(),
             ConfigError::VelocityTooHigh { .. }
         ));
+    }
+
+    /// A-2 (E6): NaN/inf on any prescribed velocity, the body force, or the
+    /// TRT magic parameter must be rejected at `build()` rather than slipping
+    /// past a bare `>`-comparison (NaN inlet → field NaN in ~3 steps; NaN
+    /// MovingWall → silent static wall).
+    #[test]
+    fn rejects_non_finite_parameters() {
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+
+        // NaN inlet velocity (would corrupt the field, not caught by `>`).
+        let nan_inlet = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::VelocityInlet { u: [nan, 0.0] },
+                right: EdgeBC::Outflow,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            nan_inlet.build().unwrap_err(),
+            ConfigError::NonFiniteParameter { .. }
+        ));
+
+        // NaN MovingWall velocity (would degrade to a static wall, no error).
+        let nan_wall = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::Periodic,
+                right: EdgeBC::Periodic,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::MovingWall { u: [nan, 0.0] },
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            nan_wall.build().unwrap_err(),
+            ConfigError::NonFiniteParameter { .. }
+        ));
+
+        // inf inlet velocity.
+        let inf_inlet = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::VelocityInlet { u: [0.0, inf] },
+                right: EdgeBC::Outflow,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            inf_inlet.build().unwrap_err(),
+            ConfigError::NonFiniteParameter { .. }
+        ));
+
+        // NaN body force component.
+        let nan_force = SimConfig::<f64> {
+            force: [0.0, nan],
+            ..Default::default()
+        };
+        assert!(matches!(
+            nan_force.build().unwrap_err(),
+            ConfigError::NonFiniteParameter { .. }
+        ));
+
+        // NaN TRT magic.
+        let nan_magic = SimConfig::<f64> {
+            collision: Collision::Trt { magic: nan },
+            ..Default::default()
+        };
+        assert!(matches!(
+            nan_magic.build().unwrap_err(),
+            ConfigError::NonFiniteParameter { .. }
+        ));
+
+        // Non-positive TRT magic (Λ ≤ 0).
+        let bad_magic = SimConfig::<f64> {
+            collision: Collision::Trt { magic: 0.0 },
+            ..Default::default()
+        };
+        assert!(matches!(
+            bad_magic.build().unwrap_err(),
+            ConfigError::InvalidParameter { what: "magic", .. }
+        ));
+
+        // Sanity: the finite defaults still build.
+        assert!(SimConfig::<f64>::default().build().is_ok());
+    }
+
+    /// A-6 (E7): a MovingWall velocity component normal to its own edge is a
+    /// silent mass leak (bounce-back injects/removes mass without diverging).
+    /// Tangential motion is fine; a normal component must be rejected.
+    #[test]
+    fn rejects_moving_wall_normal_component() {
+        // Top wall (y-facing): tangential = x-component only.
+        let tangential = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::BounceBack,
+                right: EdgeBC::BounceBack,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::MovingWall { u: [0.05, 0.0] },
+            },
+            ..Default::default()
+        };
+        assert!(tangential.build().is_ok(), "tangential lid must be allowed");
+
+        // Top wall with a normal (y) component — the E7 leak.
+        let normal = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::BounceBack,
+                right: EdgeBC::BounceBack,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::MovingWall { u: [0.0, -0.05] },
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            normal.build().unwrap_err(),
+            ConfigError::InvalidParameter { .. }
+        ));
+
+        // Left wall (x-facing): normal = x-component.
+        let left_normal = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::MovingWall { u: [0.05, 0.0] },
+                right: EdgeBC::BounceBack,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            left_normal.build().unwrap_err(),
+            ConfigError::InvalidParameter { .. }
+        ));
+        // Left wall sliding tangentially (y) is fine.
+        let left_tangential = SimConfig::<f64> {
+            edges: Edges {
+                left: EdgeBC::MovingWall { u: [0.0, 0.05] },
+                right: EdgeBC::BounceBack,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        };
+        assert!(left_tangential.build().is_ok());
     }
 }

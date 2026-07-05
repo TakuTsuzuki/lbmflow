@@ -223,10 +223,28 @@ impl<T: Real> Simulation<T> {
     /// finite differences (periodic wrap on periodic axes, one-sided at
     /// walls). Pure-equilibrium initialisation would inject an O(1/N)
     /// error into smooth flows (measured on Taylor–Green; docs/PHYSICS.md).
+    ///
+    /// # Panics
+    /// Panics (with the offending coordinate) if `init` returns a density
+    /// that is not strictly positive and finite — `rho = 0` makes the
+    /// equilibrium `0 × ∞ = NaN` immediately — or a speed exceeding
+    /// [`MAX_SPEED`]. `init` must also be *pure*: the finite-difference
+    /// stencil re-evaluates it at each cell's neighbours, so it is called up
+    /// to five times per cell.
     pub fn init_with(&mut self, init: impl Fn(usize, usize) -> (T, T, T)) {
         self.sync_force_field();
         self.solver.init_with(|x, y, _| {
             let (r, vx, vy) = init(x, y);
+            assert!(
+                r.as_f64() > 0.0 && r.as_f64().is_finite(),
+                "init_with: density at ({x},{y}) must be > 0 and finite, got {}",
+                r.as_f64()
+            );
+            let s = (vx.as_f64().powi(2) + vy.as_f64().powi(2)).sqrt();
+            assert!(
+                s <= MAX_SPEED,
+                "init_with: speed {s} at ({x},{y}) exceeds the low-Mach limit {MAX_SPEED}"
+            );
             (r, [vx, vy, T::zero()])
         });
     }
@@ -415,6 +433,70 @@ impl<T: Real> Simulation<T> {
 #[cfg(test)]
 mod tests {
     use crate::compat::domain::{Collision, EdgeBC, Edges, SimConfig};
+
+    /// A-7: `init_with` rejects a zero density (immediate `0 × ∞` NaN) with a
+    /// coordinate-bearing panic.
+    #[test]
+    #[should_panic(expected = "density at (3,3)")]
+    fn init_with_rejects_zero_density() {
+        let mut sim = SimConfig::<f64> {
+            nx: 8,
+            ny: 8,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        sim.init_with(|x, y| {
+            if (x, y) == (3, 3) {
+                (0.0, 0.0, 0.0)
+            } else {
+                (1.0, 0.0, 0.0)
+            }
+        });
+    }
+
+    /// A-7: `init_with` rejects a non-finite density.
+    #[test]
+    #[should_panic(expected = "must be > 0 and finite")]
+    fn init_with_rejects_nan_density() {
+        let mut sim = SimConfig::<f64> {
+            nx: 8,
+            ny: 8,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        sim.init_with(|_, _| (f64::NAN, 0.0, 0.0));
+    }
+
+    /// A-7: `init_with` rejects a super-sonic seed velocity (asymmetry with
+    /// `set_inlet_profile`, which already checked, is closed).
+    #[test]
+    #[should_panic(expected = "exceeds the low-Mach limit")]
+    fn init_with_rejects_too_fast() {
+        let mut sim = SimConfig::<f64> {
+            nx: 8,
+            ny: 8,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        sim.init_with(|_, _| (1.0, 0.9, 0.0));
+    }
+
+    /// A-7: a legal seed field initialises without panicking.
+    #[test]
+    fn init_with_accepts_valid_field() {
+        let mut sim = SimConfig::<f64> {
+            nx: 16,
+            ny: 16,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        sim.init_with(|x, _| (1.0 + 0.01 * x as f64, 0.02, 0.0));
+        assert!(sim.rho(4, 4).is_finite());
+    }
 
     #[test]
     #[should_panic(expected = "open")]
