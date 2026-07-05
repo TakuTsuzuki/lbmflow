@@ -145,6 +145,20 @@ Marangoni 形の W²↔(κ,β) 係数整合 — REQ §3 に明記済み）/
 1e9 格子級はメモリ予算表（REQ §7）により**クラスタ専用**（単機開発線は ≤256³）—
 実測はクラスタ計画（CLUSTER_OPTIONS.md、ユーザー判断待ち）に統合。
 
+**Fine-grained scheduling (rev.3)**: the authoritative dependency DAG is
+**REQ_STIRRED_REACTOR.md §11** (W-items; MF-α〜ζ above are the delegation bundles,
+each row maps to its track). Execution shape: after W0 (=MF-α core basis), wave 1
+runs **6-way parallel** {W-EXT, W-UNIT, W-STRESS, W-ROT, W-GRAV, W-SCAL}; then
+{W-LES, W-VOF, W-PART, W-REACT}; then {W-BCTOP, W-BUB, active feedback};
+W-COUP / W-IO / W-VAL run cross-cutting. **Critical paths to staff first**:
+`W0→W-GRAV→W-VOF→W-BCTOP` (interface chain) and `W0→W-STRESS→W-LES→W-PART`
+(stress/exposure chain). W-EXT is co-designed with R-Phase 2 B-1 (one trait design,
+two consumers). Validation (W-VAL) stays codex-adversarial and implementation-separated.
+
+**Language policy (2026-07-05 user directive)**: all artifacts English from now on
+(code, docs, commit messages, UI/CLI strings). Legacy Japanese content is being
+translated by a dedicated spawned session; this file will be fully translated there.
+
 ## 進捗メモ
 
 - 2026-07-05 深夜: **並走レビューセッションの成果を main へ統合**。改善仕様書 v1 +

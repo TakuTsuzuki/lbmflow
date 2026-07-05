@@ -24,7 +24,11 @@ cd web && npm run build                   # GUI（tsc strict + vite）
 - codex 実行例: `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
   （モデル gpt-5.5。**`< /dev/null` 必須** — stdin が pipe だと EOF 待ちで永久にスタックする。
   進捗は `~/.codex/sessions/<date>/rollout-*.jsonl` の更新で確認できる）
-- コード・識別子・コミットメッセージは英語、ドキュメント・ユーザー向け文言は日本語。
+- **Language policy (user directive 2026-07-05): ALL artifacts in English** — code,
+  identifiers, commit messages, documentation, and user-facing strings (docs / GUI /
+  CLI / error messages). Legacy Japanese content is being translated by a dedicated
+  session; write new content in English only. (Conversation with the user may remain
+  Japanese — the user is a Japanese speaker; the product is English.)
 - 物理仕様を変更したら docs/PHYSICS.md に理由と実験結果を記録する。
 - フェーズ完了ごとに git commit。テストが red のままコミットしない（WIP は例外、メッセージに明記）。
 

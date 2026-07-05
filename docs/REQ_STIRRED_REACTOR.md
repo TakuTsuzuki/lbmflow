@@ -1,6 +1,6 @@
 # 要求定義書（完成版）：回転境界・高密度比二相・LES 連成 3D マルチフィジックス LBM ソルバ
 
-**文書ID**: REQ-M-F-STR / **改訂**: rev.2（rev.1=codex 敵対的レビュー全48件反映／rev.1a=PM 決定「既定は忠実度最優先・緩和は後付け拡張点」を反映／rev.1b=PM 統合: 表題のドメイン中立化・コア改名追随・§7 メモリ予算表追加・VALIDATION T17 配線／rev.2=codex 第2次レビュー 11 件全採択: 緩和同等性検証 VR-STR-RELAX 新設・スコープ語の明確化・変数 σ 表面張力規約・F_b^scalar 追加・予算表算術修正ほか — docs/proposals/req-round2-findings.md 参照）
+**文書ID**: REQ-M-F-STR / **改訂**: rev.3（rev.1=codex 敵対的レビュー全48件反映／rev.1a=PM 決定「既定は忠実度最優先・緩和は後付け拡張点」を反映／rev.1b=PM 統合: 表題のドメイン中立化・コア改名追随・§7 メモリ予算表追加・VALIDATION T17 配線／rev.2=codex 第2次レビュー 11 件全採択: 緩和同等性検証 VR-STR-RELAX 新設・スコープ語の明確化・変数 σ 表面張力規約・F_b^scalar 追加・予算表算術修正ほか — docs/proposals/req-round2-findings.md 参照／**rev.3** = competitive-review triage diff merged (authored as "rev.1c" against rev.1b, layered here onto rev.2): P1 population balance, P2 §4.8 extension contracts, P3 FR-IO-05/06, P4 reference datasets, P5 product-layer scope note, §11 implementation dependency DAG. New content in English per the 2026-07-05 language directive; full translation of this document is delegated to the translation session.）
 **位置づけ**: `docs/PLAN.md` の M-F（垂直機能）／ `ARCHITECTURE_V2.md` への上位要求。
 検証受入は [VALIDATION.md](VALIDATION.md) **T17**（VR-STR-01〜07 を配線）。
 **対象コア**: `lbm-core`（旧 lbm-core2。D3Q19/D3Q27, CpuScalar/CpuSimd/wgpu, MPI 分割）
@@ -145,6 +145,14 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 - **FR-VOF-02**: 寄生流は静止液滴で `|u|_spurious·L/(σ/μ) = Ca_spurious < 10⁻³`（対象 We→0、解像度明記）。well-balanced 化学ポテンシャル形式（#7 の係数関係を実装）。
 - **FR-VOF-03**（スパージャ）: 「気相体積流量境界 / 確率的気泡注入 / 解像オリフィス」から選択（単純 `φ=1`＋速度 Dirichlet 単独は禁止）。流量保存・圧力境界・接触角・`d_b/W`・`d_b/Δx` 下限を明記（#10）。分裂・合体は「数値的に許容」までに弱め、実薄膜排液は解かない旨明記（#11）。
 - **FR-VOF-04**（point-bubble）: 切替条件に `d_b/W, Eo, Re_b, α_g, We_b, 物質移動一貫性` を含める。hybrid 混在時の相間 質量・運動量・スカラー保存則を定義（#12）。
+  **(rev.3, P1)** Population balance modelling (PBM) of the bubble-size distribution is
+  required on the point-bubble path (breakup/coalescence kernels, e.g. Luo–Svendsen /
+  Prince–Blanch): a mono-disperse point-bubble model cannot support the `d_32`
+  acceptance of VR-STR-02 (internal consistency). Per-bubble gas-phase composition
+  bookkeeping (component inventory and interfacial transfer budgets) must reconcile
+  with FR-VOF-05. *Scope alignment (rev.2/§0)*: point-bubble is a relaxation extension
+  (API-reserved in v1); this PBM requirement binds when that extension is implemented —
+  in the resolved-phasefield default, `d_32` is measured from the resolved interface.
 - **FR-VOF-05**: 界面物質移動を **解像界面（法線フラックス・分配係数・相別拡散）と point-bubble（`k_L a(C*−C)`）で分離**（#35）。Henry 則・Sherwood 数の適用範囲を明示。
 
 ### 4.5 分散粒子
@@ -171,6 +179,24 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 - **FR-BC-04**（スカラー壁）: 無流束/吸着/反応壁を選択（#35）。
 - **FR-INIT-01**: 初期 速度/圧力/相場/スカラー/粒子配置、インペラ ramp-up、ガス流量 ramp、統計サンプリング開始時刻、準定常判定基準を要求（#45）。
 
+### 4.8 Extension & closure contracts (rev.3, P2)
+
+- **FR-EXT-01**: Define explicit contracts for the trait/strategy extension points of
+  §1 and for user-supplied closures — reaction rates `R_k`, non-Newtonian viscosity
+  `μ(γ̇)`, body-force sources, and the relaxation-mode implementations
+  (MRF / point-bubble / one-way / AMR):
+  - input/output signatures with explicit physical vs. lattice units;
+  - determinism (identical inputs → bit-identical outputs);
+  - GPU evaluability (state-free, portable to wgpu);
+  - error handling (NaN/divergence detection at the contract boundary);
+  - schema versioning and backward compatibility.
+  The primary boundary is Rust traits; foreign-language ABI/SDK is deferred to a
+  separate API specification (see §10 product-layer note). The fidelity-default
+  implementation is the default of each trait; relaxation implementations swap in
+  under the same contract and are accepted via VR-STR-RELAX.
+  *Implementation note*: this contract work is co-designed with the R-Phase 2 / B-1
+  trait-boundary design (SOLVER_IMPROVEMENT_SPEC WP-B) — one design, two consumers.
+
 ---
 
 ## 5. 連成・時間積分（#28）
@@ -189,6 +215,19 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 - **FR-IO-02**: 時間平均／位相平均統計（平均場・RMS・レイノルズ応力）。**位相平均は IBM/overset 非定常モードのみ**。MRF は回転座標平均/疑似定常として別出力（#37）。
 - **FR-IO-03**: Web GUI に 3D 表示（スライス・等値面・せん断ヒートマップ・時系列プローブ）。既存 2D canvas を WebGL/WebGPU 拡張。
 - **FR-IO-04**: 粒子累積せん断曝露のヒストグラム/CDF（SGS 分散の有無を明記）。
+- **FR-IO-05 (rev.3, P3 — mixing metrics)**: Derived outputs for **blend time**
+  (time until the coefficient of variation CoV of a tracer falls below a stated
+  threshold) and **RTD** (tracer response `E(t)`, mean residence time, variance).
+  The homogenisation threshold and the tracer injection/detection surfaces must be
+  explicitly defined per scenario.
+- **FR-IO-06 (rev.3, P3 — large-scale I/O & resilience)**: Full-field dumps are
+  impractical at target scales (§7 budget); require **parallel I/O**
+  (HDF5/ADIOS2-class) + compression + in-situ statistics / downsampling.
+  **Deterministic checkpoint/restart with crash recovery** (bit-reproducible resume
+  including RNG state, particle state, and statistics accumulators) is mandatory.
+  Formats are sized against the §7 budget table.
+  *Convergence note*: builds on SOLVER_IMPROVEMENT_SPEC B-5 (snapshot API),
+  C-3 (per-rank parallel I/O), C-8 (distributed checkpoint) — reuse, don't duplicate.
 
 ---
 
@@ -231,7 +270,14 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 根拠記録 → 凍結）で数値化し、凍結値を VALIDATION.md T17 に記載する。
 
 - **VR-STR-01（単相撹拌）**: 標準 baffled tank（`D/T`, `C/T`, blade geometry, バッフル数を固定）、指定 Re 範囲・非通気。Rushton `Np`＝実験相関±許容%、翼吐出速度プロファイルを PIV/LDA 基準測線で `L2/L∞rel` 閾値照合（#38）。
+  **(rev.3, P4) Reference datasets**: Wu & Patterson (1989) LDA; Deen et al. (2002)
+  PIV (standard Rushton, D/T=1/3, 4 baffles); standard `Np` correlations. Numeric
+  bands are frozen via the T17 experiment-driven protocol — not hardcoded here.
 - **VR-STR-02（気液, rev.2 で 02a/b/c に分割）**: **02a 単一気泡** = `U_t` を Grace 線図 Eo-Mo-Re と相対誤差照合。**02b 気泡群** = `ε_g` 空間分布・群上昇速度（hindered rise）・合体/分裂を許す場合の `d_32`・BIT 使用時の乱流強度（`ν_t` 応答）。**02c 撹拌槽通気** = `ε_g, d_32, k_L a` の実験相関比（#39）。
+  **(rev.3, P4) References**: single bubble = Grace diagram (Eo-Mo-Re); aerated tank =
+  published `ε_g`/`d_32`/`k_L a` data and correlations. In point-bubble / RELAX-PB
+  evaluations, `d_32` presupposes the FR-VOF-04 population balance (P1); in the
+  resolved-phasefield default it is measured by interface segmentation.
 - **VR-STR-03（せん断・応力）**: 製造解（MMS）単相、曲面 Couette、回転円柱、非 Newton Poiseuille、多相静止液滴を分け、**格子収束次数**と `L2/L∞` を設定。壁近傍 `L∞` の発散的厳しさを考慮した測線設計（#40）。
 - **VR-STR-04（スカラー/反応）**: Taylor-Aris 分散、既知 `Da` 反応拡散前線、`k_L a`（算出式＝界面積分か相関か明示）。各々の許容誤差・対象 `Pe/Da/Sc`・境界条件を指定（#41）。
 - **VR-STR-05（連成回帰・保存）**: `probe_state_hash` は単一バックエンド回帰限定。**質量・運動量・スカラー総量・気相体積・粒子数・エネルギー様量のドリフト閾値を個別設定**。エネルギー様量（運動エネルギー・界面自由エネルギー・粒子運動エネルギー）は**厳密保存でなく非物理ドリフトの監視量**として扱う（rev.2）。GPU/MPI は許容誤差ベース（#42）。
@@ -268,9 +314,66 @@ N_Q  = Q / (N D³)                     (Q=翼吐出面での正味体積流量)
 - 格子既定 = `uniform`（完全解像）。`block-AMR` は緩和拡張。
 - 精度既定 = 忠実度プロファイル（界面近傍・保存量・縮約 f64、遠方バルク f32）。全 f64 は基準級、積極的 f32 は緩和拡張。
 
-**残実装詳細（決定ではなく仕様詰め）**:
+**残実装詳細（決定ではなく仕様詰め）** — status as of rev.3:
 
 - `active` スカラーの帰還対象（σ・粘性・密度・[温度]）の具体式と安定化（Marangoni 含む）。
+  → researched: docs/proposals/active-scalar-feedback.md. **One derivation is mandatory
+  before implementation** (Marangoni coefficient consistency with the (κ,β) convention,
+  §3). Thermal axis recommended as API-reserved extension.
 - 緩和拡張ごとの忠実度基準解に対する許容誤差閾値（§8 VR へ追記）。
+  → structure defined as VR-STR-RELAX (rev.2); numeric bands frozen at relaxation
+  implementation time.
 - 忠実度プロファイルの f64/f32 境界（界面近傍の帯幅・縮約範囲）。
+  → frozen experimentally during W-VOF implementation (characterize→freeze).
 - 各モード軸の trait 境界（strategy 差し替え点）の API 定義。
+  → contract requirements fixed as FR-EXT-01 (§4.8); concrete Rust API co-designed
+  with R-Phase 2 / B-1.
+
+**Product-layer scope note (rev.3, P5)**: GUI/CAD & STL import, materials DB,
+Python/CLI SDK, parameter sweep & optimizer, cloud/cluster/queue integration,
+packaged validation assets, and competitive benchmark tables are **out of scope for
+this solver specification**. They are version-managed in separate volumes
+(Product Requirements / API Specification / Validation Pack / Performance Benchmark).
+
+---
+
+## 11. Implementation dependency graph (rev.3 — priority + dependency DAG, not stage gates)
+
+Items with no dependency edge between them are implemented **concurrently**
+(parallel-agent worktrees, per the standing parallelization directive).
+Mapping to the PLAN.md M-F delegation tracks is noted per row
+(MF-α…ζ are the delegation bundles; W-items are the fine-grained DAG nodes).
+
+| Item | Hard deps (must precede) | Parallel | Notes / PLAN track |
+|---|---|---|---|
+| W0 core basis (D3Q19/27, cumulant, Guo forcing) | — (strengthens M-C 3D basis) | — | prerequisite for all; = MF-α |
+| W-EXT trait contracts (FR-EXT-01) | W0 | yes | early definition = prerequisite of all relaxation modes; low cost, high leverage; co-designed with R-Phase 2 B-1 |
+| W-UNIT unit/nondimensional feasibility (§2.2) | W0 | yes | independent, early |
+| W-STRESS stress fields (FR-STRESS) | W0 | yes | top priority (primary output + prerequisite of LES & particle exposure); ⊂ MF-β |
+| W-ROT rotating IBM (FR-ROT-01) | W0 | yes | prerequisite of Np/N_Q; MRF/overset live behind W-EXT as relaxation/reference tiers; = MF-δ |
+| W-GRAV well-balanced gravity (FR-BC-02) | W0 | yes | prerequisite of the interface track; ⊂ MF-γ |
+| W-SCAL passive scalar ADE (§3 scalar eq.; SGS flux part waits on W-LES) | W0 | yes | ⊂ MF-ε |
+| W-LES turbulence SGS (FR-LES) | W-STRESS | conditional | \|S\| closure needs the stress evaluation; ⊂ MF-β |
+| W-VOF resolved interface (FR-VOF-01/02) | W-GRAV | conditional | fidelity default; hardest item; **critical path**; ⊂ MF-γ |
+| W-PART particles + cumulative exposure (FR-PART) | W-STRESS (SGS dispersion: W-LES) | conditional | exposure integral needs the γ̇ field; ⊂ MF-ε |
+| W-REACT reaction / active feedback (§3, FR-COUP-02; active feedback needs W-VOF) | W-SCAL | conditional | ⊂ MF-ε |
+| W-BUB point bubbles + PBM + interfacial transfer (FR-VOF-03/04/05) | W0, W-SCAL, W-EXT | conditional | relaxation extension (API-reserved in v1, per §0) |
+| W-BCTOP top boundary / degassing / contact angle (FR-BC-01/03) | W-VOF | conditional | ⊂ MF-γ |
+| W-COUP coupling loop (FR-COUP) | active subsystem set | incremental | grows as tracks land; ⊂ MF-ζ |
+| W-IO I/O & analysis (FR-IO incl. -05/-06) | each producing subsystem | incremental | Np←ROT, blend/RTD←SCAL, exposure←PART; ⊂ MF-ζ |
+| W-VAL validation T17 (VR-STR-01–07, RELAX) | each subsystem | yes | codex adversarial authorship, separated from implementation |
+
+**Parallel waves** (sets that start together):
+1. After W0, mutually independent: **W-EXT / W-UNIT / W-STRESS / W-ROT / W-GRAV / W-SCAL** (6-way parallel).
+2. After their deps: W-LES (←STRESS) / W-VOF (←GRAV) / W-PART (←STRESS) / W-REACT (←SCAL).
+3. Later: W-BCTOP (←VOF) / W-BUB (←SCAL,EXT) / active feedback & interfacial transfer (←VOF).
+4. Cross-cutting throughout: W-COUP / W-IO / W-VAL.
+
+**Critical paths** (staff first):
+`W0 → W-GRAV → W-VOF → W-BCTOP/interfacial transfer` (interface chain — longest, hardest) and
+`W0 → W-STRESS → W-LES → W-PART` (stress/exposure chain).
+
+*Boundary decisions upheld (rev.3)*: throughput/scaling KPIs stay delegated to
+CLUSTER_OPTIONS.md (R3) — not duplicated here; no hardcoded numeric thresholds
+(P4 adds dataset names only — bands freeze via the T17 protocol); the product
+ecosystem (P5 list) lives in separate volumes.

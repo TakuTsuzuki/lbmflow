@@ -320,3 +320,24 @@ order #2 の 5 件の dispositions:
 - m8/m9: メモリ予算表の界面帯償却 +18–37 B に修正（帯 5–10% と整合）、
   「数 TB 級」→「0.6 TB 級（既定）/ TB〜数 TB（全 f64・複数スカラー・CP 込み）」。
 - m10/m11: §2 見出しの中立化整合、M-F 忠実度既定 = 常に D3Q27 の明示。
+
+## PM integration record (2026-07-05, late night — English from here on per user directive)
+
+- **Language policy change (user directive)**: ALL artifacts in English going forward
+  (code, docs, commits, UI/CLI strings). CLAUDE.md rule updated. A dedicated spawned
+  session translates all legacy Japanese content (docs/*.md, TESTING_NOTES, GUI/CLI/
+  wasm strings). Until it lands, documents are transitional mixed-language.
+- **REQ rev.3 applied**: competitive-review triage diff (authored as "rev.1c" against
+  rev.1b by the requirements session) merged on top of rev.2. P1 population balance
+  (scope-aligned to point-bubble relaxation), P2 §4.8 FR-EXT-01 extension contracts
+  (co-designed with R-Phase 2 B-1), P3 FR-IO-05 (blend time/RTD) + FR-IO-06 (parallel
+  I/O, deterministic checkpoint — converges with spec B-5/C-3/C-8), P4 reference
+  datasets (names only; bands stay experiment-frozen), P5 product-layer out-of-scope
+  note, §11 implementation dependency DAG (W-items, 6-way wave-1, two critical paths).
+  Boundary decisions upheld: no KPI duplication (CLUSTER_OPTIONS owns R3), no
+  hardcoded thresholds, product ecosystem in separate volumes.
+- Note to the requirements session: your "rev.1c" landed as **rev.3** because rev.2
+  (codex round-2, 11 findings, all adopted) had already been applied on main. No
+  content of yours was dropped; scope-alignment notes were added where rev.2's
+  "fidelity-default = initial delivery, relaxations = API-reserved" decision
+  interacts with P1/W-BUB.
