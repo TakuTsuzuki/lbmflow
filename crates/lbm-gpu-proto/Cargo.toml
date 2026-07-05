@@ -1,0 +1,35 @@
+[package]
+name = "lbm-gpu-proto"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Phase 9c evaluation prototype: D2Q9 LBM on wgpu compute (Metal). Standalone; NOT a workspace member."
+publish = false
+
+# Runs verification (GPU vs lbm-core CPU reference) and the MLUPS benchmark
+# in one shot:
+#
+#     cd crates/lbm-gpu-proto && cargo run --release
+#
+# lbm-core is pulled in as a *verification-only* path dependency. It has to be
+# a regular dependency (not a dev-dependency) because the `cargo run` harness
+# binary performs the CPU cross-check itself and dev-dependencies are not
+# visible to binary targets. The whole crate is excluded from the workspace,
+# so nothing in the production build graph ever depends on wgpu.
+
+[dependencies]
+# wgpu pinned to 26.x: latest release the prototype was written/tested
+# against. Production adoption should re-target current wgpu (30.x as of
+# 2026-07); the compute-only API surface used here is essentially stable.
+wgpu = "26"
+bytemuck = "1"
+pollster = "0.4"
+futures-intrusive = "0.5"
+lbm-core = { path = "../lbm-core" }
+
+[profile.release]
+# Match the workspace release profile so CPU-reference numbers measured from
+# this crate are comparable with docs/PERFORMANCE.md.
+lto = "thin"
+codegen-units = 1
+opt-level = 3
