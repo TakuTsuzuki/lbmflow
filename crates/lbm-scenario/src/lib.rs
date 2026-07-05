@@ -127,14 +127,22 @@ pub enum Precision {
 pub enum EdgeSpec {
     Periodic,
     BounceBack,
-    MovingWall { u: [f64; 2] },
-    VelocityInlet { u: [f64; 2] },
-    PressureOutlet { rho: f64 },
+    MovingWall {
+        u: [f64; 2],
+    },
+    VelocityInlet {
+        u: [f64; 2],
+    },
+    PressureOutlet {
+        rho: f64,
+    },
     Outflow,
     /// Convective (radiation) outflow: far less pressure-reflective than
     /// `Outflow`. `uConv` is the expected mean outflow speed, in (0, 1].
     #[serde(rename_all = "camelCase")]
-    ConvectiveOutflow { u_conv: f64 },
+    ConvectiveOutflow {
+        u_conv: f64,
+    },
 }
 
 impl EdgeSpec {
@@ -211,11 +219,7 @@ pub enum ProfileKind {
 #[serde(tag = "shape", rename_all = "camelCase")]
 pub enum Obstacle {
     /// 2D: a disk. 3D: extruded along z (a cylinder through the domain).
-    Circle {
-        cx: f64,
-        cy: f64,
-        r: f64,
-    },
+    Circle { cx: f64, cy: f64, r: f64 },
     /// 2D: a rectangle. 3D: extruded along z (a box through the domain).
     Rect {
         x0: usize,
@@ -224,12 +228,7 @@ pub enum Obstacle {
         y1: usize,
     },
     /// 3D only: a solid ball (staircase approximation).
-    Sphere {
-        cx: f64,
-        cy: f64,
-        cz: f64,
-        r: f64,
-    },
+    Sphere { cx: f64, cy: f64, cz: f64, r: f64 },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -498,8 +497,13 @@ pub enum Sim3Handle {
 /// engine does not support yet.
 #[derive(Debug)]
 pub enum Build3Error {
-    /// Invalid physical/boundary configuration.
+    /// Invalid physical/boundary configuration (compat-facade error kind, kept
+    /// for the scenario-level checks that have no core equivalent — e.g.
+    /// unpaired periodic faces).
     Core(ConfigError),
+    /// Invalid native `GlobalSpec`, as reported by `GlobalSpec::validate`
+    /// (A-4): uncovered face, ν ≤ 0, periodic × open, out-of-range BC, …
+    Spec(lbm_core::solver::SpecError),
     /// Feature not available on the 3D engine (message is user-facing).
     Unsupported(&'static str),
 }
@@ -508,6 +512,7 @@ impl std::fmt::Display for Build3Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Build3Error::Core(e) => write!(f, "{e}"),
+            Build3Error::Spec(e) => write!(f, "{e}"),
             Build3Error::Unsupported(what) => write!(f, "3D (nz > 1) では未対応: {what}"),
         }
     }
@@ -518,6 +523,12 @@ impl std::error::Error for Build3Error {}
 impl From<ConfigError> for Build3Error {
     fn from(e: ConfigError) -> Self {
         Build3Error::Core(e)
+    }
+}
+
+impl From<lbm_core::solver::SpecError> for Build3Error {
+    fn from(e: lbm_core::solver::SpecError) -> Self {
+        Build3Error::Spec(e)
     }
 }
 
@@ -560,8 +571,8 @@ pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
 
 fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build3Error> {
     use lbm_core::prelude::{
-        build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic,
-        Solver, WallSpec,
+        build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic, Solver,
+        WallSpec,
     };
 
     assert!(sc.is_3d(), "build3d requires grid.nz > 1");
@@ -579,26 +590,11 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         }
     }
     let dims = [sc.grid.nx, sc.grid.ny, sc.grid.nz];
-    if dims[0] < 3 || dims[1] < 3 {
-        return Err(ConfigError::DomainTooSmall {
-            nx: dims[0],
-            ny: dims[1],
-        }
-        .into());
-    }
-    if dims[2] < 3 {
-        return Err(ConfigError::InvalidParameter {
-            what: "grid.nz (3D requires nz >= 3)",
-            value: dims[2] as f64,
-        }
-        .into());
-    }
-    if sc.physics.nu <= 0.0 {
-        return Err(ConfigError::NonPositiveViscosity { nu: sc.physics.nu }.into());
-    }
-
     let specs = face_specs(&sc.edges);
-    // Periodic pairing per axis.
+    // Periodic *pairing* per axis is a scenario-level concern (two separate
+    // EdgeSpecs collapse into one `GlobalSpec::periodic` bool), so it stays
+    // here; the extents / open-axis / BC-range / coverage checks are delegated
+    // to `GlobalSpec::validate` below (A-4, no duplication).
     let mut periodic = [false; 3];
     for (axis, name) in [(0usize, "x"), (1, "y"), (2, "z")] {
         let lo = matches!(specs[2 * axis], EdgeSpec::Periodic);
@@ -608,8 +604,10 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         }
         periodic[axis] = lo && hi;
     }
-    // Open faces must not share a domain edge (V1's corner rule, lifted to
-    // 3D): all open faces on one axis only.
+    // Open faces must not share a domain edge (V1's corner rule, lifted to 3D:
+    // all open faces on one axis). Kept here so callers keep seeing the
+    // `AdjacentOpenEdges` kind; `GlobalSpec::validate` re-checks it as
+    // `OpenFacesOnMultipleAxes`.
     let is_open = |s: &EdgeSpec| {
         matches!(
             s,
@@ -619,37 +617,21 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
                 | EdgeSpec::ConvectiveOutflow { .. }
         )
     };
-    let open_axes: Vec<usize> = (0..3)
+    if (0..3)
         .filter(|a| is_open(&specs[2 * a]) || is_open(&specs[2 * a + 1]))
-        .collect();
-    if open_axes.len() > 1 {
+        .count()
+        > 1
+    {
         return Err(ConfigError::AdjacentOpenEdges.into());
     }
-    // Speed / density / parameter limits (2D `SimConfig::build` semantics).
-    let speed_of = |u: [f64; 2]| (u[0] * u[0] + u[1] * u[1]).sqrt();
+    // A wall's velocity lives in `WallSpec`, not in `GlobalSpec::faces`, so its
+    // low-Mach limit is checked here (validate only covers inlet faces).
     for s in &specs {
-        match *s {
-            EdgeSpec::MovingWall { u } | EdgeSpec::VelocityInlet { u } => {
-                let sp = speed_of(u);
-                if sp > MAX_SPEED {
-                    return Err(ConfigError::VelocityTooHigh { speed: sp }.into());
-                }
+        if let EdgeSpec::MovingWall { u } = *s {
+            let sp = (u[0] * u[0] + u[1] * u[1]).sqrt();
+            if sp > MAX_SPEED {
+                return Err(ConfigError::VelocityTooHigh { speed: sp }.into());
             }
-            EdgeSpec::PressureOutlet { rho } => {
-                if rho <= 0.0 {
-                    return Err(ConfigError::NonPositiveDensity { rho }.into());
-                }
-            }
-            EdgeSpec::ConvectiveOutflow { u_conv } => {
-                if !(u_conv > 0.0 && u_conv <= 1.0) {
-                    return Err(ConfigError::InvalidParameter {
-                        what: "u_conv",
-                        value: u_conv,
-                    }
-                    .into());
-                }
-            }
-            _ => {}
         }
     }
 
@@ -697,6 +679,11 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         ],
     };
     let (solid, wall_u) = build_wall_rims::<T>(3, dims, &walls);
+    // A-4: the single native config gate (extents, ν, periodic × open,
+    // open-axis, uncovered faces, inlet/pressure/convective ranges, force[2]).
+    // Surfaces a typed error here; `Solver::new` re-checks as a last-line
+    // panic guard.
+    spec.validate(3, &solid)?;
     let mut s: Solver3<T> = Solver::new(
         &spec,
         &solid,
@@ -796,16 +783,13 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         // Probe all obstacle solids (cells strictly inside the domain box,
         // rims excluded) — 2D convention lifted to 3D.
         let solid: Vec<bool> = (0..dims[2])
-            .flat_map(|z| {
-                (0..dims[1]).flat_map(move |y| (0..dims[0]).map(move |x| (x, y, z)))
-            })
+            .flat_map(|z| (0..dims[1]).flat_map(move |y| (0..dims[0]).map(move |x| (x, y, z))))
             .map(|(x, y, z)| s.is_solid(x, y, z))
             .collect();
         let (nx, ny) = (dims[0], dims[1]);
         let rim = move |c: usize, n: usize| c == 0 || c == n - 1;
         s.set_force_probe(move |x, y, z| {
-            !rim(x, dims[0]) && !rim(y, dims[1]) && !rim(z, dims[2])
-                && solid[(z * ny + y) * nx + x]
+            !rim(x, dims[0]) && !rim(y, dims[1]) && !rim(z, dims[2]) && solid[(z * ny + y) * nx + x]
         });
     }
 
@@ -961,7 +945,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let cavity = Scenario {
         version: 0,
         name: "cavity".into(),
-        grid: Grid { nx: 128, ny: 128, nz: 1 },
+        grid: Grid {
+            nx: 128,
+            ny: 128,
+            nz: 1,
+        },
         physics: Physics {
             nu: 0.02,
             collision: CollisionSpec::Trt,
@@ -998,7 +986,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let cylinder = Scenario {
         version: 0,
         name: "cylinder-karman".into(),
-        grid: Grid { nx: 440, ny: 164, nz: 1 },
+        grid: Grid {
+            nx: 440,
+            ny: 164,
+            nz: 1,
+        },
         physics: Physics {
             nu: 0.04,
             collision: CollisionSpec::Trt,
@@ -1047,7 +1039,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let droplet = Scenario {
         version: 0,
         name: "two-phase-droplet".into(),
-        grid: Grid { nx: 128, ny: 128, nz: 1 },
+        grid: Grid {
+            nx: 128,
+            ny: 128,
+            nz: 1,
+        },
         physics: Physics {
             nu: 1.0 / 6.0,
             collision: CollisionSpec::Trt,
@@ -1093,7 +1089,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     let droplet_on_wall = Scenario {
         version: 0,
         name: "droplet-on-wall".into(),
-        grid: Grid { nx: 160, ny: 100, nz: 1 },
+        grid: Grid {
+            nx: 160,
+            ny: 100,
+            nz: 1,
+        },
         physics: Physics {
             nu: 1.0 / 6.0,
             collision: CollisionSpec::Trt,
@@ -1196,7 +1196,10 @@ mod tests {
         // New fields stay invisible on serialisation of 2D scenarios.
         let json = serde_json::to_string(&sc).unwrap();
         for key in ["\"nz\"", "\"front\"", "\"back\"", "\"compute\"", "\"z\""] {
-            assert!(!json.contains(key), "2D JSON must not contain {key}: {json}");
+            assert!(
+                !json.contains(key),
+                "2D JSON must not contain {key}: {json}"
+            );
         }
         // deny_unknown_fields still rejects typos.
         assert!(serde_json::from_str::<Scenario>(
@@ -1303,7 +1306,9 @@ mod tests {
         unpaired.edges.back = Some(EdgeSpec::Periodic);
         assert!(matches!(
             build3d(&unpaired),
-            Err(Build3Error::Core(ConfigError::UnpairedPeriodic { axis: "z" }))
+            Err(Build3Error::Core(ConfigError::UnpairedPeriodic {
+                axis: "z"
+            }))
         ));
         // Open faces on two axes violate the corner rule.
         let mut cross = duct3d();

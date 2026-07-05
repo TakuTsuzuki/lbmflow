@@ -40,7 +40,7 @@ use crate::backend::Backend;
 use crate::fields::SoaFields;
 use crate::halo::{
     layer_cell_count, layer_indices, pack_f_layer, pack_scalar_layer, unpack_f_layer,
-    unpack_scalar_layer, HaloExchange,
+    unpack_scalar_layer, ExchangeScope, HaloExchange,
 };
 use crate::lattice::{Face, Lattice};
 use crate::real::Real;
@@ -183,6 +183,8 @@ impl MpiExchange {
 }
 
 impl<T: Real> HaloExchange<T> for MpiExchange {
+    const SCOPE: ExchangeScope = ExchangeScope::Remote;
+
     fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
         assert_eq!(parts.len(), 1, "MpiExchange serves exactly the local part");
         let sub = &subs[0];
@@ -398,6 +400,46 @@ where
     pub fn run(&mut self, steps: usize) {
         for _ in 0..steps {
             self.step();
+        }
+    }
+
+    /// Advance `steps` steps with a periodic non-finite watchdog (A-9):
+    /// the distributed counterpart of `Solver::run_guarded`. Collective —
+    /// every rank must call it with the same arguments; each check is one
+    /// 2-double `MPI_SUM` Allreduce of the mass partials, so every rank sees
+    /// the same global sum and takes the same `Ok`/`Err` branch (no
+    /// divergence in control flow). `check_every == 0` is treated as 1.
+    pub fn run_guarded(
+        &mut self,
+        steps: usize,
+        check_every: usize,
+    ) -> Result<(), crate::solver::Diverged> {
+        let check_every = check_every.max(1);
+        let mut since_check = 0usize;
+        for _ in 0..steps {
+            self.step();
+            since_check += 1;
+            if since_check == check_every {
+                since_check = 0;
+                self.check_mass_finite()?;
+            }
+        }
+        if since_check > 0 {
+            self.check_mass_finite()?;
+        }
+        Ok(())
+    }
+
+    fn check_mass_finite(&self) -> Result<(), crate::solver::Diverged> {
+        let (fluid, m) = self.inner.local_mass_partials();
+        let mut out = [0.0f64; 2];
+        self.allreduce_sum(&[fluid, m], &mut out);
+        if (out[0] + out[1]).is_finite() {
+            Ok(())
+        } else {
+            Err(crate::solver::Diverged {
+                step: self.inner.time(),
+            })
         }
     }
 

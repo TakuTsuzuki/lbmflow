@@ -24,6 +24,30 @@ use crate::lattice::{Face, Lattice};
 use crate::real::Real;
 use crate::subdomain::Subdomain;
 
+/// Where an exchange resolves neighbour part ids.
+///
+/// This is a *safety contract*, not a hint. [`Subdomain::neighbors`] stores
+/// **global** part ids, but the in-process implementations
+/// ([`LocalPeriodic`], [`InProcess`]) index those ids straight into the local
+/// `parts` slice they were handed. That only coincides with the global
+/// numbering when the solver owns *every* part (a monolithic run or a full
+/// in-process decomposition). A solver that owns a single part of a wider
+/// decomposition (`Solver::new_local_part`, the distributed configuration)
+/// stores a global neighbour id ≥ 1, which such a `Local` exchange would
+/// either read as a bogus local index (silent wrong physics when it wraps to
+/// part 0) or panic on out of bounds. Only a `Remote` exchange (MPI) treats
+/// those ids as addresses of parts living elsewhere, so `Solver::build`
+/// requires `SCOPE == Remote` for a single-part owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExchangeScope {
+    /// Neighbour ids index the local `parts` slice: the solver must own every
+    /// part (monolithic, or a full in-process decomposition).
+    Local,
+    /// Neighbour ids address parts owned by other processes (MPI ranks): the
+    /// solver owns a single part of the global decomposition.
+    Remote,
+}
+
 /// Fills halo rings from neighbouring parts. Implementations define where
 /// neighbours live (same process, other threads, MPI ranks).
 ///
@@ -31,6 +55,12 @@ use crate::subdomain::Subdomain;
 /// implementation over device buffers; the layer geometry below is layout-
 /// identical, so the plan (faces, phases, direction sets) is shared.
 pub trait HaloExchange<T: Real> {
+    /// Whether this exchange resolves [`Subdomain::neighbors`] ids as local
+    /// `parts` indices ([`ExchangeScope::Local`]) or as remote part addresses
+    /// ([`ExchangeScope::Remote`]). `Solver::build` enforces this against the
+    /// decomposition ownership (see [`ExchangeScope`]).
+    const SCOPE: ExchangeScope;
+
     /// Fill the population halos (post-collide, pre-stream).
     fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]);
     /// Refresh halo copies of `solid` / `wall_u` / `probe` after edits.
@@ -45,6 +75,8 @@ pub trait HaloExchange<T: Real> {
 pub struct LocalPeriodic;
 
 impl<T: Real> HaloExchange<T> for LocalPeriodic {
+    const SCOPE: ExchangeScope = ExchangeScope::Local;
+
     fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
         assert_eq!(parts.len(), 1, "LocalPeriodic serves a single part");
         exchange_f_generic::<L, T>(subs, parts);
@@ -71,6 +103,8 @@ impl<T: Real> HaloExchange<T> for LocalPeriodic {
 pub struct InProcess;
 
 impl<T: Real> HaloExchange<T> for InProcess {
+    const SCOPE: ExchangeScope = ExchangeScope::Local;
+
     fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
         exchange_f_generic::<L, T>(subs, parts);
     }

@@ -8,10 +8,10 @@
 
 use crate::backend::{Backend, CellRange};
 use crate::fields::SoaFields;
-use crate::halo::HaloExchange;
+use crate::halo::{ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice};
-use crate::params::{CollisionKind, FaceBC, KParams, Reduction, StepParams};
+use crate::params::{CollisionKind, FaceBC, KParams, Reduction, StepParams, MAX_SPEED};
 use crate::real::Real;
 use crate::subdomain::Subdomain;
 
@@ -45,6 +45,307 @@ impl<T: Real> Default for GlobalSpec<T> {
             force: [T::zero(); 3],
         }
     }
+}
+
+/// A rejected [`GlobalSpec`] (A-4): the V2-native counterpart of the compat
+/// facade's `ConfigError`. `Solver::build` calls [`GlobalSpec::validate`]
+/// before allocating, turning the previously-silent non-physical
+/// configurations (stale data on an uncovered face, ν = 0, periodic × open
+/// on one axis, …) into hard errors.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpecError {
+    /// Kinematic viscosity must be finite and > 0 (`tau = 3ν + 0.5 > 0.5`);
+    /// `ν = 0` gives `omega_m = 0` and a non-physical relaxation (E3).
+    NonPositiveViscosity {
+        /// Offending value.
+        nu: f64,
+    },
+    /// A parameter that must be finite is NaN or infinite.
+    NonFiniteParameter {
+        /// Parameter name.
+        what: &'static str,
+    },
+    /// TRT magic Λ must be finite and > 0.
+    InvalidMagic {
+        /// Offending value.
+        magic: f64,
+    },
+    /// The domain must be at least 3 cells on every active axis.
+    DomainTooSmall {
+        /// Configured extents.
+        dims: [usize; 3],
+    },
+    /// `periodic` must not be combined with an open BC on the same axis.
+    PeriodicOpenConflict {
+        /// Axis (0 = x, 1 = y, 2 = z).
+        axis: usize,
+    },
+    /// Open faces may lie on at most one axis (a shared domain edge breaks the
+    /// Zou–He face assumptions — the 3D lift of V1's corner rule).
+    OpenFacesOnMultipleAxes,
+    /// A non-periodic face is neither an open BC nor fully covered by a solid
+    /// wall rim: its halo would feed stale data into the interior every step
+    /// (E2 — silent non-physical drift, no NaN).
+    UncoveredFace {
+        /// The offending face index ([`Face::index`]).
+        face: usize,
+    },
+    /// A prescribed velocity (inlet or z-normal component etc.) exceeds
+    /// [`MAX_SPEED`] (NaN-safe: NaN is rejected here too).
+    VelocityTooHigh {
+        /// Offending speed magnitude.
+        speed: f64,
+    },
+    /// A prescribed outlet density must be finite and > 0.
+    NonPositiveDensity {
+        /// Offending value.
+        rho: f64,
+    },
+    /// A convective-outflow advection speed must lie in `(0, 1]`.
+    InvalidConvectiveSpeed {
+        /// Offending value.
+        u_conv: f64,
+    },
+    /// A 2D lattice must have a zero z body-force component.
+    NonZeroZForce2D {
+        /// Offending value.
+        fz: f64,
+    },
+    /// An open face's own axis must span at least 3 cells (the Zou–He /
+    /// outflow stencil reads one cell inward).
+    OpenFaceAxisTooShort {
+        /// The offending face index.
+        face: usize,
+        /// The axis extent.
+        extent: usize,
+    },
+}
+
+impl std::fmt::Display for SpecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpecError::NonPositiveViscosity { nu } => write!(
+                f,
+                "kinematic viscosity must be > 0 (got {nu}); tau = 3*nu + 0.5 must exceed 0.5"
+            ),
+            SpecError::NonFiniteParameter { what } => {
+                write!(f, "parameter {what} must be finite (got NaN or infinity)")
+            }
+            SpecError::InvalidMagic { magic } => {
+                write!(f, "TRT magic must be finite and > 0 (got {magic})")
+            }
+            SpecError::DomainTooSmall { dims } => write!(
+                f,
+                "domain must be at least 3 cells on every active axis (got {dims:?})"
+            ),
+            SpecError::PeriodicOpenConflict { axis } => write!(
+                f,
+                "axis {axis} is periodic and also carries an open BC; a face is one or the other"
+            ),
+            SpecError::OpenFacesOnMultipleAxes => write!(
+                f,
+                "open faces (inlet/outlet/outflow) may lie on at most one axis; \
+                 perpendicular faces must be walls or periodic"
+            ),
+            SpecError::UncoveredFace { face } => write!(
+                f,
+                "face {face} is neither periodic, an open BC, nor a full solid wall rim; \
+                 its halo would feed stale values into the interior every step"
+            ),
+            SpecError::VelocityTooHigh { speed } => write!(
+                f,
+                "prescribed speed {speed} exceeds the low-Mach limit {MAX_SPEED} (lattice units)"
+            ),
+            SpecError::NonPositiveDensity { rho } => {
+                write!(f, "prescribed density must be > 0 (got {rho})")
+            }
+            SpecError::InvalidConvectiveSpeed { u_conv } => {
+                write!(f, "convective outflow u_conv = {u_conv} must lie in (0, 1]")
+            }
+            SpecError::NonZeroZForce2D { fz } => {
+                write!(f, "2D lattice requires force[2] == 0 (got {fz})")
+            }
+            SpecError::OpenFaceAxisTooShort { face, extent } => write!(
+                f,
+                "open face {face} needs its own axis to span >= 3 cells (got {extent})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SpecError {}
+
+/// A non-finite state detected by the run-time watchdog
+/// ([`Solver::run_guarded`] and the GPU/MPI counterparts, A-9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Diverged {
+    /// Completed steps when the non-finite state was detected. The divergence
+    /// itself occurred at most `check_every` steps earlier.
+    pub step: u64,
+}
+
+impl std::fmt::Display for Diverged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "simulation diverged: non-finite mass detected at step {}",
+            self.step
+        )
+    }
+}
+
+impl std::error::Error for Diverged {}
+
+impl<T: Real> GlobalSpec<T> {
+    /// Validate the scenario before a solver is built (A-4). `d` is the
+    /// lattice dimension (`L::D`); `solid` is the compact global solid mask
+    /// (`z*(nx*ny) + y*nx + x`, empty = no solids) used to decide whether a
+    /// non-open, non-periodic face is fully walled.
+    ///
+    /// Checks (all previously silent on the V2-native path): ν finite & > 0;
+    /// TRT magic finite & > 0; body force finite and (2D) `force[2] == 0`;
+    /// every active axis ≥ 3 cells; no axis both periodic and open; open faces
+    /// confined to one axis; every non-periodic face open **or** a full solid
+    /// rim; open-face velocity ≤ MAX_SPEED (NaN-safe); outlet ρ > 0; convective
+    /// u_conv ∈ (0, 1]; each open face's own axis ≥ 3 cells.
+    pub fn validate(&self, d: usize, solid: &[bool]) -> Result<(), SpecError> {
+        // Viscosity (finite & positive: ν = 0 ⇒ omega_m = 0, E3).
+        if !self.nu.is_finite() {
+            return Err(SpecError::NonFiniteParameter { what: "nu" });
+        }
+        if !(self.nu > 0.0) {
+            return Err(SpecError::NonPositiveViscosity { nu: self.nu });
+        }
+        // TRT magic (finite & positive).
+        if let CollisionKind::Trt { magic } = self.collision {
+            if !magic.is_finite() || !(magic > 0.0) {
+                return Err(SpecError::InvalidMagic { magic });
+            }
+        }
+        // Body force finiteness, plus the 2D z-component rule.
+        for (a, comp) in self.force.iter().enumerate() {
+            let v = comp.as_f64();
+            if !v.is_finite() {
+                return Err(SpecError::NonFiniteParameter {
+                    what: match a {
+                        0 => "force[0]",
+                        1 => "force[1]",
+                        _ => "force[2]",
+                    },
+                });
+            }
+            if a == 2 && d < 3 && v != 0.0 {
+                return Err(SpecError::NonZeroZForce2D { fz: v });
+            }
+        }
+        // Minimum extents on the active axes.
+        for a in 0..d {
+            if self.dims[a] < 3 {
+                return Err(SpecError::DomainTooSmall { dims: self.dims });
+            }
+        }
+        // Per-axis: periodic × open exclusivity, and gather open axes.
+        let mut open_axes = 0usize;
+        for a in 0..d {
+            let (neg, pos) = (Face::ALL[2 * a], Face::ALL[2 * a + 1]);
+            let axis_open = self.faces[neg.index()].is_open() || self.faces[pos.index()].is_open();
+            if self.periodic[a] && axis_open {
+                return Err(SpecError::PeriodicOpenConflict { axis: a });
+            }
+            if axis_open {
+                open_axes += 1;
+            }
+        }
+        if open_axes > 1 {
+            return Err(SpecError::OpenFacesOnMultipleAxes);
+        }
+        // Per-face checks: coverage, BC parameter ranges, open-axis extent.
+        for face in Face::ALL {
+            let a = face.axis();
+            if a >= d {
+                continue;
+            }
+            let bc = &self.faces[face.index()];
+            if self.periodic[a] {
+                // Periodic axis: this face wraps, no coverage or BC needed
+                // (periodic × open already rejected above).
+                continue;
+            }
+            if bc.is_open() {
+                // Open face: its own axis must span >= 3 cells (reads one cell
+                // inward), and its BC parameters must be in range.
+                if self.dims[a] < 3 {
+                    return Err(SpecError::OpenFaceAxisTooShort {
+                        face: face.index(),
+                        extent: self.dims[a],
+                    });
+                }
+                match bc {
+                    FaceBC::Velocity { u } => {
+                        let mut sq = 0.0f64;
+                        for c in u.iter() {
+                            let v = c.as_f64();
+                            if !v.is_finite() {
+                                return Err(SpecError::NonFiniteParameter {
+                                    what: "inlet velocity",
+                                });
+                            }
+                            sq += v * v;
+                        }
+                        let s = sq.sqrt();
+                        if !(s <= MAX_SPEED) {
+                            return Err(SpecError::VelocityTooHigh { speed: s });
+                        }
+                    }
+                    FaceBC::Pressure { rho } => {
+                        let r = rho.as_f64();
+                        if !(r > 0.0) {
+                            return Err(SpecError::NonPositiveDensity { rho: r });
+                        }
+                    }
+                    FaceBC::Convective { u_conv } => {
+                        let v = u_conv.as_f64();
+                        if !(v > 0.0 && v <= 1.0) {
+                            return Err(SpecError::InvalidConvectiveSpeed { u_conv: v });
+                        }
+                    }
+                    FaceBC::Outflow | FaceBC::Closed => {}
+                }
+            } else {
+                // Closed, non-periodic face: it must be a full solid wall rim,
+                // else its halo feeds stale interior values (E2).
+                if !face_is_full_solid_rim(face, self.dims, solid) {
+                    return Err(SpecError::UncoveredFace { face: face.index() });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether every cell on `face`'s plane is solid (a full wall rim). An empty
+/// `solid` mask means no solids, so a bare non-periodic closed face is
+/// uncovered.
+fn face_is_full_solid_rim(face: Face, dims: [usize; 3], solid: &[bool]) -> bool {
+    if solid.is_empty() {
+        return false;
+    }
+    let a = face.axis();
+    let fixed = if face.is_neg() { 0 } else { dims[a] - 1 };
+    let (t1, t2) = face.tangents();
+    for c2 in 0..dims[t2] {
+        for c1 in 0..dims[t1] {
+            let mut pos = [0usize; 3];
+            pos[a] = fixed;
+            pos[t1] = c1;
+            pos[t2] = c2;
+            let i = (pos[2] * dims[1] + pos[1]) * dims[0] + pos[0];
+            if !solid[i] {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Which global faces are walls, and their tangential velocities.
@@ -295,6 +596,13 @@ where
         let n = spec.dims[0] * spec.dims[1] * spec.dims[2];
         assert!(solid.is_empty() || solid.len() == n);
         assert!(wall_u.is_empty() || wall_u.len() == n);
+        // A-4: validate the scenario before allocating. Higher layers
+        // (lbm-scenario, the compat facade) validate explicitly and surface a
+        // typed error; this call is the last-line guard that turns an invalid
+        // native `GlobalSpec` (uncovered face, ν = 0, periodic × open, …) into
+        // a clear panic instead of silent non-physical output.
+        spec.validate(L::D, solid)
+            .unwrap_or_else(|e| panic!("invalid GlobalSpec: {e}"));
         let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
         let params = StepParams {
             omega_p,
@@ -305,6 +613,18 @@ where
         let mut subs = partition(L::D, spec.dims, spec.periodic, decomp);
         if let Some(part) = only {
             assert!(part < subs.len(), "part {part} out of range for {decomp:?}");
+            // A single-part owner keeps *global* neighbour ids in its
+            // subdomain, so only a Remote exchange (MPI) can resolve them. A
+            // Local exchange (LocalPeriodic/InProcess) would read a global id
+            // as a local `parts` index — a silent self-wrap into part 0 when
+            // the id is 0, or an out-of-bounds panic otherwise (A-5).
+            assert_eq!(
+                H::SCOPE,
+                ExchangeScope::Remote,
+                "new_local_part (single-part ownership of a {decomp:?} decomposition) requires a \
+                 Remote halo exchange (e.g. MpiExchange); LocalPeriodic/InProcess resolve \
+                 neighbour ids as local part indices and would silently wrap or panic"
+            );
             subs = vec![subs[part].clone()];
         }
         let mut parts: Vec<SoaFields<T>> = subs.iter().map(|s| backend.alloc(s)).collect();
@@ -436,6 +756,47 @@ where
     pub fn run(&mut self, steps: usize) {
         for _ in 0..steps {
             self.step();
+        }
+    }
+
+    /// Advance `steps` steps with a periodic non-finite watchdog (A-9).
+    ///
+    /// Every `check_every` steps — and once more after the final step when
+    /// `steps` is not a multiple — the f64 mass aggregation behind
+    /// [`Solver::total_mass`] is inspected. A NaN or ±Inf anywhere in the
+    /// fluid populations propagates into that sum, so a non-finite total
+    /// detects the divergence **without touching the physics kernels** (they
+    /// stay guard-free and V1-equivalent); the produced trajectory is
+    /// bit-identical to [`Solver::run`]. `check_every == 0` is treated as 1.
+    ///
+    /// Cost: one extra O(N·Q) f64 reduction per check — measured < 1% of
+    /// step cost at 512² with `check_every = 100` (`tests/run_guarded.rs`).
+    ///
+    /// On detection, returns the completed step count; the divergence
+    /// occurred at most `check_every` steps earlier.
+    pub fn run_guarded(&mut self, steps: usize, check_every: usize) -> Result<(), Diverged> {
+        let check_every = check_every.max(1);
+        let mut since_check = 0usize;
+        for _ in 0..steps {
+            self.step();
+            since_check += 1;
+            if since_check == check_every {
+                since_check = 0;
+                self.check_mass_finite()?;
+            }
+        }
+        if since_check > 0 {
+            self.check_mass_finite()?;
+        }
+        Ok(())
+    }
+
+    fn check_mass_finite(&self) -> Result<(), Diverged> {
+        let (fluid, m) = self.local_mass_partials();
+        if (fluid + m).is_finite() {
+            Ok(())
+        } else {
+            Err(Diverged { step: self.time })
         }
     }
 
@@ -1083,4 +1444,316 @@ fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellRange> {
     }
     shells.retain(|s| !s.is_empty());
     shells
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::CpuScalar;
+    use crate::halo::{InProcess, LocalPeriodic};
+    use crate::lattice::D2Q9;
+
+    /// A-5 (E4): building a single-part owner of a wider decomposition with a
+    /// Local exchange must fail at construction — such an owner keeps global
+    /// neighbour ids that a Local exchange would resolve as local indices
+    /// (E4: part=1 of [2,1,1] periodic-x + LocalPeriodic ran without panic
+    /// and diverged from the correct 2-part result by up to 7.7e-2).
+    #[test]
+    #[should_panic(expected = "Remote halo exchange")]
+    fn single_part_owner_rejects_local_periodic_exchange() {
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 4, 1],
+            // Both in-plane axes periodic so the config itself is valid (A-4);
+            // the failure under test is the halo *scope*, not coverage.
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        // part=1 of a [2,1,1] decomposition, LocalPeriodic (a Local scope).
+        let _s: Solver<D2Q9, f64, CpuScalar, LocalPeriodic> = Solver::new_local_part(
+            &spec,
+            &[],
+            &[],
+            [2, 1, 1],
+            1,
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+    }
+
+    /// The same misuse with `InProcess` is equally rejected (also Local).
+    #[test]
+    #[should_panic(expected = "Remote halo exchange")]
+    fn single_part_owner_rejects_in_process_exchange() {
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 4, 1],
+            // Both in-plane axes periodic so the config itself is valid (A-4);
+            // the failure under test is the halo *scope*, not coverage.
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        let _s: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::new_local_part(
+            &spec,
+            &[],
+            &[],
+            [2, 1, 1],
+            0,
+            CpuScalar::default(),
+            InProcess,
+        );
+    }
+
+    /// A full in-process decomposition (owns every part) is the legitimate
+    /// Local use and must still build.
+    #[test]
+    fn full_in_process_decomposition_builds() {
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 4, 1],
+            // Both in-plane axes periodic so the config itself is valid (A-4);
+            // the failure under test is the halo *scope*, not coverage.
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        let mut s: Solver<D2Q9, f64, CpuScalar, InProcess> =
+            Solver::new(&spec, &[], &[], [2, 1, 1], CpuScalar::default(), InProcess);
+        s.run(2);
+        assert!(s.total_mass().is_finite());
+    }
+
+    // ----------------------------------------------------------------------
+    // A-4: GlobalSpec::validate
+    // ----------------------------------------------------------------------
+
+    use crate::lattice::D3Q19;
+    use crate::params::FaceBC;
+
+    /// Full solid rims for a walled non-periodic D3Q19 box (so a "closed
+    /// non-periodic face" is legitimately covered in the positive tests).
+    fn walled_box_solid(dims: [usize; 3]) -> Vec<bool> {
+        let mut walls = WallSpec::<f64>::default();
+        for f in Face::ALL {
+            walls.is_wall[f.index()] = true;
+        }
+        build_wall_rims(3, dims, &walls).0
+    }
+
+    /// E2: a non-periodic z-face that is neither open nor a solid rim is
+    /// rejected (its halo would feed stale interior values every step —
+    /// nonfinite=0 yet mass drift 2.7e-3, false uz 2.6e-3).
+    #[test]
+    fn validate_rejects_uncovered_face() {
+        // z non-periodic, no z walls, no z open BC, no solids → uncovered.
+        let spec = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        assert!(matches!(
+            spec.validate(3, &[]),
+            Err(SpecError::UncoveredFace { .. })
+        ));
+        // Covered by a full z-wall rim → OK.
+        let mut walls = WallSpec::<f64>::default();
+        walls.is_wall[Face::ZNeg.index()] = true;
+        walls.is_wall[Face::ZPos.index()] = true;
+        let (solid, _) = build_wall_rims(3, spec.dims, &walls);
+        assert!(spec.validate(3, &solid).is_ok());
+    }
+
+    /// E3: ν = 0 (and non-finite ν) are rejected (omega_m collapses to 0).
+    #[test]
+    fn validate_rejects_bad_viscosity() {
+        let dims = [6, 6, 6];
+        let solid = walled_box_solid(dims);
+        let zero_nu = GlobalSpec::<f64> {
+            dims,
+            nu: 0.0,
+            periodic: [false, false, false],
+            ..Default::default()
+        };
+        assert!(matches!(
+            zero_nu.validate(3, &solid),
+            Err(SpecError::NonPositiveViscosity { .. })
+        ));
+        let nan_nu = GlobalSpec::<f64> {
+            dims,
+            nu: f64::NAN,
+            periodic: [false, false, false],
+            ..Default::default()
+        };
+        assert!(matches!(
+            nan_nu.validate(3, &solid),
+            Err(SpecError::NonFiniteParameter { .. })
+        ));
+    }
+
+    /// periodic × open on the same axis is rejected.
+    #[test]
+    fn validate_rejects_periodic_open_conflict() {
+        let mut faces = [FaceBC::<f64>::Closed; 6];
+        faces[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.05, 0.0, 0.0],
+        };
+        let spec = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [true, false, false], // x periodic AND x-open
+            faces,
+            ..Default::default()
+        };
+        assert!(matches!(
+            spec.validate(3, &walled_box_solid([6, 6, 6])),
+            Err(SpecError::PeriodicOpenConflict { axis: 0 })
+        ));
+    }
+
+    /// Open faces on two different axes are rejected (Zou–He edge sharing).
+    #[test]
+    fn validate_rejects_open_on_multiple_axes() {
+        let mut faces = [FaceBC::<f64>::Closed; 6];
+        faces[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.05, 0.0, 0.0],
+        };
+        faces[Face::YNeg.index()] = FaceBC::Outflow;
+        let spec = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [false, false, false],
+            faces,
+            ..Default::default()
+        };
+        // The remaining closed faces are walled so only the multi-axis rule
+        // fires.
+        assert!(matches!(
+            spec.validate(3, &walled_box_solid([6, 6, 6])),
+            Err(SpecError::OpenFacesOnMultipleAxes)
+        ));
+    }
+
+    /// Out-of-range open-face BC parameters are rejected (NaN-safe speed,
+    /// non-positive outlet ρ, convective u_conv ∉ (0,1]).
+    #[test]
+    fn validate_rejects_bad_face_bc_parameters() {
+        let dims = [6, 6, 6];
+        let base = |faces| GlobalSpec::<f64> {
+            dims,
+            periodic: [false, true, true],
+            faces,
+            ..Default::default()
+        };
+        // Only x is non-periodic here, so the x-faces carry the open BC and
+        // the y/z axes are periodic (covered). Too-fast inlet:
+        let mut f = [FaceBC::<f64>::Closed; 6];
+        f[Face::XNeg.index()] = FaceBC::Velocity { u: [0.9, 0.0, 0.0] };
+        f[Face::XPos.index()] = FaceBC::Outflow;
+        assert!(matches!(
+            base(f).validate(3, &[]),
+            Err(SpecError::VelocityTooHigh { .. })
+        ));
+        // NaN inlet component (NaN-safe rejection).
+        let mut f = [FaceBC::<f64>::Closed; 6];
+        f[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [f64::NAN, 0.0, 0.0],
+        };
+        f[Face::XPos.index()] = FaceBC::Outflow;
+        assert!(matches!(
+            base(f).validate(3, &[]),
+            Err(SpecError::NonFiniteParameter { .. })
+        ));
+        // Non-positive outlet density.
+        let mut f = [FaceBC::<f64>::Closed; 6];
+        f[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.05, 0.0, 0.0],
+        };
+        f[Face::XPos.index()] = FaceBC::Pressure { rho: 0.0 };
+        assert!(matches!(
+            base(f).validate(3, &[]),
+            Err(SpecError::NonPositiveDensity { .. })
+        ));
+        // Convective u_conv out of (0, 1].
+        let mut f = [FaceBC::<f64>::Closed; 6];
+        f[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.05, 0.0, 0.0],
+        };
+        f[Face::XPos.index()] = FaceBC::Convective { u_conv: 1.5 };
+        assert!(matches!(
+            base(f).validate(3, &[]),
+            Err(SpecError::InvalidConvectiveSpeed { .. })
+        ));
+    }
+
+    /// A 2D lattice must have force[2] == 0; a too-small active axis and a bad
+    /// TRT magic are rejected.
+    #[test]
+    fn validate_rejects_2d_zforce_small_dims_and_magic() {
+        // force[2] != 0 on a 2D spec.
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 8, 1],
+            periodic: [true, true, false],
+            force: [0.0, 0.0, 1e-6],
+            ..Default::default()
+        };
+        assert!(matches!(
+            spec.validate(2, &[]),
+            Err(SpecError::NonZeroZForce2D { .. })
+        ));
+        // 2-cell active axis.
+        let tiny = GlobalSpec::<f64> {
+            dims: [2, 8, 1],
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        assert!(matches!(
+            tiny.validate(2, &[]),
+            Err(SpecError::DomainTooSmall { .. })
+        ));
+        // Non-positive TRT magic.
+        let bad_magic = GlobalSpec::<f64> {
+            dims: [8, 8, 1],
+            periodic: [true, true, false],
+            collision: CollisionKind::Trt { magic: -1.0 },
+            ..Default::default()
+        };
+        assert!(matches!(
+            bad_magic.validate(2, &[]),
+            Err(SpecError::InvalidMagic { .. })
+        ));
+    }
+
+    /// A fully-periodic box (no faces to cover) and a fully-walled box both
+    /// validate — the legitimate configurations must not be rejected.
+    #[test]
+    fn validate_accepts_periodic_and_walled() {
+        let periodic = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [true, true, true],
+            ..Default::default()
+        };
+        assert!(periodic.validate(3, &[]).is_ok());
+
+        let dims = [6, 6, 6];
+        let walled = GlobalSpec::<f64> {
+            dims,
+            periodic: [false, false, false],
+            ..Default::default()
+        };
+        assert!(walled.validate(3, &walled_box_solid(dims)).is_ok());
+    }
+
+    /// The internal build-time guard fires for an uncovered native spec even
+    /// when a caller bypasses the scenario layer (defense in depth).
+    #[test]
+    #[should_panic(expected = "invalid GlobalSpec")]
+    fn build_panics_on_uncovered_face() {
+        let spec = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        let _s: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+    }
 }

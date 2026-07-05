@@ -130,12 +130,26 @@ impl<T: Real> MultiComponent<T> {
     }
 
     /// Compute cross-interaction + gravity forces into both simulations'
-    /// force fields. Panics if the two grids differ.
+    /// force fields. Panics if the two grids differ; in debug builds also
+    /// verifies that the solid geometry and the axis periodicities agree
+    /// (the stencil below evaluates both components over component A's
+    /// mask and wrap rules, so a divergence would silently misplace forces —
+    /// A-10e).
     pub fn update_forces(&self, a: &mut Simulation<T>, b: &mut Simulation<T>) {
         assert_eq!(
             (a.nx(), a.ny()),
             (b.nx(), b.ny()),
             "components must share the grid"
+        );
+        debug_assert_eq!(
+            a.solid_field(),
+            b.solid_field(),
+            "components must share the solid geometry (forces use A's mask)"
+        );
+        debug_assert_eq!(
+            (a.is_periodic_x(), a.is_periodic_y()),
+            (b.is_periodic_x(), b.is_periodic_y()),
+            "components must share axis periodicity (forces use A's wrap)"
         );
         let (nx, ny) = (a.nx(), a.ny());
         let per_x = a.is_periodic_x();
