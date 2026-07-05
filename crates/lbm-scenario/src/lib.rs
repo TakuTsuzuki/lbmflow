@@ -317,6 +317,19 @@ pub enum FieldKind {
     Uy,
     Rho,
     Vorticity,
+    /// Strain-rate invariant `gamma_dot = sqrt(2 S:S)` from the native
+    /// non-equilibrium stress (exact — not a finite-difference reconstruction).
+    /// Consumed by shear-threshold analyses; paired with `DissipationRate`.
+    ShearRate,
+    /// Viscous/turbulent dissipation rate `epsilon = nu * gamma_dot^2`
+    /// (= `2 nu S:S`), from the same native gather as `ShearRate`. Consumed by
+    /// the SCALEUP S-Fingerprint layer for `<eps>_vol` and the Kolmogorov length
+    /// `eta = (nu^3 / eps)^(1/4)`.
+    DissipationRate,
+    /// Vorticity magnitude `|omega|` (central-difference velocity gradient).
+    VorticityMag,
+    /// Q-criterion `Q = 0.5 (|Omega|^2 - |S|^2)` (central-difference gradient).
+    QCriterion,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

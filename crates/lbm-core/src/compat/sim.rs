@@ -363,6 +363,12 @@ impl<T: Real> Simulation<T> {
     pub fn tau(&self) -> f64 {
         self.solver.tau()
     }
+    /// Per-cell strain-rate invariant `gamma_dot = sqrt(2 S:S)` from the native
+    /// non-equilibrium stress (compact cell order; solids read zero). Exact —
+    /// not a finite-difference reconstruction. See `Solver::gather_shear_rate`.
+    pub fn shear_rate_field(&self) -> Vec<T> {
+        self.solver.gather_shear_rate()
+    }
 
     #[inline]
     fn idx(&self, x: usize, y: usize) -> usize {

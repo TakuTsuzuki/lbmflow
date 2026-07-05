@@ -1,7 +1,7 @@
 //! Scenario execution: probes, snapshots, divergence/steady detection,
 //! machine-readable manifest.
 
-use crate::render::write_png;
+use crate::render::{write_png_scaled, Colormap};
 use anyhow::{Context, Result};
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
@@ -199,6 +199,74 @@ fn run_t<T: Real>(
     Ok(manifest)
 }
 
+/// Colormap chosen by field semantics: signed fields diverge (RdBu), magnitude
+/// fields are sequential (Inferno for stress/shear, Viridis for speed/density).
+fn colormap_for(field: FieldKind) -> Colormap {
+    match field {
+        FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy | FieldKind::QCriterion => Colormap::RdBu,
+        FieldKind::ShearRate | FieldKind::DissipationRate | FieldKind::VorticityMag => Colormap::Inferno,
+        FieldKind::Speed | FieldKind::Rho => Colormap::Viridis,
+    }
+}
+
+/// Velocity-gradient-derived scalar fields — the SINGLE physics implementation
+/// of vorticity magnitude and Q-criterion, shared by the 2D and 3D field
+/// providers (SPEC_OBSERVER_FRAMEWORK §12-F3: one field_value site, never
+/// forked). These need the ANTISYMMETRIC (rotation) part of grad(u), which is
+/// genuinely absent from the non-equilibrium stress `f_neq` (it carries only the
+/// symmetric strain rate) — hence finite differences here, not the native gather
+/// used for ShearRate/DissipationRate. `uz` may be all zeros for 2D (`nz == 1`),
+/// where z-derivatives drop.
+fn grad_derived(ux: &[f64], uy: &[f64], uz: &[f64], dims: [usize; 3], kind: FieldKind) -> Vec<f64> {
+    let [nx, ny, nz] = dims;
+    let idx = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
+    let mut out = vec![0.0; nx * ny * nz];
+    let (z0, z1) = if nz > 1 { (1, nz - 1) } else { (0, 1) };
+    for z in z0..z1 {
+        for y in 1..ny - 1 {
+            for x in 1..nx - 1 {
+                let ddx = |f: &[f64]| 0.5 * (f[idx(x + 1, y, z)] - f[idx(x - 1, y, z)]);
+                let ddy = |f: &[f64]| 0.5 * (f[idx(x, y + 1, z)] - f[idx(x, y - 1, z)]);
+                let ddz = |f: &[f64]| {
+                    if nz > 1 {
+                        0.5 * (f[idx(x, y, z + 1)] - f[idx(x, y, z - 1)])
+                    } else {
+                        0.0
+                    }
+                };
+                // g[i][j] = d(u_i)/d(x_j), (i,j) in {0:x, 1:y, 2:z}.
+                let g = [
+                    [ddx(ux), ddy(ux), ddz(ux)],
+                    [ddx(uy), ddy(uy), ddz(uy)],
+                    [ddx(uz), ddy(uz), ddz(uz)],
+                ];
+                out[idx(x, y, z)] = match kind {
+                    FieldKind::VorticityMag => {
+                        let wx = g[2][1] - g[1][2];
+                        let wy = g[0][2] - g[2][0];
+                        let wz = g[1][0] - g[0][1];
+                        (wx * wx + wy * wy + wz * wz).sqrt()
+                    }
+                    FieldKind::QCriterion => {
+                        let (mut s2, mut w2) = (0.0, 0.0);
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                let s = 0.5 * (g[i][j] + g[j][i]);
+                                let w = 0.5 * (g[i][j] - g[j][i]);
+                                s2 += s * s;
+                                w2 += w * w;
+                            }
+                        }
+                        0.5 * (w2 - s2)
+                    }
+                    _ => 0.0,
+                };
+            }
+        }
+    }
+    out
+}
+
 fn field_values<T: Real>(sim: &Simulation<T>, kind: FieldKind) -> Vec<f64> {
     let (nx, ny) = (sim.nx(), sim.ny());
     let idx = |x: usize, y: usize| y * nx + x;
@@ -225,6 +293,23 @@ fn field_values<T: Real>(sim: &Simulation<T>, kind: FieldKind) -> Vec<f64> {
             }
             w
         }
+        FieldKind::ShearRate => sim.shear_rate_field().iter().map(|v| v.as_f64()).collect(),
+        FieldKind::DissipationRate => {
+            let nu = sim.nu();
+            sim.shear_rate_field()
+                .iter()
+                .map(|v| {
+                    let g = v.as_f64();
+                    nu * g * g
+                })
+                .collect()
+        }
+        FieldKind::VorticityMag | FieldKind::QCriterion => {
+            let ux: Vec<f64> = sim.ux_field().iter().map(|v| v.as_f64()).collect();
+            let uy: Vec<f64> = sim.uy_field().iter().map(|v| v.as_f64()).collect();
+            let uz = vec![0.0; nx * ny];
+            grad_derived(&ux, &uy, &uz, [nx, ny, 1], kind)
+        }
     }
 }
 
@@ -243,11 +328,7 @@ fn write_output<T: Real>(
         OutputFormat::Png => {
             let name = format!("{kind_name}_{step}.png");
             let path: PathBuf = out_dir.join(&name);
-            let diverging = matches!(
-                o.field,
-                FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy
-            );
-            write_png(&path, &values, &solid, nx, ny, diverging)?;
+            write_png_scaled(&path, &values, &solid, nx, ny, colormap_for(o.field), None, 1)?;
             Ok(name)
         }
         OutputFormat::Csv => {
@@ -311,6 +392,10 @@ struct Fields3 {
     uy: Vec<f64>,
     uz: Vec<f64>,
     rho: Vec<f64>,
+    /// Native strain-rate invariant gamma_dot = sqrt(2 S:S) (exact, from f_neq).
+    shear: Vec<f64>,
+    /// Kinematic viscosity (lattice units) — for DissipationRate = nu*gamma_dot^2.
+    nu: f64,
 }
 
 fn gather3<T: lbm_core::real::Real>(s: &Solver3<T>) -> Fields3 {
@@ -320,6 +405,8 @@ fn gather3<T: lbm_core::real::Real>(s: &Solver3<T>) -> Fields3 {
         uy: to64(s.gather_uy()),
         uz: to64(s.gather_uz()),
         rho: to64(s.gather_rho()),
+        shear: to64(s.gather_shear_rate()),
+        nu: s.nu(),
     }
 }
 
@@ -352,6 +439,11 @@ fn field_values3(f: &Fields3, dims: [usize; 3], kind: FieldKind) -> Vec<f64> {
             }
             w
         }
+        FieldKind::ShearRate => f.shear.clone(),
+        FieldKind::DissipationRate => f.shear.iter().map(|g| f.nu * g * g).collect(),
+        FieldKind::VorticityMag | FieldKind::QCriterion => {
+            grad_derived(&f.ux, &f.uy, &f.uz, dims, kind)
+        }
     }
 }
 
@@ -377,11 +469,7 @@ fn write_output3<T: lbm_core::real::Real>(
                 .map(|(x, y)| s.is_solid(x, y, zmid))
                 .collect();
             let name = format!("{kind_name}_{step}.png");
-            let diverging = matches!(
-                o.field,
-                FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy
-            );
-            write_png(&out_dir.join(&name), slice, &solid, nx, ny, diverging)?;
+            write_png_scaled(&out_dir.join(&name), slice, &solid, nx, ny, colormap_for(o.field), None, 1)?;
             Ok(name)
         }
         OutputFormat::Csv => {
