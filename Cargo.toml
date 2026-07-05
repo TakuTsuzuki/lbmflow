@@ -16,6 +16,6 @@ license = "MIT OR Apache-2.0"
 lto = "thin"
 codegen-units = 1
 
-# テストを release でも高速ビルドしつつ実行速度を確保
+# Keep release test builds fast while preserving runtime speed
 [profile.release.package."*"]
 opt-level = 3

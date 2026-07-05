@@ -1,5 +1,5 @@
-# LBMFlow CI — リモートリポジトリ設定後に自動で有効化される
-# （ホスティング先は未決定。GitHub 以外なら同等の内容で移植する）
+# LBMFlow CI — activates automatically once a remote repository is configured
+# (hosting not yet decided; if not GitHub, port an equivalent workflow)
 name: CI
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # LBM は debug だと ~50x 遅い。CI も必ず --release（CLAUDE.md）
+      # LBM is ~50x slower in debug. CI must also use --release (CLAUDE.md)
       - name: Test (default features)
         run: cargo test --workspace --release
       - name: Build (gpu feature, compile-only — no GPU on runners)
@@ -41,7 +41,7 @@ jobs:
         run: npm ci && npm run build
 
   heavy-validation:
-    # 重い検証（--include-ignored）は夜間のみ
+    # Heavy validation (--include-ignored) runs nightly only
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 120

@@ -1,50 +1,59 @@
-# LBMFlow — 格子ボルツマン法流体シミュレータ
+# LBMFlow — Lattice Boltzmann Method Fluid Simulator
 
-商用グレードを目指す LBM シミュレータ。Rust コア + TypeScript GUI + Agent モード。
-**必読**: [docs/PLAN.md](docs/PLAN.md)（フェーズ計画・体制）、
-[docs/VALIDATION.md](docs/VALIDATION.md)（検証テスト仕様 = 受入基準）。
+An LBM simulator aiming for commercial grade. Rust core + TypeScript GUI + Agent mode.
+**Required reading**: [docs/PLAN.md](docs/PLAN.md) (phase plan, team structure),
+[docs/VALIDATION.md](docs/VALIDATION.md) (validation test spec = acceptance criteria).
 
-## ビルド・テスト
+## Build & test
 
 ```bash
 cargo build --workspace --release
-cargo test --workspace --release          # 通常スイート（LBM は debug だと ~50x 遅い。必ず --release）
-cargo test --release -- --include-ignored # 重いベンチ含むフル検証（~5分）
-# WASM（web GUI 用。lbm-wasm はワークスペース外）:
+cargo test --workspace --release          # regular suite (LBM is ~50x slower in debug — always --release)
+cargo test --release -- --include-ignored # full validation incl. heavy benchmarks (~5 min)
+# WASM (for the web GUI; lbm-wasm is outside the workspace):
 wasm-pack build crates/lbm-wasm --target web --release --out-dir ../../web/src/engine/pkg
-#   （生成後 pkg/.gitignore を削除して pkg をコミットする運用）
-cd web && npm run build                   # GUI（tsc strict + vite）
-./target/release/lbm presets run cavity   # CLI スモーク
+#   (after generating, delete pkg/.gitignore and commit pkg — standing procedure)
+cd web && npm run build                   # GUI (tsc strict + vite)
+./target/release/lbm presets run cavity   # CLI smoke test
 ```
 
-## 体制・規約
+## Team structure & conventions
 
-- Fable が PM。実装は Opus/Sonnet サブエージェント / codex に委任。
-  **検証テストは codex or Opus/Sonnet が仕様（VALIDATION.md）から敵対的に作成**し、実装と分離する。
-- codex 実行例: `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
-  （モデル gpt-5.5。**`< /dev/null` 必須** — stdin が pipe だと EOF 待ちで永久にスタックする。
-  進捗は `~/.codex/sessions/<date>/rollout-*.jsonl` の更新で確認できる）
+- Fable is PM. Implementation is delegated to Opus/Sonnet subagents / codex.
+  **Validation tests are written adversarially by codex or Opus/Sonnet from the spec
+  (VALIDATION.md)**, kept separate from the implementation.
+- codex invocation example: `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
+  (model gpt-5.5. **`< /dev/null` is REQUIRED** — with a pipe as stdin it waits for
+  EOF and hangs forever. Progress can be monitored via updates to
+  `~/.codex/sessions/<date>/rollout-*.jsonl`)
 - **Language policy (user directive 2026-07-05): ALL artifacts in English** — code,
   identifiers, commit messages, documentation, and user-facing strings (docs / GUI /
   CLI / error messages). Legacy Japanese content is being translated by a dedicated
   session; write new content in English only. (Conversation with the user may remain
   Japanese — the user is a Japanese speaker; the product is English.)
-- 物理仕様を変更したら docs/PHYSICS.md に理由と実験結果を記録する。
-- フェーズ完了ごとに git commit。テストが red のままコミットしない（WIP は例外、メッセージに明記）。
+- Whenever a physics spec changes, record the reason and experimental results in
+  docs/PHYSICS.md.
+- git commit at the end of each phase. Never commit with tests red (WIP is the
+  exception — state it explicitly in the message).
 
-## コア設計の約束事（壊すと検証が全滅する）
+## Core design commitments (breaking these wipes out validation)
 
-- 単一コアは `crates/lbm-core`（旧 lbm-core2 = V2 アーキテクチャ。V1 は 2026-07-05 引退、
-  等価性凍結値はブランチ履歴の `tests/v1_match.rs` ヘッダ）。旧 V1 API は
-  `lbm_core::compat`（公開ファサード）が提供し、scenario / CLI / wasm の 2D 経路が使う。
-- D2Q9 の方向順序は lattice.rs（`Lattice` trait 実装）の定義が唯一の正。0:(0,0), 1:(1,0),
-  2:(0,1), 3:(-1,0), 4:(0,-1), 5:(1,1), 6:(-1,1), 7:(-1,-1), 8:(1,-1)。
-- f の配置は q-major SoA（fields.rs、halo パッド付き）: `f[q*plane + cell]`、
-  cell = z·(nx·ny) + y·nx + x。GPU コアレッシング前提と同一。公開 API には出ない。
-- 1 ステップ = 衝突 → halo 交換 → streaming → 開放端 BC → 境界線 moments 修正
-  （CpuSimd は collide+stream+moments を step_band で融合）。パス構造・格納順を変える
-  改修は `tests/backend_simd_equiv.rs` と T13（分割不変）のビット/閾値ゲートを
-  通してから入れる。
-- 壁エッジは 1 セルのソリッドリム。壁面は half-way（リム中心と流体中心の中間）。
-- 速度モーメントは Guo forcing の F/2 補正込み（`sim.ux()` などは物理速度）。
-- tau = 3*nu + 0.5（cs² = 1/3）。
+- The single core is `crates/lbm-core` (formerly lbm-core2 = the V2 architecture.
+  V1 retired 2026-07-05; the frozen equivalence values live in the
+  `tests/v1_match.rs` header in branch history). The old V1 API is provided by
+  `lbm_core::compat` (public facade), used by the 2D paths of scenario / CLI / wasm.
+- The D2Q9 direction ordering defined in lattice.rs (the `Lattice` trait impl) is
+  the single source of truth. 0:(0,0), 1:(1,0), 2:(0,1), 3:(-1,0), 4:(0,-1),
+  5:(1,1), 6:(-1,1), 7:(-1,-1), 8:(1,-1).
+- f layout is q-major SoA (fields.rs, halo-padded): `f[q*plane + cell]`,
+  cell = z·(nx·ny) + y·nx + x. Identical to the GPU-coalescing assumption. Never
+  exposed in the public API.
+- 1 step = collision → halo exchange → streaming → open-boundary BCs → boundary-line
+  moments correction (CpuSimd fuses collide+stream+moments in step_band). Any change
+  that alters the pass structure or storage order must pass the bit/threshold gates
+  of `tests/backend_simd_equiv.rs` and T13 (partition invariance) before landing.
+- Wall edges are a 1-cell solid rim. The wall surface is half-way (midpoint between
+  rim center and fluid center).
+- Velocity moments include the Guo forcing F/2 correction (`sim.ux()` etc. are
+  physical velocities).
+- tau = 3*nu + 0.5 (cs² = 1/3).

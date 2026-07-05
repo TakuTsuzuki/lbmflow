@@ -1,63 +1,67 @@
-# LBMFlow — 格子ボルツマン法 流体シミュレータ
+# LBMFlow — Lattice Boltzmann Method Fluid Simulator
 
-Rust 製の高速な LBM（Lattice Boltzmann Method, D2Q9）流体シミュレーションエンジンと、
-ブラウザ GUI・エージェント連携（CLI / MCP）を備えた統合環境。
+A fast LBM (Lattice Boltzmann Method, D2Q9) fluid simulation engine written in Rust,
+with an integrated browser GUI and agent integration (CLI / MCP).
 
-## 特徴
+## Features
 
-- **検証済みの物理**: Taylor-Green 渦の2次収束、TRT(Λ=3/16) による Poiseuille 流の
-  厳密再現、Ghia+1982 キャビティベンチマーク等、敵対的に作成された検証スイートを
-  全て通過（仕様: [docs/VALIDATION.md](docs/VALIDATION.md)）
-- **精度と速度のトレードオフを明示的に制御**:
-  - 衝突演算子: BGK（速い）⇔ TRT（高精度・高安定、推奨）
-  - 数値精度: `f32`（偏差格納で検証グレード）⇔ `f64`
-  - 並列度: rayon マルチスレッド（小格子は自動でシリアル実行）
-  - GPU: wgpu/Metal 実測 **6,975〜12,152 MLUPS（CPU比16〜42倍）**、
-    本統合は進行中（[docs/GPU_EVALUATION.md](docs/GPU_EVALUATION.md)）
-- **豊富な境界条件**: 周期、half-way bounce-back（静止壁・移動壁）、
-  Zou-He 速度流入（一様・任意プロファイル）、Zou-He 圧力、ゼロ勾配流出、
-  任意形状の内部障害物、momentum-exchange 抗力測定
-- **3 つの使い方**: ブラウザ GUI（WASM）/ CLI（JSON シナリオ）/
-  MCP サーバー（AI エージェントから操作）
-- **混相流対応**: Shan-Chen 単成分多相（液滴・接触角、検証済み）
+- **Validated physics**: passes an adversarially written validation suite including
+  2nd-order convergence of the Taylor-Green vortex, exact Poiseuille flow with
+  TRT (Λ=3/16), and the Ghia+1982 lid-driven cavity benchmark
+  (spec: [docs/VALIDATION.md](docs/VALIDATION.md))
+- **Explicit control over the accuracy/speed trade-off**:
+  - Collision operator: BGK (fast) ⇔ TRT (accurate, more stable, recommended)
+  - Numeric precision: `f32` (validation-grade via deviation storage) ⇔ `f64`
+  - Parallelism: rayon multithreading (small grids automatically run serial)
+  - GPU: wgpu/Metal measured at **6,975–12,152 MLUPS (16–42x over CPU)**;
+    full integration in progress ([docs/GPU_EVALUATION.md](docs/GPU_EVALUATION.md))
+- **Rich boundary conditions**: periodic, half-way bounce-back (stationary and
+  moving walls), Zou-He velocity inlet (uniform or arbitrary profile), Zou-He
+  pressure, zero-gradient outflow, arbitrarily shaped internal obstacles,
+  momentum-exchange drag measurement
+- **Three ways to use it**: browser GUI (WASM) / CLI (JSON scenarios) /
+  MCP server (driven by AI agents)
+- **Multiphase support**: Shan-Chen single-component multiphase (droplets,
+  contact angles — validated)
 
-## 使い方 1: ブラウザ GUI（初学者向け）
+## Usage 1: Browser GUI (beginner-friendly)
 
 ```bash
 cd web && npm install && npm run dev   # → http://localhost:5173
 ```
 
-プリセット（キャビティ流れ / カルマン渦列 / ポアズイユ / 二相液滴 / 自由キャンバス）を
-選んで「▶実行」するだけ。障害物はマウスで描けます。本物の LBM（Rust→WASM）が
-ブラウザ内で毎秒約 60 万格子点更新で動きます。
+Pick a preset (lid-driven cavity / Kármán vortex street / Poiseuille /
+two-phase droplet / free canvas) and press "▶ Run". Obstacles can be painted
+with the mouse. A real LBM engine (Rust→WASM) runs in the browser at roughly
+600k lattice-site updates per second.
 
-## 使い方 2: CLI（シナリオ実行）
+## Usage 2: CLI (scenario runner)
 
 ```bash
 cargo build --release -p lbm-cli
-./target/release/lbm presets list                 # 組み込みプリセット（4種）
-./target/release/lbm presets run cylinder-karman  # 実行 → out/ に PNG/CSV/VTK/manifest.json
-./target/release/lbm gallery                      # 全プリセット実行 → HTML レポート
-./target/release/lbm schema                       # シナリオ JSON の書式
-./target/release/lbm run my-scenario.json --json  # 自作シナリオ
+./target/release/lbm presets list                 # built-in presets (4)
+./target/release/lbm presets run cylinder-karman  # run → PNG/CSV/VTK/manifest.json in out/
+./target/release/lbm gallery                      # run all presets → HTML report
+./target/release/lbm schema                       # scenario JSON format
+./target/release/lbm run my-scenario.json --json  # your own scenario
 ```
 
-## 使い方 3: MCP サーバー（AI エージェント連携）
+## Usage 3: MCP server (AI agent integration)
 
 ```bash
 claude mcp add lbmflow -- /path/to/target/release/lbm mcp
 ```
 
-エージェントは `run_scenario` / `validate_scenario` / `list_presets` /
-`get_schema` の 4 ツールでシミュレーションを実行し、構造化された結果
-（manifest + PNG/CSV）を受け取れます。
+Agents can run simulations through the 4 tools `run_scenario` /
+`validate_scenario` / `list_presets` / `get_schema` and receive structured
+results (manifest + PNG/CSV).
 
-## クイックスタート（ライブラリ）
+## Quick start (library)
 
 ```rust
 use lbm_core::prelude::*;
 
-// リッド駆動キャビティ
+// Lid-driven cavity
 let mut sim: Simulation<f64> = SimConfig {
     nx: 128, ny: 128,
     nu: 0.02,
@@ -74,19 +78,19 @@ sim.run(10_000);
 println!("centre velocity = {}", sim.ux(64, 64));
 ```
 
-## 開発
+## Development
 
 ```bash
-cargo test --release                       # 検証スイート（必ず --release で）
-cargo test --release -- --include-ignored  # 重いベンチマーク込みフル検証
+cargo test --release                       # validation suite (always --release)
+cargo test --release -- --include-ignored  # full validation incl. heavy benchmarks
 ```
 
-- 計画・体制: [docs/PLAN.md](docs/PLAN.md)
-- 検証仕様（受入基準）: [docs/VALIDATION.md](docs/VALIDATION.md)
-- 物理モデルと実験記録: [docs/PHYSICS.md](docs/PHYSICS.md)
-- Agent モード設計: [docs/AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md)
-- 混相流設計: [docs/MULTIPHASE_DESIGN.md](docs/MULTIPHASE_DESIGN.md)
+- Plan & team structure: [docs/PLAN.md](docs/PLAN.md)
+- Validation spec (acceptance criteria): [docs/VALIDATION.md](docs/VALIDATION.md)
+- Physics models & experiment records: [docs/PHYSICS.md](docs/PHYSICS.md)
+- Agent-mode design: [docs/AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md)
+- Multiphase design: [docs/MULTIPHASE_DESIGN.md](docs/MULTIPHASE_DESIGN.md)
 
-## ライセンス
+## License
 
 MIT OR Apache-2.0
