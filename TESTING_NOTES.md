@@ -391,3 +391,24 @@ reviewer had not seen). Dispositions:
 
 Net: 13 adopted (1 adapted), 1 already-fixed-and-strengthened. REQ is now rev.4.
 Reviewer read rev.1a — overlaps with rev.2/rev.3 noted above to avoid double-fixing.
+
+## D-4 f32 x 3D validation measurements (2026-07-05, branch cx-d4)
+
+New default-suite test file: `crates/lbm-core/tests/t15_3d_f32.rs`.
+
+- T15-1 f32 z-invariant TGV degeneracy, D3Q19 `32x32x4` vs D2Q9 `32x32`,
+  `nu=0.02`, `u0=1.28/N`, 648 steps: max relative agreement on the characteristic
+  velocity scale is `4.400e-6` (`rho=5.958e-7`, `ux=4.400e-6`, `uy=3.795e-6`,
+  `|uz|/u0=1.164e-8`). Test gate: `<= 1.0e-5`.
+- T15-4 f32 TGV3D decay rate, D3Q19 `64^3`, `nu=0.02`, frozen scaling
+  `u0=1.28e-4/N=2.000e-6`, 519 steps: measured rate `1.155265e-3`,
+  diffusive reference `1.156594e-3`, relative error `1.149e-3`.
+  Test gate: `<= 2.0e-2`.
+- T15-4 f32 TGV3D mass drift, same `64^3` setup, 1000 steps: `m0=2.621440000e5`,
+  `m1=2.621440000e5`, relative drift per 1000 steps `3.109e-15`.
+  Test gate: `<= 1.0e-5`.
+
+Note: `lbm-scenario::Sim3Handle::F32` is a thin wrapper around
+`Solver<D3Q19, f32, CpuScalar, LocalPeriodic>`. These tests live in `lbm-core`,
+so they pin that product engine type directly without adding a reverse
+dependency from core tests to the scenario crate.
