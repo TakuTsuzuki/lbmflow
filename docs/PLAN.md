@@ -112,6 +112,23 @@ GUI モードと、エージェントから操作できる Agent モードの両
   C-12〜C-16、D-8〜D-10。
 - **M-E は B-1/B-2/C-9/C-12/C-13/D-9 完了が前提**（仕様書 §4 の依存関係）。
 
+### Performance roadmap — ALL FOUR gaps are committed implementation items (user directive 2026-07-05: "implement all of these; at minimum put them on the roadmap")
+
+The four gaps identified by the sales-paper analysis (vs FluidX3D / waLBerla / OpenLB /
+M-Star) are hereby **committed**, in this order:
+
+| # | Item | Acceptance line | Depends on | Wave |
+|---|---|---|---|---|
+| ME-1 | **3D GPU** (D3Q19 WGSL kernels + BC passes) | R2: single-GPU D3Q19 f32 **≥1,500 MLUPS** (expect multi-GLUPS on M5 Max); T14 extended to 3D | R-Phase 2 B-1 (orchestrator unification) | immediately after R-2 |
+| ME-2 | **FP16 storage** (C-12, shader-f16; compute stays f32) | T16 degradation bands frozen (TGV/cavity); **≥1.5×** MLUPS vs f32 at 2048²; grid capacity ×2 | B-1, ME-1 (shares kernel plumbing) | with ME-1 wave |
+| ME-3 | **Multi-node / cluster measurement** (R3) | 64-rank weak scaling **≥80%** on a real cluster; the 8-item measurement list in MPI_GUIDE §cluster | C-1 (MPI setup localization) + cluster access — **AWS hpc7g×8 (~¥13k, CLUSTER_OPTIONS.md recommended) or Fugaku trial**; committed on the roadmap, instance spend gets a one-line user confirm at execution | R-Phase 3 window |
+| ME-4 | **Full-physics benchmark** (stirred-tank workload: two-phase + particles + scalar + LES) | performance-degradation ratio vs single-phase measured and published (the M-Star-comparable number); runs as part of MF-ζ acceptance | M-F tracks | MF-ζ |
+
+Sales/technical-paper policy (PM decision, same date): hybrid — scoped honest claims
+now (2D GPU GLUPS, single-node CPU, n≤4 weak scaling, verification-as-product,
+agent-native), roadmap items labeled as roadmap with the acceptance lines above as
+public commitments; a follow-up "performance title" edition after ME-1/ME-2 land.
+
 ### M-F: 回転境界・高密度比二相・LES 連成 3D（REQ-M-F-STR rev.1b）
 
 確定済み設計判断（プロジェクトオーナー決定）: **スコープ一括**（サブシステムを段階分割
