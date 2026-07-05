@@ -752,6 +752,7 @@ mod tests {
                 nu: 0.02,
                 collision: CollisionSpec::Trt,
                 force: [0.0, 0.0],
+                gravity: None,
                 precision: Precision::F64,
             },
             units: None,
@@ -768,6 +769,9 @@ mod tests {
             obstacles: vec![],
             init: Default::default(),
             multiphase: None,
+            wall: None,
+            rotor: None,
+            particles: None,
             run: RunSpec {
                 steps: 1,
                 stop_when_steady: None,
