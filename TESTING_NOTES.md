@@ -1,350 +1,349 @@
 # TESTING_NOTES
 
-テスト作者（codex）とエンジン作者（PM/Fable）の連絡帳。
-新しい不一致は末尾に追記する。処理済み項目は Disposition を残して保持。
+Communication log between the test author (codex) and the engine author (PM/Fable).
+New discrepancies are appended at the end. Processed items are retained with their Disposition.
 
-## 処理済み（2026-07-05 PM triage、詳細: docs/PHYSICS.md）
+## Processed (2026-07-05 PM triage, details: docs/PHYSICS.md)
 
-1. `t6_f32_...`: f32 一様場の運動量成長誤差 5.3e-4 (>1e-4)
-   → **仕様変更**: コヒーレント丸めバイアスは f32 の本質特性。許容 5e-3 に改定
-   （VALIDATION.md T6 更新済み）。診断集計は f64 化した（エンジン変更）。
-   **テスト側の対応が必要**: 閾値を新仕様に合わせる。
+1. `t6_f32_...`: momentum growth error of f32 uniform field 5.3e-4 (>1e-4)
+   → **Spec change**: the coherent rounding bias is an intrinsic property of f32. Tolerance revised to 5e-3
+   (VALIDATION.md T6 updated). Diagnostic aggregation was made f64 (engine change).
+   **Test-side action required**: align the threshold with the new spec.
 
-2. `t4_...flow_rate_constancy`: 流量一定性 4.8e-3 (>1e-6)
-   → **仕様/API バグ**: 放物線流入 API が無かった → `set_inlet_profile` 追加。
-   流量は質量流束 Q=Σρux で、流出境界の直前は Zou-He 固有のスタッガード層
-   （O(Ma²), 減衰長~4セル）があるため**バルク領域（流出から24列以上）で ≤1e-4**
-   に改定（VALIDATION.md T4 更新済み）。
-   **テスト側の対応が必要**: プロファイル API 使用 + バルク判定に書き換え。
+2. `t4_...flow_rate_constancy`: flow-rate constancy 4.8e-3 (>1e-6)
+   → **Spec/API bug**: there was no parabolic-inlet API → added `set_inlet_profile`.
+   Flow rate is the mass flux Q=Σρux, and immediately upstream of the outflow boundary there is a Zou-He-specific staggered layer
+   (O(Ma²), decay length ~4 cells), so revised to **≤1e-4 in the bulk region (24 columns or more from the outflow)**
+   (VALIDATION.md T4 updated).
+   **Test-side action required**: rewrite to use the profile API + bulk judgement.
 
-3. `t5_pressure_sign_reversal`: 反対称 4.5e-5 (>1e-12)
-   → **仕様バグ**: 慣性項は2次なので厳密反対称は成立しない。
-   厳密角度は「Δρ反転 + x鏡映 = 厳密一致 ≤1e-12」に置換、単純反転は ≤5e-3 相対
-   （VALIDATION.md T5 更新済み）。
-   **テスト側の対応が必要**: 2 つの角度に分割。
+3. `t5_pressure_sign_reversal`: antisymmetry 4.5e-5 (>1e-12)
+   → **Spec bug**: the inertial term is 2nd-order, so exact antisymmetry does not hold.
+   The exact angle is replaced with "Δρ reversal + x mirror = exact match ≤1e-12", and plain reversal is ≤5e-3 relative
+   (VALIDATION.md T5 updated).
+   **Test-side action required**: split into 2 angles.
 
 4. `t10_tau_051_cavity`: NaN
-   → **仕様確定**: U=0.05（Re≈1890）なら安定、U=0.1 は発散（実測）。
-   T10 パラメータを τ=0.51, N=128, U=0.05, Λ=3/16 に確定（VALIDATION.md 更新済み）。
-   **テスト側の対応が必要**: パラメータ変更。
+   → **Spec fixed**: stable at U=0.05 (Re≈1890), diverges at U=0.1 (measured).
+   T10 parameters fixed to τ=0.51, N=128, U=0.05, Λ=3/16 (VALIDATION.md updated).
+   **Test-side action required**: change parameters.
 
-## 処理済み（2026-07-05 PM triage #2、詳細: docs/PHYSICS.md 2026-07-05 各節）
+## Processed (2026-07-05 PM triage #2, details: docs/PHYSICS.md 2026-07-05 respective sections)
 
-order #2 の 5 件の dispositions:
+The 5 dispositions of order #2:
 
-1. `t7_re400`: **参照データの既知の誤植**。Ghia Re=400 の v(0.9063)=−0.23827 は
-   流通データ自体が誤り（隣接点と不連続・出典 gist にも注記あり・我々の解は
-   −0.37657 で滑らか）。→ この 1 点を RMS から除外（VALIDATION T7 更新済み）。
-   **テスト側対応**: 除外処理 + 出典コメント。
-2. `t7_orientation`: **両側バグ**。(a) エンジン: リムコーナーの wall_u が適用順
-   依存 → 「速い壁が勝つ」規則に修正済み。(b) テスト: Left/Right の対称写像が
-   誤り（[0,−U] 左蓋は回転でなく反対角鏡映）。正しい写像は VALIDATION T7 /
-   PHYSICS.md に記載。エンジンは正しい写像で L∞ ~4e-16 を実証済み
-   （examples/probe_equivariance.rs）。**テスト側対応**: 写像修正（Bottom は正しい）。
-3. `t8_re20`: **仕様の幾何不整合**。周期境界+ブロッケージの Cd=2.55 は物理的に
-   正しい値。→ T8 を Schäfer-Turek 2D-1/2D-2 に全面再定義（VALIDATION T8 更新済み）。
-   **テスト側対応**: validation_cylinder.rs を新仕様で書き直し。
-4. `t8_re100`: 同上（2D-2 へ）。
-5. `t9_outflow`: **仕様改定**。ゼロ勾配流出の圧力反射は固有特性（実測 ratio 11.3、
-   衝突演算子非依存の見込み）。→ 上限 15 に改定（VALIDATION T9 更新済み）。
-   convective outlet は Phase 7 バックログ。**テスト側対応**: 閾値変更。
+1. `t7_re400`: **known typo in the reference data**. The Ghia Re=400 v(0.9063)=−0.23827 is
+   an error in the circulated data itself (discontinuous with adjacent points, noted in the source gist too, our solution is
+   −0.37657 and smooth). → Exclude this 1 point from the RMS (VALIDATION T7 updated).
+   **Test-side action**: exclusion handling + source comment.
+2. `t7_orientation`: **bug on both sides**. (a) Engine: the rim-corner wall_u was application-order
+   dependent → fixed to a "faster wall wins" rule. (b) Test: the Left/Right symmetry mapping was
+   wrong (the [0,−U] left lid is an anti-diagonal mirror, not a rotation). The correct mapping is documented in VALIDATION T7 /
+   PHYSICS.md. The engine has demonstrated L∞ ~4e-16 with the correct mapping
+   (examples/probe_equivariance.rs). **Test-side action**: fix the mapping (Bottom is correct).
+3. `t8_re20`: **geometric inconsistency in the spec**. Cd=2.55 with periodic boundaries + blockage is the physically
+   correct value. → Fully redefine T8 to Schäfer-Turek 2D-1/2D-2 (VALIDATION T8 updated).
+   **Test-side action**: rewrite validation_cylinder.rs under the new spec.
+4. `t8_re100`: same as above (to 2D-2).
+5. `t9_outflow`: **spec revision**. The pressure reflection of zero-gradient outflow is an intrinsic property (measured ratio 11.3,
+   expected to be independent of the collision operator). → Revise the upper bound to 15 (VALIDATION T9 updated).
+   The convective outlet is Phase 7 backlog. **Test-side action**: change the threshold.
 
-## 新規不一致（2026-07-05 codex adversarial test order #2）
+## New discrepancies (2026-07-05 codex adversarial test order #2)
 
-1. `t7_lid_driven_cavity_re400_matches_ghia`: N=129, U=0.1, TRT Λ=3/16, Re=400。
-   `run_to_steady(1000, 1e-8, 200000)` は 99000 step で定常判定に到達したが、
-   Ghia et al. 1982 中心線 u/v の RMS 誤差が 2.6577415383317194e-3 で、
-   仕様上限 2.0e-3 (= 0.02U) を超過。Re=100 は同じテストで合格、Re=1000 ignored
-   は 2:10.57 で合格。
+1. `t7_lid_driven_cavity_re400_matches_ghia`: N=129, U=0.1, TRT Λ=3/16, Re=400.
+   `run_to_steady(1000, 1e-8, 200000)` reached the steady-state verdict at 99000 step, but
+   the RMS error of the Ghia et al. 1982 centerline u/v is 2.6577415383317194e-3,
+   exceeding the spec upper bound 2.0e-3 (= 0.02U). Re=100 passes the same test, and Re=1000 ignored
+   passes at 2:10.57.
 
 2. `t7_re100_cavity_is_exact_under_four_lid_orientations`: N=129, U=0.1, TRT Λ=3/16,
-   Re=100。蓋向きを左へ回したケースを 2000 step 後に回転写像で比較すると
-   L_inf = 2.843743051315205e-2 で、仕様上限 1e-10 を超過。テスト側では座標写像と
-   左右壁の接線速度符号を修正済み。左壁 MovingWall 経路または壁更新の回転対称性を
-   要確認。
+   Re=100. Comparing the case with the lid rotated left against the rotation mapping after 2000 step gives
+   L_inf = 2.843743051315205e-2, exceeding the spec upper bound 1e-10. On the test side the coordinate mapping and
+   the tangential-velocity sign of the left/right walls have been fixed. The left-wall MovingWall path or the rotational symmetry of the wall update
+   needs checking.
 
 3. `t8_re20_cylinder_steady_drag_is_in_reference_band`: D=20, domain 440x160,
    left VelocityInlet U=0.05, right PressureOutlet rho=1, top/bottom Periodic,
-   cylinder center (110,80), Re=20, TRT Λ=3/16。7000..10000 step の平均で
-   Cd = 2.5454767275786616、仕様帯 [1.8, 2.4] を超過。
+   cylinder center (110,80), Re=20, TRT Λ=3/16. Averaged over 7000..10000 step,
+   Cd = 2.5454767275786616, exceeding the spec band [1.8, 2.4].
 
-4. `t8_re100_cylinder_vortex_shedding_has_expected_st_cd_cl`（ignored）:
-   D=20, domain 440x160, right Outflow, off-centre cylinder y=81, Re=100。
-   80000 step 実行で mean Cd = 1.6199794592087982 となり、仕様帯 [1.2, 1.5] を超過。
-   St 判定は先に通過。
+4. `t8_re100_cylinder_vortex_shedding_has_expected_st_cd_cl` (ignored):
+   D=20, domain 440x160, right Outflow, off-centre cylinder y=81, Re=100.
+   An 80000 step run gives mean Cd = 1.6199794592087982, exceeding the spec band [1.2, 1.5].
+   The St judgement passes first.
 
-5. `t9_outflow_cylinder_wake_long_run_stays_sane`（ignored）:
-   D=20, domain 440x160, right Outflow, off-centre cylinder y=81, Re=100。
-   100000 step 実行で NaN/Inf と backflow 判定は先に通過したが、
+5. `t9_outflow_cylinder_wake_long_run_stays_sane` (ignored):
+   D=20, domain 440x160, right Outflow, off-centre cylinder y=81, Re=100.
+   A 100000 step run passes the NaN/Inf and backflow judgements first, but
    near-outlet pressure RMS ratio = 11.32538182631078
-   （near = 2.0001796481913235e-3, mid = 1.766103499967275e-4）で仕様上限 3 を超過。
+   (near = 2.0001796481913235e-3, mid = 1.766103499967275e-4) exceeds the spec upper bound 3.
 
-## 新規メモ（2026-07-05 codex adversarial test order #4）
+## New note (2026-07-05 codex adversarial test order #4)
 
-1. T11b の文面「bottom BounceBack, others Periodic」は現 API では構築不可。
-   `SimConfig::validate` が周期境界の軸ペアを必須にしているため、bottom BounceBack
-   + top Periodic は `ConfigError::UnpairedPeriodic { axis: "y" }` になる。
-   追加テストは left/right Periodic + bottom/top BounceBack（上壁は液滴から遠い）で
-   G_w 特性を凍結した。
+1. The T11b wording "bottom BounceBack, others Periodic" cannot be constructed with the current API.
+   Because `SimConfig::validate` requires an axis pair for periodic boundaries, bottom BounceBack
+   + top Periodic becomes `ConfigError::UnpairedPeriodic { axis: "y" }`.
+   The additional test froze the G_w characteristics with left/right Periodic + bottom/top BounceBack (the top wall is far from the droplet).
 
-## 新規メモ（2026-07-05 codex adversarial test order #5）
+## New note (2026-07-05 codex adversarial test order #5)
 
-1. `cargo test --release -p lbm-core -- --include-ignored` はテスト本体を最後まで通過したが、
-   doctest 段で `crates/lbm-core/src/multiphase.rs` の `MultiComponent` ignored doc snippet
-   （line 77）がコンパイル対象になり失敗した。スニペットは `MultiComponent` import と
-   `a`/`b` simulation 定義を省略した疑似コードで、通常の default run では ignored doctest
-   としてスキップされる。今回の作業範囲は `crates/lbm-core/tests/**` と
-   `TESTING_NOTES.md` のため、`src/**` doctest は修正せず証拠だけ記録する。
+1. `cargo test --release -p lbm-core -- --include-ignored` passed the test body all the way through, but
+   at the doctest stage the `MultiComponent` ignored doc snippet in `crates/lbm-core/src/multiphase.rs`
+   (line 77) became a compile target and failed. The snippet is pseudocode omitting the `MultiComponent` import and
+   the `a`/`b` simulation definitions, and in a normal default run it is skipped as an ignored doctest.
+   Since this task's scope is `crates/lbm-core/tests/**` and
+   `TESTING_NOTES.md`, the `src/**` doctest is left unfixed and only the evidence is recorded.
 
-## 解決状況（2026-07-05 codex adversarial test order #3）
+## Resolution status (2026-07-05 codex adversarial test order #3)
 
-1. `t7_re400`: fixed-by-spec / fixed-in-test — 既知の誤植 datum を RMS から除外。
-2. `t7_orientation`: fixed-by-engine / fixed-in-test — リムコーナー修正済み、Left/Right 写像を仕様通りに修正。
-3. `t8_re20`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-1 に全面更新。
-4. `t8_re100`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-2 に全面更新。
-5. `t9_outflow`: fixed-by-spec / fixed-in-test — 圧力 RMS ratio 閾値を T9 の 15 に更新。
+1. `t7_re400`: fixed-by-spec / fixed-in-test — excluded the known-typo datum from the RMS.
+2. `t7_orientation`: fixed-by-engine / fixed-in-test — rim-corner fixed, Left/Right mapping fixed per spec.
+3. `t8_re20`: fixed-by-spec / fixed-in-test — fully updated to Schäfer-Turek 2D-1.
+4. `t8_re100`: fixed-by-spec / fixed-in-test — fully updated to Schäfer-Turek 2D-2.
+5. `t9_outflow`: fixed-by-spec / fixed-in-test — updated the pressure RMS ratio threshold to T9's 15.
 
-## 新規メモ（2026-07-05 codex adversarial test order #6）
+## New note (2026-07-05 codex adversarial test order #6)
 
-1. Core V2 `Solver` には分割対応の single-component Shan-Chen driver が直接は露出していない。
-   Shan-Chen は現状 V1 互換 `Simulation` facade 経由で利用できるが、T13 の 2x2 seam 上で
-   `Solver<D2Q9, ..., InProcess>` に対して密度から force field を再計算する公開 API は未整備。
-   そのため `t13_adversarial.rs` では gap を残しつつ、同じ下層経路である per-cell
-   `force_field` を各 subdomain の compact core に直接設定し、四分割 corner 上の droplet 型
-   force field が一枚岩と一致することを検査する。
+1. Core V2 `Solver` does not directly expose a partition-aware single-component Shan-Chen driver.
+   Shan-Chen is currently usable via the V1-compat `Simulation` facade, but on the T13 2x2 seam
+   there is no public API to recompute the force field from density for `Solver<D2Q9, ..., InProcess>`.
+   Therefore `t13_adversarial.rs` leaves the gap in place while directly setting the per-cell
+   `force_field`, which is the same lower-level path, on each subdomain's compact core, and checks that a droplet-type
+   force field on the four-way corner matches the monolithic one.
 
-## 新規不一致（2026-07-05 codex adversarial test order #6）
+## New discrepancies (2026-07-05 codex adversarial test order #6)
 
-1. `d3q19_lattice_properties_from_all_angles`: D3Q19 の face closure constant を
-   `assert_eq!(closure, 1.0)` で検査すると、`XNeg` で `closure = 1.0000000000000002`
-   となり失敗する。既存 unit test は `abs <= 1e-15` で許容しているが、今回の発注条件
-   「closure constant exactly 1」に対しては red。原因は `1/3, 1/18, 1/36` の f64 加算順に
-   よる丸めの可能性が高いが、テーブル/API が「exact」を名乗るなら rational/整数式での
-   定数化、または仕様文言の明確化が必要。
+1. `d3q19_lattice_properties_from_all_angles`: checking the D3Q19 face closure constant with
+   `assert_eq!(closure, 1.0)` fails at `XNeg` with `closure = 1.0000000000000002`.
+   The existing unit test allows `abs <= 1e-15`, but against this order's condition
+   "closure constant exactly 1" it is red. The cause is most likely rounding due to the f64 addition order of
+   `1/3, 1/18, 1/36`, but if the table/API claims to be "exact", it needs to be
+   constified with a rational/integer expression, or the spec wording needs clarification.
 
-## 処理済み（2026-07-05 PM triage #3: codex order #6）
+## Processed (2026-07-05 PM triage #3: codex order #6)
 
-- `d3q19_lattice_properties_from_all_angles` の閉包定数「厳密 == 1.0」失敗
-  → **テストの過剰厳密**（カテゴリ: テストのバグ）。エンジンは解析値 T::one() を
-  ハードコード済み（kernels.rs zou_he）で物理は正しい。テスト自身の f64 総和が
-  加算順で 1 ulp ずれるだけ（XNeg: 1.0000000000000002）。判定を 4 ulp 許容に修正。
-  分割不変性への攻撃 8 種（分割線上円柱+プローブ/L字3分割跨ぎ/蓋・流入の分割跨ぎ/
-  不均等[3,1,1]/最小幅ガード/4分割コーナー液滴/20k長時間）は**全て耐えた**。
-  Shan-Chen V2 ネイティブAPI未整備のギャップは記録どおり（M-C/M-D で配線）。
-## 新規メモ（2026-07-05 M-B Wgpu backend / T14 実装）
+- Failure of the `d3q19_lattice_properties_from_all_angles` closure-constant "exactly == 1.0"
+  → **over-strict test** (category: test bug). The engine has the analytic value T::one()
+  hardcoded (kernels.rs zou_he) and the physics is correct. Only the test's own f64 sum
+  is off by 1 ulp due to addition order (XNeg: 1.0000000000000002). Fixed the judgement to a 4-ulp tolerance.
+  All 8 attacks on partition invariance (cylinder+probe on the partition line / L-shaped 3-way straddle / lid & inlet straddle /
+  uneven [3,1,1] / minimum-width guard / four-way corner droplet / 20k long run) **all held**.
+  The gap of the unwired Shan-Chen V2 native API is as recorded (wired in M-C/M-D).
+## New note (2026-07-05 M-B Wgpu backend / T14 implementation)
 
-1. **T14 圧力 BC の許容線**: Zou–He 圧力面は `un = 1 - closure/rho_bc` が
-   O(1) スケールの closure の丸め差（Metal fast-math の逆数除算・再結合、
-   ~ulp(1) ≈ 1.2e-7）を**そのまま面の法線速度に**写像する（速度 BC では同じ
-   除算誤差が rho に落ち、f への寄与は u_n 倍で減衰する — 非対称）。
-   実測: CPU↔GPU 差は圧力面に固定（argmax が面に張り付き）、t=2 で ~2.2e-7、
-   t=100 で ~2.5e-6（u0=0.1 の速度相対 2.5e-5）。**CPU-vs-CPU で rho_bc を
-   1 ulp だけ摂動した対照実験が同じ成長曲線を再現**（t=100 で ~1.5e-6）した
-   ため、バックエンド欠陥ではなく BC の条件数と確定。
-   → **Disposition**: T14 は 6 構成（TGV/キャビティ/プロファイル流入チャネル/
-   円柱+プローブ/セル別力/Convective）を厳格線 1e-5 で凍結し受入を満たす。
-   圧力チャネルは第 7 構成として文書化済み緩和線 1e-4 + 恒久対照テスト
-   `t14_pressure_bc_ulp_sensitivity_control`（1 ulp 摂動ドリフトが 1e-6..1e-5
-   の帯にあることを常時検証; 帯を外れたら許容線を見直す）で凍結。
+1. **T14 pressure BC tolerance line**: the Zou–He pressure face maps the rounding difference of the
+   O(1)-scale closure (Metal fast-math reciprocal division/recombination,
+   ~ulp(1) ≈ 1.2e-7) **directly onto the face normal velocity** (for the velocity BC the same
+   division error falls into rho, and its contribution to f is damped by u_n — asymmetric).
+   Measured: the CPU↔GPU difference is pinned to the pressure face (argmax sticks to the face), ~2.2e-7 at t=2,
+   ~2.5e-6 at t=100 (velocity-relative 2.5e-5 at u0=0.1). **A CPU-vs-CPU control experiment perturbing rho_bc
+   by just 1 ulp reproduced the same growth curve** (~1.5e-6 at t=100),
+   so this is confirmed to be the condition number of the BC, not a backend defect.
+   → **Disposition**: T14 satisfies acceptance by freezing 6 configurations (TGV/cavity/profile-inlet channel/
+   cylinder+probe/per-cell force/Convective) at the strict line 1e-5.
+   The pressure channel is frozen as a 7th configuration at the documented relaxed line 1e-4 + a permanent control test
+   `t14_pressure_bc_ulp_sensitivity_control` (continuously verifies that the 1-ulp perturbation drift is in the
+   1e-6..1e-5 band; revisit the tolerance line if it leaves the band).
 
-2. **GPU ベンチの測定衛生**: ユニファイドメモリでは並走する CPU スイート
-   （本日: 3D エージェントの t15、load ~38）が GPU の DRAM 帯域を食い、
-   帯域律速カーネルは 1024²/2048² で 15-25% 落ちる（SLC に乗る 512² は鈍感）。
-   proto 凍結値との比較は**同一時間窓で proto を併走**させること
-   （examples/bench_gpu.rs のヘッダに手順と 2026-07-05 同窓実測を記録:
-   -6.4% / -10.7% / -13.6%、合格線 ±20% 内）。
-## 新規（2026-07-05 M-C 3D 実装）
+2. **GPU bench measurement hygiene**: with unified memory a concurrently running CPU suite
+   (today: the 3D agent's t15, load ~38) eats the GPU's DRAM bandwidth, and
+   bandwidth-bound kernels drop 15-25% at 1024²/2048² (512², which fits in SLC, is insensitive).
+   For comparison against proto frozen values, **run proto concurrently in the same time window**
+   (examples/bench_gpu.rs header records the procedure and the 2026-07-05 same-window measurements:
+   -6.4% / -10.7% / -13.6%, within the pass line ±20%).
+## New (2026-07-05 M-C 3D implementation)
 
-1. **T15.3 の参照値注記の誤記**: VALIDATION.md T15.3 は受入基準を
-   「Schiller-Naumann 相関 Cd = (24/Re)(1 + 0.15 Re^0.687) の ±10%」と定義し、
-   括弧書きで「Re=20: ≈2.09、Re=100: ≈1.09」を添えていたが、式の値は
-   **Re=20 → 2.6095**（2.09 は Re≈28 の値。Re=100 → 1.0917 は正しい）。
-   テスト（crates/lbm-core2/tests/t15_3d.rs）は一次基準である**式**に対して
-   ±10% を判定する。VALIDATION.md の括弧書きは 2.61 に訂正済み（許容幅は不変更）。
+1. **Typo in the T15.3 reference-value note**: VALIDATION.md T15.3 defined the acceptance criterion as
+   "±10% of the Schiller-Naumann correlation Cd = (24/Re)(1 + 0.15 Re^0.687)" and
+   added in parentheses "Re=20: ≈2.09, Re=100: ≈1.09", but the value of the formula is
+   **Re=20 → 2.6095** (2.09 is the value at Re≈28; Re=100 → 1.0917 is correct).
+   The test (crates/lbm-core2/tests/t15_3d.rs) judges ±10% against the **formula**, which is the primary criterion.
+   The parenthetical in VALIDATION.md has been corrected to 2.61 (the tolerance width is unchanged).
 
-2. **T15.3 球抗力 Re=20 (D=24) が公称 D 基準で仕様帯 ±10% を超過**（PM triage 依頼）。
-   測定（momentum-exchange、窓平均 Cd = 500 step 窓の平均が相対 5e-4 で収束するまで。
-   窓平均にしたのは、速度流入↔圧力流出間の弱減衰音響定在波（減衰 ~1/(νk²) ≈ 6e4 step）
-   の O(Ma) リップルが瞬時サンプルの収束判定を ~1e5 step 停滞させるため）:
-   | 構成 | Cd 実測 | SN(Re) | 公称D 誤差 |
+2. **T15.3 sphere drag Re=20 (D=24) exceeds the spec band ±10% on a nominal-D basis** (PM triage request).
+   Measurement (momentum-exchange, window-averaged Cd = until the average of a 500 step window converges to relative 5e-4.
+   Window averaging was used because the O(Ma) ripple of the weakly damped acoustic standing wave between the velocity inlet ↔ pressure outlet (decay ~1/(νk²) ≈ 6e4 step)
+   stalls the convergence judgement of instantaneous samples for ~1e5 step):
+   | Configuration | Cd measured | SN(Re) | nominal-D error |
    |---|---|---|---|
-   | D=24, Re=100, 192×128×128, u=0.10 | 1.1698 (11k step) | 1.0917 | **+7.2% 合格** |
-   | D=24, Re=20, 192×128×128, u=0.05 | 2.9551 (39k step) | 2.6095 | **+13.2% 不合格** |
-   | D=12, Re=20, 96×64×64, u=0.06（軽量版・帯±25%） | 2.9790 (3k step) | 2.6095 | +14.2% 合格 |
-   **原因分析**: half-way BB の staircase 球は流体力学的半径が公称より約半リンク大きい
-   （Ladd 較正の古典的事実）。r_h = r + 0.5 で Cd と Re を再正規化すると誤差は
-   **+0.6% / +7.1% / +2.3%** に潰れ、物理（エンジン）は正しい。残差 +7.1%（Re=20, D=24）
-   は低 Re で遮蔽されない周期側面イメージ（D/L_y = 0.19、Stokes 的 O(D/L) 補正）が主。
-   つまり「公称 D・±10%・D=24・ブロッケージ≤3%」の組は Re=20 では物理的に両立しない
-   （半リンクバイアス ~ +2/D = +8.5% だけで帯をほぼ使い切る）。
-   **triage 候補**: (a) D を流体力学的直径（D_h = D+1）で定義（Ladd 流儀。全ケース余裕で
-   合格、帯の締め付けも可能）、(b) 公称 D のまま D ≥ 48 に引き上げ + 側面 ≥ 8D、
-   (c) Re=20 のみ帯を +15% に拡大。テストは仕様どおり公称 D ±10% のまま**弱めずに**
-   コミット（#[ignore] 重量級のみ red、デフォルトスイートは緑）。
+   | D=24, Re=100, 192×128×128, u=0.10 | 1.1698 (11k step) | 1.0917 | **+7.2% pass** |
+   | D=24, Re=20, 192×128×128, u=0.05 | 2.9551 (39k step) | 2.6095 | **+13.2% fail** |
+   | D=12, Re=20, 96×64×64, u=0.06 (lightweight, band ±25%) | 2.9790 (3k step) | 2.6095 | +14.2% pass |
+   **Cause analysis**: the half-way BB staircase sphere has a hydrodynamic radius about half a link larger than nominal
+   (a classical fact of Ladd calibration). Renormalizing Cd and Re with r_h = r + 0.5 collapses the error to
+   **+0.6% / +7.1% / +2.3%**, and the physics (engine) is correct. The residual +7.1% (Re=20, D=24)
+   is mainly the periodic side images that are not screened at low Re (D/L_y = 0.19, Stokes-like O(D/L) correction).
+   In other words, the combination "nominal D, ±10%, D=24, blockage ≤3%" is physically incompatible at Re=20
+   (the half-link bias alone, ~ +2/D = +8.5%, nearly uses up the band).
+   **triage candidates**: (a) define D as the hydrodynamic diameter (D_h = D+1) (Ladd style; all cases pass with margin,
+   and the band can also be tightened), (b) keep nominal D but raise to D ≥ 48 + side ≥ 8D,
+   (c) widen the band to +15% for Re=20 only. The test is committed as spec, nominal D ±10%, **without weakening it**
+   (only the #[ignore] heavyweight is red; the default suite is green).
 
-## 処理済み（2026-07-05 PM triage #4: M-C 球抗力）
+## Processed (2026-07-05 PM triage #4: M-C sphere drag)
 
-- T15.3 球 Re=20/D=24 の +13.2% 帯超過 → **仕様の正規化定義バグ**。
-  half-way BB の staircase 球は流体力学的半径 r_h = r+0.5（Ladd 較正）を持ち、
-  (Cd_h, Re_h) ペアで再正規化すると 3 ケースが +0.6%/+7.1%/+2.3% に収束
-  （エンジン正常）。VALIDATION T15.3 を D_h 定義に改定、テストは sn_hydro 化。
-  併せて仕様の誤記（Re=20 の SN 値 2.09 → 正しくは 2.6095）も訂正済み。
+- The +13.2% band overshoot of T15.3 sphere Re=20/D=24 → **normalization-definition bug in the spec**.
+  The half-way BB staircase sphere has a hydrodynamic radius r_h = r+0.5 (Ladd calibration), and
+  renormalizing with the (Cd_h, Re_h) pair converges the 3 cases to +0.6%/+7.1%/+2.3%
+  (engine normal). Revised VALIDATION T15.3 to the D_h definition, and made the test sn_hydro.
+  The spec typo (Re=20 SN value 2.09 → correctly 2.6095) has also been corrected.
 
-## 新規（2026-07-05 M-E CpuSimd 融合バックエンド）
+## New (2026-07-05 M-E CpuSimd fused backend)
 
-1. **等価性ゲート実測（tests/backend_simd_equiv.rs）**: CpuScalar vs CpuSimd、
-   8 シナリオ（2D TGV/キャビティ/プロファイル流入チャネル/円柱+プローブ/
-   セル別力 BGK/Convective、3D TGV/ダクト）× f64/f32、150〜400 step。
-   場（rho/u/流体セル f 平面）の実測 worst |Δ| は f64 で ~6e-14
-   （ゲート 1e-11）、f32 は全構成ゲート 1e-6 内。probed_force はリンク寄与を
-   CpuScalar の (x,q) セル順に並べ替えて再生する設計でビット等価。
-   InProcess 2×2（円柱+プローブが縫い目跨ぎ/周期 TGV/3D 2×2×1 ダクト）
-   vs 単一領域 CpuScalar も ≤6.4e-12（f64 部分和再結合のみ）。
-2. **f32 の外延診断は次元整合ゲートが必要**: total momentum は N セルの
-   f64 総和なので、バックエンド最終 ulp ドリフト（~1e-9/セル）が N 倍に
-   蓄積する（実測 96×64 で 1.1e-6、48×20×20 で 3.8e-6 — N 線形）。
-   v1_match の f32 ケースが場のみ比較していたのはこのため。ゲートは
-   場 1e-6（絶対）/ 質量・運動量 1e-6·N_fluid / probe 1e-5（実測 ≤1.3e-6）
-   に整理し、テスト頭書に測定根拠を記載。
-3. **カーネル形状の測定断面**（詳細 docs/PERFORMANCE.md「V2 CpuSimd」節 +
-   コード内 doc）: kernels.rs の逐語 DAG は V1 ペア形式比 1T −16%;
-   D3Q19 flat 展開はスカラー化（vec/scalar 命令 18/285）→ blocked 化で
-   3.0x; blocked への src/dst 別ビューはエイリアス検査でベクトル化崩壊
-   （−30%）; y ストリップリングは本機では SLC が平面リングを吸収するため
-   −20%; バンド 2 倍過剰分割 −8%。全て実装→実測→棄却の記録付き。
-4. **3D 12T の 2 倍未達を記録**: 128³ 12T で f32 1.9x / f64 1.4x
-   （1T は 3.0x/2.0x で達成）。支配要因はバンド端二重衝突（+19%）と
-   P/E 異種コアでの粗粒度バンド不均衡（scalar は行粒度 stealing で
-   スケール 7.5x、融合 5.2x）。改善候補: バンド端衝突の共有（要同期）、
-   または nz を跨ぐ動的バンドサイズ。
+1. **Equivalence-gate measurements (tests/backend_simd_equiv.rs)**: CpuScalar vs CpuSimd,
+   8 scenarios (2D TGV/cavity/profile-inlet channel/cylinder+probe/
+   per-cell force BGK/Convective, 3D TGV/duct) × f64/f32, 150–400 step.
+   The measured worst |Δ| of the fields (rho/u/fluid-cell f plane) is ~6e-14 in f64
+   (gate 1e-11), and f32 is within the 1e-6 gate for all configurations. probed_force is bit-equivalent by design,
+   reproducing the link contributions reordered into CpuScalar's (x,q) cell order.
+   InProcess 2×2 (cylinder+probe straddling the seam / periodic TGV / 3D 2×2×1 duct)
+   vs single-domain CpuScalar is also ≤6.4e-12 (f64 partial-sum recombination only).
+2. **f32 extensive diagnostics need a dimension-consistent gate**: total momentum is an
+   f64 sum over N cells, so the backend's final ulp drift (~1e-9/cell) accumulates N-fold
+   (measured 1.1e-6 at 96×64, 3.8e-6 at 48×20×20 — linear in N).
+   This is why the f32 case of v1_match compared fields only. The gate was organized into
+   field 1e-6 (absolute) / mass & momentum 1e-6·N_fluid / probe 1e-5 (measured ≤1.3e-6),
+   with the measurement basis recorded in the test header.
+3. **Measurement cross-section of kernel shapes** (details in docs/PERFORMANCE.md "V2 CpuSimd" section +
+   in-code doc): the verbatim DAG in kernels.rs is 1T −16% vs the V1 pair form;
+   the D3Q19 flat expansion becomes scalarized (vec/scalar instructions 18/285) → 3.0x once blocked;
+   separate src/dst views into blocked collapse vectorization under alias checking
+   (−30%); y strip ringing is −20% because on this machine the SLC absorbs the plane ring;
+   band 2x over-partitioning −8%. All with an implement→measure→reject record.
+4. **Recording the sub-2x of 3D 12T**: at 128³ 12T, f32 1.9x / f64 1.4x
+   (1T achieves 3.0x/2.0x). The dominant factors are band-edge double collision (+19%) and
+   coarse-grained band imbalance on the heterogeneous P/E cores (scalar scales 7.5x with row-granularity stealing,
+   fused 5.2x). Improvement candidates: sharing the band-edge collision (requires synchronization),
+   or a dynamic band size that straddles nz.
 
-## 新規（2026-07-05 V1 引退作業）
+## New (2026-07-05 V1 retirement work)
 
-1. **sync-tests.sh の置換が macOS では無効だった**: `sed -E 's/\blbm_core\b/…/'` の
-   `\b` は BSD sed 非対応で無置換コピーになっており、「compat へ再標的化済み」の
-   複製テスト 16 ファイルは実際には dev-dependency の V1 を直接テストしていた
-   （M-A の「56+ テストが compat 経由で緑」は未検証状態だった）。perl 置換に修正して
-   再同期し、compat 実経由で全複製スイート緑を実測確認（T11b/T11c 含む）。
-   結果として compat ファサードの欠陥は見つからず — 事後的に主張は正しかった。
-2. **compat 切替で 2D 実行経路は CpuScalar になり V1 比で遅くなる**（要 triage）:
-   compat ファサードは `Solver<D2Q9, T, CpuScalar, LocalPeriodic>` 固定
-   （V1 ビット一致の根拠）。CLI/GUI の 2D は V1 融合カーネル → CpuScalar への
-   置換になり、実測 `lbm presets run cavity` は 140 → 52 MLUPS（2.7x 減）。
-   wasm も同様（V1 シリアル融合 → シリアル CpuScalar、俯瞰値で ~5x 減の見込み）。
-   対処はファサードの backend を CpuSimd に差し替える 1 行だが、これは軌道を
-   ulp レベルで変える挙動変更（backend_simd_equiv のゲートは f64 1e-11 /
-   f32 1e-6）なので、本引退作業では**行わず**現状維持。複製スイート緑のまま
-   差し替え可能なことは backend_simd_equiv が示唆しており、別途サインオフで。
-3. **Shan-Chen 壁吸着の V2 ネイティブ配線完了**（M-D 申し送りの解消）:
-   `Solver::update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi)` を追加
-   （`MpiSolver` にも同名ラッパ）。solid 隣接は cohesion 和に ψ_wall を寄与し
-   `g_wall` の吸着項を加算、非周期域外は無寄与 — V1 と演算子順まで同一。
-   受入: `t13_shan_chen_wall_adhesion_native_matches_compat_and_split`
-   （3 ケース g_wall=-1.5/+0.9/wall_rho=1.2 × 150 step、native vs compat
-   ビット一致 + 2x1/1x2/2x2 分割不変ビット一致）。中立壁の既存呼び出しは
-   歴史的式を保持（ビット同一）。
+1. **sync-tests.sh's substitution was ineffective on macOS**: the `\b` in `sed -E 's/\blbm_core\b/…/'`
+   is unsupported by BSD sed, producing a no-substitution copy, so the 16 duplicate test files "already re-targeted to compat"
+   were actually testing the dev-dependency V1 directly
+   (M-A's "56+ tests green via compat" was unverified). Fixed it to a perl substitution and
+   re-synced, confirming by measurement that the entire duplicate suite is green via the actual compat path (including T11b/T11c).
+   As a result no defect was found in the compat facade — after the fact, the claim was correct.
+2. **The compat switch makes the 2D execution path CpuScalar and slower than V1** (needs triage):
+   the compat facade is fixed to `Solver<D2Q9, T, CpuScalar, LocalPeriodic>`
+   (the basis for V1 bit-match). The 2D of CLI/GUI becomes a replacement of the V1 fused kernel → CpuScalar,
+   and measured `lbm presets run cavity` is 140 → 52 MLUPS (2.7x drop).
+   wasm is the same (V1 serial fused → serial CpuScalar, expected ~5x drop at a glance).
+   The fix is a 1-line replacement of the facade's backend with CpuSimd, but this is a behavior change that alters the trajectory
+   at the ulp level (backend_simd_equiv's gate is f64 1e-11 /
+   f32 1e-6), so it is **not done** in this retirement work and left as-is. That it can be
+   replaced with the duplicate suite still green is suggested by backend_simd_equiv, to be done with a separate sign-off.
+3. **V2 native wiring of Shan-Chen wall adhesion completed** (resolves the M-D handover):
+   added `Solver::update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi)`
+   (with an identically named wrapper on `MpiSolver` too). Solid neighbors contribute ψ_wall to the cohesion sum and
+   add the adhesion term of `g_wall`; outside the non-periodic domain there is no contribution — identical to V1 down to the operator order.
+   Acceptance: `t13_shan_chen_wall_adhesion_native_matches_compat_and_split`
+   (3 cases g_wall=-1.5/+0.9/wall_rho=1.2 × 150 step, native vs compat
+   bit-match + 2x1/1x2/2x2 partition-invariance bit-match). The existing neutral-wall calls
+   retain the historical formula (bit-identical).
 
-## 新規（2026-07-05 M-D MPI 分散実装）
+## New (2026-07-05 M-D MPI distributed implementation)
 
-1. **T13-MPI 全 PASS（場はビット一致）**: mpirun -n {1,2,4} × {2D TGV/キャビティ
-   （蓋が縫い目跨ぎ）/縫い目上円柱+プローブ+放物線流入/Shan-Chen 液滴（2×2 コーナー、
-   ψ を exchange_scalar 経由）} と -n 8 × {3D TGV 24³ 2×2×2} で、rank-0 gather 場
-   （rho/u/全 f 平面）が単一ランク基準と **max|Δ| = 0.0**。診断（mass/momentum/
-   probed_force/NaN 数）は rank 部分和 → Allreduce の f64 再結合差のみ
-   （≤9.1e-13 abs、液滴 mass は ≤4.5e-11 abs = 相対 ~3e-14）。判定線は T13 流儀
-   atol+rtol 各 1e-12（場）/1e-11（診断）。再現: `./scripts/test_mpi.sh`。
-2. **Shan-Chen V2 ネイティブ API ギャップ解消**（codex order #6 記載分）:
-   `Solver::update_shan_chen_force`（単成分、ψ ハローを exchange_scalar で配線）を
-   追加。InProcess の 2×2 コーナー液滴 T13（`t13_shan_chen_droplet_native_split_
-   invariant`）もビット一致で緑。壁吸着（g_wall/wall_rho）は未配線 — 必要になった
-   時点で compat::ShanChen から移植する。
-3. **rsmpi/Open MPI の罠**（詳細 docs/MPI_GUIDE.md）: (a) x86_64 Homebrew MPI が
-   PATH 先頭だと rsmpi ビルド/実行が壊れる（arm64 版を先頭に）。(b) 複製
-   コミュニケータを持つ MpiSolver を Universe drop（MPI_Finalize）後に drop すると
-   MPI_Comm_free で abort（exit 14）— bench_mpi.rs で実際に踏んだ。(c) マスク編集は
-   collective: set_solid を所有ランクだけで呼ぶと exchange_masks の呼び出し回数が
-   ずれてデッドロック（MpiSolver は非所有ランクも dirty マークを立てて回避）。
-4. **弱スケーリング（単一ノード・共有メモリ経由の参考値）**: 512²/rank 直列
-   バックエンドで n=1: 40.2 / n=2: 79.9 (99.4%) / n=4: 155.9 (97.0%) /
-   n=8: 235.5 MLUPS (73.2%)。n=8 の低下は M5 Max の異種コア（6 Super + 12
-   Performance）+帯域競合が主因: 通信ゼロの対照実験（独立 1 ランク×8 並走）でも
-   84% 相当が天井で、MPI 化の追加損は ~12%（ロックステップのジッタ結合）。
-   n≤4（均質コア内）は R3 ローカル線 ≥85% を満たす。真の測定はクラスタ待ち
-   （測定リスト: docs/MPI_GUIDE.md §クラスタ）。
+1. **T13-MPI all PASS (fields bit-match)**: for mpirun -n {1,2,4} × {2D TGV/cavity
+   (lid straddling the seam)/cylinder+probe+parabolic-inlet on the seam/Shan-Chen droplet (2×2 corner,
+   ψ via exchange_scalar)} and -n 8 × {3D TGV 24³ 2×2×2}, the rank-0 gathered fields
+   (rho/u/all f planes) are **max|Δ| = 0.0** against the single-rank baseline. The diagnostics (mass/momentum/
+   probed_force/NaN count) are only the f64 recombination difference of rank partial-sum → Allreduce
+   (≤9.1e-13 abs; droplet mass is ≤4.5e-11 abs = relative ~3e-14). The judgement lines are T13-style
+   atol+rtol of 1e-12 each (fields) / 1e-11 (diagnostics). Reproduce: `./scripts/test_mpi.sh`.
+2. **Shan-Chen V2 native API gap resolved** (the part noted in codex order #6):
+   added `Solver::update_shan_chen_force` (single-component, ψ halo wired via exchange_scalar).
+   The InProcess 2×2 corner droplet T13 (`t13_shan_chen_droplet_native_split_
+   invariant`) is also green with a bit-match. Wall adhesion (g_wall/wall_rho) is not wired — port it
+   from compat::ShanChen when needed.
+3. **rsmpi/Open MPI pitfalls** (details in docs/MPI_GUIDE.md): (a) if x86_64 Homebrew MPI is
+   at the front of PATH, the rsmpi build/run breaks (put the arm64 version first). (b) dropping an MpiSolver holding a
+   duplicated communicator after the Universe is dropped (MPI_Finalize) aborts at
+   MPI_Comm_free (exit 14) — actually hit in bench_mpi.rs. (c) mask editing is
+   collective: calling set_solid only on the owning rank misaligns the number of exchange_masks calls
+   and deadlocks (MpiSolver avoids this by having non-owning ranks also set the dirty mark).
+4. **Weak scaling (single node, reference values via shared memory)**: with the 512²/rank serial
+   backend, n=1: 40.2 / n=2: 79.9 (99.4%) / n=4: 155.9 (97.0%) /
+   n=8: 235.5 MLUPS (73.2%). The drop at n=8 is mainly due to the M5 Max heterogeneous cores (6 Super + 12
+   Performance) + bandwidth contention: even a zero-communication control experiment (8 independent 1-rank runs concurrently)
+   caps at about 84%, and the additional loss from MPI-ization is ~12% (lockstep jitter coupling).
+   n≤4 (within the homogeneous cores) satisfies the R3 local line ≥85%. The true measurement awaits a cluster
+   (measurement list: docs/MPI_GUIDE.md §cluster).
 
-## 新規（2026-07-05 T15.5 3D cavity Re=1000）
+## New (2026-07-05 T15.5 3D cavity Re=1000)
 
-1. **T15.5 既定スイートは N=64 qualitative sentinel に固定**:
-   `cargo test -p lbm-core --release --test t15_5_cavity3d` は 47.32s wall で
-   green（2 passed / 2 ignored）。N=48 は Re/(N-2)=21.7 で 20k step 内に NaN
-   発散し、docs/T15_5_CAVITY3D_REFERENCE.md の Re/(N-2) ≲ 15 安定性警告と整合。
-   N=64 は同制約をわずかに超えるが、20k step で mass_rel=1.2e-16、
-   symmetry-plane max|v|/U≈2e-15、定性的 extrema signs/locations は通るため、
-   default では profile 数値帯を要求しない。
-2. **T15.5 N=72 spec-profile は red のまま凍結**:
+1. **T15.5 default suite is fixed to the N=64 qualitative sentinel**:
+   `cargo test -p lbm-core --release --test t15_5_cavity3d` is
+   green at 47.32s wall (2 passed / 2 ignored). N=48 has Re/(N-2)=21.7 and NaN-diverges
+   within 20k step, consistent with the Re/(N-2) ≲ 15 stability warning in docs/T15_5_CAVITY3D_REFERENCE.md.
+   N=64 slightly exceeds that constraint but passes mass_rel=1.2e-16 at 20k step,
+   symmetry-plane max|v|/U≈2e-15, and qualitative extrema signs/locations, so
+   the default does not require the profile numeric band.
+2. **T15.5 N=72 spec-profile is frozen as red**:
    `cargo test -p lbm-core --release --test t15_5_cavity3d \
-   t15_5_cavity3d_re1000_profiles_n72 -- --ignored --nocapture` は 1477.27s wall。
-   steady=true at 324500 step、mass_rel=2.546e-15、midplane max|v|/U=1.700e-15、
-   anti-2D RMS/U=0.1031、profile RMS/U は u=0.0153（limit 0.030）、
-   w=0.0255（limit 0.035）で通過。失敗点は extremum band:
-   u_min=-0.25084 at z=0.12925 vs A&K -0.2803833 at z=0.12419、rel=0.105
-   （limit 0.06）。w_min=-0.39537 at x=0.90383、w_max=0.22148 at x=0.11181
-   も A&K より浅い傾向。従って N=72 の中心線形状は合うが、渦強度は
-   A&K/Ben Beya band より数値拡散側で、ignored validation は red evidence として保持。
+   t15_5_cavity3d_re1000_profiles_n72 -- --ignored --nocapture` is 1477.27s wall.
+   steady=true at 324500 step, mass_rel=2.546e-15, midplane max|v|/U=1.700e-15,
+   anti-2D RMS/U=0.1031, profile RMS/U passes at u=0.0153 (limit 0.030),
+   w=0.0255 (limit 0.035). The failure point is the extremum band:
+   u_min=-0.25084 at z=0.12925 vs A&K -0.2803833 at z=0.12419, rel=0.105
+   (limit 0.06). w_min=-0.39537 at x=0.90383, w_max=0.22148 at x=0.11181
+   also tend to be shallower than A&K. Therefore the N=72 centerline shape matches, but the vortex strength
+   is on the numerically diffusive side of the A&K/Ben Beya band, and the ignored validation is retained as red evidence.
 3. **Endpoint sampling correction**:
-   A&K/Ghia 型 17 点表の端点は境界条件値そのものなので、T15.5 sampler は
-   u(z=0)=0, u(z=1)=U, w(x=0)=w(x=1)=0 を直接返す。隣接流体セルを端点として
-   使うと N=72 で u-line RMS/U が 0.0374 まで悪化し、half-way moving-wall
-   境界層を参照端点と混同する。
+   Since the endpoints of the A&K/Ghia-type 17-point table are the boundary-condition values themselves, the T15.5 sampler
+   returns u(z=0)=0, u(z=1)=U, w(x=0)=w(x=1)=0 directly. Using an adjacent fluid cell as the endpoint
+   worsens the u-line RMS/U to 0.0374 at N=72 and confuses the half-way moving-wall
+   boundary layer with the reference endpoint.
 
-## PM 回答（2026-07-05 深夜）— レビューセッション判断依頼 4 件 + M-F 統合
+## PM answers (2026-07-05 late night) — 4 review-session decision requests + M-F integration
 
-- **(a) 仕様書の main 取込**: PM 実施済み（コミット 5cf7a97）。SOLVER_IMPROVEMENT_SPEC.md
-  冒頭に main 用パス翻訳注記を追加。scripts/spec-experiments はパス翻訳
-  （lbm_core2→lbm_core、V1→compat）のうえ **E2/E7 が改名後 main で仕様書の数値と
-  厳密一致再現**することを確認済み。R-Phase 1 セッション側での取込作業は不要。
-- **(b) R-Phase 2 の発注時期**: R-Phase 1 着地直後に発注する。M-E 前提に加え、
-  M-F（REQ-M-F-STR rev.1b）の構造前提 = **複数分布セット（相場 g・スカラー h）・
-  per-cell 物性場・Lagrangian バッファ**を B-1 の設計要求に追加した（PLAN.md 現行キュー参照）。
-- **(c) D-6**: PM 直轄で適用済み — COMPETITIVE_SPEC R1/R3 を改定履歴付きで更新
-  （球 ±10%・D_h 正規化、弱スケ n≤4 局所線）、PLAN の「R1/R3 達成」表記に注記、
-  VALIDATION T15 の ±25%/±15% 不整合も解消（= A-10(c) の文書側は処理済み。
-  R-Phase 1 エージェントはコード側の t15_3d.rs コメントのみ対処すればよい）。
-- **(d) codex D-8（T14/T15 敵対発注）**: R-Phase 1 着地後に発注（入口ガードで
-  不正構成の挙動が Err に変わるため、ガード後の仕様で攻撃させるのが正しい）。
-  T15.5（3D キャビティ A&K 2005）は別途 codex order #7 として実行中。
-- **R-Phase 1 の起動**: チップ task_f890716a の押下は不要 — PM が worktree
-  `/Users/taku/projects/lbmflow-wt-rphase1`（ブランチ r-phase1、main 5cf7a97 ベース）で
-  Opus に発注済み。スコープ A-2〜A-10（D-6/D-7 除外、A-1 残作業は現地判断）。
-- **CpuSimd 切替**: 引き続き保留（B-1/B-2 の同期点契約整理後に判断）— 貴見解と一致。
-- **M-F 統合完了**: REQ rev.1b（表題中立化・コア改名追随・§7 メモリ予算表・T17 配線）、
-  VALIDATION.md に T13/T14 節（D-7）+ T16 プレースホルダ + **T17（VR-STR-01〜07）**新設、
-  PLAN.md に R-Phase キューと MF-α〜ζ 実装トラック表を制定。
-  残仕様詰め: active スカラー帰還式はリサーチ委任中（→ docs/proposals/）、
-  REQ 第 2 次 codex 検証は rev.1b に対し発注。
+- **(a) main uptake of the spec**: done by PM (commit 5cf7a97). Added a main-oriented path-translation note
+  at the head of SOLVER_IMPROVEMENT_SPEC.md. Confirmed that scripts/spec-experiments, after path translation
+  (lbm_core2→lbm_core, V1→compat), **reproduce the spec's numbers exactly on renamed main for E2/E7**.
+  No uptake work is needed on the R-Phase 1 session side.
+- **(b) timing of the R-Phase 2 order**: order it right after R-Phase 1 lands. In addition to the M-E premise,
+  added the structural premise of M-F (REQ-M-F-STR rev.1b) = **multiple distribution sets (phase field g, scalar h),
+  per-cell property fields, Lagrangian buffers** to B-1's design requirements (see the current PLAN.md queue).
+- **(c) D-6**: applied under direct PM control — updated COMPETITIVE_SPEC R1/R3 with a revision history
+  (sphere ±10%, D_h normalization, weak-scaling n≤4 local line), annotated the "R1/R3 achieved" wording in PLAN,
+  and also resolved the ±25%/±15% inconsistency of VALIDATION T15 (= the document side of A-10(c) is processed;
+  the R-Phase 1 agent only needs to handle the code-side t15_3d.rs comment).
+- **(d) codex D-8 (T14/T15 adversarial order)**: order it after R-Phase 1 lands (because the entrance guard
+  changes the behavior of invalid configurations to Err, it is correct to attack under the post-guard spec).
+  T15.5 (3D cavity A&K 2005) is separately running as codex order #7.
+- **launch of R-Phase 1**: pressing the chip task_f890716a is not needed — PM has ordered Opus in the worktree
+  `/Users/taku/projects/lbmflow-wt-rphase1` (branch r-phase1, based on main 5cf7a97).
+  Scope A-2–A-10 (excluding D-6/D-7; the remaining A-1 work is a local judgement).
+- **CpuSimd switch**: still on hold (to be decided after organizing the B-1/B-2 synchronization-point contracts) — agrees with your view.
+- **M-F integration complete**: REQ rev.1b (title neutralization, following the core rename, §7 memory budget table, T17 wiring),
+  added T13/T14 sections (D-7) + a T16 placeholder + **T17 (VR-STR-01–07)** to VALIDATION.md,
+  and established the R-Phase queue and the MF-α–ζ implementation track table in PLAN.md.
+  Remaining spec details: the active-scalar feedback formula is delegated to research (→ docs/proposals/),
+  and the 2nd codex verification of REQ was ordered against rev.1b.
 
-### 進行中プロセスの注意（2026-07-05 深夜時点）
-- codex #7 が main ツリーで実行中。副作用として `cargo fmt` がソース 17 ファイルに
-  整形のみの diff を生成している（lattice.rs / kernels.rs を目視確認 — 意味変更なし）。
-  codex 完了時に PM が triage（テスト成果物以外の整形 diff は revert 予定）。
+### Note on in-progress processes (as of 2026-07-05 late night)
+- codex #7 is running in the main tree. As a side effect `cargo fmt` is generating
+  formatting-only diffs in 17 source files (visually checked lattice.rs / kernels.rs — no semantic change).
+  When codex finishes, PM triages (formatting diffs other than test artifacts will be reverted).
 
-## codex REQ 第 2 次レビュー triage（2026-07-05 深夜、PM）
+## codex REQ 2nd-round review triage (2026-07-05 late night, PM)
 
-11 件（Critical 1 / Major 6 / Minor 4）**全採択** → REQ rev.2 として適用済み。
-所見原本: docs/proposals/req-round2-findings.md。要点:
-- C1: 緩和拡張の忠実度基準比検証が未配線 → **VR-STR-RELAX 群を新設**（REQ §8 + T17。
-  初版は trait/スキーマ/検証項目の予約のみ、帯は緩和実装時に凍結）。
-- M2: 「一括実装」と「後付け拡張」の混線 → 納品スコープを「忠実度既定 = 一括実装、
-  緩和 = API 予約のみ」に明文化。
-- M3: 変数 σ 時の表面張力規約 → §3 を条件分岐化（σ 一定 = μ_φ∇φ 基準形 / active =
-  well-balanced 併用形。**係数導出が実装前必須** — リサーチ提案の要導出と同一項目）。
-- M4: F_b^scalar（Boussinesq）を運動量式・FR-COUP-01 力源合成に追加、
-  C≡C_0 厳密ゼロ + VR-STR-06+ 退化検証。
-- M5/M6: T17 転記漏れ（エネルギー様量 = 監視量扱い）と 02a/b/c 分割を REQ/T17 両面で修正。
-- M7: NFR-02 の旧「f32 既定」語彙を忠実度プロファイル既定に統一。
-- m8/m9: メモリ予算表の界面帯償却 +18–37 B に修正（帯 5–10% と整合）、
-  「数 TB 級」→「0.6 TB 級（既定）/ TB〜数 TB（全 f64・複数スカラー・CP 込み）」。
-- m10/m11: §2 見出しの中立化整合、M-F 忠実度既定 = 常に D3Q27 の明示。
+11 findings (Critical 1 / Major 6 / Minor 4) **all adopted** → applied as REQ rev.2.
+Original findings: docs/proposals/req-round2-findings.md. Key points:
+- C1: fidelity-vs-baseline verification of the relaxation extension is unwired → **created the VR-STR-RELAX group** (REQ §8 + T17.
+  The first version only reserves the trait/schema/verification items; the bands are frozen when the relaxation is implemented).
+- M2: confusion between "batch implementation" and "add-on extension" → made the delivery scope explicit as "fidelity-default = batch implementation,
+  relaxation = API reservation only".
+- M3: surface-tension convention for variable σ → made §3 branch on conditions (constant σ = μ_φ∇φ base form / active =
+  well-balanced combined form. **Coefficient derivation is mandatory before implementation** — the same item as the required derivation in the research proposal).
+- M4: added F_b^scalar (Boussinesq) to the momentum equation and the FR-COUP-01 force-source composition,
+  with C≡C_0 exactly zero + VR-STR-06+ degeneracy verification.
+- M5/M6: fixed the T17 transcription omission (energy-like quantity = treated as a monitored quantity) and the 02a/b/c split on both the REQ and T17 sides.
+- M7: unified NFR-02's old "f32 default" vocabulary to fidelity-profile default.
+- m8/m9: corrected the memory budget table's interface-band amortization to +18–37 B (consistent with band 5–10%),
+  "TB-scale" → "0.6 TB-scale (default) / TB to several TB (all-f64, multiple scalars, CP included)".
+- m10/m11: neutralization consistency of the §2 headings, explicit that the M-F fidelity default is always D3Q27.
 
 ## PM integration record (2026-07-05, late night — English from here on per user directive)
 
@@ -381,12 +380,12 @@ reviewer had not seen). Dispositions:
 | MJ-005 Ca_spurious dimensional | **valid** (stray L) | ADOPTED: Ca_spurious = μ_l\|u\|/σ; Re_spurious separate. VALIDATION T17 synced |
 | MJ-006 Pe vs U_tip | **valid** (π ambiguity) | ADOPTED: Pe_N = Re·Sc / Pe_tip = π·Re·Sc split; bare "Pe" banned |
 | MJ-007 active scalar 1-step lag | **valid** vs fidelity-default principle | ADOPTED: dataflow split passive/active; predictor–corrector default; `active_scalar_lagged` = flagged relaxation via VR-STR-RELAX; dt-halving acceptance |
-| MJ-008 一括 vs 後日 | already fixed in rev.2 (codex round-2 #2) | STRENGTHENED: explicit Initial-delivery / Phase-2 lists added to §0 |
+| MJ-008 batch vs later | already fixed in rev.2 (codex round-2 #2) | STRENGTHENED: explicit Initial-delivery / Phase-2 lists added to §0 |
 | MJ-009 f32/f64 boundary undefined | **valid** (needed for array/GPU design now) | ADOPTED: precision_profile enum {full_f64, mixed_safe(default), mixed_fast}; interface_band = max(3W,6Δx) provisional, re-frozen at W-VOF |
 | MJ-010 no numeric thresholds | conflicts with characterize→freeze protocol; concern (post-hoc band-fitting) legitimate | **ADAPTED**: provisional numeric bands added NOW (Np ±10% etc.) + asymmetric governance — tighten freely, loosen only with PHYSICS.md rationale (T15.5 precedent). Reviewer's per-test metadata format adopted for T17 rows |
 | MJ-011 scalar non-conservative form | **valid** for two-phase/active | ADOPTED: phase-wise conservative + ρY forms normative; Henry flux sign convention; total-mass conservation test |
 | MJ-012 four-way contact undefined | **valid gap** | ADOPTED as Phase-2 contract: FR-PART-04 (soft-sphere params), -05 (lubrication), -06 (config rejection beyond two-way regime — ships in initial delivery) |
-| MJ-013 viscosity interp / σ coefficient hedges | **valid** ("固定版" claim violated) | ADOPTED: harmonic-in-μ default frozen (alternatives = logged options outside default bands); "(係数はモデル定義)" hedge removed — σ=√(2κβ)/6, W=4√(κ/(2β)) are THE definitions (internal consistency was verified by codex round-2) |
+| MJ-013 viscosity interp / σ coefficient hedges | **valid** ("fixed version" claim violated) | ADOPTED: harmonic-in-μ default frozen (alternatives = logged options outside default bands); "(coefficients are model-defined)" hedge removed — σ=√(2κβ)/6, W=4√(κ/(2β)) are THE definitions (internal consistency was verified by codex round-2) |
 | MN-014 ε_g processing units | **valid refinement** | ADOPTED: ε_g_raw / ε_g_thresholded(φ_c=0.5) / kernel-smoothed / hybrid-dedup definitions + mandatory metadata |
 
 Net: 13 adopted (1 adapted), 1 already-fixed-and-strengthened. REQ is now rev.4.
