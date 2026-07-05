@@ -771,3 +771,38 @@ LBM-native non-equilibrium stress evaluation (FR-STRESS-01 / order A) over
 post-hoc FD — paper-grade datum (claims ledger GREEN list candidate once the
 CLI channel ships). Viewer now consumes gather_shear_rate; vorticity/Q swap
 pending the FieldKind channel.
+
+### MEASUREMENT WINDOW **CLOSED** — 2026-07-05 23:35 JST (sales-paper session)
+PM: window released — **you may resume heavy dispatches / start ME-1**. Public-grade
+results in `docs/paper/benchmark-results.md`. Summary (M5 Max, HEAD b262447):
+- Roofline: 344 GB/s STREAM / 459 GB/s write-alloc (18T), ~546 nominal.
+- LBMFlow CPU 2D D2Q9 f32 peak **1,480 MLUPS** (2048x2048/18T; beats prior 1,183);
+  3D D3Q19 f32 **302** (192^3/18T), **267** (128^3).
+- LBMFlow GPU 2D Metal f32: **12,205 / 7,073 / 6,720** MLUPS (512/1024/2048);
+  all CPU-vs-GPU verification passed.
+- Head-to-head vs OpenLB 1.9 (native arm64, CPU_SISD, D3Q19 128^3 f32):
+  LBMFlow **52.0** vs OpenLB 44.6 (single thread, LBMFlow +17%);
+  LBMFlow 266.6 vs OpenLB **298.8** (18-way, OpenLB +12%). Same order = competitive;
+  LBMFlow additionally has the GPU path OpenLB lacks on Apple Silicon.
+Follow-up window: OpenLB-2D, Palabos, OpenFOAM(Colima) — see results doc section 4.
+
+## Bench-driven core improvement queue (sales-paper measurements, 2026-07-06)
+
+From docs/paper/benchmark-results.md (public-grade window, M5 Max):
+**#1 R2-D order (queued after the TRT-port order — both churn backend_simd.rs):
+3D CPU all-core scaling loses to OpenLB by 12%** (128³ f32: 266.6 vs 298.8 MLUPS)
+while single-thread WINS +17% (52.0 vs 44.6) → parallel efficiency, not kernel.
+Known roots (already measured): band-edge slab double-collision (+19% work) +
+coarse band granularity vs P/E heterogeneous cores (fused 5.2x vs scalar
+work-stealing 7.5x). Candidates: shared band-edge collision (needs sync) /
+dynamic band size across nz / phase-split fallback above a core-count threshold.
+The ONLY measured competitive loss — high paper leverage, also feeds ME-3.
+**#2 → M-E main course (confirmed on roadmap)**: bandwidth headroom — 2D f32 peak
+= ~23% of write-alloc roofline (1,480 MLUPS vs 344/459 GB/s measured) → 3-4x
+theoretical: esoteric-pull in-place streaming (memory halving ⇒ ~2x effective
+bandwidth; NOTE the A-8 open-face unknown-slot stream contract must be preserved
+or its mechanism replaced — pinned in ARCHITECTURE_V2 §2.3) + explicit SIMD.
+**#3 S3**: 2D 4096² droop −11% vs 2048² — TLB/cache blocking investigation.
+Strengths confirmed for the paper: single-thread NEON wins; GPU 2D at bandwidth
+ceiling (7,073 @1024² sustained; 12,205 @512² is SLC-resident, not sustained).
+Repro: ~/projects/cfd-bench/ (sweep scripts + bw_triad).
