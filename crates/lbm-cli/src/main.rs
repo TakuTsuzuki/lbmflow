@@ -128,10 +128,10 @@ fn main() -> Result<()> {
         Command::Validate { scenario } => {
             let sc = load_scenario(&scenario)?;
             let warnings = lbm_scenario::validate(&sc);
-            let build_result = lbm_scenario::build(&sc);
+            let build_result = lbm_scenario::build_check(&sc);
             let report = serde_json::json!({
                 "ok": build_result.is_ok(),
-                "error": build_result.err().map(|e| e.to_string()),
+                "error": build_result.err(),
                 "warnings": warnings,
             });
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -179,31 +179,37 @@ const SCHEMA_DOC: &str = r#"シナリオ JSON (v0) — lbm run <file.json>
 {
   "version": 0,
   "name": "my-sim",                       // 出力ディレクトリ名
-  "grid": { "nx": 128, "ny": 128 },
+  "grid": { "nx": 128, "ny": 128 },        // "nz": 64 を足すと 3D (D3Q19) で実行
+                                           //   （省略 or 1 = 2D。3D の制約は末尾参照）
   "physics": {
     "nu": 0.02,                            // 動粘性係数（格子単位）。tau = 3*nu + 0.5
     "collision": { "type": "trt" },        // "trt"（推奨） | "bgk"
-    "force": [0.0, 0.0],                   // 一様体積力（重力など）
+    "force": [0.0, 0.0],                   // 一様体積力（重力など。3D では z 成分 0）
     "precision": "f64"                     // "f32" | "f64"
   },
+  "compute": { "backend": "auto" },        // 省略可: "auto" | "cpu" | "gpu"（gpu は未提供）
   "edges": {                               // 4辺の境界条件
     "left":   { "type": "velocityInlet", "u": [0.1, 0.0] },
     "right":  { "type": "pressureOutlet", "rho": 1.0 },
     "bottom": { "type": "bounceBack" },
     "top":    { "type": "bounceBack" }
+    // 3D では "front"（z=0）/"back"（z=nz-1）を追加可（省略 = periodic）。
     // 他: {"type":"periodic"}（対辺ペア必須）, {"type":"movingWall","u":[ux,uy]},
     //     {"type":"outflow"},
     //     {"type":"convectiveOutflow","uConv":0.1}  // 対流流出。outflow より圧力反射が
     //       小さい。uConv = 期待平均流出速度（0 < uConv <= 1、流入速度と同程度が目安）
     // 制約: 開境界(velocityInlet/pressureOutlet/outflow/convectiveOutflow)同士は
-    //       直交して隣接不可
+    //       直交して隣接不可（3D では開境界は 1 軸のみ）
   },
   "inletProfile": {                        // 省略可: 放物線流入
     "edge": "left", "kind": "parabolic", "umax": 0.15
+    // 3D: 壁に挟まれた接線軸ごとに放物線、periodic 軸は一様
+    //     （4壁ならダクト型 u = umax·f(y)·f(z)）
   },
   "obstacles": [                           // 省略可
-    { "shape": "circle", "cx": 80, "cy": 80, "r": 20 },
-    { "shape": "rect", "x0": 10, "y0": 10, "x1": 20, "y1": 40 }
+    { "shape": "circle", "cx": 80, "cy": 80, "r": 20 },   // 3D では z 方向に押し出し（円柱）
+    { "shape": "rect", "x0": 10, "y0": 10, "x1": 20, "y1": 40 },
+    { "shape": "sphere", "cx": 60, "cy": 32, "cz": 32, "r": 12 }  // 3D 専用
   ],
   "init": { "kind": "rest" },              // rest | droplet{cx,cy,r,rhoLiquid,rhoVapor}
                                            // | pool{heightFrac,rhoLiquid,rhoVapor}
@@ -218,15 +224,19 @@ const SCHEMA_DOC: &str = r#"シナリオ JSON (v0) — lbm run <file.json>
     "stopWhenSteady": { "epsilon": 1e-8, "checkEvery": 500 }  // 省略可
   },
   "probes": [                              // 省略可: 時系列 CSV
-    { "type": "force", "every": 10 },      // 障害物への力（force.csv）
-    { "type": "point", "x": 220, "y": 80, "every": 100 }
+    { "type": "force", "every": 10 },      // 障害物への力（force.csv。3D は fx,fy,fz）
+    { "type": "point", "x": 220, "y": 80, "every": 100 }  // 3D は "z" も指定可（省略 = nz/2）
   ],
   "outputs": [                             // 省略可: 場のスナップショット
     { "field": "speed", "format": "png", "every": 0 }   // every=0 は終了時のみ
     // field: speed | ux | uy | rho | vorticity
     // format: png | csv | vtk（VTK legacy structured points。ParaView 等で開ける）
+    // 3D: png/csv は z 中央断面、vtk は 3D 全体（DIMENSIONS nx ny nz）
   ]
 }
+
+3D (nz > 1) の制約: 単相のみ（multiphase 不可）、init は rest のみ、
+compute.backend は cpu/auto（gpu は未提供）。エンジンは V2 コア（D3Q19）。
 
 結果: <out>/manifest.json（status/steps/mlups/診断/警告/ファイル一覧）
 status: completed | steady（定常判定で早期終了）| diverged（NaN 検出）
