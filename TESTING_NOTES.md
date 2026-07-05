@@ -597,3 +597,13 @@ pipeline on the new body-force API.
 - Verified FR-STRESS-01 rev.4 force correction sign in the native body-force Poiseuille check: `Pi_force = -0.5 * (uF + Fu)`, so `Pi_neq_corr = Pi_neq_raw + 0.5 * (uF + Fu)` for this engine's physical velocity and deviation-form equilibrium. Measured interior `gamma_dot(y)` max absolute error: `1.528708800171974e-14`.
 - Plane Couette half-way-wall check: analytic `S_xy = 0.5 * U / H` with `U=0.1`, `H=8`; measured max absolute `S_xy` error: `1.3877787807814457e-16`. `gather_shear_rate()` matched `sqrt(2 S:S)` from the returned tensor exactly in this fixture.
 - InProcess decomposition check `[1,1,1]` vs `[2,2,1]`: `gather_strain_rate()` and `gather_shear_rate()` matched bit-for-bit after 25 forced BGK steps with a spatial body-force field.
+
+## Attribution correction (2026-07-05, per the requirements session / Taku)
+
+docs/REQ_STIRRED_REACTOR.md + the orders A/B/C derivation = the requirements session
+(correct as recorded). Commit b74298e (body-force field API) + the primary-checkout
+switch to feat/body-force-field-api = a DIFFERENT worker (earlier PM notes attributed
+both to one session — corrected). The stirred-tank demo is now owned by the
+requirements session: builds against trunk (R-Phase 1 guards active), demo example
+stays untracked, volume-penalization interim, measured behavior lands here in
+English for the MF-δ record; no primary-checkout branch switches.
