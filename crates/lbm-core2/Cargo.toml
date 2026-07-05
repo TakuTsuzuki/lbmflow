@@ -14,6 +14,9 @@ wgpu = { version = "26", optional = true }
 bytemuck = { version = "1", optional = true }
 pollster = { version = "0.4", optional = true }
 futures-intrusive = { version = "0.5", optional = true }
+# MPI distribution (feature `mpi`; rsmpi needs an MPI toolchain — `mpicc`
+# on PATH — at build time, so the default graph never depends on it).
+mpi = { version = "0.8", optional = true }
 
 [features]
 default = ["parallel"]
@@ -22,10 +25,21 @@ parallel = ["dep:rayon"]
 # graph never depends on wgpu; CI runs `--features gpu` separately on GPU
 # hosts (docs/GPU_EVALUATION.md adoption condition (b)).
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:futures-intrusive"]
+# MPI halo exchange + distributed diagnostics (docs/MPI_GUIDE.md). Off by
+# default: requires a native MPI installation (see scripts/test_mpi.sh).
+mpi = ["dep:mpi"]
 
 [[example]]
 name = "bench_gpu"
 required-features = ["gpu"]
+
+[[example]]
+name = "mpi_t13"
+required-features = ["mpi"]
+
+[[example]]
+name = "bench_mpi"
+required-features = ["mpi"]
 
 [dev-dependencies]
 # V1 reference implementation, used only by equivalence tests (never a
