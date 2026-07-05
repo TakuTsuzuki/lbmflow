@@ -58,6 +58,7 @@ impl<L: Lattice> GpuSolver<L> {
 
     /// Second-order consistent initialisation.
     pub fn init_with(&mut self, init: impl Fn(usize, usize, usize) -> (f32, [f32; 3])) {
+        self.inner.backend().clear_cached_moment_upload_marker();
         self.inner.init_with(init);
     }
 
@@ -81,6 +82,7 @@ impl<L: Lattice> GpuSolver<L> {
         let n = self.inner.dims().iter().product::<usize>();
         assert_eq!(field.len(), n, "force field must cover the whole grid");
         self.inner.fields_mut(0).force_field = Some(field);
+        self.inner.backend().cache_next_upload_moments_once();
     }
 
     /// Advance `steps` steps on the GPU through the unified solver.
