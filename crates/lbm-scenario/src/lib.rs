@@ -1209,6 +1209,45 @@ mod tests {
         .is_err());
     }
 
+    #[test]
+    fn web_export_shape_roundtrips_stably() {
+        let exported = r#"{
+            "version": 0,
+            "name": "web-export-smoke",
+            "grid": { "nx": 24, "ny": 18 },
+            "physics": {
+                "nu": 0.04,
+                "collision": { "type": "bgk" },
+                "force": [0.000001, 0.0],
+                "precision": "f64"
+            },
+            "edges": {
+                "left": { "type": "periodic" },
+                "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" },
+                "top": { "type": "movingWall", "u": [0.05, 0.0] }
+            },
+            "obstacles": [
+                { "shape": "rect", "x0": 8, "y0": 7, "x1": 10, "y1": 9 }
+            ],
+            "init": { "kind": "rest" },
+            "run": { "steps": 20000 },
+            "outputs": [
+                { "field": "speed", "format": "png", "every": 0 }
+            ]
+        }"#;
+        let sc: Scenario = serde_json::from_str(exported).unwrap();
+        build(&sc).unwrap();
+
+        let first = serde_json::to_string(&sc).unwrap();
+        let back: Scenario = serde_json::from_str(&first).unwrap();
+        let second = serde_json::to_string(&back).unwrap();
+        assert_eq!(first, second);
+        for key in ["\"nz\"", "\"compute\"", "\"front\"", "\"back\"", "\"probes\""] {
+            assert!(!second.contains(key), "web export gained {key}: {second}");
+        }
+    }
+
     fn duct3d() -> Scenario {
         serde_json::from_str(
             r#"{
