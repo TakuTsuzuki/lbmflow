@@ -24,9 +24,9 @@ AI-agent integration (MCP).
 - **Scale-out**: MPI domain decomposition behind feature `mpi`
   ([docs/MPI_GUIDE.md](docs/MPI_GUIDE.md)).
 - **Rich boundary conditions**: periodic, half-way bounce-back (static and
-  moving walls), Zou-He velocity inlet (uniform or arbitrary profile), Zou-He
-  pressure, zero-gradient outflow, arbitrary internal obstacles,
-  momentum-exchange drag probes.
+  moving walls), Zou-He velocity inlet (uniform or arbitrary profile via
+  `set_inlet_profile`), Zou-He pressure, zero-gradient and convective outflow,
+  arbitrary internal obstacles, momentum-exchange drag probes.
 - **Multiphase**: Shan-Chen single-component two-phase (droplets, contact
   angles — validated).
 - **Three front-ends**: browser GUI (WASM) / CLI (JSON scenarios) /
@@ -47,6 +47,7 @@ the mouse. This is the real LBM engine (Rust→WASM) running in your browser.
 ```bash
 cargo build --release -p lbm-cli
 ./target/release/lbm presets list                 # built-in presets
+./target/release/lbm presets show cavity          # print a preset's scenario JSON
 ./target/release/lbm presets run cylinder-karman  # run → PNG/CSV/VTK/manifest.json in out/
 ./target/release/lbm gallery                      # run all presets → HTML report
 ./target/release/lbm schema                       # scenario JSON format
@@ -59,9 +60,10 @@ cargo build --release -p lbm-cli
 claude mcp add lbmflow -- /path/to/target/release/lbm mcp
 ```
 
-Agents drive simulations through four tools — `run_scenario` /
-`validate_scenario` / `list_presets` / `get_schema` — and receive structured
-results (manifest + PNG/CSV).
+Agents drive simulations through seven tools: `run_scenario` (synchronous),
+`start_run` / `run_status` / `list_runs` (async jobs for long runs and
+parallel sweeps), plus `validate_scenario` / `list_presets` / `get_schema`.
+Results are structured (manifest + PNG/CSV).
 
 ## Quickstart (library)
 

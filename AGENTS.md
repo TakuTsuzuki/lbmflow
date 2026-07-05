@@ -24,13 +24,16 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 ## Repository map
 
 - `crates/lbm-core` — the single core (V2): D2Q9/D3Q19 lattices, CPU
-  scalar/SIMD backends, wgpu GPU backend (feature `gpu`), MPI halo exchange
-  (feature `mpi`), legacy 2D facade in `compat/`
+  scalar/SIMD backends, wgpu GPU backend (feature `gpu`, off by default —
+  `cargo test --workspace` does NOT cover it; CI runs `--features gpu` on GPU
+  hosts), MPI halo exchange (feature `mpi`, off by default, needs a native MPI
+  toolchain — see scripts/test_mpi.sh), legacy 2D facade in `compat/`
 - `crates/lbm-scenario` — JSON scenario schema + runner (2D compat path)
-- `crates/lbm-cli` — `lbm` binary: presets, gallery, schema, scenario run, MCP server
-- `crates/lbm-wasm` — WASM bindings for the web GUI (outside the workspace)
-- `crates/lbm-gpu-proto` — wgpu evaluation prototype (measurement record;
-  superseded by the in-core `gpu` module)
+- `crates/lbm-cli` — `lbm` binary: presets (list/show/run), gallery, schema,
+  scenario run, MCP server (7 tools incl. async start_run/run_status/list_runs)
+- `crates/lbm-wasm` — WASM bindings for the web GUI (excluded from the workspace)
+- `crates/lbm-gpu-proto` — standalone wgpu evaluation prototype (excluded from
+  the workspace; measurement record, superseded by the in-core `gpu` module)
 - `web/` — TypeScript GUI (Vite; engine WASM committed under `web/src/engine/pkg`)
 
 ## Docs index (read on demand)
