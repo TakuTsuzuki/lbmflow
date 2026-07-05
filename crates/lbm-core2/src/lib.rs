@@ -34,7 +34,7 @@ pub mod subdomain;
 pub mod prelude {
     pub use crate::backend::{Backend, CellRange, CpuScalar, HostMoments, PARALLEL_MIN_CELLS};
     pub use crate::fields::{LocalGeom, SoaFields};
-    pub use crate::halo::{HaloExchange, LocalPeriodic};
+    pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};
     pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
     pub use crate::real::Real;

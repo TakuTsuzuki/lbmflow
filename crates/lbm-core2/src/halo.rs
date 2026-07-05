@@ -61,6 +61,29 @@ impl<T: Real> HaloExchange<T> for LocalPeriodic {
     }
 }
 
+/// In-process multi-part exchange: all subdomains live in this process and
+/// hand buffers to each other directly (T13 vehicle; the MPI implementation
+/// replaces the buffer hand-off with send/recv).
+///
+/// A single-part decomposition behaves exactly like [`LocalPeriodic`] (both
+/// delegate to the same layer machinery).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InProcess;
+
+impl<T: Real> HaloExchange<T> for InProcess {
+    fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
+        exchange_f_generic::<L, T>(subs, parts);
+    }
+
+    fn exchange_masks(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
+        exchange_masks_generic(subs, parts);
+    }
+
+    fn exchange_scalar(&self, subs: &[Subdomain], planes: &mut [&mut [T]]) {
+        exchange_scalar_generic(subs, planes);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared layer machinery (used by LocalPeriodic and InProcess)
 // ---------------------------------------------------------------------------

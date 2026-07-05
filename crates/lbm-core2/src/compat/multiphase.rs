@@ -308,7 +308,7 @@ impl<T: Real> ShanChen<T> {
         }
 
         // borrow rules: compute into a local, then write
-        let mut wrap = |x: isize, y: isize| -> Option<usize> {
+        let wrap = |x: isize, y: isize| -> Option<usize> {
             let mut x = x;
             let mut y = y;
             if x < 0 || x >= nx as isize {
