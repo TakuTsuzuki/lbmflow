@@ -104,7 +104,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "list_presets",
-            "description": "組み込みプリセット（キャビティ流れ・カルマン渦列・二相液滴）の名前と完全なシナリオ JSON を返す。シナリオ作成の実例として使える。",
+            "description": "組み込みプリセット（キャビティ流れ・カルマン渦列・二相液滴・壁上液滴）の名前と完全なシナリオ JSON を返す。シナリオ作成の実例として使える。",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {

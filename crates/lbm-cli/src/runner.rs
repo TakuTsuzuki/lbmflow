@@ -256,5 +256,74 @@ fn write_output<T: Real>(
             let _ = index;
             Ok(name)
         }
+        OutputFormat::Vtk => {
+            // VTK legacy structured points (ASCII). Point order is x-fastest,
+            // which matches the row-major field layout (y up, like the sim).
+            let name = format!("{kind_name}_{step}.vtk");
+            let mut file = std::io::BufWriter::new(fs::File::create(out_dir.join(&name))?);
+            writeln!(file, "# vtk DataFile Version 3.0")?;
+            writeln!(file, "LBMFlow {kind_name} step={step}")?;
+            writeln!(file, "ASCII")?;
+            writeln!(file, "DATASET STRUCTURED_POINTS")?;
+            writeln!(file, "DIMENSIONS {nx} {ny} 1")?;
+            writeln!(file, "ORIGIN 0 0 0")?;
+            writeln!(file, "SPACING 1 1 1")?;
+            writeln!(file, "POINT_DATA {}", nx * ny)?;
+            writeln!(file, "SCALARS {kind_name} double 1")?;
+            writeln!(file, "LOOKUP_TABLE default")?;
+            for chunk in values.chunks(9) {
+                let line: Vec<String> = chunk.iter().map(|v| format!("{v}")).collect();
+                writeln!(file, "{}", line.join(" "))?;
+            }
+            Ok(name)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vtk_output_is_legacy_structured_points() {
+        let sc: Scenario = serde_json::from_str(
+            r#"{
+                "name": "vtk-smoke",
+                "grid": { "nx": 16, "ny": 12 },
+                "physics": { "nu": 0.05 },
+                "edges": {
+                    "left": { "type": "bounceBack" },
+                    "right": { "type": "bounceBack" },
+                    "bottom": { "type": "bounceBack" },
+                    "top": { "type": "movingWall", "u": [0.05, 0.0] }
+                },
+                "run": { "steps": 5 },
+                "outputs": [ { "field": "rho", "format": "vtk", "every": 0 } ]
+            }"#,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("lbm_vtk_test_{}", std::process::id()));
+        let manifest = run(&sc, &dir).unwrap();
+        assert!(manifest.files.contains(&"rho_5.vtk".to_string()), "{:?}", manifest.files);
+        let text = fs::read_to_string(dir.join("rho_5.vtk")).unwrap();
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("# vtk DataFile Version 3.0"));
+        assert!(text.contains("\nASCII\n"), "missing ASCII marker");
+        assert!(text.contains("\nDATASET STRUCTURED_POINTS\n"));
+        assert!(text.contains("\nDIMENSIONS 16 12 1\n"));
+        assert!(text.contains("\nPOINT_DATA 192\n"));
+        assert!(text.contains("\nSCALARS rho double 1\n"));
+        assert!(text.contains("\nLOOKUP_TABLE default\n"));
+        // all 16*12 values present after the header, and all parse as f64
+        let data: Vec<f64> = text
+            .lines()
+            .skip_while(|l| *l != "LOOKUP_TABLE default")
+            .skip(1)
+            .flat_map(|l| l.split_whitespace())
+            .map(|v| v.parse().unwrap())
+            .collect();
+        assert_eq!(data.len(), 192);
+        assert!(data.iter().all(|v| v.is_finite()));
+        fs::remove_dir_all(&dir).ok();
     }
 }
