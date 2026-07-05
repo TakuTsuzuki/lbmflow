@@ -1002,3 +1002,45 @@ Acceptance/verification:
   t8_bouzidi_2d1_d20_cylinder_steady_drag_lift_are_in_tight_band -- --ignored
   --nocapture`: passed.
 - `cargo test --workspace --release`: passed.
+
+## R2-D 3D CPU scaling investigation (r2-d-cpuscale, 2026-07-06)
+
+Scope: `crates/lbm-core/src/backend_simd.rs` scheduler only; collision arithmetic
+internals were not changed.
+
+Baseline in this session, before edits:
+- `cargo run --release -p lbm-core --example bench_backends -- simd f32 128 18 80 128`
+  → 265.1 MLUPS.
+- `cargo run --release -p lbm-core --example bench_backends -- simd f32 1024 18 80`
+  → 1205.7 MLUPS.
+
+Rejected experiments:
+- 8-band 3D cap: 128^3 f32 87.7 MLUPS; too few rayon tasks, cores idle.
+- Shared edge-slab post-collide cache: backend equivalence targeted 3D tests
+  passed, but 128^3 f32 fell to 100.0 MLUPS because full-slab cache allocation
+  and copy traffic outweighed the saved duplicate collision.
+- 2x band oversubscription for work stealing: 128^3 f32 123.7 MLUPS; extra
+  band-edge recollides dominated the load-balance gain.
+- 14-band cap: 131.6 MLUPS under the later overloaded window.
+- 17-band cap: 135.9 MLUPS under the later overloaded window.
+
+Final scheduler change under test:
+- 3D `CpuSimd` caps bands at 16 on an 18-thread pool. This reduces 128^3
+  inter-band duplicate source slabs from 34 to 30 and avoids the slowest
+  heterogeneous-core tail without changing 2D scheduling.
+- Later measurement window was not acceptance-grade: `uptime` showed load
+  averages around 100-110 (`load averages: 110.46 106.87 99.80`). Under that
+  load, restored 18-band code measured 121.7 MLUPS, while the 16-band cap
+  measured 146.7 / 142.2 MLUPS in nearby runs. Treat this as relative evidence
+  only, not the required public-bench result.
+- 2D check in the overloaded window: 1024^2 f32 18-thread measured 493.5 MLUPS;
+  this is also not acceptance-grade and is dominated by machine contention. The
+  2D code path is unchanged by the final patch.
+
+Gates run:
+- `cargo test -p lbm-core --release --test backend_simd_equiv -- --nocapture`
+  passed: 20/20.
+- `cargo test -p lbm-core --release --test t13_split_invariance -- --nocapture`
+  passed: 8/8.
+- `cargo test --workspace --release` passed under high machine load; long
+  validation tests completed without failures.
