@@ -22,6 +22,8 @@
 pub mod backend;
 pub mod compat;
 pub mod fields;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod halo;
 mod kernels;
 pub mod lattice;
@@ -40,4 +42,7 @@ pub mod prelude {
     pub use crate::real::Real;
     pub use crate::solver::{build_wall_rims, partition, GlobalSpec, Solver, WallSpec};
     pub use crate::subdomain::Subdomain;
+
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu::{GpuContext, GpuSolver, WgpuBackend};
 }
