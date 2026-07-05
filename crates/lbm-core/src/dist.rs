@@ -40,7 +40,7 @@ use crate::backend::Backend;
 use crate::fields::SoaFields;
 use crate::halo::{
     layer_cell_count, layer_indices, pack_f_layer, pack_scalar_layer, unpack_f_layer,
-    unpack_scalar_layer, HaloExchange,
+    unpack_scalar_layer, ExchangeScope, HaloExchange,
 };
 use crate::lattice::{Face, Lattice};
 use crate::real::Real;
@@ -183,6 +183,8 @@ impl MpiExchange {
 }
 
 impl<T: Real> HaloExchange<T> for MpiExchange {
+    const SCOPE: ExchangeScope = ExchangeScope::Remote;
+
     fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
         assert_eq!(parts.len(), 1, "MpiExchange serves exactly the local part");
         let sub = &subs[0];

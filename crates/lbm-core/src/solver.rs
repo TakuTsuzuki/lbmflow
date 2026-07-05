@@ -8,7 +8,7 @@
 
 use crate::backend::{Backend, CellRange};
 use crate::fields::SoaFields;
-use crate::halo::HaloExchange;
+use crate::halo::{ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice};
 use crate::params::{CollisionKind, FaceBC, KParams, Reduction, StepParams};
@@ -305,6 +305,18 @@ where
         let mut subs = partition(L::D, spec.dims, spec.periodic, decomp);
         if let Some(part) = only {
             assert!(part < subs.len(), "part {part} out of range for {decomp:?}");
+            // A single-part owner keeps *global* neighbour ids in its
+            // subdomain, so only a Remote exchange (MPI) can resolve them. A
+            // Local exchange (LocalPeriodic/InProcess) would read a global id
+            // as a local `parts` index — a silent self-wrap into part 0 when
+            // the id is 0, or an out-of-bounds panic otherwise (A-5).
+            assert_eq!(
+                H::SCOPE,
+                ExchangeScope::Remote,
+                "new_local_part (single-part ownership of a {decomp:?} decomposition) requires a \
+                 Remote halo exchange (e.g. MpiExchange); LocalPeriodic/InProcess resolve \
+                 neighbour ids as local part indices and would silently wrap or panic"
+            );
             subs = vec![subs[part].clone()];
         }
         let mut parts: Vec<SoaFields<T>> = subs.iter().map(|s| backend.alloc(s)).collect();
@@ -1039,4 +1051,72 @@ fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellRange> {
     }
     shells.retain(|s| !s.is_empty());
     shells
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::CpuScalar;
+    use crate::halo::{InProcess, LocalPeriodic};
+    use crate::lattice::D2Q9;
+
+    /// A-5 (E4): building a single-part owner of a wider decomposition with a
+    /// Local exchange must fail at construction — such an owner keeps global
+    /// neighbour ids that a Local exchange would resolve as local indices
+    /// (E4: part=1 of [2,1,1] periodic-x + LocalPeriodic ran without panic
+    /// and diverged from the correct 2-part result by up to 7.7e-2).
+    #[test]
+    #[should_panic(expected = "Remote halo exchange")]
+    fn single_part_owner_rejects_local_periodic_exchange() {
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 4, 1],
+            periodic: [true, false, false],
+            ..Default::default()
+        };
+        // part=1 of a [2,1,1] decomposition, LocalPeriodic (a Local scope).
+        let _s: Solver<D2Q9, f64, CpuScalar, LocalPeriodic> = Solver::new_local_part(
+            &spec,
+            &[],
+            &[],
+            [2, 1, 1],
+            1,
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+    }
+
+    /// The same misuse with `InProcess` is equally rejected (also Local).
+    #[test]
+    #[should_panic(expected = "Remote halo exchange")]
+    fn single_part_owner_rejects_in_process_exchange() {
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 4, 1],
+            periodic: [true, false, false],
+            ..Default::default()
+        };
+        let _s: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::new_local_part(
+            &spec,
+            &[],
+            &[],
+            [2, 1, 1],
+            0,
+            CpuScalar::default(),
+            InProcess,
+        );
+    }
+
+    /// A full in-process decomposition (owns every part) is the legitimate
+    /// Local use and must still build.
+    #[test]
+    fn full_in_process_decomposition_builds() {
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 4, 1],
+            periodic: [true, false, false],
+            ..Default::default()
+        };
+        let mut s: Solver<D2Q9, f64, CpuScalar, InProcess> =
+            Solver::new(&spec, &[], &[], [2, 1, 1], CpuScalar::default(), InProcess);
+        s.run(2);
+        assert!(s.total_mass().is_finite());
+    }
 }
