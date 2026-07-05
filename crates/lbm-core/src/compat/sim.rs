@@ -184,10 +184,38 @@ impl<T: Real> Simulation<T> {
         }
     }
 
+    /// Whether `(x, y)` is the cell directly one step inward from an open
+    /// edge — the neighbour an open-face BC reads to fill its unknown slots.
+    /// A solid here makes the BC skip that column/row (`solid[edge] ||
+    /// solid[interior]`), freezing the unknown populations at their initial
+    /// values (A-3 / E5b: a stationary box with a right-Outflow pocket held a
+    /// permanent ux = -0.115 at the edge, silent — every cell stays finite).
+    fn is_open_edge_interior(&self, x: usize, y: usize) -> bool {
+        let (nx, ny) = (self.nx(), self.ny());
+        (x == 1 && self.edges.left.is_open())
+            || (x == nx - 2 && self.edges.right.is_open())
+            || (y == 1 && self.edges.bottom.is_open())
+            || (y == ny - 2 && self.edges.top.is_open())
+    }
+
+    /// Whether [`Simulation::set_solid`] would accept `(x, y)`: it is in
+    /// bounds, not on an open edge, and not the interior neighbour of one.
+    /// Callers that must not panic (e.g. the GUI's paint tool) check this
+    /// first.
+    pub fn set_solid_allowed(&self, x: usize, y: usize) -> bool {
+        x < self.nx()
+            && y < self.ny()
+            && !self.on_open_edge(x, y)
+            && !self.is_open_edge_interior(x, y)
+    }
+
     /// Mark a cell as solid (half-way bounce-back obstacle).
     ///
-    /// Panics if `(x, y)` lies on an open (inlet/outlet/outflow) edge, which
-    /// is unsupported.
+    /// # Panics
+    /// Panics if `(x, y)` lies on an open (inlet/outlet/outflow) edge, or is
+    /// the cell directly inward from one: an open-face BC reads that interior
+    /// neighbour to reconstruct its unknown populations, and a solid there
+    /// makes it silently skip, freezing those populations (A-3).
     pub fn set_solid(&mut self, x: usize, y: usize) {
         assert!(
             x < self.nx() && y < self.ny(),
@@ -196,6 +224,12 @@ impl<T: Real> Simulation<T> {
         assert!(
             !self.on_open_edge(x, y),
             "cannot place solid cells on an open (inlet/outlet/outflow) edge"
+        );
+        assert!(
+            !self.is_open_edge_interior(x, y),
+            "cannot place a solid cell ({x},{y}) directly inward from an open \
+             (inlet/outlet/outflow) edge: the boundary condition reads this \
+             neighbour and would silently freeze its unknown populations"
         );
         let nx = self.nx();
         self.solid_mirror[y * nx + x] = true;
@@ -433,6 +467,7 @@ impl<T: Real> Simulation<T> {
 #[cfg(test)]
 mod tests {
     use crate::compat::domain::{Collision, EdgeBC, Edges, SimConfig};
+    use crate::compat::sim::Simulation;
 
     /// A-7: `init_with` rejects a zero density (immediate `0 × ∞` NaN) with a
     /// coordinate-bearing panic.
@@ -515,6 +550,79 @@ mod tests {
         .build()
         .unwrap();
         sim.set_solid(0, 3);
+    }
+
+    fn e5b_sim() -> Simulation<f64> {
+        // E5b geometry: inlet left, Outflow right, walls top/bottom.
+        SimConfig::<f64> {
+            nx: 16,
+            ny: 8,
+            edges: Edges {
+                left: EdgeBC::VelocityInlet { u: [0.05, 0.0] },
+                right: EdgeBC::Outflow,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        }
+        .build()
+        .unwrap()
+    }
+
+    /// A-3 (E5b): a solid on the cell directly inward from the right Outflow
+    /// (x = nx-2) freezes the outflow's unknown populations (permanent
+    /// non-physical ux, no NaN). It must be rejected.
+    #[test]
+    #[should_panic(expected = "directly inward from an open")]
+    fn solid_inward_of_outflow_panics() {
+        let mut sim = e5b_sim();
+        sim.set_solid(14, 4); // nx-2 = 14, the pocket cell that broke E5b
+    }
+
+    /// A-3: the cell inward from the left inlet (x = 1) is likewise rejected.
+    #[test]
+    #[should_panic(expected = "directly inward from an open")]
+    fn solid_inward_of_inlet_panics() {
+        let mut sim = e5b_sim();
+        sim.set_solid(1, 4);
+    }
+
+    /// A-3: `set_solid_allowed` mirrors the panic condition; a solid two cells
+    /// inward from the outflow (the E5 "plug 1 cell further in" control) is
+    /// legal, and placing it leaves the field finite (the physical case).
+    #[test]
+    fn set_solid_allowed_matches_and_legal_shape_runs() {
+        let mut sim = e5b_sim();
+        let (nx, ny) = (sim.nx(), sim.ny());
+        // Open edges + their interior neighbours are disallowed.
+        assert!(!sim.set_solid_allowed(0, 4)); // on the inlet edge
+        assert!(!sim.set_solid_allowed(nx - 1, 4)); // on the outflow edge
+        assert!(!sim.set_solid_allowed(1, 4)); // inward of inlet
+        assert!(!sim.set_solid_allowed(nx - 2, 4)); // inward of outflow
+                                                    // A cell two in from the outflow is fine.
+        assert!(sim.set_solid_allowed(nx - 3, 4));
+        sim.set_solid(nx - 3, 4);
+        assert!(sim.is_solid(nx - 3, 4));
+        sim.run(50);
+        assert!(sim.rho_field().iter().all(|r| r.is_finite()));
+        // y-open variant: inlet on the bottom edge disallows y == 1.
+        let sim_y = SimConfig::<f64> {
+            nx: 8,
+            ny: 16,
+            edges: Edges {
+                left: EdgeBC::BounceBack,
+                right: EdgeBC::BounceBack,
+                bottom: EdgeBC::VelocityInlet { u: [0.0, 0.05] },
+                top: EdgeBC::Outflow,
+            },
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        let _ = ny;
+        assert!(!sim_y.set_solid_allowed(4, 1)); // inward of bottom inlet
+        assert!(!sim_y.set_solid_allowed(4, sim_y.ny() - 2)); // inward of top outflow
+        assert!(sim_y.set_solid_allowed(4, 2)); // two in from bottom is fine
     }
 
     #[test]

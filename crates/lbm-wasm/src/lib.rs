@@ -235,9 +235,11 @@ impl WasmSim {
             if self.painted[i] == 1 || sim0.is_solid(x, y) {
                 return Ok(());
             }
-            // set_solid panics on open edges; only paint strictly interior
-            // cells for simplicity.
-            if x == 0 || y == 0 || x == nx - 1 || y == ny - 1 {
+            // Only paint strictly interior cells (the outer ring is walls or
+            // open faces), and never the cell directly inward from an open
+            // face — set_solid panics there, because such a solid would
+            // silently freeze the open BC's unknown populations (A-3).
+            if x == 0 || y == 0 || x == nx - 1 || y == ny - 1 || !sim0.set_solid_allowed(x, y) {
                 return Ok(());
             }
             self.painted[i] = 1;
@@ -246,8 +248,8 @@ impl WasmSim {
         } else if self.painted[i] == 1 {
             self.painted[i] = 0;
             let painted = self.painted.clone();
-            let (mut sim, mp) = build_sim(&self.cfg_json)
-                .map_err(|_| JsError::new("再構築に失敗しました"))?;
+            let (mut sim, mp) =
+                build_sim(&self.cfg_json).map_err(|_| JsError::new("再構築に失敗しました"))?;
             let nx = sim.nx();
             sim.set_solid_region(|px, py| painted[py * nx + px] == 1);
             self.sim = Some(sim);
