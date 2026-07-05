@@ -13,15 +13,10 @@
 //! (total mass / momentum / probed force / NaN count) to ≤ 1e-11
 //! (rank partial sums reassociate).
 //!
-//! Case sets by world size (optional `argv[1]` substring-filters cases):
-//!
-//! - `-n 1|2|4`: 2D TGV (periodic), lid-driven cavity (lid crossing the
-//!   seam), cylinder + force probe on the seam, and a single-component
-//!   Shan–Chen droplet (ψ halos over `exchange_scalar`; at `-n 4` the
-//!   droplet sits exactly on the 2×2 corner).
-//! - `-n 8`: 3D TGV on a 2×2×2 decomposition (D3Q19).
+//! Any `-n >= 1` runs the 2D cases with the automatic surface-minimising
+//! decomposition. `-n 6|8` also runs the 3D TGV case.
 
-use lbm_core::dist::MpiSolver;
+use lbm_core::dist::{choose_decomp, MpiSolver};
 use lbm_core::lattice::{D2Q9, D3Q19};
 use lbm_core::prelude::*;
 use mpi::topology::SimpleCommunicator;
@@ -394,35 +389,40 @@ fn main() {
     let rank = world.rank() as usize;
     let only = std::env::args().nth(1);
 
+    if only.as_deref() == Some("mismatch-nu") {
+        assert_eq!(size, 2, "mismatch-nu test requires exactly 2 ranks");
+        let mut spec = GlobalSpec::<f64> {
+            dims: [16, 12, 1],
+            nu: 0.02,
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        if rank == 1 {
+            spec.nu = 0.03;
+        }
+        let _solver: MpiSolver<D2Q9, f64, CpuScalar> =
+            MpiSolver::new(&world, &spec, &[], &[], [2, 1, 1], CpuScalar::default());
+        unreachable!("mismatched rank specs must be rejected");
+    }
+
     let mut all_pass = true;
     let mut ran = 0usize;
-    match size {
-        1 | 2 | 4 => {
-            let decomp = match size {
-                1 => [1, 1, 1],
-                2 => [2, 1, 1],
-                _ => [2, 2, 1],
-            };
-            for setup in [tgv2d(), cavity(), cylinder(), droplet()] {
-                if only.as_deref().is_some_and(|o| !setup.name.contains(o)) {
-                    continue;
-                }
-                all_pass &= run_case::<D2Q9>(&world, &setup, decomp);
-                ran += 1;
+    if size >= 1 {
+        for setup in [tgv2d(), cavity(), cylinder(), droplet()] {
+            if only.as_deref().is_some_and(|o| !setup.name.contains(o)) {
+                continue;
             }
+            let decomp = choose_decomp(D2Q9::D, setup.spec.dims, size);
+            all_pass &= run_case::<D2Q9>(&world, &setup, decomp);
+            ran += 1;
         }
-        8 => {
-            let setup = tgv3d();
-            if !only.as_deref().is_some_and(|o| !setup.name.contains(o)) {
-                all_pass &= run_case::<D3Q19>(&world, &setup, [2, 2, 2]);
-                ran += 1;
-            }
-        }
-        n => {
-            if rank == 0 {
-                eprintln!("unsupported world size {n}: use -n 1, 2, 4 (2D) or 8 (3D)");
-            }
-            all_pass = false;
+    }
+    if size == 6 || size == 8 || only.as_deref().is_some_and(|o| tgv3d().name.contains(o)) {
+        let setup = tgv3d();
+        if !only.as_deref().is_some_and(|o| !setup.name.contains(o)) {
+            let decomp = choose_decomp(D3Q19::D, setup.spec.dims, size);
+            all_pass &= run_case::<D3Q19>(&world, &setup, decomp);
+            ran += 1;
         }
     }
     if rank == 0 {

@@ -17,21 +17,35 @@ fn spec(nx: usize, ny: usize) -> GlobalSpec<f64> {
         dims: [nx, ny, 1],
         nu: 1.0 / 6.0,
         periodic: [true, true, false],
-        collision: CollisionKind::Trt { magic: CollisionKind::MAGIC_STD },
+        collision: CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
         ..Default::default()
     }
 }
 
 fn local(nx: usize, ny: usize) -> Solver<D2Q9, f64, CpuScalar, LocalPeriodic> {
     let n = nx * ny;
-    Solver::new(&spec(nx, ny), &vec![false; n], &vec![[0.0; 3]; n], [1, 1, 1],
-        CpuScalar::default(), LocalPeriodic)
+    Solver::new(
+        &spec(nx, ny),
+        &vec![false; n],
+        &vec![[0.0; 3]; n],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    )
 }
 
 fn in_proc(nx: usize, ny: usize, decomp: [usize; 3]) -> Solver<D2Q9, f64, CpuScalar, InProcess> {
     let n = nx * ny;
-    Solver::new(&spec(nx, ny), &vec![false; n], &vec![[0.0; 3]; n], decomp,
-        CpuScalar::default(), InProcess)
+    Solver::new(
+        &spec(nx, ny),
+        &vec![false; n],
+        &vec![[0.0; 3]; n],
+        decomp,
+        CpuScalar::default(),
+        InProcess,
+    )
 }
 
 #[test]
@@ -54,7 +68,10 @@ fn uniform_force_injects_exact_momentum_rate() {
     // Differencing cancels the constant half-force offset and the init state.
     let rate = (p2 - p1) / 20.0;
     let expect = fx * (nx * ny) as f64;
-    assert!((rate - expect).abs() / expect < 1e-9, "rate={rate} expected={expect}");
+    assert!(
+        (rate - expect).abs() / expect < 1e-9,
+        "rate={rate} expected={expect}"
+    );
 }
 
 #[test]
@@ -74,7 +91,10 @@ fn clear_stops_injection() {
     }
     let b = s.total_momentum()[0];
     // No force + periodic + no walls => bulk momentum is frozen step to step.
-    assert!((b - a).abs() / a.abs() < 1e-12, "injection continued after clear: {a} -> {b}");
+    assert!(
+        (b - a).abs() / a.abs() < 1e-12,
+        "injection continued after clear: {a} -> {b}"
+    );
 }
 
 #[test]
@@ -82,7 +102,11 @@ fn spatially_varying_force_is_decomposition_invariant() {
     let (nx, ny) = (32, 32);
     // A smooth, sign-varying force so an indexing/origin slip would show up.
     let force = |x: usize, y: usize, _z: usize| -> [f64; 3] {
-        [1.0e-4 * ((x as f64) * 0.19).sin(), 1.0e-4 * ((y as f64) * 0.23).cos(), 0.0]
+        [
+            1.0e-4 * ((x as f64) * 0.19).sin(),
+            1.0e-4 * ((y as f64) * 0.23).cos(),
+            0.0,
+        ]
     };
 
     let mut mono = in_proc(nx, ny, [1, 1, 1]);
@@ -96,7 +120,10 @@ fn spatially_varying_force_is_decomposition_invariant() {
 
     let (ax, ay) = (mono.gather_ux(), mono.gather_uy());
     let (bx, by) = (part.gather_ux(), part.gather_uy());
-    let max_diff = ax.iter().zip(&bx).chain(ay.iter().zip(&by))
+    let max_diff = ax
+        .iter()
+        .zip(&bx)
+        .chain(ay.iter().zip(&by))
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f64, f64::max);
     // T13-style: decomposition must be bit-exact, not merely close.

@@ -80,6 +80,25 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 - Commit at each phase completion. Never commit with red tests (WIP is the
   exception; say so explicitly in the commit message).
 
+## Working discipline (applies to every agent on this repo)
+
+- **Evidence-based progress.** Before reporting anything as done, match each
+  claim against a tool result from THIS session (test output, file diff, run
+  log). Report unverified work as unverified; report skipped steps as skipped;
+  report failing tests with their output. "Done" means the relevant gate in
+  Build & test actually passed here — a codex order finishing is not evidence
+  its branch is green. Fabricated progress is the worst possible failure.
+- **Minimal scope.** Implement exactly what the order/task asks: no drive-by
+  refactors, no helpers for one-off operations, no abstractions for
+  hypothetical future requirements, no defensive code for impossible states
+  (validate at system boundaries only — scenario JSON, CLI args, user input).
+  A bug fix does not need surrounding cleanup.
+- **Finish, don't announce.** Never end a turn on a plan, a checklist, or
+  "I'll now do X" — do X first, then end. Stopping is allowed only when the
+  task is complete or blocked on input only the user can provide. When unsure
+  between options, pick one recommendation and proceed; don't enumerate
+  alternatives you won't take or re-litigate decisions already made.
+
 ## Core design invariants (breaking these kills the whole validation suite)
 
 - The single core is `crates/lbm-core` (formerly lbm-core2 = V2 architecture.

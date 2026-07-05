@@ -298,6 +298,19 @@ fn mcp_async_job_lifecycle() {
     );
     assert_eq!(tool_json(&res)["ok"], true);
 
+    let mut gpu_2d = cavity_scenario("gpu-2d", 16, 10);
+    gpu_2d["compute"] = json!({ "backend": "gpu" });
+    let res = mcp.call_tool("validate_scenario", json!({ "scenario": gpu_2d }));
+    let report = tool_json(&res);
+    assert_eq!(report["ok"], false, "{report}");
+    let error = report["error"].as_str().unwrap();
+    assert!(
+        error.contains("requested backend \"gpu\" is unavailable")
+            && error.contains("2D compat scenario path")
+            && error.contains("--features gpu"),
+        "{error}"
+    );
+
     let res = mcp.call_tool("get_schema", json!({}));
     assert!(
         tool_text(&res).contains("start_run"),

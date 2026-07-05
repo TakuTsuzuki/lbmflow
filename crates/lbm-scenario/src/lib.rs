@@ -64,9 +64,9 @@ impl Scenario {
     }
 }
 
-/// Compute-target selection (ARCHITECTURE_V2 §3). All fields optional; the
-/// 3D engine currently runs on the CPU backend only ("gpu" is rejected at
-/// build time until the wgpu backend lands).
+/// Compute-target selection (ARCHITECTURE_V2 §3). All fields optional.
+/// Explicit backend requests must be honored or rejected; only `auto` may
+/// silently choose an available fallback.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComputeSpec {
@@ -82,6 +82,9 @@ pub enum BackendSpec {
     Cpu,
     Gpu,
 }
+
+const GPU_2D_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: the 2D compat scenario path cannot honor explicit GPU requests pending R-Phase 2 B-1, and this build was compiled without GPU scenario dispatch (--features gpu is not enabled for this scenario path). Use compute.backend \"cpu\" or \"auto\".";
+const GPU_3D_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: the 3D scenario path currently supports CPU execution only, and this build was compiled without GPU scenario dispatch (--features gpu is not enabled for this scenario path). Use compute.backend \"cpu\" or \"auto\".";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -410,17 +413,23 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 backend: BackendSpec::Gpu
             })
         ) {
+            warn("compute.backend", GPU_3D_UNAVAILABLE.to_string());
+        }
+    } else {
+        if matches!(
+            sc.compute,
+            Some(ComputeSpec {
+                backend: BackendSpec::Gpu
+            })
+        ) {
+            warn("compute.backend", GPU_2D_UNAVAILABLE.to_string());
+        }
+        if sc.edges.front.is_some() || sc.edges.back.is_some() {
             warn(
-                "compute.backend",
-                "the gpu backend is not available yet (specify cpu / auto; will error at build time)"
-                    .to_string(),
+                "edges",
+                "front/back are for 3D (nz > 1) only and are ignored in 2D".to_string(),
             );
         }
-    } else if sc.edges.front.is_some() || sc.edges.back.is_some() {
-        warn(
-            "edges",
-            "front/back are for 3D (nz > 1) only and are ignored in 2D".to_string(),
-        );
     }
     let mut named_edges = vec![
         ("edges.left", sc.edges.left),
@@ -475,6 +484,33 @@ pub enum SimHandle {
     F64(Simulation<f64>, Option<ShanChen<f64>>),
 }
 
+/// Build error for 2D scenarios: either a core configuration error or a
+/// requested scenario capability the 2D compat execution path cannot provide.
+#[derive(Debug)]
+pub enum BuildError {
+    /// Invalid physical/boundary configuration.
+    Core(ConfigError),
+    /// Feature not available on the 2D scenario path (message is user-facing).
+    Unsupported(&'static str),
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildError::Core(e) => write!(f, "{e}"),
+            BuildError::Unsupported(what) => write!(f, "{what}"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+impl From<ConfigError> for BuildError {
+    fn from(e: ConfigError) -> Self {
+        BuildError::Core(e)
+    }
+}
+
 // ---------------------------------------------------------------- build (3D)
 
 /// The 3D engine type behind a scenario: V2 core, D3Q19, CPU backend,
@@ -504,6 +540,8 @@ pub enum Build3Error {
     /// Invalid native `GlobalSpec`, as reported by `GlobalSpec::validate`
     /// (A-4): uncovered face, ν ≤ 0, periodic × open, out-of-range BC, …
     Spec(lbm_core::solver::SpecError),
+    /// Explicit backend request that this scenario path cannot honor.
+    BackendUnavailable(&'static str),
     /// Feature not available on the 3D engine (message is user-facing).
     Unsupported(&'static str),
 }
@@ -513,6 +551,7 @@ impl std::fmt::Display for Build3Error {
         match self {
             Build3Error::Core(e) => write!(f, "{e}"),
             Build3Error::Spec(e) => write!(f, "{e}"),
+            Build3Error::BackendUnavailable(what) => write!(f, "{what}"),
             Build3Error::Unsupported(what) => write!(f, "unsupported in 3D (nz > 1): {what}"),
         }
     }
@@ -584,9 +623,7 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     }
     if let Some(c) = &sc.compute {
         if c.backend == BackendSpec::Gpu {
-            return Err(Build3Error::Unsupported(
-                "compute.backend \"gpu\" (specify cpu / auto)",
-            ));
+            return Err(Build3Error::BackendUnavailable(GPU_3D_UNAVAILABLE));
         }
     }
     let dims = [sc.grid.nx, sc.grid.ny, sc.grid.nz];
@@ -798,12 +835,21 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
 
 /// Build the 2D simulation (+ optional multiphase driver) from a scenario.
 /// Scenarios with `grid.nz > 1` must go through [`build3d`] instead.
-pub fn build(sc: &Scenario) -> Result<SimHandle, ConfigError> {
+pub fn build(sc: &Scenario) -> Result<SimHandle, BuildError> {
     if sc.is_3d() {
         return Err(ConfigError::InvalidParameter {
             what: "grid.nz (2D build requires nz == 1; the runner dispatches 3D to build3d)",
             value: sc.grid.nz as f64,
-        });
+        }
+        .into());
+    }
+    if matches!(
+        sc.compute,
+        Some(ComputeSpec {
+            backend: BackendSpec::Gpu
+        })
+    ) {
+        return Err(BuildError::Unsupported(GPU_2D_UNAVAILABLE));
     }
     Ok(match sc.physics.precision {
         Precision::F32 => {
@@ -1246,7 +1292,13 @@ mod tests {
         let back: Scenario = serde_json::from_str(&first).unwrap();
         let second = serde_json::to_string(&back).unwrap();
         assert_eq!(first, second);
-        for key in ["\"nz\"", "\"compute\"", "\"front\"", "\"back\"", "\"probes\""] {
+        for key in [
+            "\"nz\"",
+            "\"compute\"",
+            "\"front\"",
+            "\"back\"",
+            "\"probes\"",
+        ] {
             assert!(!second.contains(key), "web export gained {key}: {second}");
         }
     }
@@ -1290,7 +1342,10 @@ mod tests {
         gpu.compute = Some(ComputeSpec {
             backend: BackendSpec::Gpu,
         });
-        assert!(matches!(build3d(&gpu), Err(Build3Error::Unsupported(_))));
+        assert!(matches!(
+            build3d(&gpu),
+            Err(Build3Error::BackendUnavailable(_))
+        ));
         assert!(build_check(&gpu).is_err());
         assert!(validate(&gpu).iter().any(|w| w.field == "compute.backend"));
         // multiphase is 2D-only for now.
@@ -1330,6 +1385,51 @@ mod tests {
             r: 2.0,
         }];
         assert!(build(&sphere2d).is_err());
+    }
+
+    #[test]
+    fn explicit_gpu_backend_is_rejected_for_2d() {
+        let mut sc = preset("cavity");
+        sc.compute = Some(ComputeSpec {
+            backend: BackendSpec::Gpu,
+        });
+
+        let err = match build(&sc) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("explicit GPU backend should fail for 2D scenarios"),
+        };
+        assert!(
+            err.contains("requested backend \"gpu\" is unavailable"),
+            "{err}"
+        );
+        assert!(err.contains("2D compat scenario path"), "{err}");
+        assert!(err.contains("R-Phase 2 B-1"), "{err}");
+        assert!(err.contains("--features gpu"), "{err}");
+
+        let check = build_check(&sc).unwrap_err();
+        assert_eq!(check, err);
+        assert!(validate(&sc).iter().any(|w| {
+            w.field == "compute.backend"
+                && w.message
+                    .contains("requested backend \"gpu\" is unavailable")
+        }));
+    }
+
+    #[test]
+    fn auto_backend_still_builds_and_runs_for_2d() {
+        let mut sc = preset("cavity");
+        sc.compute = Some(ComputeSpec {
+            backend: BackendSpec::Auto,
+        });
+
+        match build(&sc).unwrap() {
+            SimHandle::F64(mut sim, None) => {
+                sim.run(2);
+                assert_eq!(sim.time(), 2);
+            }
+            _ => panic!("expected an f64 single-phase CPU compat build"),
+        }
+        assert!(build_check(&sc).is_ok());
     }
 
     /// The z-periodic 3D parabolic inlet degenerates to the 2D parabola:

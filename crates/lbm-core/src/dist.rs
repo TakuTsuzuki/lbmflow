@@ -33,8 +33,9 @@
 
 use mpi::collective::SystemOperation;
 use mpi::topology::SimpleCommunicator;
-use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Source};
+use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Root, Source};
 use mpi::{Rank, Tag};
+use std::cell::RefCell;
 
 use crate::backend::Backend;
 use crate::fields::SoaFields;
@@ -43,6 +44,7 @@ use crate::halo::{
     unpack_scalar_layer, ExchangeScope, HaloExchange,
 };
 use crate::lattice::{Face, Lattice};
+use crate::params::{CollisionKind, FaceBC};
 use crate::real::Real;
 use crate::solver::{partition, GlobalSpec, Solver};
 use crate::subdomain::Subdomain;
@@ -52,6 +54,40 @@ const TAG_SCALAR: Tag = 200;
 const TAG_MASK_META: Tag = 300;
 const TAG_MASK_WALL: Tag = 400;
 const TAG_GATHER: Tag = 500;
+const TAG_MASS_ROWS: Tag = 600;
+
+#[derive(Clone)]
+struct AxisBuffers<E> {
+    send: [Vec<E>; 2],
+    recv: [Vec<E>; 2],
+}
+
+impl<E> Default for AxisBuffers<E> {
+    fn default() -> Self {
+        Self {
+            send: [Vec::new(), Vec::new()],
+            recv: [Vec::new(), Vec::new()],
+        }
+    }
+}
+
+struct MpiBuffers<T: Real> {
+    f: [AxisBuffers<T>; 3],
+    scalar: [AxisBuffers<T>; 3],
+    mask_meta: [AxisBuffers<u8>; 3],
+    mask_wall: [AxisBuffers<T>; 3],
+}
+
+impl<T: Real> Default for MpiBuffers<T> {
+    fn default() -> Self {
+        Self {
+            f: std::array::from_fn(|_| AxisBuffers::default()),
+            scalar: std::array::from_fn(|_| AxisBuffers::default()),
+            mask_meta: std::array::from_fn(|_| AxisBuffers::default()),
+            mask_wall: std::array::from_fn(|_| AxisBuffers::default()),
+        }
+    }
+}
 
 /// Raw-byte view of a POD slice (`f32` / `f64` / `u8`: no padding, every bit
 /// pattern valid). Private to this module; only instantiated with those.
@@ -65,21 +101,181 @@ fn as_bytes_mut<E: Copy>(v: &mut [E]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
 }
 
+/// Choose a Cartesian rank decomposition whose part count is `ranks` and
+/// whose approximate block surface area is minimal for `dims`.
+pub fn choose_decomp(d: usize, dims: [usize; 3], ranks: usize) -> [usize; 3] {
+    assert!(ranks > 0, "rank count must be positive");
+    assert!(d == 2 || d == 3, "dimension must be 2 or 3");
+    let mut best = [ranks, 1, 1];
+    let mut best_score = f64::INFINITY;
+    for dx in 1..=ranks {
+        if ranks % dx != 0 {
+            continue;
+        }
+        let rem = ranks / dx;
+        for dy in 1..=rem {
+            if rem % dy != 0 {
+                continue;
+            }
+            let dz = rem / dy;
+            if d == 2 && dz != 1 {
+                continue;
+            }
+            let lx = dims[0] as f64 / dx as f64;
+            let ly = dims[1] as f64 / dy as f64;
+            let lz = if d == 2 {
+                1.0
+            } else {
+                dims[2] as f64 / dz as f64
+            };
+            let surface = if d == 2 {
+                2.0 * (lx + ly)
+            } else {
+                2.0 * (lx * ly + lx * lz + ly * lz)
+            };
+            let balance = lx.max(ly).max(lz) / lx.min(ly).min(lz);
+            let score = surface + balance * 1e-9;
+            let decomp = [dx, dy, dz];
+            if score < best_score
+                || (score == best_score && decomp.iter().rev().cmp(best.iter().rev()).is_lt())
+            {
+                best_score = score;
+                best = decomp;
+            }
+        }
+    }
+    best
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn hash_bytes(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+}
+
+fn hash_f64(h: &mut u64, v: f64) {
+    hash_bytes(h, &v.to_bits().to_le_bytes());
+}
+
+fn spec_item_hashes<T: Real>(
+    spec: &GlobalSpec<T>,
+    solid: &[bool],
+    wall_u: &[[T; 3]],
+) -> [(&'static str, u64); 8] {
+    let mut dims = 0xcbf29ce484222325u64;
+    for v in spec.dims {
+        hash_bytes(&mut dims, &(v as u64).to_le_bytes());
+    }
+    let mut periodic = 0xcbf29ce484222325u64;
+    for v in spec.periodic {
+        hash_bytes(&mut periodic, &[v as u8]);
+    }
+    let mut collision = 0xcbf29ce484222325u64;
+    match spec.collision {
+        CollisionKind::Bgk => hash_bytes(&mut collision, &[0]),
+        CollisionKind::Trt { magic } => {
+            hash_bytes(&mut collision, &[1]);
+            hash_f64(&mut collision, magic);
+        }
+    }
+    let mut faces = 0xcbf29ce484222325u64;
+    for bc in spec.faces {
+        match bc {
+            FaceBC::Closed => hash_bytes(&mut faces, &[0]),
+            FaceBC::Velocity { u } => {
+                hash_bytes(&mut faces, &[1]);
+                for v in u {
+                    hash_f64(&mut faces, v.as_f64());
+                }
+            }
+            FaceBC::Pressure { rho } => {
+                hash_bytes(&mut faces, &[2]);
+                hash_f64(&mut faces, rho.as_f64());
+            }
+            FaceBC::Outflow => hash_bytes(&mut faces, &[3]),
+            FaceBC::Convective { u_conv } => {
+                hash_bytes(&mut faces, &[4]);
+                hash_f64(&mut faces, u_conv.as_f64());
+            }
+        }
+    }
+    let mut force = 0xcbf29ce484222325u64;
+    for v in spec.force {
+        hash_f64(&mut force, v.as_f64());
+    }
+    let mut solid_mask = 0xcbf29ce484222325u64;
+    hash_bytes(&mut solid_mask, &(solid.len() as u64).to_le_bytes());
+    for &v in solid {
+        hash_bytes(&mut solid_mask, &[v as u8]);
+    }
+    let mut wall_mask = 0xcbf29ce484222325u64;
+    hash_bytes(&mut wall_mask, &(wall_u.len() as u64).to_le_bytes());
+    for u in wall_u {
+        for &v in u {
+            hash_f64(&mut wall_mask, v.as_f64());
+        }
+    }
+    [
+        ("dims", dims),
+        ("nu", fnv1a64(&spec.nu.to_bits().to_le_bytes())),
+        ("periodic", periodic),
+        ("collision", collision),
+        ("faces", faces),
+        ("force", force),
+        ("solid mask", solid_mask),
+        ("wall velocity mask", wall_mask),
+    ]
+}
+
+fn assert_rank_specs_match<T: Real>(
+    world: &SimpleCommunicator,
+    spec: &GlobalSpec<T>,
+    solid: &[bool],
+    wall_u: &[[T; 3]],
+) {
+    for (name, hash) in spec_item_hashes(spec, solid, wall_u) {
+        let local = [hash];
+        let mut min = [0u64];
+        let mut max = [0u64];
+        world.all_reduce_into(&local, &mut min, SystemOperation::min());
+        world.all_reduce_into(&local, &mut max, SystemOperation::max());
+        assert_eq!(
+            min[0], max[0],
+            "MPI rank specification mismatch: {name} differs across ranks"
+        );
+    }
+}
+
 /// MPI implementation of [`HaloExchange`]: serves exactly the local part of a
 /// [`Solver::new_local_part`] decomposition, interpreting subdomain neighbour
 /// ids as ranks of its (duplicated) communicator.
-pub struct MpiExchange {
+pub struct MpiExchange<T: Real> {
     comm: SimpleCommunicator,
     rank: usize,
+    buffers: RefCell<MpiBuffers<T>>,
 }
 
-impl MpiExchange {
+impl<T: Real> MpiExchange<T> {
     /// Duplicate `world` (collective) and bind the exchange to it, isolating
     /// halo traffic from the caller's communicator.
     pub fn new(world: &SimpleCommunicator) -> Self {
         let comm = world.duplicate();
         let rank = comm.rank() as usize;
-        Self { comm, rank }
+        Self {
+            comm,
+            rank,
+            buffers: RefCell::new(MpiBuffers::default()),
+        }
     }
 
     /// This process's rank (= part id).
@@ -98,111 +294,117 @@ impl MpiExchange {
     /// it therefore goes to this part's *opposite*-side neighbour. A periodic
     /// self-wrap short-circuits to a local hand-off (no MPI).
     fn transfer_axis<E: Copy + Default>(
-        &self,
+        comm: &SimpleCommunicator,
+        me: usize,
         sub: &Subdomain,
         axis: usize,
         tag_base: Tag,
-        payloads: [Vec<E>; 2],
+        buffers: &mut AxisBuffers<E>,
         recv_counts: [usize; 2],
-    ) -> [Option<Vec<E>>; 2] {
+        mut unpack: impl FnMut(usize, &[E]),
+    ) {
         let faces = [Face::ALL[2 * axis], Face::ALL[2 * axis + 1]];
         let nb = [
             sub.neighbors[faces[0].index()],
             sub.neighbors[faces[1].index()],
         ];
-        let me = self.rank;
         if nb[0] == Some(me) || nb[1] == Some(me) {
             // decomp == 1 on a periodic axis: both faces wrap onto this rank.
             assert!(
                 nb[0] == Some(me) && nb[1] == Some(me),
                 "self-wrap must be symmetric on axis {axis}"
             );
-            let [lo, hi] = payloads;
-            debug_assert_eq!(lo.len(), recv_counts[0]);
-            debug_assert_eq!(hi.len(), recv_counts[1]);
-            return [Some(lo), Some(hi)];
+            debug_assert_eq!(buffers.send[0].len(), recv_counts[0]);
+            debug_assert_eq!(buffers.send[1].len(), recv_counts[1]);
+            unpack(0, &buffers.send[0]);
+            unpack(1, &buffers.send[1]);
+            return;
         }
-        let mut rb_lo: Option<Vec<E>> = nb[0].map(|_| vec![E::default(); recv_counts[0]]);
-        let mut rb_hi: Option<Vec<E>> = nb[1].map(|_| vec![E::default(); recv_counts[1]]);
-        let (pay_lo, pay_hi) = (&payloads[0], &payloads[1]);
+        for s in 0..2 {
+            if nb[s].is_some() {
+                buffers.recv[s].resize(recv_counts[s], E::default());
+            }
+        }
+        let (recv_lo, recv_hi) = buffers.recv.split_at_mut(1);
+        let recv_lo = &mut recv_lo[0];
+        let recv_hi = &mut recv_hi[0];
+        let send = &buffers.send;
         mpi::request::scope(|sc| {
             let mut reqs = Vec::with_capacity(4);
             // Receives first, then sends; all are posted before any wait, so
             // the phase cannot deadlock regardless of the neighbour graph.
-            if let (Some(r), Some(buf)) = (nb[0], rb_lo.as_mut()) {
+            if let Some(r) = nb[0] {
                 reqs.push(
-                    self.comm
-                        .process_at_rank(r as Rank)
+                    comm.process_at_rank(r as Rank)
                         .immediate_receive_into_with_tag(
                             sc,
-                            as_bytes_mut(buf.as_mut_slice()),
+                            as_bytes_mut(recv_lo.as_mut_slice()),
                             tag_base + faces[0].index() as Tag,
                         ),
                 );
             }
-            if let (Some(r), Some(buf)) = (nb[1], rb_hi.as_mut()) {
+            if let Some(r) = nb[1] {
                 reqs.push(
-                    self.comm
-                        .process_at_rank(r as Rank)
+                    comm.process_at_rank(r as Rank)
                         .immediate_receive_into_with_tag(
                             sc,
-                            as_bytes_mut(buf.as_mut_slice()),
+                            as_bytes_mut(recv_hi.as_mut_slice()),
                             tag_base + faces[1].index() as Tag,
                         ),
                 );
             }
             if let Some(r) = nb[1] {
                 // The +side neighbour unpacks this at its low face.
-                reqs.push(
-                    self.comm
-                        .process_at_rank(r as Rank)
-                        .immediate_send_with_tag(
-                            sc,
-                            as_bytes(pay_lo.as_slice()),
-                            tag_base + faces[0].index() as Tag,
-                        ),
-                );
+                reqs.push(comm.process_at_rank(r as Rank).immediate_send_with_tag(
+                    sc,
+                    as_bytes(send[0].as_slice()),
+                    tag_base + faces[0].index() as Tag,
+                ));
             }
             if let Some(r) = nb[0] {
-                reqs.push(
-                    self.comm
-                        .process_at_rank(r as Rank)
-                        .immediate_send_with_tag(
-                            sc,
-                            as_bytes(pay_hi.as_slice()),
-                            tag_base + faces[1].index() as Tag,
-                        ),
-                );
+                reqs.push(comm.process_at_rank(r as Rank).immediate_send_with_tag(
+                    sc,
+                    as_bytes(send[1].as_slice()),
+                    tag_base + faces[1].index() as Tag,
+                ));
             }
             for req in reqs {
                 req.wait();
             }
         });
-        [rb_lo, rb_hi]
+        for s in 0..2 {
+            if nb[s].is_some() {
+                unpack(s, &buffers.recv[s]);
+            }
+        }
     }
 }
 
-impl<T: Real> HaloExchange<T> for MpiExchange {
+impl<T: Real> HaloExchange<T> for MpiExchange<T> {
     const SCOPE: ExchangeScope = ExchangeScope::Remote;
 
     fn exchange_f<L: Lattice>(&self, subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
         assert_eq!(parts.len(), 1, "MpiExchange serves exactly the local part");
         let sub = &subs[0];
+        let mut buffers = self.buffers.borrow_mut();
         for axis in 0..sub.geom.d {
             let faces = [Face::ALL[2 * axis], Face::ALL[2 * axis + 1]];
-            let mut payloads = [Vec::new(), Vec::new()];
             let mut counts = [0usize; 2];
             for s in 0..2 {
-                pack_f_layer::<L, T>(&parts[0], faces[s], &mut payloads[s]);
+                pack_f_layer::<L, T>(&parts[0], faces[s], &mut buffers.f[axis].send[s]);
                 counts[s] =
                     layer_cell_count(&parts[0].geom, faces[s]) * L::unknowns(faces[s]).len();
             }
-            let recvd = self.transfer_axis(sub, axis, TAG_F, payloads, counts);
-            for s in 0..2 {
-                if let Some(buf) = &recvd[s] {
-                    unpack_f_layer::<L, T>(&mut parts[0], faces[s], buf);
-                }
-            }
+            Self::transfer_axis(
+                &self.comm,
+                self.rank,
+                sub,
+                axis,
+                TAG_F,
+                &mut buffers.f[axis],
+                counts,
+                |s, buf| unpack_f_layer::<L, T>(&mut parts[0], faces[s], buf),
+            );
         }
     }
 
@@ -210,16 +412,18 @@ impl<T: Real> HaloExchange<T> for MpiExchange {
         assert_eq!(parts.len(), 1, "MpiExchange serves exactly the local part");
         let sub = &subs[0];
         let geom = parts[0].geom;
+        let mut buffers = self.buffers.borrow_mut();
         for axis in 0..sub.geom.d {
             let faces = [Face::ALL[2 * axis], Face::ALL[2 * axis + 1]];
             // Round A (u8): [solid n][probe-flag 1][probe n] — fixed size so
             // the receiver can post the buffer without a size handshake.
-            let mut meta = [Vec::new(), Vec::new()];
             let mut meta_counts = [0usize; 2];
             for s in 0..2 {
                 let idx = layer_indices(&geom, faces[s], axis, false);
                 let n = idx.len();
-                let mut buf = Vec::with_capacity(2 * n + 1);
+                let buf = &mut buffers.mask_meta[axis].send[s];
+                buf.clear();
+                buf.reserve(2 * n + 1);
                 for &c in &idx {
                     buf.push(parts[0].solid[c] as u8);
                 }
@@ -228,26 +432,53 @@ impl<T: Real> HaloExchange<T> for MpiExchange {
                     Some(m) => buf.extend(idx.iter().map(|&c| m[c] as u8)),
                     None => buf.extend(std::iter::repeat(0u8).take(n)),
                 }
-                meta[s] = buf;
                 meta_counts[s] = 2 * layer_cell_count(&geom, faces[s]) + 1;
             }
-            let meta_recv = self.transfer_axis(sub, axis, TAG_MASK_META, meta, meta_counts);
+            Self::transfer_axis(
+                &self.comm,
+                self.rank,
+                sub,
+                axis,
+                TAG_MASK_META,
+                &mut buffers.mask_meta[axis],
+                meta_counts,
+                |_, _| {},
+            );
             // Round B (T): wall_u, cell-major with the 3 components inner.
-            let mut wall = [Vec::new(), Vec::new()];
             let mut wall_counts = [0usize; 2];
             for s in 0..2 {
                 let idx = layer_indices(&geom, faces[s], axis, false);
-                let mut buf: Vec<T> = Vec::with_capacity(3 * idx.len());
+                let buf = &mut buffers.mask_wall[axis].send[s];
+                buf.clear();
+                buf.reserve(3 * idx.len());
                 for &c in &idx {
                     buf.extend_from_slice(&parts[0].wall_u[c]);
                 }
-                wall[s] = buf;
                 wall_counts[s] = 3 * layer_cell_count(&geom, faces[s]);
             }
-            let wall_recv = self.transfer_axis(sub, axis, TAG_MASK_WALL, wall, wall_counts);
+            Self::transfer_axis(
+                &self.comm,
+                self.rank,
+                sub,
+                axis,
+                TAG_MASK_WALL,
+                &mut buffers.mask_wall[axis],
+                wall_counts,
+                |_, _| {},
+            );
             for s in 0..2 {
-                let (Some(mbuf), Some(wbuf)) = (&meta_recv[s], &wall_recv[s]) else {
+                if sub.neighbors[faces[s].index()].is_none() {
                     continue;
+                }
+                let mbuf = if sub.neighbors[faces[s].index()] == Some(self.rank) {
+                    &buffers.mask_meta[axis].send[s]
+                } else {
+                    &buffers.mask_meta[axis].recv[s]
+                };
+                let wbuf = if sub.neighbors[faces[s].index()] == Some(self.rank) {
+                    &buffers.mask_wall[axis].send[s]
+                } else {
+                    &buffers.mask_wall[axis].recv[s]
                 };
                 let idx = layer_indices(&geom, faces[s], axis, true);
                 let n = idx.len();
@@ -272,20 +503,24 @@ impl<T: Real> HaloExchange<T> for MpiExchange {
         assert_eq!(planes.len(), 1, "MpiExchange serves exactly the local part");
         let sub = &subs[0];
         let geom = &sub.geom;
+        let mut buffers = self.buffers.borrow_mut();
         for axis in 0..sub.geom.d {
             let faces = [Face::ALL[2 * axis], Face::ALL[2 * axis + 1]];
-            let mut payloads = [Vec::new(), Vec::new()];
             let mut counts = [0usize; 2];
             for s in 0..2 {
-                pack_scalar_layer(geom, planes[0], faces[s], &mut payloads[s]);
+                pack_scalar_layer(geom, planes[0], faces[s], &mut buffers.scalar[axis].send[s]);
                 counts[s] = layer_cell_count(geom, faces[s]);
             }
-            let recvd = self.transfer_axis(sub, axis, TAG_SCALAR, payloads, counts);
-            for s in 0..2 {
-                if let Some(buf) = &recvd[s] {
-                    unpack_scalar_layer(geom, planes[0], faces[s], buf);
-                }
-            }
+            Self::transfer_axis(
+                &self.comm,
+                self.rank,
+                sub,
+                axis,
+                TAG_SCALAR,
+                &mut buffers.scalar[axis],
+                counts,
+                |s, buf| unpack_scalar_layer(geom, planes[0], faces[s], buf),
+            );
         }
     }
 }
@@ -301,7 +536,7 @@ where
     T: Real,
     B: Backend<L, T, Fields = SoaFields<T>>,
 {
-    inner: Solver<L, T, B, MpiExchange>,
+    inner: Solver<L, T, B, MpiExchange<T>>,
     comm: SimpleCommunicator,
     rank: usize,
     size: usize,
@@ -335,7 +570,8 @@ where
             size,
             "decomp {decomp:?} must cover exactly the communicator size {size}"
         );
-        let exchange = MpiExchange::new(world);
+        assert_rank_specs_match(world, spec, solid, wall_u);
+        let exchange = MpiExchange::<T>::new(world);
         let comm = world.duplicate();
         let subs_meta = partition(L::D, spec.dims, spec.periodic, decomp);
         let inner = Solver::new_local_part(spec, solid, wall_u, decomp, rank, backend, exchange);
@@ -362,14 +598,14 @@ where
 
     /// The local [`Solver`] (one part). Cell accessors on it address global
     /// coordinates and are only valid for cells this rank owns.
-    pub fn local(&self) -> &Solver<L, T, B, MpiExchange> {
+    pub fn local(&self) -> &Solver<L, T, B, MpiExchange<T>> {
         &self.inner
     }
 
     /// Mutable access to the local solver (see [`MpiSolver::local`] caveats;
     /// mask edits through this must be followed by [`Solver::mark_masks_dirty`]
     /// *on every rank*).
-    pub fn local_mut(&mut self) -> &mut Solver<L, T, B, MpiExchange> {
+    pub fn local_mut(&mut self) -> &mut Solver<L, T, B, MpiExchange<T>> {
         &mut self.inner
     }
 
@@ -533,6 +769,68 @@ where
         let mut out = [0.0f64; 2];
         self.allreduce_sum(&[fluid, m], &mut out);
         T::r(out[0] + out[1])
+    }
+
+    /// Global total mass with fixed-order composition. Rank blocks are first
+    /// reduced to global `(z, y)` row partials, rank 0 folds rows in
+    /// lexicographic order, and the scalar result is broadcast to all ranks.
+    pub fn total_mass_deterministic(&self) -> T {
+        let dims = self.inner.dims();
+        let rows = dims[1] * dims[2];
+        let mut local = vec![0.0f64; rows * 2];
+        let sub = &self.subs_meta[self.rank];
+        let fields = self.inner.fields(0);
+        let g = fields.geom;
+        let np = g.n_padded();
+        for z in 0..g.core[2] {
+            for y in 0..g.core[1] {
+                let row = (sub.origin[2] + z) * dims[1] + sub.origin[1] + y;
+                for x in 0..g.core[0] {
+                    let pi = g.pidx(x, y, z);
+                    if fields.solid[pi] {
+                        continue;
+                    }
+                    local[2 * row] += 1.0;
+                    for q in 0..L::Q {
+                        local[2 * row + 1] += fields.f[q * np + pi].as_f64();
+                    }
+                }
+            }
+        }
+
+        let mut total = 0.0f64;
+        if self.rank == 0 {
+            let mut rows_by_rank = vec![0.0f64; rows * 2];
+            for row in 0..rows {
+                rows_by_rank[2 * row] = local[2 * row];
+                rows_by_rank[2 * row + 1] = local[2 * row + 1];
+            }
+            let mut staging = vec![0.0f64; rows * 2];
+            let mut all = vec![vec![0.0f64; rows * 2]; self.size];
+            all[0].copy_from_slice(&rows_by_rank);
+            for r in 1..self.size {
+                staging.fill(0.0);
+                self.comm
+                    .process_at_rank(r as Rank)
+                    .receive_into_with_tag(as_bytes_mut(staging.as_mut_slice()), TAG_MASS_ROWS);
+                all[r].copy_from_slice(&staging);
+            }
+            for row in 0..rows {
+                let mut fluid = 0.0f64;
+                let mut mass_dev = 0.0f64;
+                for rank_rows in &all {
+                    fluid += rank_rows[2 * row];
+                    mass_dev += rank_rows[2 * row + 1];
+                }
+                total += fluid + mass_dev;
+            }
+        } else {
+            self.comm
+                .process_at_rank(0)
+                .send_with_tag(as_bytes(local.as_slice()), TAG_MASS_ROWS);
+        }
+        self.comm.process_at_rank(0).broadcast_into(&mut total);
+        T::r(total)
     }
 
     /// Global total momentum (collective; same contract as `total_mass`).
@@ -736,5 +1034,153 @@ where
             }
         }
         self.gather_compact(&local)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::CpuScalar;
+    use crate::halo::InProcess;
+    use crate::lattice::{D2Q9, D3Q19};
+    use crate::solver::WallSpec;
+
+    fn patterned_parts<L: Lattice>(dims: [usize; 3], decomp: [usize; 3]) -> Vec<SoaFields<f64>> {
+        let subs = partition(L::D, dims, [true, true, true], decomp);
+        let mut parts: Vec<SoaFields<f64>> =
+            subs.iter().map(|s| SoaFields::new(L::Q, s.geom)).collect();
+        for (p, fields) in parts.iter_mut().enumerate() {
+            let np = fields.plane_len();
+            for q in 0..L::Q {
+                for cell in 0..np {
+                    fields.f[q * np + cell] = (p * 10_000 + q * 1_000 + cell) as f64;
+                }
+            }
+        }
+        parts
+    }
+
+    #[test]
+    fn choose_decomp_minimizes_surface_for_common_rank_counts() {
+        assert_eq!(choose_decomp(2, [96, 64, 1], 3), [3, 1, 1]);
+        assert_eq!(choose_decomp(2, [96, 64, 1], 5), [5, 1, 1]);
+        assert_eq!(choose_decomp(2, [96, 64, 1], 6), [3, 2, 1]);
+        assert_eq!(choose_decomp(3, [30, 24, 18], 6), [3, 2, 1]);
+    }
+
+    #[test]
+    fn mpi_phase_payloads_match_inprocess_exchange_buffers() {
+        let dims = [8usize, 9, 1];
+        let decomp = [2usize, 3, 1];
+        let subs = partition(D2Q9::D, dims, [true, true, false], decomp);
+        let before = patterned_parts::<D2Q9>(dims, decomp);
+        let mut inprocess = before.clone();
+        InProcess.exchange_f::<D2Q9>(&subs, &mut inprocess);
+
+        let mut rebuilt = before.clone();
+        for axis in 0..D2Q9::D {
+            let phase_start = rebuilt.clone();
+            for side in 0..2 {
+                let recv_face = Face::ALL[2 * axis + side];
+                for dst in 0..rebuilt.len() {
+                    let Some(src) = subs[dst].neighbors[recv_face.index()] else {
+                        continue;
+                    };
+                    let mut buf = Vec::new();
+                    pack_f_layer::<D2Q9, f64>(&phase_start[src], recv_face, &mut buf);
+                    let want_len = layer_cell_count(&before[dst].geom, recv_face)
+                        * D2Q9::unknowns(recv_face).len();
+                    assert_eq!(buf.len(), want_len);
+                    unpack_f_layer::<D2Q9, f64>(&mut rebuilt[dst], recv_face, &buf);
+                }
+            }
+        }
+        for (a, b) in rebuilt.iter().zip(&inprocess) {
+            assert_eq!(a.f, b.f);
+        }
+    }
+
+    #[test]
+    fn scalar_phase_payloads_match_inprocess_exchange_buffers() {
+        let dims = [6usize, 4, 6];
+        let decomp = [2usize, 1, 2];
+        let subs = partition(D3Q19::D, dims, [true, true, true], decomp);
+        let mut planes: Vec<Vec<f64>> = subs
+            .iter()
+            .enumerate()
+            .map(|(p, s)| {
+                (0..s.geom.n_padded())
+                    .map(|cell| (p * 10_000 + cell) as f64)
+                    .collect()
+            })
+            .collect();
+        let before = planes.clone();
+        let mut refs: Vec<&mut [f64]> = planes.iter_mut().map(|p| p.as_mut_slice()).collect();
+        InProcess.exchange_scalar(&subs, &mut refs);
+
+        let mut rebuilt = before.clone();
+        for axis in 0..D3Q19::D {
+            let phase_start = rebuilt.clone();
+            for side in 0..2 {
+                let recv_face = Face::ALL[2 * axis + side];
+                for dst in 0..rebuilt.len() {
+                    let Some(src) = subs[dst].neighbors[recv_face.index()] else {
+                        continue;
+                    };
+                    let mut buf = Vec::new();
+                    pack_scalar_layer(&subs[src].geom, &phase_start[src], recv_face, &mut buf);
+                    assert_eq!(buf.len(), layer_cell_count(&subs[dst].geom, recv_face));
+                    unpack_scalar_layer(&subs[dst].geom, &mut rebuilt[dst], recv_face, &buf);
+                }
+            }
+        }
+        assert_eq!(rebuilt, planes);
+    }
+
+    #[test]
+    fn rank_spec_hash_names_changed_item() {
+        let spec = GlobalSpec::<f64>::default();
+        let mut changed = spec.clone();
+        changed.nu = 0.03;
+        let base = spec_item_hashes(&spec, &[], &[]);
+        let other = spec_item_hashes(&changed, &[], &[]);
+        let changed_names: Vec<&str> = base
+            .iter()
+            .zip(other.iter())
+            .filter_map(|((name, a), (_, b))| (a != b).then_some(*name))
+            .collect();
+        assert_eq!(changed_names, vec!["nu"]);
+    }
+
+    #[test]
+    fn one_rank_self_exchange_smoke_if_mpi_is_available() {
+        let Some(universe) = mpi::initialize() else {
+            return;
+        };
+        let world = universe.world();
+        if world.size() != 1 {
+            return;
+        }
+        let spec = GlobalSpec::<f64> {
+            dims: [8, 6, 1],
+            nu: 0.02,
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        let (solid, wall_u) =
+            crate::solver::build_wall_rims(D2Q9::D, spec.dims, &WallSpec::default());
+        let mut solver: MpiSolver<D2Q9, f64, CpuScalar> = MpiSolver::new(
+            &world,
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+        );
+        solver.step();
+        assert_eq!(solver.nonfinite_count(), 0);
+        drop(solver);
+        drop(world);
+        drop(universe);
     }
 }
