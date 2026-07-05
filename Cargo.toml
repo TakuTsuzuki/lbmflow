@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lbm-core", "crates/lbm-scenario", "crates/lbm-cli"]
+members = ["crates/lbm-core", "crates/lbm-core2", "crates/lbm-scenario", "crates/lbm-cli"]
 # lbm-wasm builds standalone (wasm-pack, no rayon); excluded so native
 # `cargo test` never depends on the wasm toolchain.
 # lbm-gpu-proto is the standalone Phase 9c wgpu evaluation prototype; excluded

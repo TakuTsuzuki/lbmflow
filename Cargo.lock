@@ -237,6 +237,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lbm-core2"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "lbm-core",
+ "num-traits",
+ "rayon",
+]
+
+[[package]]
 name = "lbm-scenario"
 version = "0.1.0"
 dependencies = [

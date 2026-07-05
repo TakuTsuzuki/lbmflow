@@ -1,0 +1,20 @@
+[package]
+name = "lbm-core2"
+description = "Lattice Boltzmann core V2: dimension/lattice/backend/subdomain orthogonal abstractions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+num-traits = "0.2"
+rayon = { version = "1.10", optional = true }
+
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
+[dev-dependencies]
+# V1 reference implementation, used only by equivalence tests (never a
+# build dependency of the V2 engine itself).
+lbm-core = { path = "../lbm-core" }
+approx = "0.5"
