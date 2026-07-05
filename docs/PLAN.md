@@ -92,6 +92,13 @@ GUI モードと、エージェントから操作できる Agent モードの両
 
 ## 進捗メモ
 
+- 2026-07-05 昼: **Phase 8 完了**（T12 RT γ比1.118・T11c 接触角フルレンジ・T9b 対流流出は
+  反射ケースで16倍改善、67テスト緑）。**GPU 実測完了**: M5 Max Metal で 6,975〜12,152
+  MLUPS（CPU比16〜42倍、検証L∞ 7e-6、GPU_EVALUATION.md、R2目標を4-8倍超過）。
+  シナリオ/CLI に convectiveOutflow・wallRho・VTK・gallery。GUI にシナリオ書き出し
+  （→lbm run E2E確認）・発散ガード・MLUPS。SoA/SIMD は WIP（phase9-perf、クォータ
+  回復後に再開）。次: M-B コアV2 の並列発注。
+
 - 2026-07-05: **Phase 4a/5/6 完了（三モード統一達成）**。codex #4 の多相検証
   全緑（共存密度・EOS 圧力平衡・Laplace・接触角回帰 133/160/164°・f32 強化 1e-5）。
   GUI: WASM 実エンジンでキャビティ/カルマン渦/二相液滴が動作（~600 steps/s）。
