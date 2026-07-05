@@ -1,5 +1,5 @@
 /* ============================================================
-   LBMFlow — ダークテーマ UI
+   LBMFlow — dark theme UI
    ============================================================ */
 
 :root {
@@ -53,7 +53,7 @@ body {
   height: 100dvh;
 }
 
-/* ------------------------------------------------------------ ヘッダー */
+/* ------------------------------------------------------------ Header */
 
 .app-header {
   display: flex;
@@ -117,7 +117,7 @@ body {
   gap: 8px;
 }
 
-/* ---------------------------------------------------------- フォーム部品 */
+/* ---------------------------------------------------------- Form controls */
 
 select,
 button {
@@ -239,7 +239,7 @@ input[type="range"]::-moz-range-thumb {
   border: 2px solid #06283d;
 }
 
-/* ------------------------------------------------------------- メイン */
+/* ------------------------------------------------------------- Main */
 
 .app-main {
   display: flex;
@@ -284,7 +284,7 @@ input[type="range"]::-moz-range-thumb {
   font-size: 12.5px;
 }
 
-/* ------------------------------------------------------------ 右パネル */
+/* ------------------------------------------------------------ Side panel */
 
 .side-panel {
   width: 292px;
@@ -458,7 +458,7 @@ input[type="range"]::-moz-range-thumb {
   margin-bottom: 10px;
 }
 
-/* --------------------------------------------------------- 初回ヒント */
+/* --------------------------------------------------------- First-time hint */
 
 .first-hint {
   position: absolute;
@@ -468,7 +468,7 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* abspos + left:50% は残り半分の幅で折り返してしまうため max-content 指定 */
+  /* abspos + left:50% would wrap at half the remaining width, hence max-content */
   width: max-content;
   max-width: calc(100% - 20px);
   background: color-mix(in srgb, var(--panel-2) 92%, transparent);
@@ -521,7 +521,7 @@ input[type="range"]::-moz-range-thumb {
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* ------------------------------------------------------------- トースト */
+/* ------------------------------------------------------------- Toast */
 
 #toast-region {
   position: fixed;
@@ -621,7 +621,7 @@ input[type="range"]::-moz-range-thumb {
   }
 }
 
-/* -------------------------------------------------------- ステータスバー */
+/* -------------------------------------------------------- Status bar */
 
 .status-bar {
   display: flex;
@@ -644,7 +644,7 @@ input[type="range"]::-moz-range-thumb {
   margin-left: auto;
 }
 
-/* --------------------------------------------------------- レスポンシブ */
+/* --------------------------------------------------------- Responsive */
 
 @media (max-width: 880px) {
   .app-header {
@@ -716,7 +716,7 @@ input[type="range"]::-moz-range-thumb {
   }
 }
 
-/* タッチ端末: 当たり判定を広げる */
+/* Touch devices: widen the hit targets */
 @media (pointer: coarse) {
   .btn {
     padding: 10px 16px;
@@ -755,7 +755,7 @@ input[type="range"]::-moz-range-thumb {
   }
 }
 
-/* スクロールバー（WebKit） */
+/* Scrollbar (WebKit) */
 .side-panel::-webkit-scrollbar {
   width: 8px;
 }

@@ -4,36 +4,36 @@ import { RDBU, VIRIDIS, type Lut } from "./colormap.ts";
 export type VisMode = "speed" | "vorticity" | "density";
 
 export const VIS_MODE_LABEL: Record<VisMode, string> = {
-  speed: "速さ |u|",
-  vorticity: "渦度 ω",
-  density: "密度 ρ",
+  speed: "Speed |u|",
+  vorticity: "Vorticity ω",
+  density: "Density ρ",
 };
 
 export const VIS_MODE_HINT: Record<VisMode, string> = {
-  speed: "流れの速いところほど明るい色で表示されます。",
-  vorticity: "反時計回りの渦が赤、時計回りの渦が青で表示されます。",
-  density: "平均より濃いところが赤、薄いところが青で表示されます。",
+  speed: "Faster flow is shown in brighter colors.",
+  vorticity: "Counterclockwise vortices are shown in red, clockwise vortices in blue.",
+  density: "Areas denser than average are shown in red, sparser areas in blue.",
 };
 
 const SOLID_RGB: readonly [number, number, number] = [110, 118, 129];
 
 export interface BrushPreview {
-  /** 格子座標（x: 0..nx, y: 0..ny、y は下端が 0） */
+  /** Grid coordinates (x: 0..nx, y: 0..ny; y is 0 at the bottom edge) */
   gx: number;
   gy: number;
   radius: number;
   erase: boolean;
 }
 
-/** 表示レンジ（カラーバーのラベル用） */
+/** Display range (for the colorbar labels) */
 export interface VisRange {
   lo: number;
   hi: number;
 }
 
 /**
- * 場のスカラー化 → 正規化 → LUT 着色 → オフスクリーン canvas(nx×ny)
- * → メイン canvas へ拡大転写、まで担当する。
+ * Handles everything from scalarizing the field -> normalizing -> LUT
+ * coloring -> offscreen canvas(nx*ny) -> upscaled blit to the main canvas.
  */
 export class FieldRenderer {
   private off: HTMLCanvasElement;
@@ -41,18 +41,18 @@ export class FieldRenderer {
   private img: ImageData | null = null;
   private scalar = new Float32Array(0);
 
-  /** ちらつき防止のためレンジは指数移動平均でならす */
+  /** Smooth the range with an exponential moving average to avoid flicker */
   private emaHi = 0;
   private emaMode: VisMode | null = null;
 
   constructor(private main: HTMLCanvasElement) {
     this.off = document.createElement("canvas");
     const ctx = this.off.getContext("2d");
-    if (!ctx) throw new Error("2D コンテキストを取得できません");
+    if (!ctx) throw new Error("Failed to get 2D context");
     this.offCtx = ctx;
   }
 
-  /** リセット時などにレンジの学習をやり直す */
+  /** Restart range learning, e.g. on reset */
   resetRange(): void {
     this.emaHi = 0;
     this.emaMode = null;
@@ -82,7 +82,7 @@ export class FieldRenderer {
     return range;
   }
 
-  // ------------------------------------------------------------ スカラー化
+  // ------------------------------------------------------------ Scalarization
 
   private computeScalar(engine: Engine, mode: VisMode): Float32Array {
     const nx = engine.nx;
@@ -98,7 +98,7 @@ export class FieldRenderer {
     } else if (mode === "density") {
       out.set(engine.rho());
     } else {
-      // 渦度 ω = ∂uy/∂x − ∂ux/∂y（中心差分、端は 0）
+      // Vorticity ω = ∂uy/∂x − ∂ux/∂y (central difference, 0 at edges)
       const ux = engine.ux();
       const uy = engine.uy();
       out.fill(0);
@@ -115,7 +115,7 @@ export class FieldRenderer {
     return out;
   }
 
-  // ---------------------------------------------------------- レンジ計算
+  // ---------------------------------------------------------- Range computation
 
   private updateRange(mode: VisMode, scalar: Float32Array): VisRange {
     let target: number;
@@ -135,7 +135,8 @@ export class FieldRenderer {
       target = Math.max(1e-4, m * (mode === "vorticity" ? 0.7 : 1));
     }
 
-    // 発散（Inf）してもレンジが壊れないように直前の値へフォールバック
+    // Fall back to the previous value so the range doesn't break even if
+    // things diverge (Inf)
     if (!Number.isFinite(target)) target = this.emaHi > 0 ? this.emaHi : 1;
 
     this.emaHi = this.emaHi === 0 ? target : this.emaHi * 0.92 + target * 0.08;
@@ -146,7 +147,7 @@ export class FieldRenderer {
     return { lo: 1 - hi, hi: 1 + hi }; // density
   }
 
-  // ------------------------------------------------------------- 着色
+  // ------------------------------------------------------------- Coloring
 
   private paint(
     engine: Engine,
@@ -163,7 +164,7 @@ export class FieldRenderer {
 
     for (let y = 0; y < ny; y++) {
       const srcRow = y * nx;
-      const dstRow = (ny - 1 - y) * nx; // 上下反転（y=0 が下端）
+      const dstRow = (ny - 1 - y) * nx; // Flip vertically (y=0 is the bottom edge)
       for (let x = 0; x < nx; x++) {
         const si = srcRow + x;
         const di = (dstRow + x) * 4;
@@ -175,7 +176,7 @@ export class FieldRenderer {
           continue;
         }
         let t = (scalar[si]! - range.lo) * inv;
-        // !(t > 0) は NaN も拾う: 発散時に描画が乱れない防御
+        // !(t > 0) also catches NaN: guards against garbled rendering on divergence
         if (!(t > 0)) t = 0;
         else if (t > 1) t = 1;
         const li = ((t * 255) | 0) * 3;
@@ -188,7 +189,7 @@ export class FieldRenderer {
     this.offCtx.putImageData(img, 0, 0);
   }
 
-  // ----------------------------------------------------------- 拡大転写
+  // ----------------------------------------------------------- Upscaled blit
 
   private blit(engine: Engine, brush: BrushPreview | null): void {
     const ctx = this.main.getContext("2d");
@@ -204,7 +205,7 @@ export class FieldRenderer {
       const sx = w / engine.nx;
       const sy = h / engine.ny;
       const cx = brush.gx * sx;
-      const cy = (engine.ny - brush.gy) * sy; // 上下反転
+      const cy = (engine.ny - brush.gy) * sy; // Flip vertically
       ctx.beginPath();
       ctx.ellipse(cx, cy, brush.radius * sx, brush.radius * sy, 0, 0, Math.PI * 2);
       ctx.strokeStyle = brush.erase ? "rgba(255,120,120,0.9)" : "rgba(255,255,255,0.9)";
@@ -216,7 +217,7 @@ export class FieldRenderer {
   }
 }
 
-/** パネルのカラーバー canvas に LUT を描く */
+/** Draw the LUT onto the panel's colorbar canvas */
 export function drawColorbar(canvas: HTMLCanvasElement, mode: VisMode): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -237,7 +238,7 @@ export function drawColorbar(canvas: HTMLCanvasElement, mode: VisMode): void {
   ctx.putImageData(img, 0, 0);
 }
 
-/** カラーバーの端ラベル用フォーマッタ */
+/** Formatter for the colorbar's end labels */
 export function formatRange(v: number): string {
   if (!Number.isFinite(v)) return "—";
   const a = Math.abs(v);

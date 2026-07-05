@@ -1,12 +1,13 @@
 # LBMFlow Web GUI
 
-格子ボルツマン法（LBM）流体シミュレータ LBMFlow のブラウザ GUI です。
-Vite + TypeScript（vanilla、フレームワーク不使用・実行時依存ゼロ）で実装しています。
+Browser GUI for LBMFlow, a Lattice Boltzmann Method (LBM) fluid simulator.
+Implemented in Vite + TypeScript (vanilla, no framework, zero runtime dependencies).
 
-現在は **モックエンジン**（純 TS の解析的な流れ場生成器）で動作します。
-将来、Rust 製の WASM エンジンを同じ interface に差し込む前提の構成です。
+It currently runs on a **mock engine** (a pure-TS analytic flow-field generator).
+The architecture is designed so a Rust-based WASM engine can be plugged into the
+same interface in the future.
 
-## 起動方法
+## Getting started
 
 ```bash
 cd web
@@ -14,43 +15,45 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-本番ビルド:
+Production build:
 
 ```bash
-npm run build      # tsc(strict) → vite build、成果物は web/dist/
-npm run preview    # dist/ の動作確認
+npm run build      # tsc(strict) → vite build; output goes to web/dist/
+npm run preview    # check the dist/ build
 ```
 
-## 使い方
+## Usage
 
-1. ヘッダーのプリセット（キャビティ流れ / 円柱まわりの流れ / チャネル流 / 自由キャンバス）を選ぶ
-2. ▶実行 を押す（Space キーでも可）
-3. キャンバスをドラッグすると障害物を描ける（右ドラッグ or「消す」モードで消去）
-4. 右パネルで可視化する量（速さ / 渦度 / 密度）やパラメータを調整
+1. Pick a preset from the header (lid-driven cavity / flow around a cylinder /
+   channel flow / free canvas)
+2. Press ▶ Run (Space also works)
+3. Drag on the canvas to draw obstacles (right-drag, or use "Erase" mode, to erase)
+4. Adjust the visualized quantity (speed / vorticity / density) or parameters
+   in the right panel
 
-タブが非表示になるとシミュレーションは自動停止します。
+The simulation stops automatically when the tab is hidden.
 
-## ディレクトリ構成
+## Directory layout
 
 ```
 web/
-├── index.html            # UI の静的骨格（日本語ラベル）
+├── index.html            # Static UI skeleton (English labels)
 ├── src/
-│   ├── main.ts           # アプリ配線・RAF ループ・障害物ペイント
-│   ├── style.css         # ダークテーマ（CSS 変数、手書き）
-│   ├── presets.ts        # プリセット定義（EngineConfig + 説明 + 初期障害物）
-│   ├── colormap.ts       # viridis / RdBu の LUT（外部依存なし）
-│   ├── render.ts         # スカラー化（|u|・渦度・密度）→ LUT 着色 → canvas 転写
+│   ├── main.ts           # App wiring, RAF loop, obstacle painting
+│   ├── style.css         # Dark theme (CSS variables, hand-written)
+│   ├── presets.ts        # Preset definitions (EngineConfig + description + initial obstacles)
+│   ├── colormap.ts       # viridis / RdBu LUTs (no external dependencies)
+│   ├── render.ts         # Scalarize (|u| / vorticity / density) → LUT color → canvas transfer
 │   └── engine/
-│       ├── types.ts      # ★ エンジン抽象（wasm-bindgen 契約）
-│       ├── index.ts      # ★ エンジン生成の差し替えポイント
-│       └── mock.ts       # モックエンジン（解析的な流れ場生成器）
+│       ├── types.ts      # ★ Engine abstraction (wasm-bindgen contract)
+│       ├── index.ts      # ★ Engine-creation swap point
+│       └── mock.ts       # Mock engine (analytic flow-field generator)
 └── vite.config.ts
 ```
 
-## エンジン差し替え設計
+## Engine swap design
 
-UI は `src/engine/types.ts` の `Engine` interface **のみ** に依存します。
+The UI depends **only** on the `Engine` interface in `src/engine/types.ts`.
 
 ```ts
 export interface Engine {
@@ -59,7 +62,7 @@ export interface Engine {
   readonly nx: number;
   readonly ny: number;
   readonly time: number;
-  rho(): Float32Array;   // 長さ nx*ny、index = y*nx+x（y=0 が下端）
+  rho(): Float32Array;   // length nx*ny, index = y*nx+x (y=0 is the bottom edge)
   ux(): Float32Array;
   uy(): Float32Array;
   solidMask(): Uint8Array;
@@ -67,36 +70,50 @@ export interface Engine {
 }
 ```
 
-WASM エンジンへの移行手順:
+Steps to migrate to the WASM engine:
 
-1. wasm-bindgen 側で上記シグネチャに対応するクラス（例 `WasmEngine`）を公開する
-   - `rho()` などは WASM メモリ上のバッファを指す `Float32Array` ビュー、
-     もしくはコピーを返す。呼び出し側は「次に `step()`/`init()` を呼ぶまで有効」
-     という前提でしか保持しないので、ビュー返しで問題ない
-2. `src/engine/index.ts` の `createEngine()` を `WasmEngine` を返すように書き換える
-   - `.wasm` の非同期ロードが必要な場合は `createEngine(): Promise<Engine>` に変え、
-     `main.ts` 冒頭の起動シーケンスで `await` する（変更点はこの 2 ファイルに閉じる)
-3. `mock.ts` はデモ・フォールバック用として残してよい
+1. On the wasm-bindgen side, expose a class matching the signature above
+   (e.g. `WasmEngine`)
+   - `rho()` and friends can return a `Float32Array` view into the WASM
+     memory buffer, or a copy. The caller only ever holds onto it under the
+     assumption that it's "valid until the next `step()`/`init()` call," so
+     returning a view is fine
+2. Rewrite `createEngine()` in `src/engine/index.ts` to return a `WasmEngine`
+   - If asynchronous loading of `.wasm` is needed, change it to
+     `createEngine(): Promise<Engine>` and `await` it in the startup
+     sequence at the top of `main.ts` (the change stays confined to these
+     2 files)
+3. `mock.ts` can be kept around for demos and as a fallback
 
-### 座標系の約束
+### Coordinate system convention
 
-- `index = y * nx + x`、`y = 0` が **下端**（物理系の慣例）
-- 描画時は `render.ts` が上下反転して canvas（上が y 最大）へ転写する
+- `index = y * nx + x`, `y = 0` is the **bottom edge** (physics convention)
+- At draw time, `render.ts` flips vertically when transferring to the canvas
+  (where the top is y max)
 
-## モックエンジンの仕組み（`src/engine/mock.ts`）
+## How the mock engine works (`src/engine/mock.ts`)
 
-本物の LBM は解かず、経過ステップ数 `t` の関数として場を解析的に合成します:
+It doesn't solve real LBM; instead it analytically synthesizes the field as a
+function of the elapsed step count `t`:
 
-- 境界条件から基本流を選択（上壁 movingWall → キャビティ風の主渦、
-  velocityInlet → 一様流 + 障害物下流の交互渦放出（カルマン渦列風）、
-  外力 → ポアズイユ放物線分布、全周期 → 減衰テイラー・グリーン渦）
-- 粘性 ν は渦の減衰率・渦列の振幅に反映（大きいほど早く静まる）
-- `collision: "bgk"` では微小ノイズを付加（TRT が安定という演出。実物理ではない）
-- 障害物セルは u=0・ρ=1、近傍セルは減速して壁らしく見せる
+- The base flow is chosen from the boundary conditions (top-wall movingWall
+  → cavity-like primary vortex; velocityInlet → uniform flow + alternating
+  vortex shedding downstream of an obstacle, Kármán-vortex-street-like;
+  body force → Poiseuille parabolic profile; all-periodic → decaying
+  Taylor-Green vortex)
+- Viscosity ν affects the vortex decay rate / vortex-street amplitude
+  (the larger it is, the faster things settle down)
+- `collision: "bgk"` adds a small amount of noise (a dramatization implying
+  TRT is more stable — not real physics)
+- Obstacle cells get u=0, ρ=1; neighboring cells are slowed down to look
+  wall-like
 
-## 既知の制限
+## Known limitations
 
-- モックエンジンの流れ場は見た目重視の合成場であり、物理的に正しくない
-  （境界条件・ν・衝突演算子は「らしさ」の演出にのみ使われる）
-- `pressureOutlet` の ρ 指定は現状モックでは未使用
-- 解像度変更時、描いた障害物は最近傍サンプリングで引き継ぐため輪郭が粗くなる
+- The mock engine's flow field is a synthesized field optimized for
+  appearance and is not physically correct
+  (boundary conditions, ν, and the collision operator are only used for the
+  "feel" of the dramatization)
+- The `pressureOutlet` ρ setting is currently unused by the mock
+- When the resolution changes, painted obstacles are carried over via
+  nearest-neighbor sampling, so their outline becomes coarser

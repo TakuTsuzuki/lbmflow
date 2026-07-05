@@ -14,11 +14,11 @@ import {
 import { buildScenario } from "./scenario.ts";
 import { showToast } from "./toast.ts";
 
-// ------------------------------------------------------------- DOM ヘルパ
+// ------------------------------------------------------------- DOM helpers
 
 function $<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
-  if (!el) throw new Error(`要素が見つかりません: #${id}`);
+  if (!el) throw new Error(`Element not found: #${id}`);
   return el as T;
 }
 
@@ -56,7 +56,7 @@ const btnExport = $<HTMLButtonElement>("btn-export");
 const firstHint = $<HTMLDivElement>("first-hint");
 const firstHintClose = $<HTMLButtonElement>("first-hint-close");
 
-// ------------------------------------------------------------- 状態
+// ------------------------------------------------------------- State
 
 const engine = await createEngine();
 const renderer = new FieldRenderer(canvas);
@@ -69,15 +69,15 @@ let stepsPerFrame = Number(spfSlider.value);
 let brushErase = false;
 let brushPreview: BrushPreview | null = null;
 let painting = false;
-let paintEraseOverride: boolean | null = null; // 右ドラッグは常に消しゴム
+let paintEraseOverride: boolean | null = null; // Right-drag is always erase
 let lastPaint: { gx: number; gy: number } | null = null;
 
-// steps/s 計測
+// steps/s measurement
 let spsSteps = 0;
 let spsT0 = performance.now();
 
-// ---------------------------------------------------------- 粘性スライダー
-// 対数スケール: slider 0..100 → ν ∈ [1e-4, 0.5]
+// ---------------------------------------------------------- Viscosity slider
+// Logarithmic scale: slider 0..100 -> ν ∈ [1e-4, 0.5]
 
 const NU_LOG_MIN = Math.log10(1e-4);
 const NU_LOG_MAX = Math.log10(0.5);
@@ -99,7 +99,7 @@ function updateNuLabel(): void {
   nuValue.textContent = currentNu().toPrecision(2);
 }
 
-// ------------------------------------------------------------ リセット処理
+// ------------------------------------------------------------ Reset handling
 
 function scaledDims(preset: Preset): { nx: number; ny: number } {
   const s = Number(resSelect.value);
@@ -132,16 +132,17 @@ function buildConfig(preset: Preset): EngineConfig {
 }
 
 /**
- * シミュレーションを初期化する。
- * preserveSolids=true なら現在の障害物を（解像度が変わる場合は最近傍で
- * スケールして）引き継ぐ。false ならプリセットの初期障害物を配置する。
+ * Initialize the simulation.
+ * If preserveSolids=true, carries over the current obstacles (scaled with
+ * nearest-neighbor if the resolution changes). If false, places the preset's
+ * initial obstacles.
  */
 function resetSim(preserveSolids: boolean): void {
   let oldMask: Uint8Array | null = null;
   let oldNx = 0;
   let oldNy = 0;
   if (preserveSolids && engine.nx > 0) {
-    oldMask = new Uint8Array(engine.solidMask()); // コピー
+    oldMask = new Uint8Array(engine.solidMask()); // Copy
     oldNx = engine.nx;
     oldNy = engine.ny;
   }
@@ -185,12 +186,12 @@ function applyPreset(preset: Preset): void {
   resetSim(false);
 }
 
-// ---------------------------------------------------------- 実行 / 停止
+// ---------------------------------------------------------- Run / Stop
 
 function setRunning(v: boolean): void {
   running = v;
   btnRunIcon.textContent = v ? "⏸" : "▶";
-  btnRunLabel.textContent = v ? "停止" : "実行";
+  btnRunLabel.textContent = v ? "Stop" : "Run";
   btnRun.classList.toggle("btn-primary", !v);
   btnRun.classList.toggle("btn-running", v);
   if (!v) {
@@ -203,11 +204,12 @@ function setRunning(v: boolean): void {
   spsT0 = performance.now();
 }
 
-// ------------------------------------------------------------ 発散検出
+// ------------------------------------------------------------ Divergence detection
 
 /**
- * フィールドに NaN / Inf / 物理的にあり得ない速度（|u| > 5）が現れたら
- * 発散とみなす。NaN は比較演算が常に false になるため isFinite で拾う。
+ * Treat the simulation as diverged if the fields show NaN / Inf / a
+ * physically impossible velocity (|u| > 5). NaN is caught via isFinite
+ * since comparison operators always evaluate to false for it.
  */
 function fieldsDiverged(): boolean {
   const ux = engine.ux();
@@ -222,23 +224,23 @@ function fieldsDiverged(): boolean {
   return false;
 }
 
-/** 発散（またはエンジン例外）時: 自動停止してリカバリ手段を提示する */
+/** On divergence (or an engine exception): auto-stop and offer a way to recover */
 function handleDivergence(fromError: boolean): void {
   if (diverged) return;
   diverged = true;
   setRunning(false);
-  console.warn("LBMFlow: 発散を検出しました", { fromError });
+  console.warn("LBMFlow: detected divergence", { fromError });
   showToast(
-    "発散しました。粘性 ν を上げるか流速を下げて、リセットしてください。",
+    "The simulation diverged. Raise the viscosity ν or lower the flow speed, then reset.",
     "danger",
     {
-      label: "↺ リセット",
+      label: "↺ Reset",
       onClick: () => {
         try {
           resetSim(true);
         } catch (err) {
-          console.error("LBMFlow: リセットに失敗しました", err);
-          showToast("復旧できませんでした。ページを再読み込みしてください。", "danger");
+          console.error("LBMFlow: reset failed", err);
+          showToast("Could not recover. Please reload the page.", "danger");
         }
       },
     },
@@ -246,9 +248,9 @@ function handleDivergence(fromError: boolean): void {
   );
 }
 
-// ------------------------------------------------------- キャンバスサイズ
+// ------------------------------------------------------- Canvas sizing
 
-/** ラッパー内にアスペクト比を保って収まるよう canvas の実寸を決める */
+/** Determine the canvas's actual size to fit inside the wrapper while preserving aspect ratio */
 function fitCanvas(): void {
   const rect = canvasWrap.getBoundingClientRect();
   if (rect.width < 4 || rect.height < 4 || engine.nx === 0) return;
@@ -270,7 +272,7 @@ function fitCanvas(): void {
 
 new ResizeObserver(() => fitCanvas()).observe(canvasWrap);
 
-// ------------------------------------------------------------ ペイント
+// ------------------------------------------------------------ Painting
 
 function eventToGrid(e: PointerEvent): { gx: number; gy: number } {
   const rect = canvas.getBoundingClientRect();
@@ -294,7 +296,7 @@ function paintDisk(gx: number, gy: number, radius: number, solid: boolean): void
   }
 }
 
-/** 前回位置から補間しながら塗る（速いドラッグでも途切れない） */
+/** Paint while interpolating from the previous position (no gaps even on fast drags) */
 function paintStroke(gx: number, gy: number): void {
   const erase = paintEraseOverride ?? brushErase;
   const radius = Number(brushSize.value);
@@ -352,7 +354,7 @@ canvas.addEventListener("pointerleave", () => {
   brushPreview = null;
 });
 
-// ------------------------------------------------------- 初回ヒント表示
+// ------------------------------------------------------- First-time hint
 
 const HINT_STORAGE_KEY = "lbmflow.first-hint-dismissed";
 
@@ -368,7 +370,7 @@ function safeStorageSet(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // プライベートモード等では保存できなくてもよい
+    // It's fine if saving fails, e.g. in private browsing mode
   }
 }
 
@@ -380,7 +382,7 @@ function dismissFirstHint(persist: boolean): void {
 if (safeStorageGet(HINT_STORAGE_KEY) === null) firstHint.hidden = false;
 firstHintClose.addEventListener("click", () => dismissFirstHint(true));
 
-// --------------------------------------------------- シナリオ JSON 書き出し
+// --------------------------------------------------- Scenario JSON export
 
 function downloadJson(filename: string, data: unknown): void {
   const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {
@@ -404,14 +406,14 @@ btnExport.addEventListener("click", () => {
       `${currentPreset.id}-gui`,
     );
     downloadJson(`lbmflow-${currentPreset.id}.json`, scenario);
-    showToast("シナリオ JSON を保存しました。CLI の lbm run でそのまま実行できます。", "success");
+    showToast("Scenario JSON saved. You can run it as-is with the CLI's lbm run.", "success");
   } catch (err) {
-    console.error("LBMFlow: シナリオの書き出しに失敗しました", err);
-    showToast("シナリオの書き出しに失敗しました。", "danger");
+    console.error("LBMFlow: failed to export scenario", err);
+    showToast("Failed to export the scenario.", "danger");
   }
 });
 
-// ------------------------------------------------------------- UI 配線
+// ------------------------------------------------------------- UI wiring
 
 for (const p of PRESETS) {
   const opt = document.createElement("option");
@@ -465,7 +467,7 @@ spfSlider.addEventListener("input", () => {
   spfValue.textContent = spfSlider.value;
 });
 
-// Space で実行 / 停止（フォーム要素にフォーカスがあるときは無効）
+// Space to run / stop (disabled while a form element has focus)
 window.addEventListener("keydown", (e) => {
   if (e.code !== "Space") return;
   const t = e.target;
@@ -481,12 +483,12 @@ window.addEventListener("keydown", (e) => {
   setRunning(!running);
 });
 
-// タブが隠れたら自動停止
+// Auto-stop when the tab is hidden
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && running) setRunning(false);
 });
 
-// ------------------------------------------------------------ メインループ
+// ------------------------------------------------------------ Main loop
 
 function frame(): void {
   if (running) {
@@ -497,30 +499,31 @@ function frame(): void {
       const dt = now - spsT0;
       if (dt >= 500) {
         const sps = (spsSteps * 1000) / dt;
-        statusSps.textContent = Math.round(sps).toLocaleString("ja-JP");
-        // MLUPS = 1 秒あたりの格子点更新数（百万単位）
+        statusSps.textContent = Math.round(sps).toLocaleString("en-US");
+        // MLUPS = lattice point updates per second (in millions)
         statusMlups.textContent = ((sps * engine.nx * engine.ny) / 1e6).toFixed(1);
         spsSteps = 0;
         spsT0 = now;
       }
       if (fieldsDiverged()) handleDivergence(false);
     } catch (err) {
-      console.error("LBMFlow: エンジンの実行に失敗しました", err);
+      console.error("LBMFlow: engine step failed", err);
       handleDivergence(true);
     }
   }
 
-  // NaN は描画側で最小色に落とす防御があるため、発散後もフィールドは
-  // 表示され続ける。エンジンが例外を投げる状態でも白画面にしない。
+  // Rendering has a fallback that clamps NaN to the minimum color, so the
+  // field keeps being displayed even after divergence. Avoid a blank white
+  // screen even while the engine is throwing.
   try {
     const range = renderer.render(engine, visMode, brushPreview);
     colorbarMin.textContent = formatRange(range.lo);
     colorbarMid.textContent = formatRange((range.lo + range.hi) / 2);
     colorbarMax.textContent = formatRange(range.hi);
-    statusStep.textContent = engine.time.toLocaleString("ja-JP");
+    statusStep.textContent = engine.time.toLocaleString("en-US");
   } catch (err) {
     if (!diverged) {
-      console.error("LBMFlow: 描画に失敗しました", err);
+      console.error("LBMFlow: render failed", err);
       handleDivergence(true);
     }
   }
@@ -528,7 +531,7 @@ function frame(): void {
   requestAnimationFrame(frame);
 }
 
-// ------------------------------------------------------------- 起動
+// ------------------------------------------------------------- Startup
 
 drawColorbar(colorbar, visMode);
 statusMode.textContent = VIS_MODE_LABEL[visMode];

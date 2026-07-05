@@ -1,27 +1,27 @@
 import type { Engine, EngineConfig } from "./engine/types.ts";
 import type { VisMode } from "./render.ts";
 
-/** プリセット = エンジン設定 + 説明文 + 障害物の初期配置 */
+/** A preset = engine config + description + initial obstacle layout */
 export interface Preset {
   id: string;
-  /** セレクトボックスに出す名前 */
+  /** Name shown in the select box */
   name: string;
-  /** 何が起きるか・注目ポイント（1-2文、初学者向け） */
+  /** What happens / what to watch for (1-2 sentences, beginner-friendly) */
   description: string;
-  /** 基準解像度での設定。解像度セレクトで nx, ny はスケールされる */
+  /** Config at the reference resolution. The resolution select scales nx, ny */
   config: EngineConfig;
-  /** 初期障害物の配置（省略可）。engine.nx / engine.ny を使って描くこと */
+  /** Initial obstacle layout (optional). Draw using engine.nx / engine.ny */
   paintObstacles?: (engine: Engine) => void;
-  /** プリセット適用時に切り替える表示モード（省略可） */
+  /** Visualization mode to switch to when the preset is applied (optional) */
   defaultVis?: VisMode;
 }
 
 export const PRESETS: Preset[] = [
   {
     id: "cavity",
-    name: "キャビティ流れ",
+    name: "Lid-driven cavity",
     description:
-      "上のフタだけが右に動く箱の中の流れです。フタに引きずられた流体が箱全体を回る大きな渦を作ります。渦の中心が少しずつ動く様子に注目してください。",
+      "Flow inside a box where only the top lid moves to the right. The fluid dragged along by the lid forms one large vortex circulating around the whole box. Watch how the vortex center drifts gradually.",
     config: {
       nx: 128,
       ny: 128,
@@ -38,9 +38,9 @@ export const PRESETS: Preset[] = [
   },
   {
     id: "cylinder",
-    name: "円柱まわりの流れ",
+    name: "Flow around a cylinder",
     description:
-      "左から流れてきた流体が円柱にぶつかり、後ろに渦が交互に放出されます（カルマン渦列）。粘性 ν を小さくするほど渦がはっきり現れます。渦度表示がおすすめです。",
+      "Fluid flowing in from the left hits a cylinder, shedding vortices alternately behind it (a Kármán vortex street). The smaller the viscosity ν, the more distinct the vortices become. Vorticity view is recommended.",
     config: {
       nx: 224,
       ny: 112,
@@ -60,9 +60,9 @@ export const PRESETS: Preset[] = [
   },
   {
     id: "poiseuille",
-    name: "チャネル流（ポアズイユ）",
+    name: "Channel flow (Poiseuille)",
     description:
-      "上下の壁にはさまれた水路を、一定の力（ポンプの代わり）で押し流します。壁でゼロ・中央で最大の、放物線型の速度分布ができるのが見どころです。",
+      "A channel between two walls is driven by a constant force (standing in for a pump). The highlight is the parabolic velocity profile that forms: zero at the walls, maximum at the center.",
     config: {
       nx: 192,
       ny: 96,
@@ -79,9 +79,9 @@ export const PRESETS: Preset[] = [
   },
   {
     id: "droplet",
-    name: "二相流体（液滴）",
+    name: "Two-phase fluid (droplet)",
     description:
-      "液体と気体（蒸気）が共存する二相流体のシミュレーションです（Shan-Chen モデル）。液滴が表面張力で丸く保たれ、界面がくっきり安定していく様子を密度表示で観察してください。",
+      "A two-phase fluid simulation where liquid and gas (vapor) coexist (Shan-Chen model). Watch, in the density view, how the droplet is held round by surface tension as the interface stabilizes into a sharp boundary.",
     config: {
       nx: 128,
       ny: 128,
@@ -108,9 +108,9 @@ export const PRESETS: Preset[] = [
   },
   {
     id: "sandbox",
-    name: "自由キャンバス",
+    name: "Free canvas",
     description:
-      "上下の壁にはさまれた水路に一定の力で流れを作ります。ブラシで好きな形の障害物を描いて、後ろにできる渦や流れの変化を試してみましょう。",
+      "A constant force drives flow through a channel between two walls. Use the brush to draw obstacles of any shape and see how the vortices and flow behind them change.",
     config: {
       nx: 192,
       ny: 112,
@@ -127,7 +127,7 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-/** 円形の障害物を塗る補助関数 */
+/** Helper function that paints a circular obstacle */
 export function paintCircle(
   engine: Engine,
   cx: number,
