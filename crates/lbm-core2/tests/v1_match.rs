@@ -7,6 +7,34 @@
 //! rho/ux/uy fields plus the f64 diagnostics (total mass / momentum /
 //! probed force) at every step for the first ten steps and periodically
 //! afterwards.
+//!
+//! ------------------------------------------------------------------------
+//! HISTORICAL EQUIVALENCE PROOF — FROZEN 2026-07-05 (V1 retirement)
+//!
+//! This file is deleted together with V1 (`crates/lbm-core`); it lives on in
+//! branch history as the record that V2 reproduced V1. Final measured
+//! worst |Δ| over full rho/ux/uy fields + f64 diagnostics, gate TOL = 1e-11
+//! (all f64 unless noted; steps in parentheses; Apple Silicon, rustc 1.93,
+//! --release, commit 7b9dc0b):
+//!
+//! - tgv_periodic_trt              (500): 2.0799334476961917e-15
+//! - tgv_periodic_bgk_f32          (300): bit-exact per step vs 1e-6 gate
+//! - lid_driven_cavity             (400): 7.051824402193319e-14
+//! - poiseuille_body_force         (400): 3.552713678800501e-15
+//! - channel_inlet_profile_outflow (400): 2.5579538487363607e-13
+//! - pressure_outlet               (400): 7.105427357601002e-14
+//! - convective_outflow            (400): 1.4921397450962104e-13
+//! - cylinder_probe                (300, probe every step): 2.8421709430404007e-13
+//! - per_cell_force_field          (250): 1.5543122344752192e-15
+//! - build_time_state              (t=0): 0.0 (exact)
+//!
+//! Residual drift is FP reordering only (V1 gained the fused SoA kernel in
+//! 581da6e; the original pre-fusion comparison was exactly 0.0, commit
+//! af55e57). Post-retirement, backend equivalence is carried by
+//! tests/backend_simd_equiv.rs (CpuScalar vs CpuSimd), tests/t13_* (splits,
+//! incl. compat-vs-native Shan-Chen wall adhesion), tests/t14_* (GPU) and
+//! the synced compat suite (T1-T12 physics).
+//! ------------------------------------------------------------------------
 
 use lbm_core::prelude::{
     Collision as V1Collision, EdgeBC as V1EdgeBC, Edges as V1Edges, SimConfig as V1SimConfig,
