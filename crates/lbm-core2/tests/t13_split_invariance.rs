@@ -373,6 +373,53 @@ fn t13_tgv3d_2x2x2_split_invariant() {
 }
 
 #[test]
+fn t13_shan_chen_droplet_native_split_invariant() {
+    // Single-component Shan–Chen droplet sitting on the 2x2 corner, driven
+    // by the native Solver::update_shan_chen_force (ψ halo exchange via
+    // exchange_scalar) — closes the TESTING_NOTES gap where T13 could only
+    // hand-roll per-cell forces. Fields must match bit-for-bit.
+    let n = 48usize;
+    let case = Case {
+        spec: GlobalSpec {
+            dims: [n, n, 1],
+            nu: 1.0 / 6.0,
+            periodic: [true, true, false],
+            ..Default::default()
+        },
+        walls: WallSpec::default(),
+    };
+    // Smooth droplet: liquid ~1.9 inside r0, vapour ~0.16 outside (classic
+    // ψ = 1 - exp(-rho), G = -5 two-phase state).
+    let init = move |x: usize, y: usize| {
+        let (dx, dy) = (x as f64 + 0.5 - n as f64 / 2.0, y as f64 + 0.5 - n as f64 / 2.0);
+        let r = (dx * dx + dy * dy).sqrt();
+        let rho = 0.16 + (1.90 - 0.16) * 0.5 * (1.0 - ((r - 10.0) / 2.0).tanh());
+        (rho, [0.0, 0.0, 0.0])
+    };
+    let g = -5.0f64;
+    let psi = |rho: f64| 1.0 - (-rho).exp();
+    let mut base = build(&case, [1, 1, 1], LocalPeriodic, false);
+    base.init_with(|x, y, _| init(x, y));
+    for decomp in DECOMPS {
+        let mut s = build(&case, decomp, InProcess, false);
+        s.init_with(|x, y, _| init(x, y));
+        let mut b = build(&case, [1, 1, 1], LocalPeriodic, false);
+        b.init_with(|x, y, _| init(x, y));
+        for t in 0..150 {
+            b.update_shan_chen_force(g, psi);
+            s.update_shan_chen_force(g, psi);
+            b.step();
+            s.step();
+            if t < 3 || t % 50 == 49 {
+                assert_fields_equal(&b, &s, &format!("shan-chen droplet {decomp:?} t={}", t + 1));
+                assert_diagnostics_close(&b, &s, 1e-12, &format!("shan-chen droplet {decomp:?} t={}", t + 1));
+            }
+        }
+    }
+    println!("Shan-Chen droplet (native update_shan_chen_force): bit-exact across {DECOMPS:?}");
+}
+
+#[test]
 fn t13_uneven_split_and_deeper_decomp() {
     // Remainder handling: 50 cells over 3 parts (17/17/16) and a 4x1 strip
     // decomposition, against the monolithic baseline.
