@@ -538,9 +538,7 @@ impl<T: Real> Simulation<T> {
                 let div = duxdx + duydy;
                 for q in 0..Q {
                     let (cx, cy) = (p.cxr[q], p.cyr[q]);
-                    let ccgu = cx * cx * duxdx
-                        + cx * cy * (duydx + duxdy)
-                        + cy * cy * duydy;
+                    let ccgu = cx * cx * duxdx + cx * cy * (duydx + duxdy) + cy * cy * duydy;
                     let fneq = -p.wr[q] * self.rho[i] * tau * (three * ccgu - div);
                     self.f[o + q] = self.f[o + q] + fneq;
                 }
@@ -582,7 +580,8 @@ impl<T: Real> Simulation<T> {
     /// step by multiphase models (see `multiphase::ShanChen::update_force`).
     pub fn force_field_mut(&mut self) -> &mut [[T; 2]] {
         let n = self.nx * self.ny;
-        self.force_field.get_or_insert_with(|| vec![[T::zero(); 2]; n])
+        self.force_field
+            .get_or_insert_with(|| vec![[T::zero(); 2]; n])
     }
 
     /// Remove the per-cell force field (reverts to the uniform force only).

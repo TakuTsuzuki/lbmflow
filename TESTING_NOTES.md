@@ -79,6 +79,14 @@ order #2 の 5 件の dispositions:
    near-outlet pressure RMS ratio = 11.32538182631078
    （near = 2.0001796481913235e-3, mid = 1.766103499967275e-4）で仕様上限 3 を超過。
 
+## 新規メモ（2026-07-05 codex adversarial test order #4）
+
+1. T11b の文面「bottom BounceBack, others Periodic」は現 API では構築不可。
+   `SimConfig::validate` が周期境界の軸ペアを必須にしているため、bottom BounceBack
+   + top Periodic は `ConfigError::UnpairedPeriodic { axis: "y" }` になる。
+   追加テストは left/right Periodic + bottom/top BounceBack（上壁は液滴から遠い）で
+   G_w 特性を凍結した。
+
 ## 解決状況（2026-07-05 codex adversarial test order #3）
 
 1. `t7_re400`: fixed-by-spec / fixed-in-test — 既知の誤植 datum を RMS から除外。

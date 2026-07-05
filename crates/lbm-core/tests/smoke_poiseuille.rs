@@ -67,7 +67,10 @@ fn profile_is_symmetric() {
     let h = sim.len();
     for j in 0..h / 2 {
         let d = (sim[j] - sim[h - 1 - j]).abs();
-        assert!(d < 1e-12 * umax, "asymmetry at row {j}: {d:e} (umax {umax:e})");
+        assert!(
+            d < 1e-12 * umax,
+            "asymmetry at row {j}: {d:e} (umax {umax:e})"
+        );
     }
 }
 
@@ -78,8 +81,5 @@ fn bgk_is_second_order() {
     let e8 = linf_rel(&s8, &a8);
     let e16 = linf_rel(&s16, &a16);
     let order = (e8 / e16).log2();
-    assert!(
-        order > 1.7,
-        "order = {order} (e8 = {e8:e}, e16 = {e16:e})"
-    );
+    assert!(order > 1.7, "order = {order} (e8 = {e8:e}, e16 = {e16:e})");
 }

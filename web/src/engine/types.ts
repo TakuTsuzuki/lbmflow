@@ -20,6 +20,17 @@ export interface EngineConfig {
   collision: "bgk" | "trt";
   edges: { left: EdgeBC; right: EdgeBC; bottom: EdgeBC; top: EdgeBC };
   force: [number, number];
+  /** Shan-Chen 単成分多相（省略可）。g は負で凝集（推奨 -5.0） */
+  multiphase?: { g: number; gWall?: number };
+  /** 初期密度場（省略時は静止一様）。多相とセットで使う */
+  init?: {
+    kind: "droplet";
+    cx: number;
+    cy: number;
+    r: number;
+    rhoLiquid: number;
+    rhoVapor: number;
+  };
 }
 
 export interface Engine {

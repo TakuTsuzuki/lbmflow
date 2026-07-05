@@ -68,7 +68,10 @@ fn probe_mass_flux_constancy() {
                 .fold(0.0f64, f64::max);
             let umax = cur.iter().fold(0.0f64, |a, v| a.max(v.abs()));
             if dmax <= 1e-11 * umax || steps >= 400_000 {
-                println!("[mass flux] steady after {steps} steps (dmax/umax={:.1e})", dmax / umax);
+                println!(
+                    "[mass flux] steady after {steps} steps (dmax/umax={:.1e})",
+                    dmax / umax
+                );
                 break;
             }
         }

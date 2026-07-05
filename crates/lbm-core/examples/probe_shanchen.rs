@@ -40,9 +40,18 @@ fn flat_interface() {
             width += 1;
         }
     }
-    println!("[flat] rho_l={rho_l:.5} rho_v={rho_v:.5} ratio={:.1}", rho_l / rho_v);
-    println!("[flat] p_l={p_l:.6} p_v={p_v:.6} |dp|/p={:.3e}", ((p_l - p_v) / p_l).abs());
-    println!("[flat] max|u| (spurious) = {umax:.3e}, interface width ~ {} cells (2 interfaces)", width);
+    println!(
+        "[flat] rho_l={rho_l:.5} rho_v={rho_v:.5} ratio={:.1}",
+        rho_l / rho_v
+    );
+    println!(
+        "[flat] p_l={p_l:.6} p_v={p_v:.6} |dp|/p={:.3e}",
+        ((p_l - p_v) / p_l).abs()
+    );
+    println!(
+        "[flat] max|u| (spurious) = {umax:.3e}, interface width ~ {} cells (2 interfaces)",
+        width
+    );
     println!("[flat] mass finite = {}", sim.total_mass().is_finite());
 }
 
@@ -74,16 +83,10 @@ fn laplace() {
         let dp = sc.pressure(rho_in) - sc.pressure(rho_out);
         // measure droplet radius: count cells above mean density -> area
         let rho_mid = 0.5 * (rho_in + rho_out);
-        let area = sim
-            .rho_field()
-            .iter()
-            .filter(|&&r| r > rho_mid)
-            .count() as f64;
+        let area = sim.rho_field().iter().filter(|&&r| r > rho_mid).count() as f64;
         let r_fit = (area / std::f64::consts::PI).sqrt();
         let sigma = dp * r_fit;
-        println!(
-            "  r0={r0:>4.0}  r_fit={r_fit:6.2}  dp={dp:.6e}  sigma={sigma:.6e}"
-        );
+        println!("  r0={r0:>4.0}  r_fit={r_fit:6.2}  dp={dp:.6e}  sigma={sigma:.6e}");
         sigmas.push((1.0 / r_fit, dp));
     }
     // linear fit dp = sigma * (1/r): R^2

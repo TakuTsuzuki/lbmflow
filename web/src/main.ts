@@ -103,6 +103,7 @@ function scaledDims(preset: Preset): { nx: number; ny: number } {
 
 function buildConfig(preset: Preset): EngineConfig {
   const { nx, ny } = scaledDims(preset);
+  const scale = nx / preset.config.nx;
   return {
     ...preset.config,
     nx,
@@ -111,6 +112,14 @@ function buildConfig(preset: Preset): EngineConfig {
     collision: collisionSelect.value === "bgk" ? "bgk" : "trt",
     edges: { ...preset.config.edges },
     force: [preset.config.force[0], preset.config.force[1]],
+    init: preset.config.init
+      ? {
+          ...preset.config.init,
+          cx: preset.config.init.cx * scale,
+          cy: preset.config.init.cy * scale,
+          r: preset.config.init.r * scale,
+        }
+      : undefined,
   };
 }
 
@@ -156,6 +165,12 @@ function applyPreset(preset: Preset): void {
   presetDesc.textContent = preset.description;
   nuSlider.value = String(nuToSlider(preset.config.nu));
   collisionSelect.value = preset.config.collision;
+  if (preset.defaultVis) {
+    visMode = preset.defaultVis;
+    visModeSelect.value = preset.defaultVis;
+    visHint.textContent = VIS_MODE_HINT[visMode];
+    statusMode.textContent = VIS_MODE_LABEL[visMode];
+  }
   updateNuLabel();
   resetSim(false);
 }

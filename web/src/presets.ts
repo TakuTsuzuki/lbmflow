@@ -1,4 +1,5 @@
 import type { Engine, EngineConfig } from "./engine/types.ts";
+import type { VisMode } from "./render.ts";
 
 /** プリセット = エンジン設定 + 説明文 + 障害物の初期配置 */
 export interface Preset {
@@ -11,6 +12,8 @@ export interface Preset {
   config: EngineConfig;
   /** 初期障害物の配置（省略可）。engine.nx / engine.ny を使って描くこと */
   paintObstacles?: (engine: Engine) => void;
+  /** プリセット適用時に切り替える表示モード（省略可） */
+  defaultVis?: VisMode;
 }
 
 export const PRESETS: Preset[] = [
@@ -75,14 +78,14 @@ export const PRESETS: Preset[] = [
     },
   },
   {
-    id: "sandbox",
-    name: "自由キャンバス",
+    id: "droplet",
+    name: "二相流体（液滴）",
     description:
-      "全方向が周期境界（右端と左端がつながっている）の何もない空間に、渦模様が漂います。ブラシで好きな形の障害物を描いて、流れがどう変わるか試してみましょう。",
+      "液体と気体（蒸気）が共存する二相流体のシミュレーションです（Shan-Chen モデル）。液滴が表面張力で丸く保たれ、界面がくっきり安定していく様子を密度表示で観察してください。",
     config: {
-      nx: 160,
-      ny: 120,
-      nu: 0.008,
+      nx: 128,
+      ny: 128,
+      nu: 1 / 6,
       collision: "trt",
       edges: {
         left: { type: "periodic" },
@@ -91,6 +94,35 @@ export const PRESETS: Preset[] = [
         top: { type: "periodic" },
       },
       force: [0, 0],
+      multiphase: { g: -5.0 },
+      init: {
+        kind: "droplet",
+        cx: 64,
+        cy: 64,
+        r: 26,
+        rhoLiquid: 2.0,
+        rhoVapor: 0.15,
+      },
+    },
+    defaultVis: "density",
+  },
+  {
+    id: "sandbox",
+    name: "自由キャンバス",
+    description:
+      "上下の壁にはさまれた水路に一定の力で流れを作ります。ブラシで好きな形の障害物を描いて、後ろにできる渦や流れの変化を試してみましょう。",
+    config: {
+      nx: 192,
+      ny: 112,
+      nu: 0.006,
+      collision: "trt",
+      edges: {
+        left: { type: "periodic" },
+        right: { type: "periodic" },
+        bottom: { type: "bounceBack" },
+        top: { type: "bounceBack" },
+      },
+      force: [4e-6, 0],
     },
   },
 ];

@@ -55,7 +55,9 @@ fn run_case(collision: Collision) {
     let bulk: Vec<f64> = (0..nx - 6).map(q).collect();
     let (bmin, bmax) = bulk
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+            (a.min(v), b.max(v))
+        });
     println!(
         "bulk (x<{}) spread_rel={:.3e}",
         nx - 6,

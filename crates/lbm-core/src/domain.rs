@@ -190,13 +190,19 @@ impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConfigError::NonPositiveViscosity { nu } => {
-                write!(f, "kinematic viscosity must be > 0 (got {nu}); tau = 3*nu + 0.5 must exceed 0.5")
+                write!(
+                    f,
+                    "kinematic viscosity must be > 0 (got {nu}); tau = 3*nu + 0.5 must exceed 0.5"
+                )
             }
             ConfigError::DomainTooSmall { nx, ny } => {
                 write!(f, "domain must be at least 3x3 cells (got {nx}x{ny})")
             }
             ConfigError::UnpairedPeriodic { axis } => {
-                write!(f, "periodic BC on the {axis} axis must be set on both opposing edges")
+                write!(
+                    f,
+                    "periodic BC on the {axis} axis must be set on both opposing edges"
+                )
             }
             ConfigError::AdjacentOpenEdges => write!(
                 f,
@@ -283,9 +289,7 @@ impl<T: Real> SimConfig<T> {
             }
             if let EdgeBC::PressureOutlet { rho } = bc {
                 if !(rho.as_f64() > 0.0) {
-                    return Err(ConfigError::NonPositiveDensity {
-                        rho: rho.as_f64(),
-                    });
+                    return Err(ConfigError::NonPositiveDensity { rho: rho.as_f64() });
                 }
             }
         }

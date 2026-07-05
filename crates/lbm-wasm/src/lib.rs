@@ -5,6 +5,7 @@
 //! linear memory; the JS adapter wraps them in `Float32Array` views that are
 //! valid until the next `step`/`init` call.
 
+use lbm_core::multiphase::ShanChen;
 use lbm_core::prelude::*;
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
@@ -42,6 +43,28 @@ struct JsEdges {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsMultiphase {
+    g: f64,
+    #[serde(default)]
+    g_wall: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsInit {
+    Rest,
+    #[serde(rename_all = "camelCase")]
+    Droplet {
+        cx: f64,
+        cy: f64,
+        r: f64,
+        rho_liquid: f64,
+        rho_vapor: f64,
+    },
+}
+
+#[derive(Deserialize)]
 struct JsConfig {
     nx: usize,
     ny: usize,
@@ -49,12 +72,18 @@ struct JsConfig {
     collision: String,
     edges: JsEdges,
     force: [f32; 2],
+    #[serde(default)]
+    multiphase: Option<JsMultiphase>,
+    #[serde(default)]
+    init: Option<JsInit>,
 }
 
 /// Browser-facing simulation handle.
 #[wasm_bindgen]
 pub struct WasmSim {
     sim: Option<Simulation<f32>>,
+    /// Shan-Chen driver when the config declares multiphase.
+    multiphase: Option<ShanChen<f32>>,
     /// u8 mirror of the solid mask for cheap JS-side rendering.
     solid_u8: Vec<u8>,
     /// User-painted obstacles (kept separately so erasing can rebuild).
@@ -62,14 +91,14 @@ pub struct WasmSim {
     cfg_json: String,
 }
 
-fn build_sim(cfg_json: &str) -> Result<Simulation<f32>, JsError> {
+fn build_sim(cfg_json: &str) -> Result<(Simulation<f32>, Option<ShanChen<f32>>), JsError> {
     let cfg: JsConfig = serde_json::from_str(cfg_json)
         .map_err(|e| JsError::new(&format!("設定JSONを解釈できません: {e}")))?;
     let collision = match cfg.collision.as_str() {
         "bgk" => Collision::Bgk,
         _ => Collision::default(),
     };
-    SimConfig {
+    let mut sim = SimConfig {
         nx: cfg.nx,
         ny: cfg.ny,
         nu: cfg.nu,
@@ -83,7 +112,31 @@ fn build_sim(cfg_json: &str) -> Result<Simulation<f32>, JsError> {
         force: cfg.force,
     }
     .build()
-    .map_err(|e| JsError::new(&format!("設定エラー: {e}")))
+    .map_err(|e| JsError::new(&format!("設定エラー: {e}")))?;
+    if let Some(JsInit::Droplet {
+        cx,
+        cy,
+        r,
+        rho_liquid,
+        rho_vapor,
+    }) = cfg.init
+    {
+        let r2 = r * r;
+        sim.init_with(|x, y| {
+            let dx = x as f64 - cx;
+            let dy = y as f64 - cy;
+            let rho = if dx * dx + dy * dy <= r2 {
+                rho_liquid
+            } else {
+                rho_vapor
+            };
+            (rho as f32, 0.0, 0.0)
+        });
+    }
+    let mp = cfg
+        .multiphase
+        .map(|m| ShanChen::<f32>::new(m.g).with_wall(m.g_wall));
+    Ok((sim, mp))
 }
 
 #[wasm_bindgen]
@@ -92,6 +145,7 @@ impl WasmSim {
     pub fn new() -> WasmSim {
         WasmSim {
             sim: None,
+            multiphase: None,
             solid_u8: Vec::new(),
             painted: Vec::new(),
             cfg_json: String::new(),
@@ -100,11 +154,12 @@ impl WasmSim {
 
     /// (Re)initialise from an EngineConfig JSON string.
     pub fn init(&mut self, cfg_json: &str) -> Result<(), JsError> {
-        let sim = build_sim(cfg_json)?;
+        let (sim, mp) = build_sim(cfg_json)?;
         let n = sim.nx() * sim.ny();
         self.cfg_json = cfg_json.to_string();
         self.painted = vec![0; n];
         self.sim = Some(sim);
+        self.multiphase = mp;
         self.refresh_solid_mirror();
         Ok(())
     }
@@ -120,7 +175,15 @@ impl WasmSim {
 
     pub fn step(&mut self, n: u32) {
         if let Some(sim) = self.sim.as_mut() {
-            sim.run(n as usize);
+            match &self.multiphase {
+                Some(mp) => {
+                    for _ in 0..n {
+                        mp.update_force(sim);
+                        sim.step();
+                    }
+                }
+                None => sim.run(n as usize),
+            }
         }
     }
 
@@ -183,11 +246,12 @@ impl WasmSim {
         } else if self.painted[i] == 1 {
             self.painted[i] = 0;
             let painted = self.painted.clone();
-            let mut sim = build_sim(&self.cfg_json)
+            let (mut sim, mp) = build_sim(&self.cfg_json)
                 .map_err(|_| JsError::new("再構築に失敗しました"))?;
             let nx = sim.nx();
             sim.set_solid_region(|px, py| painted[py * nx + px] == 1);
             self.sim = Some(sim);
+            self.multiphase = mp;
             self.refresh_solid_mirror();
         }
         Ok(())

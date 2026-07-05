@@ -143,7 +143,7 @@ fn t6_feq_moments_match_density_momentum_and_pressure_tensor() {
 }
 
 #[test]
-fn t6_f32_mass_and_momentum_hold_with_relaxed_tolerance() {
+fn t6_f32_mass_and_momentum_hold_with_tightened_tolerance() {
     let n = 32;
     let force = [1.0e-5f32, 2.0e-5f32];
     let mut mass_sim: Simulation<f32> = SimConfig {
@@ -158,7 +158,7 @@ fn t6_f32_mass_and_momentum_hold_with_relaxed_tolerance() {
     let m0 = mass_sim.total_mass();
     mass_sim.run(1000);
     let drift = ((mass_sim.total_mass() - m0) / m0).abs();
-    assert!(drift <= 1.0e-4, "T6 f32 mass drift = {drift:e}");
+    assert!(drift <= 1.0e-5, "T6 f32 mass drift = {drift:e}");
 
     let mut sim: Simulation<f32> = SimConfig {
         nx: n,
@@ -179,7 +179,7 @@ fn t6_f32_mass_and_momentum_hold_with_relaxed_tolerance() {
         let expect = steps as f32 * nf * force[axis];
         let rel = ((gained - expect) / expect).abs();
         assert!(
-            rel <= 5.0e-3,
+            rel <= 1.0e-5,
             "T6 f32 force momentum axis = {axis}, rel = {rel:e}, gained = {gained:e}, expected = {expect:e}"
         );
     }

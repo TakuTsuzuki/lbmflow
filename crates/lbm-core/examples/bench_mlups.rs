@@ -50,12 +50,7 @@ fn main() {
             .num_threads(threads)
             .build()
             .unwrap();
-        let (a, b) = pool.install(|| {
-            (
-                bench::<f32>(512, trt, 300),
-                bench::<f64>(512, trt, 300),
-            )
-        });
+        let (a, b) = pool.install(|| (bench::<f32>(512, trt, 300), bench::<f64>(512, trt, 300)));
         println!("| {threads} | {a:.0} | {b:.0} |");
     }
 
@@ -77,11 +72,6 @@ fn main() {
         .num_threads(1)
         .build()
         .unwrap();
-    let (a, b) = pool.install(|| {
-        (
-            bench::<f32>(256, trt, 400),
-            bench::<f64>(256, trt, 400),
-        )
-    });
+    let (a, b) = pool.install(|| (bench::<f32>(256, trt, 400), bench::<f64>(256, trt, 400)));
     println!("1-thread 256^2: f32 {a:.0} MLUPS / f64 {b:.0} MLUPS");
 }
