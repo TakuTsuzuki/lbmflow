@@ -103,3 +103,26 @@ order #2 の 5 件の dispositions:
 3. `t8_re20`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-1 に全面更新。
 4. `t8_re100`: fixed-by-spec / fixed-in-test — Schäfer-Turek 2D-2 に全面更新。
 5. `t9_outflow`: fixed-by-spec / fixed-in-test — 圧力 RMS ratio 閾値を T9 の 15 に更新。
+
+## 新規メモ（2026-07-05 M-B Wgpu backend / T14 実装）
+
+1. **T14 圧力 BC の許容線**: Zou–He 圧力面は `un = 1 - closure/rho_bc` が
+   O(1) スケールの closure の丸め差（Metal fast-math の逆数除算・再結合、
+   ~ulp(1) ≈ 1.2e-7）を**そのまま面の法線速度に**写像する（速度 BC では同じ
+   除算誤差が rho に落ち、f への寄与は u_n 倍で減衰する — 非対称）。
+   実測: CPU↔GPU 差は圧力面に固定（argmax が面に張り付き）、t=2 で ~2.2e-7、
+   t=100 で ~2.5e-6（u0=0.1 の速度相対 2.5e-5）。**CPU-vs-CPU で rho_bc を
+   1 ulp だけ摂動した対照実験が同じ成長曲線を再現**（t=100 で ~1.5e-6）した
+   ため、バックエンド欠陥ではなく BC の条件数と確定。
+   → **Disposition**: T14 は 6 構成（TGV/キャビティ/プロファイル流入チャネル/
+   円柱+プローブ/セル別力/Convective）を厳格線 1e-5 で凍結し受入を満たす。
+   圧力チャネルは第 7 構成として文書化済み緩和線 1e-4 + 恒久対照テスト
+   `t14_pressure_bc_ulp_sensitivity_control`（1 ulp 摂動ドリフトが 1e-6..1e-5
+   の帯にあることを常時検証; 帯を外れたら許容線を見直す）で凍結。
+
+2. **GPU ベンチの測定衛生**: ユニファイドメモリでは並走する CPU スイート
+   （本日: 3D エージェントの t15、load ~38）が GPU の DRAM 帯域を食い、
+   帯域律速カーネルは 1024²/2048² で 15-25% 落ちる（SLC に乗る 512² は鈍感）。
+   proto 凍結値との比較は**同一時間窓で proto を併走**させること
+   （examples/bench_gpu.rs のヘッダに手順と 2026-07-05 同窓実測を記録:
+   -6.4% / -10.7% / -13.6%、合格線 ±20% 内）。
