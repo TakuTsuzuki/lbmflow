@@ -3,6 +3,12 @@
 use crate::lattice::{Lattice, Q_MAX};
 use crate::real::Real;
 
+/// Maximum prescribed speed (lattice units) a configuration may request
+/// before validation rejects it — the low-Mach limit shared by the V2
+/// `GlobalSpec::validate` and the compat facade (`compat::domain::MAX_SPEED`
+/// re-exports this so there is a single source of truth).
+pub const MAX_SPEED: f64 = 0.3;
+
 /// Collision operator selection (identical semantics to V1
 /// `lbm_core::domain::Collision`).
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -151,8 +151,10 @@ impl Default for Collision {
     }
 }
 
-/// Maximum allowed prescribed speed (lattice units) before construction fails.
-pub const MAX_SPEED: f64 = 0.3;
+/// Maximum allowed prescribed speed (lattice units) before construction
+/// fails. Re-exported from [`crate::params::MAX_SPEED`] (single source of
+/// truth shared with the V2 `GlobalSpec::validate`).
+pub use crate::params::MAX_SPEED;
 
 /// Errors detected when validating a [`SimConfig`].
 #[derive(Clone, Debug, PartialEq)]
