@@ -11,8 +11,8 @@
 //! - [`lattice`] — compile-time velocity sets (D2Q9, D3Q19) with derived
 //!   tables (TRT pairs, per-face unknown sets).
 //! - [`fields`] — q-major SoA deviation storage over halo-padded local boxes.
-//! - [`kernels`] — the physics (collide/stream/moments/BCs), written once,
-//!   generic over lattice and precision; V1-faithful arithmetic.
+//! - `kernels` (private) — the physics (collide/stream/moments/BCs), written
+//!   once, generic over lattice and precision; V1-faithful arithmetic.
 //! - [`backend`] — the compute-target trait and the `CpuScalar` reference.
 //! - [`subdomain`] / [`halo`] — decomposition and halo exchange.
 //! - [`solver`] — the orchestrator (V1 step sequence over parts).
