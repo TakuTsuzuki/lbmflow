@@ -42,6 +42,25 @@ impl<T: Copy> RawSlice<T> {
         }
     }
 
+    /// Read-only view over a shared slice.
+    ///
+    /// # Safety contract (caller)
+    /// The returned handle must never be written through (`set`/`copy_from`);
+    /// it exists so read-side kernel parameters can share the `RawSlice`
+    /// plumbing.
+    pub(crate) fn new_ref(s: &[T]) -> Self {
+        Self {
+            ptr: s.as_ptr() as *mut T,
+            len: s.len(),
+        }
+    }
+
+    /// Base pointer (identity comparisons only).
+    #[inline(always)]
+    pub(crate) fn as_ptr(self) -> *const T {
+        self.ptr
+    }
+
     /// # Safety
     /// `i < len` and no concurrent writer of index `i`.
     #[inline(always)]

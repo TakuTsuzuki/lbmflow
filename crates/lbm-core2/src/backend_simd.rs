@@ -209,9 +209,8 @@ fn use_blocked<L: Lattice>() -> bool {
 /// `x0 <= x < x1`.
 #[allow(clippy::too_many_arguments)]
 unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: bool>(
-    planes: RawSlice<T>,
-    q_stride: usize,
-    base: usize,
+    src: PlaneView<T>,
+    dst: PlaneView<T>,
     x0: usize,
     x1: usize,
     rho: &[T],
@@ -227,14 +226,35 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
     // SAFETY: forwarded caller contract.
     unsafe {
         if use_blocked::<L>() {
-            collide_span_blocked::<L, T, FORCE, FF>(
-                planes, q_stride, base, x0, x1, rho, ux, uy, uz, field, kp,
-            );
+            // The blocked form is in-place only (its callers never fuse the
+            // ring copy — see `ensure_slab`); a single view keeps the pair
+            // sweeps free of aliasing checks, which is what lets them
+            // vectorize (a src/dst pair measured ~30% slower end to end).
+            debug_assert!(std::ptr::eq(src.planes.as_ptr(), dst.planes.as_ptr()));
+            collide_span_blocked::<L, T, FORCE, FF>(dst, x0, x1, rho, ux, uy, uz, field, kp);
         } else {
-            collide_span_flat::<L, T, FORCE, FF>(
-                planes, q_stride, base, x0, x1, rho, ux, uy, uz, field, kp,
-            );
+            collide_span_flat::<L, T, FORCE, FF>(src, dst, x0, x1, rho, ux, uy, uz, field, kp);
         }
+    }
+}
+
+/// A `(planes, q_stride, base)` triple addressing one row of a q-major
+/// plane set: direction `q`'s cell `x` lives at `q * stride + base + x`.
+/// The collide span kernels read populations from a source view and write
+/// results to a destination view — distinct views fuse the ring copy into
+/// the collision (source `f`, destination ring); identical views collide in
+/// place (each cell is fully read before it is written).
+#[derive(Clone, Copy)]
+struct PlaneView<T> {
+    planes: RawSlice<T>,
+    stride: usize,
+    base: usize,
+}
+
+impl<T: Real> PlaneView<T> {
+    #[inline(always)]
+    fn idx(&self, q: usize, x: usize) -> usize {
+        q * self.stride + self.base + x
     }
 }
 
@@ -246,9 +266,8 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
 /// See [`collide_span_fused`].
 #[allow(clippy::too_many_arguments)]
 unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bool>(
-    planes: RawSlice<T>,
-    q_stride: usize,
-    base: usize,
+    src: PlaneView<T>,
+    dst: PlaneView<T>,
     x0: usize,
     x1: usize,
     rho: &[T],
@@ -286,7 +305,6 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
             usq = usq + u[d] * u[d];
         }
         let drho = r - one;
-        let i = base + x;
         // Shared equilibrium pieces (V1: base / r3 / r45 / uf3).
         let eq_base = drho - f15 * r * usq;
         let r3 = three * r;
@@ -303,24 +321,23 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
         // Rest population: feq0 = w0 * base, src0 = -w0 * uf3.
         {
             let w0 = T::r(L::W[L::REST]);
-            let i0 = L::REST * q_stride + i;
             // SAFETY: caller contract (disjoint cells, in bounds).
-            let f0 = unsafe { planes.get(i0) };
-            if FORCE {
-                unsafe { planes.set(i0, f0 - op * (f0 - w0 * eq_base) + cp * (-w0 * uf3)) };
+            let f0 = unsafe { src.planes.get(src.idx(L::REST, x)) };
+            let v = if FORCE {
+                f0 - op * (f0 - w0 * eq_base) + cp * (-w0 * uf3)
             } else {
-                unsafe { planes.set(i0, f0 - op * (f0 - w0 * eq_base)) };
-            }
+                f0 - op * (f0 - w0 * eq_base)
+            };
+            unsafe { dst.planes.set(dst.idx(L::REST, x), v) };
         }
         for &(a, b) in L::PAIRS {
             let wa = T::r(L::W[a]);
             let cu = dotc::<L, T>(a, u);
             let ep = wa * (eq_base + r45 * cu * cu);
             let em = wa * (r3 * cu);
-            let (ia, ib) = (a * q_stride + i, b * q_stride + i);
             // SAFETY: caller contract.
-            let fa = unsafe { planes.get(ia) };
-            let fb = unsafe { planes.get(ib) };
+            let fa = unsafe { src.planes.get(src.idx(a, x)) };
+            let fb = unsafe { src.planes.get(src.idx(b, x)) };
             let fp = half * (fa + fb);
             let fm = half * (fa - fb);
             let rp = op * (fp - ep);
@@ -330,13 +347,13 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
                 let sp = wa * (nine * cu * cf - uf3);
                 let sm = wa * (three * cf);
                 unsafe {
-                    planes.set(ia, fa - rp - rm + cp * sp + cm * sm);
-                    planes.set(ib, fb - rp + rm + cp * sp - cm * sm);
+                    dst.planes.set(dst.idx(a, x), fa - rp - rm + cp * sp + cm * sm);
+                    dst.planes.set(dst.idx(b, x), fb - rp + rm + cp * sp - cm * sm);
                 }
             } else {
                 unsafe {
-                    planes.set(ia, fa - rp - rm);
-                    planes.set(ib, fb - rp + rm);
+                    dst.planes.set(dst.idx(a, x), fa - rp - rm);
+                    dst.planes.set(dst.idx(b, x), fb - rp + rm);
                 }
             }
         }
@@ -349,9 +366,7 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
 /// See [`collide_span_fused`].
 #[allow(clippy::too_many_arguments)]
 unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF: bool>(
-    planes: RawSlice<T>,
-    q_stride: usize,
-    base: usize,
+    planes: PlaneView<T>,
     x0: usize,
     x1: usize,
     rho: &[T],
@@ -411,32 +426,31 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
         // Rest population: feq0 = w0 * base, src0 = -w0 * uf3.
         {
             let w0 = T::r(L::W[L::REST]);
-            let i0 = L::REST * q_stride + base + xb;
+            let i0 = planes.idx(L::REST, xb);
             for j in 0..blen {
                 // SAFETY: caller contract (disjoint cells, in bounds).
-                let f0 = unsafe { planes.get(i0 + j) };
+                let f0 = unsafe { planes.planes.get(i0 + j) };
                 let v = if FORCE {
                     f0 - op * (f0 - w0 * eqb[j]) + cp * (-w0 * uf3v[j])
                 } else {
                     f0 - op * (f0 - w0 * eqb[j])
                 };
-                unsafe { planes.set(i0 + j, v) };
+                unsafe { planes.planes.set(i0 + j, v) };
             }
         }
         // One sweep per TRT pair; c_a is loop-invariant, so `dotc` becomes
         // broadcast multiply-adds.
         for &(a, b) in L::PAIRS {
             let wa = T::r(L::W[a]);
-            let ia0 = a * q_stride + base + xb;
-            let ib0 = b * q_stride + base + xb;
+            let (ia0, ib0) = (planes.idx(a, xb), planes.idx(b, xb));
             for j in 0..blen {
                 let x = xb + j;
                 let cu = dotc::<L, T>(a, [ux[x], uy[x], uz[x]]);
                 let ep = wa * (eqb[j] + r45v[j] * cu * cu);
                 let em = wa * (r3v[j] * cu);
                 // SAFETY: caller contract.
-                let fa = unsafe { planes.get(ia0 + j) };
-                let fb = unsafe { planes.get(ib0 + j) };
+                let fa = unsafe { planes.planes.get(ia0 + j) };
+                let fb = unsafe { planes.planes.get(ib0 + j) };
                 let fp = half * (fa + fb);
                 let fm = half * (fa - fb);
                 let rp = op * (fp - ep);
@@ -446,13 +460,13 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
                     let sp = wa * (nine * cu * cf - uf3v[j]);
                     let sm = wa * (three * cf);
                     unsafe {
-                        planes.set(ia0 + j, fa - rp - rm + cp * sp + cm * sm);
-                        planes.set(ib0 + j, fb - rp + rm + cp * sp - cm * sm);
+                        planes.planes.set(ia0 + j, fa - rp - rm + cp * sp + cm * sm);
+                        planes.planes.set(ib0 + j, fb - rp + rm + cp * sp - cm * sm);
                     }
                 } else {
                     unsafe {
-                        planes.set(ia0 + j, fa - rp - rm);
-                        planes.set(ib0 + j, fb - rp + rm);
+                        planes.planes.set(ia0 + j, fa - rp - rm);
+                        planes.planes.set(ib0 + j, fb - rp + rm);
                     }
                 }
             }
@@ -472,9 +486,8 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
 unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
     force_on: bool,
     field: Option<&[[T; 3]]>,
-    planes: RawSlice<T>,
-    q_stride: usize,
-    base: usize,
+    src: PlaneView<T>,
+    dst: PlaneView<T>,
     x0: usize,
     x1: usize,
     rho: &[T],
@@ -486,15 +499,15 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
     // SAFETY: forwarded caller contract.
     unsafe {
         match (force_on, field) {
-            (true, Some(fr)) => collide_span_fused::<L, T, true, true>(
-                planes, q_stride, base, x0, x1, rho, ux, uy, uz, fr, kp,
-            ),
-            (true, None) => collide_span_fused::<L, T, true, false>(
-                planes, q_stride, base, x0, x1, rho, ux, uy, uz, &[], kp,
-            ),
-            (false, _) => collide_span_fused::<L, T, false, false>(
-                planes, q_stride, base, x0, x1, rho, ux, uy, uz, &[], kp,
-            ),
+            (true, Some(fr)) => {
+                collide_span_fused::<L, T, true, true>(src, dst, x0, x1, rho, ux, uy, uz, fr, kp)
+            }
+            (true, None) => {
+                collide_span_fused::<L, T, true, false>(src, dst, x0, x1, rho, ux, uy, uz, &[], kp)
+            }
+            (false, _) => {
+                collide_span_fused::<L, T, false, false>(src, dst, x0, x1, rho, ux, uy, uz, &[], kp)
+            }
         }
     }
 }
@@ -680,6 +693,8 @@ struct FusedCtx<'a, L: Lattice, T: Real> {
     np: usize,
     /// Padded x extent.
     pnx: usize,
+    /// Padded y extent (1 for 2D — matches `LocalGeom` padding).
+    pny: usize,
     halo: [bool; 6],
     f: &'a [T],
     out: RawSlice<T>,
@@ -698,40 +713,26 @@ struct FusedCtx<'a, L: Lattice, T: Real> {
     force_on: bool,
     kp: &'a KParams<T>,
     range: CellRange,
-    /// Solid runs of the two halo slabs (`[0]` = low, `[1]` = high), one
-    /// `Vec` per padded slab row; empty when the face has no halo.
-    halo_runs: [Vec<Vec<(u32, u32)>>; 2],
     _l: std::marker::PhantomData<L>,
 }
 
 impl<'a, L: Lattice, T: Real> FusedCtx<'a, L, T> {
-    /// Slab axis: rows for 2D lattices, z-planes for 3D.
+    /// Number of slabs along the sweep axis (2D: y rows; 3D: z planes).
     #[inline(always)]
-    fn slab_axis() -> usize {
-        L::D - 1
+    fn n_slabs(&self) -> usize {
+        self.g.core[L::D - 1]
     }
 
-    /// Number of padded rows per slab (1 for 2D, padded-y extent for 3D).
+    /// Padded `f`-offset of row `sy` of slab `slab` (either index may be -1
+    /// or the extent: the halo layers). For 2D lattices the slab *is* the
+    /// row and `sy` is ignored.
     #[inline(always)]
-    fn rows_per_slab(&self) -> usize {
+    fn row_base_f(&self, slab: isize, sy: isize) -> usize {
         if L::D == 3 {
-            self.g.padded()[1]
+            (((slab + 1) as usize) * self.pny + (sy + 1) as usize) * self.pnx
         } else {
-            1
+            ((slab + 1) as usize) * self.pnx
         }
-    }
-
-    /// One slab's plane length (per direction).
-    #[inline(always)]
-    fn slab_plane(&self) -> usize {
-        self.pnx * self.rows_per_slab()
-    }
-
-    /// Padded `f`-offset of slab `s` (may be -1 or `n_slabs`: the halo
-    /// slabs), i.e. the start of its plane-0 region.
-    #[inline(always)]
-    fn slab_base_f(&self, s: isize) -> usize {
-        ((s + 1) as usize) * self.slab_plane()
     }
 
     /// Whether the cell at core position `pos` was already collided in
@@ -747,23 +748,81 @@ impl<'a, L: Lattice, T: Real> FusedCtx<'a, L, T> {
     }
 }
 
-/// Ring of just-in-time collided source slabs (3 slots), with per-row solid
-/// runs computed at insertion.
-struct Ring<T> {
-    /// Slot-major slab copies: `data[slot * Q * slab_plane + q * slab_plane + row * pnx + px]`.
+/// The window of slab rows one ring pass works on, in padded row indices.
+///
+/// 2D slabs are single rows (`row0 = 0`, `rows = 1`). A 3D z-band processes
+/// its destination planes in **y-strips**: destination rows `[y0, y1)` need
+/// source rows `[y0-1, y1]` of the three z-slabs around each destination
+/// plane — the strip `[y0, y1+2)` in padded indices, swept over the band's
+/// z range so each (strip × slab) is collided once per strip pass. Ringing
+/// strips instead of whole planes keeps the ring cache-resident for any
+/// grid (a 128³ f64 D3Q19 full-plane ring is 7.7 MB per band — 92 MB across
+/// 12 bands, past even the SLC; a 32-row strip ring is ~2 MB) at the cost
+/// of the two strip-edge rows being collided by both adjacent strip passes
+/// of the *same* band. Bands still partition whole z-planes, so no two
+/// threads ever write neighbouring rows of `out` (measured: y-partitioned
+/// bands lose ~20% at 12 threads to exactly that boundary sharing).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Window {
+    /// First padded row of the strip within a slab.
+    row0: usize,
+    /// Padded rows per strip.
+    rows: usize,
+}
+
+/// Destination rows per 3D y-strip pass (see [`Window`]). `usize::MAX`
+/// disables striping: one full-plane window per band. Measured on M5 Max
+/// (128³, 12 threads, same-window A/B): 32-row strips lose ~20% against
+/// full-plane rings in both precisions — the system-level cache absorbs the
+/// per-band plane rings (3.9/7.7 MB × 12), so the strips' extra pass
+/// overhead and +6% edge-row recollides never pay off. The machinery stays
+/// for cache-poorer targets; re-tune there before enabling.
+const STRIP_ROWS: usize = usize::MAX;
+
+/// Ring of just-in-time collided source slab strips (3 slots), with
+/// per-row solid runs computed at insertion. Owned per (part, band) by
+/// [`FusedScratch`] and reused across steps and strip passes — the buffers
+/// are only (re)zeroed when they grow, so the steady state pays no
+/// allocation or memset traffic (a 128³ f64 D3Q19 ring is 7.7 MB per band;
+/// zeroing 12 of them every step measurably costs ~10%).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Ring<T> {
+    /// Slot-major strip copies:
+    /// `data[(slot * Q + q) * cap_len + row * pnx + px]`.
     data: Vec<T>,
-    /// Slot-major per-row solid runs (padded row coordinates).
+    /// Slot-major per-row solid runs (padded row coordinates), stride
+    /// `cap_rows` per slot.
     runs: Vec<Vec<(u32, u32)>>,
     tags: [usize; 3],
+    /// Capacity in padded rows per strip (allocation stride).
+    cap_rows: usize,
+    /// One strip slot's plane capacity (`cap_rows * pnx`).
+    cap_len: usize,
+    /// Active window (`win.rows <= cap_rows`).
+    win: Window,
 }
 
 impl<T: Real> Ring<T> {
-    fn new(q: usize, slab_plane: usize, rows_per_slab: usize) -> Self {
-        Self {
-            data: vec![T::zero(); 3 * q * slab_plane],
-            runs: vec![Vec::new(); 3 * rows_per_slab],
-            tags: [usize::MAX; 3],
+    /// Grow (never shrink) the buffers for the given geometry; contents are
+    /// don't-care (every slot is fully rewritten before any read).
+    fn prepare(&mut self, q: usize, pnx: usize, cap_rows: usize) {
+        let len = 3 * q * cap_rows * pnx;
+        if self.data.len() < len {
+            self.data.resize(len, T::zero());
         }
+        if self.runs.len() < 3 * cap_rows {
+            self.runs.resize(3 * cap_rows, Vec::new());
+        }
+        self.cap_rows = cap_rows;
+        self.cap_len = cap_rows * pnx;
+        self.tags = [usize::MAX; 3];
+    }
+
+    /// Begin a strip pass: invalidate all slots and set the active window.
+    fn set_window(&mut self, win: Window) {
+        debug_assert!(win.rows <= self.cap_rows);
+        self.tags = [usize::MAX; 3];
+        self.win = win;
     }
 
     #[inline(always)]
@@ -772,9 +831,18 @@ impl<T: Real> Ring<T> {
     }
 }
 
-/// Copy slab `s` into a ring slot, rebuild its solid runs, and collide the
-/// core cells that are not already post-collide (shell cells / halo rows are
-/// plain copies). No-op when already resident.
+/// Bring the window of slab `s` into a ring slot: rebuild its solid runs,
+/// collide the not-yet-collided core cells, and copy everything else
+/// verbatim (halo rows and columns, shell-precollided cells, solid cells).
+/// No-op when already resident.
+///
+/// For the flat-form lattices (D2Q9) the copy is **fused into the
+/// collision** — the kernel reads `f` and writes the ring, saving a full
+/// read+write pass per cell (measured +15% at 512² f32 1T, ahead of V1's
+/// copy-then-collide). The blocked lattices (D3Q19) keep copy-then-collide:
+/// their per-pair sweeps would otherwise walk 19 far-apart source streams
+/// per block and lose more to prefetch thrash than the copy costs
+/// (measured −10% at 128³ 12T).
 fn ensure_slab<L: Lattice, T: Real>(
     ctx: &FusedCtx<'_, L, T>,
     ring: &mut Ring<T>,
@@ -784,27 +852,21 @@ fn ensure_slab<L: Lattice, T: Real>(
     if ring.tags.contains(&s) {
         return;
     }
+    let win = ring.win;
     let slot = (0..3)
         .find(|&k| ring.tags[k] == usize::MAX || !needed.contains(&ring.tags[k]))
         .expect("three ring slots cover at most two other needed slabs");
     ring.tags[slot] = s;
-    let sp = ctx.slab_plane();
-    let rows = ctx.rows_per_slab();
+    let (cap_len, cap_rows) = (ring.cap_len, ring.cap_rows);
     let pnx = ctx.pnx;
-    let base_f = ctx.slab_base_f(s as isize);
-    let region = &mut ring.data[slot * L::Q * sp..(slot + 1) * L::Q * sp];
-    for q in 0..L::Q {
-        region[q * sp..(q + 1) * sp].copy_from_slice(&ctx.f[q * ctx.np + base_f..][..sp]);
-    }
-    // Solid runs per padded row.
-    for rr in 0..rows {
+    let base_f = ctx.row_base_f(s as isize, win.row0 as isize - 1);
+    // Solid runs per padded strip row (also the copy/collide span plan).
+    for rr in 0..win.rows {
         solid_runs_row(
             &ctx.solid[base_f + rr * pnx..][..pnx],
-            &mut ring.runs[slot * rows + rr],
+            &mut ring.runs[slot * cap_rows + rr],
         );
     }
-    // Collide the not-yet-collided core cells (with the previous step's
-    // moments — the primaries; the fused pass writes only the spares).
     let c = ctx.g.core;
     let (nx, ny) = (c[0], c[1]);
     let slab_precollided = if L::D == 3 {
@@ -812,41 +874,113 @@ fn ensure_slab<L: Lattice, T: Real>(
     } else {
         (s == 0 && ctx.halo[2]) || (s == ny - 1 && ctx.halo[3])
     };
-    if slab_precollided {
-        return;
-    }
     let x_lo = usize::from(ctx.halo[0]);
     let x_hi = nx - usize::from(ctx.halo[1]);
-    let region = RawSlice::new(&mut ring.data[slot * L::Q * sp..(slot + 1) * L::Q * sp]);
-    let row_iter = if L::D == 3 { 0..ny } else { 0..1 };
-    for y in row_iter {
-        if L::D == 3 && ((y == 0 && ctx.halo[2]) || (y == ny - 1 && ctx.halo[3])) {
+    let fuse_copy = !use_blocked::<L>();
+    let dst_raw = RawSlice::new(&mut ring.data);
+    if !fuse_copy {
+        // Copy-then-collide (blocked lattices): one bulk copy per direction
+        // plane brings the whole strip in, then the ring is collided in
+        // place. Fusing the copy here would make every per-pair sweep walk
+        // `L::Q` far-apart source streams per block — measured ~35% slower
+        // at 128³ (prefetch thrash beats the saved pass).
+        let sl = win.rows * pnx;
+        for q in 0..L::Q {
+            // SAFETY: this band owns the slot; ranges in bounds.
+            unsafe {
+                dst_raw.copy_from(
+                    slot * L::Q * cap_len + q * cap_len,
+                    &ctx.f[q * ctx.np + base_f..][..sl],
+                );
+            }
+        }
+    }
+    if slab_precollided && !fuse_copy {
+        // Blocked path: the bulk copy above already brought the
+        // shell-collided slab in; nothing to collide.
+        return;
+    }
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(8);
+    for rr in 0..win.rows {
+        let row_f = base_f + rr * pnx;
+        let dst_row = slot * L::Q * cap_len + rr * pnx;
+        // Core row behind this strip row, if any (3D strips carry the two
+        // y-halo rows; 2D slabs are their own single core row).
+        let core_y = if L::D == 3 {
+            let yy = (win.row0 + rr) as isize - 1;
+            if yy < 0 || yy >= ny as isize {
+                None
+            } else {
+                Some(yy as usize)
+            }
+        } else {
+            Some(s)
+        };
+        let collide_row_here = !slab_precollided
+            && core_y.is_some_and(|y| {
+                !(L::D == 3 && ((y == 0 && ctx.halo[2]) || (y == ny - 1 && ctx.halo[3])))
+            });
+        if fuse_copy {
+            spans.clear();
+            if collide_row_here {
+                for_fluid_spans(
+                    &ring.runs[slot * cap_rows + rr],
+                    1 + x_lo,
+                    1 + x_hi,
+                    |a, b| spans.push((a, b)),
+                );
+            }
+            // Copy the complement of the collide spans (halo columns, shell
+            // columns, solid runs — or, for copy-only rows, everything).
+            let mut cursor = 0usize;
+            for &(a, b) in spans.iter().chain(std::iter::once(&(pnx, pnx))) {
+                if cursor < a.min(pnx) {
+                    let (c0p, c1p) = (cursor, a.min(pnx));
+                    for q in 0..L::Q {
+                        // SAFETY: this band owns the slot; ranges in bounds.
+                        unsafe {
+                            dst_raw.copy_from(
+                                q * cap_len + dst_row + c0p,
+                                &ctx.f[q * ctx.np + row_f + c0p..][..c1p - c0p],
+                            );
+                        }
+                    }
+                }
+                cursor = b;
+            }
+        }
+        if !collide_row_here {
             continue;
         }
-        // (y, z) of this row in core coordinates.
+        let y = core_y.expect("collide rows lie in the core");
         let (cy, cz) = if L::D == 3 { (y, s) } else { (s, 0) };
-        let rr = if L::D == 3 { y + 1 } else { 0 };
         let c0 = ctx.g.cidx(0, cy, cz);
         let rho = &ctx.rho_old[c0..c0 + nx];
         let ux = &ctx.ux_old[c0..c0 + nx];
         let uy = &ctx.uy_old[c0..c0 + nx];
         let uz = &ctx.uz_old[c0..c0 + nx];
         let ffrow = ctx.ff.map(|v| &v[c0..c0 + nx]);
-        let row_base = rr * pnx + 1; // core x = 0 inside the slab copy
-        for_fluid_spans(
-            &ring.runs[slot * rows + rr],
-            1 + x_lo,
-            1 + x_hi,
-            |a, b| {
-                // SAFETY: this slot region is owned by this band; spans are
-                // in bounds of the slab copy.
+        let dst_view = PlaneView {
+            planes: dst_raw,
+            stride: cap_len,
+            base: dst_row + 1,
+        };
+        if fuse_copy {
+            // Collide straight from `f` into the ring over the planned spans.
+            let src_view = PlaneView {
+                planes: RawSlice::new_ref(ctx.f),
+                stride: ctx.np,
+                base: row_f + 1,
+            };
+            for &(a, b) in &spans {
+                // SAFETY: this slot region is owned by this band; the source
+                // view is read-only; spans are in bounds.
                 unsafe {
                     collide_span_dispatch::<L, T>(
                         ctx.force_on,
                         ffrow,
-                        region,
-                        sp,
-                        row_base,
+                        src_view,
+                        dst_view,
                         a - 1,
                         b - 1,
                         rho,
@@ -854,53 +988,129 @@ fn ensure_slab<L: Lattice, T: Real>(
                         uy,
                         uz,
                         ctx.kp,
-                    )
+                    );
                 }
-            },
-        );
+            }
+        } else {
+            // Collide the ring in place over its fluid core spans.
+            for_fluid_spans(
+                &ring.runs[slot * cap_rows + rr],
+                1 + x_lo,
+                1 + x_hi,
+                |a, b| {
+                    // SAFETY: this slot region is owned by this band.
+                    unsafe {
+                        collide_span_dispatch::<L, T>(
+                            ctx.force_on,
+                            ffrow,
+                            dst_view,
+                            dst_view,
+                            a - 1,
+                            b - 1,
+                            rho,
+                            ux,
+                            uy,
+                            uz,
+                            ctx.kp,
+                        );
+                    }
+                },
+            );
+        }
     }
 }
 
 /// One fused collide+stream+moments band over destination slabs
-/// `[s0, s1)` ∩ the step range. Returns the momentum-exchange force over
-/// probed solid links as **per-destination-row partials** in row order; each
-/// partial replays its link contributions in `CpuScalar`'s `stream_row`
-/// order (destination x ascending, direction ascending), so the flat fold
-/// over all rows reproduces the scalar backend's probe sum bitwise.
+/// `[s0, s1)` (2D: y rows; 3D: z planes — already intersected with the step
+/// range by the dispatcher). A 3D band processes its planes in y-strip
+/// passes (see [`Window`]), sweeping its z range once per strip so each
+/// (strip × slab) is collided exactly once per pass.
+///
+/// Returns the momentum-exchange force over probed solid links as
+/// per-destination-row partials tagged `(z, y)`, only for rows that touched
+/// probed links; each partial replays its link contributions in
+/// `CpuScalar`'s `stream_row` order (destination x ascending, direction
+/// ascending), and the dispatcher folds the tagged rows in `CpuScalar`'s
+/// global row order — the probe diagnostic is therefore bitwise band- and
+/// strip-independent.
 fn fused_band<L: Lattice, T: Real>(
     ctx: &FusedCtx<'_, L, T>,
+    ring: &mut Ring<T>,
     s0: usize,
     s1: usize,
-) -> Vec<[T; 3]> {
-    let mut row_partials = Vec::new();
+) -> Vec<(u32, u32, [T; 3])> {
+    let mut partials = Vec::new();
     if s0 >= s1 {
-        return row_partials;
+        return partials;
     }
+    if L::D == 3 {
+        let (ylo, yhi) = (ctx.range.lo[1], ctx.range.hi[1]);
+        let cap = (yhi - ylo).min(STRIP_ROWS) + 2;
+        ring.prepare(L::Q, ctx.pnx, cap);
+        let mut y0 = ylo;
+        while y0 < yhi {
+            let y1 = (y0 + STRIP_ROWS.min(yhi - y0)).min(yhi);
+            ring.set_window(Window {
+                row0: y0,
+                rows: y1 - y0 + 2,
+            });
+            sweep_window(ctx, ring, s0, s1, y0, y1, &mut partials);
+            y0 = y1;
+        }
+    } else {
+        ring.prepare(L::Q, ctx.pnx, 1);
+        ring.set_window(Window { row0: 0, rows: 1 });
+        sweep_window(ctx, ring, s0, s1, 0, 1, &mut partials);
+    }
+    partials
+}
+
+/// Sweep destination slabs `[slo, shi)` for the ring's active window
+/// (destination rows `[ylo, yhi)` for 3D lattices; the slab itself for 2D).
+#[allow(clippy::too_many_arguments)]
+fn sweep_window<L: Lattice, T: Real>(
+    ctx: &FusedCtx<'_, L, T>,
+    ring: &mut Ring<T>,
+    slo: usize,
+    shi: usize,
+    ylo: usize,
+    yhi: usize,
+    partials: &mut Vec<(u32, u32, [T; 3])>,
+) {
     let g = ctx.g;
     let c = g.core;
     let (nx, ny) = (c[0], c[1]);
-    let n_slabs = c[FusedCtx::<L, T>::slab_axis()];
+    let n_slabs = ctx.n_slabs();
     let pnx = ctx.pnx;
-    let sp = ctx.slab_plane();
-    let rows = ctx.rows_per_slab();
+    let win = ring.win;
+    let (cap_len, cap_rows) = (ring.cap_len, ring.cap_rows);
     let six = T::r(6.0);
     let two = T::r(2.0);
-    let mut ring = Ring::<T>::new(L::Q, sp, rows);
+    // Solid runs of the two sweep-halo layers' window rows
+    // (`[0]` = slab -1, `[1]` = slab `n_slabs`), streamed straight from
+    // `f`; empty when the face has no halo.
+    let (lo_face, hi_face) = if L::D == 3 { (4, 5) } else { (2, 3) };
+    let mk_halo_runs = |present: bool, slab: isize| -> Vec<Vec<(u32, u32)>> {
+        let mut v = vec![Vec::new(); if present { win.rows } else { 0 }];
+        let base = ctx.row_base_f(slab, win.row0 as isize - 1);
+        for (rr, runs) in v.iter_mut().enumerate() {
+            solid_runs_row(&ctx.solid[base + rr * pnx..][..pnx], runs);
+        }
+        v
+    };
+    let halo_runs = [
+        mk_halo_runs(ctx.halo[lo_face], -1),
+        mk_halo_runs(ctx.halo[hi_face], n_slabs as isize),
+    ];
     // Probed bounce-back links of the current row, gathered in the fused
     // pass's direction-major order and replayed in CpuScalar's cell-major
     // order: (destination x, direction q, ftot).
     let mut links: Vec<(u32, u32, T)> = Vec::new();
     let (xlo, xhi) = (ctx.range.lo[0], ctx.range.hi[0]);
-    // Destination rows within a slab (3D: the range's y span; 2D: the slab).
-    let (ylo, yhi) = if L::D == 3 {
-        (ctx.range.lo[1], ctx.range.hi[1])
-    } else {
-        (0, 1)
-    };
-    for s in s0..s1 {
+    for s in slo..shi {
         // Source slabs feeding destination slab `s` (halo slabs excluded:
         // they are read straight from `f`).
-        let needed = std::array::from_fn(|k| {
+        let needed: [usize; 3] = std::array::from_fn(|k| {
             let ss = s as isize + k as isize - 1;
             if ss < 0 || ss >= n_slabs as isize {
                 usize::MAX
@@ -910,10 +1120,11 @@ fn fused_band<L: Lattice, T: Real>(
         });
         for &ss in &needed {
             if ss != usize::MAX {
-                ensure_slab(ctx, &mut ring, ss, &needed);
+                ensure_slab(ctx, ring, ss, &needed);
             }
         }
         let dest_slot = ring.slot_of(s);
+        // Destination rows (3D: the strip's y rows; 2D: the slab itself).
         for yy in ylo..yhi {
             // Core coordinates of this destination row.
             let (y, z) = if L::D == 3 { (yy, s) } else { (s, 0) };
@@ -922,7 +1133,7 @@ fn fused_band<L: Lattice, T: Real>(
             let pb = g.pidx(0, y, z);
             let c0 = g.cidx(0, y, z);
             let rho_row = &ctx.rho_old[c0..c0 + nx];
-            let rr_dest = if L::D == 3 { y + 1 } else { 0 };
+            let rr_dest = if L::D == 3 { y + 1 - win.row0 } else { 0 };
             for q in 0..L::Q {
                 let cq = L::C[q];
                 let (cx, cy, cz) = (cq[0] as isize, cq[1] as isize, cq[2] as isize);
@@ -941,7 +1152,12 @@ fn fused_band<L: Lattice, T: Real>(
                         continue;
                     }
                 }
-                let (lo_face, hi_face) = if L::D == 3 { (4, 5) } else { (2, 3) };
+                // Strip-local row of the source (2D: the single row).
+                let rr = if L::D == 3 {
+                    (sy + 1) as usize - win.row0
+                } else {
+                    0
+                };
                 // (src row data, its solid runs, padded f-offset of the row)
                 let (src_row, runs_src, src_row_f): (&[T], &[(u32, u32)], usize) = if ss < 0
                     || ss >= n_slabs as isize
@@ -951,21 +1167,18 @@ fn fused_band<L: Lattice, T: Real>(
                         continue;
                     }
                     let hidx = usize::from(ss >= 0);
-                    let rr = if L::D == 3 { (sy + 1) as usize } else { 0 };
-                    let base = ctx.slab_base_f(ss) + rr * pnx;
+                    let base = ctx.row_base_f(ss, sy);
                     (
                         &ctx.f[q * ctx.np + base..][..pnx],
-                        &ctx.halo_runs[hidx][rr],
+                        &halo_runs[hidx][rr],
                         base,
                     )
                 } else {
                     let slot = ring.slot_of(ss as usize);
-                    let rr = if L::D == 3 { (sy + 1) as usize } else { 0 };
-                    let base = ctx.slab_base_f(ss) + rr * pnx;
                     (
-                        &ring.data[slot * L::Q * sp + q * sp + rr * pnx..][..pnx],
-                        &ring.runs[slot * rows + rr],
-                        base,
+                        &ring.data[(slot * L::Q + q) * cap_len + rr * pnx..][..pnx],
+                        &ring.runs[slot * cap_rows + rr],
+                        ctx.row_base_f(ss, sy),
                     )
                 };
                 // Destination clamps: the step range, tightened at the x
@@ -1007,7 +1220,7 @@ fn fused_band<L: Lattice, T: Real>(
                             continue;
                         }
                         let fout = ring.data
-                            [dest_slot * L::Q * sp + L::OPP[q] * sp + rr_dest * pnx + x + 1];
+                            [(dest_slot * L::Q + L::OPP[q]) * cap_len + rr_dest * pnx + x + 1];
                         let gpi = src_row_f + spx;
                         let wu = ctx.wall_u[gpi];
                         let cu = dotc::<L, T>(q, wu);
@@ -1045,7 +1258,7 @@ fn fused_band<L: Lattice, T: Real>(
             // Written to the spare buffers so in-flight collides of other
             // slabs keep reading the previous step's moments; solid cells
             // are refreshed from the primaries (V1 double-buffer sync).
-            let dest_runs = &ring.runs[dest_slot * rows + rr_dest];
+            let dest_runs = &ring.runs[dest_slot * cap_rows + rr_dest];
             let ffrow = ctx.ff.map(|v| &v[c0..c0 + nx]);
             for_fluid_spans(dest_runs, 1 + xlo, 1 + xhi, |a, b| {
                 let (x0, x1) = (a - 1, b - 1);
@@ -1081,10 +1294,11 @@ fn fused_band<L: Lattice, T: Real>(
                     }
                 }
             }
-            row_partials.push(pf_row);
+            if !links.is_empty() {
+                partials.push((z as u32, y as u32, pf_row));
+            }
         }
     }
-    row_partials
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,84 +1335,161 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         let (rho, ux, uy, uz) = (&fields.rho, &fields.ux, &fields.uy, &fields.uz);
         let solid = &fields.solid;
         let ff = fields.force_field.as_deref();
-        let rows = ny * nz;
-        let body = |r: usize| {
-            let y = r % ny;
-            let z = r / ny;
-            let full = (z == 0 && halo[4])
+        let full_row = |y: usize, z: usize| {
+            (z == 0 && halo[4])
                 || (z == nz - 1 && halo[5])
                 || (y == 0 && halo[2])
-                || (y == ny - 1 && halo[3]);
-            if !full && !halo[0] && !halo[1] {
-                return;
-            }
+                || (y == ny - 1 && halo[3])
+        };
+        // Full boundary rows (y/z-face layers), span-collided per row.
+        let full_rows: Vec<(usize, usize)> = (0..ny * nz)
+            .map(|r| (r % ny, r / ny))
+            .filter(|&(y, z)| full_row(y, z))
+            .collect();
+        let row_body = |&(y, z): &(usize, usize)| {
             let pb = g.pidx(0, y, z);
             let c0 = g.cidx(0, y, z);
-            let rho_row = &rho[c0..c0 + nx];
-            let ux_row = &ux[c0..c0 + nx];
-            let uy_row = &uy[c0..c0 + nx];
-            let uz_row = &uz[c0..c0 + nx];
             let ffrow = ff.map(|v| &v[c0..c0 + nx]);
-            if full {
-                let mut runs = Vec::new();
-                solid_runs_row(&solid[pb - 1..pb - 1 + pnx], &mut runs);
-                for_fluid_spans(&runs, 1, 1 + nx, |a, b| {
-                    // SAFETY: rows are dispatched disjointly; spans in bounds.
-                    unsafe {
-                        collide_span_dispatch::<L, T>(
-                            force_on,
-                            ffrow,
-                            f,
-                            np,
-                            pb,
-                            a - 1,
-                            b - 1,
-                            rho_row,
-                            ux_row,
-                            uy_row,
-                            uz_row,
-                            &kp,
-                        )
+            let mut runs = Vec::new();
+            solid_runs_row(&solid[pb - 1..pb - 1 + pnx], &mut runs);
+            let view = PlaneView {
+                planes: f,
+                stride: np,
+                base: pb,
+            };
+            for_fluid_spans(&runs, 1, 1 + nx, |a, b| {
+                // SAFETY: rows are dispatched disjointly; spans in bounds.
+                unsafe {
+                    collide_span_dispatch::<L, T>(
+                        force_on,
+                        ffrow,
+                        view,
+                        view,
+                        a - 1,
+                        b - 1,
+                        &rho[c0..c0 + nx],
+                        &ux[c0..c0 + nx],
+                        &uy[c0..c0 + nx],
+                        &uz[c0..c0 + nx],
+                        &kp,
+                    )
+                }
+            });
+        };
+        // The row layers are tiny for 2D grids; only fork for 3D-scale work.
+        #[cfg(feature = "parallel")]
+        if self.use_parallel(sub) && full_rows.len() * nx >= PARALLEL_MIN_CELLS {
+            full_rows.par_iter().for_each(row_body);
+        } else {
+            full_rows.iter().for_each(row_body);
+        }
+        #[cfg(not(feature = "parallel"))]
+        full_rows.iter().for_each(row_body);
+        // x-face layers: the remaining rows contribute one cell per column.
+        // Strided single cells collide poorly, so gather blocks of them into
+        // a contiguous scratch pseudo-row, span-collide it once, and scatter
+        // back (fluid cells only; the amortized cost is the two copies).
+        let mut cols: [Option<usize>; 2] = [None, None];
+        if halo[0] {
+            cols[0] = Some(0);
+        }
+        if halo[1] && (nx > 1 || !halo[0]) {
+            cols[1] = Some(nx - 1);
+        }
+        let col_body = |z: usize| {
+            let mut cell_pi = [0usize; BLOCK];
+            let mut fg = vec![T::zero(); L::Q * BLOCK];
+            let mut rho_g = [T::zero(); BLOCK];
+            let mut ux_g = [T::zero(); BLOCK];
+            let mut uy_g = [T::zero(); BLOCK];
+            let mut uz_g = [T::zero(); BLOCK];
+            let mut ff_g = [[T::zero(); 3]; BLOCK];
+            let mut cnt = 0usize;
+            let flush = |cnt: &mut usize,
+                         cell_pi: &[usize; BLOCK],
+                         fg: &mut Vec<T>,
+                         rho_g: &[T; BLOCK],
+                         ux_g: &[T; BLOCK],
+                         uy_g: &[T; BLOCK],
+                         uz_g: &[T; BLOCK],
+                         ff_g: &[[T; 3]; BLOCK]| {
+                if *cnt == 0 {
+                    return;
+                }
+                // SAFETY: the scratch is exclusive; gathered cells are
+                // pairwise distinct padded indices, and z-tasks touch
+                // disjoint cell sets.
+                unsafe {
+                    let view = PlaneView {
+                        planes: RawSlice::new(fg),
+                        stride: BLOCK,
+                        base: 0,
+                    };
+                    collide_span_dispatch::<L, T>(
+                        force_on,
+                        ff.map(|_| &ff_g[..*cnt]),
+                        view,
+                        view,
+                        0,
+                        *cnt,
+                        &rho_g[..*cnt],
+                        &ux_g[..*cnt],
+                        &uy_g[..*cnt],
+                        &uz_g[..*cnt],
+                        &kp,
+                    );
+                    for k in 0..*cnt {
+                        for q in 0..L::Q {
+                            f.set(q * np + cell_pi[k], fg[q * BLOCK + k]);
+                        }
                     }
-                });
-            } else {
-                let mut cols: [Option<usize>; 2] = [None, None];
-                if halo[0] {
-                    cols[0] = Some(0);
                 }
-                if halo[1] && (nx > 1 || !halo[0]) {
-                    cols[1] = Some(nx - 1);
-                }
-                for xc in cols.into_iter().flatten() {
-                    if solid[pb + xc] {
+                *cnt = 0;
+            };
+            for xc in cols.into_iter().flatten() {
+                for y in 0..ny {
+                    if full_row(y, z) {
                         continue;
                     }
-                    // SAFETY: single-cell span, row-disjoint dispatch.
-                    unsafe {
-                        collide_span_dispatch::<L, T>(
-                            force_on,
-                            ffrow,
-                            f,
-                            np,
-                            pb,
-                            xc,
-                            xc + 1,
-                            rho_row,
-                            ux_row,
-                            uy_row,
-                            uz_row,
-                            &kp,
-                        )
+                    let pi = g.pidx(xc, y, z);
+                    if solid[pi] {
+                        continue;
+                    }
+                    let c = g.cidx(xc, y, z);
+                    cell_pi[cnt] = pi;
+                    for q in 0..L::Q {
+                        // SAFETY: this z-task's gather; in bounds.
+                        fg[q * BLOCK + cnt] = unsafe { f.get(q * np + pi) };
+                    }
+                    rho_g[cnt] = rho[c];
+                    ux_g[cnt] = ux[c];
+                    uy_g[cnt] = uy[c];
+                    uz_g[cnt] = uz[c];
+                    if let Some(v) = ff {
+                        ff_g[cnt] = v[c];
+                    }
+                    cnt += 1;
+                    if cnt == BLOCK {
+                        flush(
+                            &mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g,
+                        );
                     }
                 }
+                flush(&mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g);
             }
         };
+        let col_cells = 2 * ny * nz;
         #[cfg(feature = "parallel")]
-        if self.use_parallel(sub) {
-            (0..rows).into_par_iter().for_each(body);
-            return;
+        if self.use_parallel(sub) && col_cells >= PARALLEL_MIN_CELLS / 2 {
+            (0..nz).into_par_iter().for_each(col_body);
+        } else {
+            (0..nz).for_each(col_body);
         }
-        (0..rows).for_each(body);
+        #[cfg(not(feature = "parallel"))]
+        {
+            let _ = col_cells;
+            (0..nz).for_each(col_body);
+        }
     }
 
     fn stream(
@@ -1225,27 +1516,11 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             .fused
             .take()
             .unwrap_or_else(|| Box::new(FusedScratch::new(g.n_core())));
-        let sa = FusedCtx::<L, T>::slab_axis();
-        let n_slabs = g.core[sa];
-        // Solid runs of the two halo slabs (streamed straight from `f`).
-        let rows_per_slab = if L::D == 3 { g.padded()[1] } else { 1 };
-        let slab_plane = pnx * rows_per_slab;
-        let mk_halo_runs = |present: bool, base: usize| -> Vec<Vec<(u32, u32)>> {
-            let mut v = vec![Vec::new(); if present { rows_per_slab } else { 0 }];
-            for (rr, runs) in v.iter_mut().enumerate() {
-                solid_runs_row(&fields.solid[base + rr * pnx..][..pnx], runs);
-            }
-            v
-        };
-        let (lo_face, hi_face) = if L::D == 3 { (4, 5) } else { (2, 3) };
-        let halo_runs = [
-            mk_halo_runs(halo[lo_face], 0),
-            mk_halo_runs(halo[hi_face], (n_slabs + 1) * slab_plane),
-        ];
         let ctx = FusedCtx::<L, T> {
             g,
             np,
             pnx,
+            pny: g.padded()[1],
             halo,
             f: &fields.f,
             out: RawSlice::new(&mut fields.ftmp),
@@ -1264,47 +1539,68 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             force_on,
             kp: &kp,
             range,
-            halo_runs,
             _l: std::marker::PhantomData,
         };
-        let (slo, shi) = (range.lo[sa], range.hi[sa]);
-        let n_range = shi - slo;
+        // Bands partition the sweep slabs of the range (2D: y rows, 3D: z
+        // planes — bands own whole `out` planes, so threads never write
+        // neighbouring rows of any plane; 3D bands run in y-strip passes
+        // internally, see `Window`).
+        let sa = L::D - 1;
+        let (blo, bhi) = (range.lo[sa], range.hi[sa]);
+        let n_range = bhi - blo;
         #[cfg(feature = "parallel")]
-        let nbands = if self.use_parallel(sub) {
-            let max = if L::D == 3 {
-                (n_range / 4).max(1)
-            } else {
-                (n_range / 16).max(1)
-            };
-            rayon::current_num_threads().clamp(1, max)
+        let threads = if self.use_parallel(sub) {
+            rayon::current_num_threads()
         } else {
             1
         };
         #[cfg(not(feature = "parallel"))]
-        let nbands = 1;
-        let band_size = n_range.div_ceil(nbands);
-        let body = |band: usize| -> Vec<[T; 3]> {
-            let s0 = slo + band * band_size;
-            let s1 = (slo + (band + 1) * band_size).min(shi);
-            fused_band(&ctx, s0, s1)
+        let threads = 1;
+        // One band per thread: oversubscribing bands for work stealing was
+        // measured net-negative (2x bands: -8% at 128^3 12T — the extra
+        // band-edge recollides outweigh the balance gain).
+        let nbands = if L::D == 3 {
+            threads.clamp(1, (n_range / 4).max(1))
+        } else {
+            threads.clamp(1, (n_range / 16).max(1))
         };
-        // Flat fold of the per-row partials in global row order — the exact
-        // shape of CpuScalar's deterministic probe fold, so the diagnostic
-        // is bitwise band-count-independent and backend-independent.
-        let fold = |bands: Vec<Vec<[T; 3]>>| -> [T; 3] {
-            bands
-                .into_iter()
-                .flatten()
-                .fold([T::zero(); 3], |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
+        let band_size = n_range.div_ceil(nbands);
+        // Per-band rings persist across steps in the scratch (see `Ring`).
+        if scratch.rings.len() < nbands {
+            scratch.rings.resize_with(nbands, Ring::default);
+        }
+        let rings = &mut scratch.rings[..nbands];
+        let body = |band: usize, ring: &mut Ring<T>| -> Vec<(u32, u32, [T; 3])> {
+            let s0 = blo + band * band_size;
+            let s1 = (blo + (band + 1) * band_size).min(bhi);
+            fused_band(&ctx, ring, s0, s1)
+        };
+        // Fold the tagged row partials in CpuScalar's global row order
+        // ((z, y) lexicographic over the range). Rows without probed links
+        // contribute exact zeros to CpuScalar's running sum, so folding
+        // only the touched rows in that order reproduces its probe total
+        // bitwise (up to signs of exact zeros) for any band/strip shape.
+        let fold = |bands: Vec<Vec<(u32, u32, [T; 3])>>| -> [T; 3] {
+            let mut rows: Vec<(u32, u32, [T; 3])> = bands.into_iter().flatten().collect();
+            rows.sort_by_key(|&(z, y, _)| (z, y));
+            rows.into_iter().fold([T::zero(); 3], |a, (_, _, b)| {
+                [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+            })
         };
         #[cfg(feature = "parallel")]
         let pf = if nbands > 1 {
-            fold((0..nbands).into_par_iter().map(body).collect())
+            fold(
+                rings
+                    .par_iter_mut()
+                    .enumerate()
+                    .map(|(b, r)| body(b, r))
+                    .collect(),
+            )
         } else {
-            fold((0..nbands).map(body).collect())
+            fold(rings.iter_mut().enumerate().map(|(b, r)| body(b, r)).collect())
         };
         #[cfg(not(feature = "parallel"))]
-        let pf = fold((0..nbands).map(body).collect());
+        let pf = fold(rings.iter_mut().enumerate().map(|(b, r)| body(b, r)).collect());
         // Capture the stale-slot memory for the *next* step's BC pass: the
         // post-collide unknown populations of every open-face cell in range
         // (V1 capture_conv_stale, generalised to every open face).
@@ -1448,12 +1744,16 @@ fn capture_stale<L: Lattice, T: Real>(
             let ffcell = ctx.ff.map(|v| &v[cidx..cidx + 1]);
             // SAFETY: `cell` is thread-local; single-cell span.
             unsafe {
+                let view = PlaneView {
+                    planes: RawSlice::new(&mut cell[..L::Q]),
+                    stride: 1,
+                    base: 0,
+                };
                 collide_span_dispatch::<L, T>(
                     ctx.force_on,
                     ffcell,
-                    RawSlice::new(&mut cell[..L::Q]),
-                    1,
-                    0,
+                    view,
+                    view,
                     0,
                     1,
                     &ctx.rho_old[cidx..cidx + 1],

@@ -140,6 +140,10 @@ pub struct FusedScratch<T: Real> {
     pub stale: [[Option<Vec<T>>; 6]; 2],
     /// Set by the fused stream pass, consumed by `update_moments`.
     pub fresh: bool,
+    /// Per-band source rings, reused across steps (contents are transient
+    /// per-pass scratch; kept here so the buffers are neither reallocated
+    /// nor re-zeroed every step).
+    pub(crate) rings: Vec<crate::backend_simd::Ring<T>>,
 }
 
 impl<T: Real> FusedScratch<T> {
@@ -154,6 +158,7 @@ impl<T: Real> FusedScratch<T> {
             uz2: vec![T::zero(); n_core],
             stale: Default::default(),
             fresh: false,
+            rings: Vec::new(),
         }
     }
 }
