@@ -51,3 +51,5 @@ MLUPS = 百万格子点更新/秒。2026-07-05 時点（偏差格納方式導入
   （or portable_simd）で f32 2-3 倍の余地。
 - collide と stream の融合（1 パス化）でメモリトラフィック ~40% 削減余地。
 - GPU（wgpu compute）で 10-100 倍級。3D 化とセットで検討。
+  → **Phase 9c で実測済み**（2026-07-05）: M5 Max GPU で 1024² 7,584 MLUPS（CPU 比 ~19 倍）、
+  2048² 6,975 MLUPS。検証 L∞ 7e-6。詳細と本採用判断は [GPU_EVALUATION.md](GPU_EVALUATION.md)。
