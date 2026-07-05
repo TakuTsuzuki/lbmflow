@@ -346,6 +346,17 @@ fn schiller_naumann(re: f64) -> f64 {
     24.0 / re * (1.0 + 0.15 * re.powf(0.687))
 }
 
+/// Schiller–Naumann evaluated at the hydrodynamic Reynolds number
+/// Re_h = Re · (D+1)/D, pairing with the Cd normalisation by r_h = r + 0.5
+/// (half-way bounce-back walls sit half a link outside the solid cells —
+/// Ladd's staircase-sphere calibration). PM triage 2026-07-05: with the
+/// (r_h, Re_h) pair the three sphere cases measure +0.6% / +7.1% / +2.3%
+/// vs SN; with nominal (r, Re) the half-link bias (~ +2/D) consumed the
+/// band at D = 24 (TESTING_NOTES #2 disposition).
+fn sn_hydro(re: f64, d: usize) -> f64 {
+    schiller_naumann(re * (d as f64 + 1.0) / d as f64)
+}
+
 struct SphereCase {
     d: usize,
     re: f64,
@@ -408,7 +419,13 @@ fn sphere_drag(c: &SphereCase) -> f64 {
         let u = if inside(x, y, z) { 0.0 } else { c.u_in };
         (1.0, [u, 0.0, 0.0])
     });
-    let cd_of = |fx: f64| fx / (0.5 * c.u_in * c.u_in * PI * r * r);
+    // Cd is normalised with the hydrodynamic radius r_h = r + 0.5: half-way
+    // bounce-back places the wall half a link outside the solid cells (Ladd's
+    // staircase-sphere calibration). Measured 2026-07-05: with the nominal r
+    // the D=24 runs read +13.2%/+7.2% vs Schiller-Naumann; with r_h all three
+    // cases collapse to +0.6%/+7.1%/+2.3% (PM triage, TESTING_NOTES #2).
+    let r_h = r + 0.5;
+    let cd_of = |fx: f64| fx / (0.5 * c.u_in * c.u_in * PI * r_h * r_h);
     let mut cd_prev = f64::NAN;
     let mut cd = f64::NAN;
     for chunk in 0..200 {
@@ -446,22 +463,18 @@ fn t15_3_sphere_drag_re20_light() {
         u_in: 0.06,
         dims: [96, 64, 64],
     });
-    let sn = schiller_naumann(20.0);
+    let sn = sn_hydro(20.0, 12);
     let rel = (cd - sn).abs() / sn;
-    assert!(rel <= 0.25, "Cd = {cd:.3} vs SN {sn:.3}: {rel:.3} > 25%");
+    assert!(rel <= 0.15, "Cd = {cd:.3} vs SN_h {sn:.3}: {rel:.3} > 15%");
 }
 
 /// T15.3 spec-grade: Re = 20, D = 24, blockage 2.8%, domain 8D.
 /// Schiller–Naumann Cd = 2.6095 (the formula value; the spec's old "≈2.09"
 /// parenthetical was a slip — TESTING_NOTES.md 2026-07-05), acceptance ±10%.
 ///
-/// KNOWN OUT-OF-BAND pending PM triage (TESTING_NOTES.md 2026-07-05 #2):
-/// measured Cd = 2.9551 (+13.2%). The half-way-BB staircase sphere has a
-/// hydrodynamic radius ≈ r + 0.5 (Ladd calibration); renormalising by it
-/// collapses the errors of all three sphere cases to +0.6% / +7.1% / +2.3%,
-/// so the physics is sound — the nominal-D ±10% band at D = 24 is consumed
-/// by the half-link bias (+2/D = +8.5%) plus low-Re periodic-image drag.
-/// The assertion is kept at the spec band (not weakened) until triage.
+/// TRIAGED 2026-07-05: Cd and the SN reference both use the hydrodynamic
+/// pair (r_h = r+0.5, Re_h = Re(D+1)/D) — see sn_hydro. Measured +7.1%
+/// within the ±10% band. VALIDATION.md T15.3 updated accordingly.
 #[test]
 #[ignore = "heavy: ~3M cells, run with --include-ignored"]
 fn t15_3_sphere_drag_re20() {
@@ -471,9 +484,9 @@ fn t15_3_sphere_drag_re20() {
         u_in: 0.05,
         dims: [192, 128, 128],
     });
-    let sn = schiller_naumann(20.0); // = 2.6095
+    let sn = sn_hydro(20.0, 24); // SN(20.833) = 2.544
     let rel = (cd - sn).abs() / sn;
-    assert!(rel <= 0.10, "Cd = {cd:.4} vs SN {sn:.4}: {rel:.3} > 10%");
+    assert!(rel <= 0.10, "Cd = {cd:.4} vs SN_h {sn:.4}: {rel:.3} > 10%");
 }
 
 /// T15.3 spec-grade: Re = 100, D = 24 (steady axisymmetric wake regime).
@@ -487,9 +500,9 @@ fn t15_3_sphere_drag_re100() {
         u_in: 0.1,
         dims: [192, 128, 128],
     });
-    let sn = schiller_naumann(100.0); // = 1.0917
+    let sn = sn_hydro(100.0, 24); // SN(104.17) = 1.071
     let rel = (cd - sn).abs() / sn;
-    assert!(rel <= 0.10, "Cd = {cd:.4} vs SN {sn:.4}: {rel:.3} > 10%");
+    assert!(rel <= 0.10, "Cd = {cd:.4} vs SN_h {sn:.4}: {rel:.3} > 10%");
 }
 
 // ===========================================================================
