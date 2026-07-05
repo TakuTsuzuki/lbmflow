@@ -4,7 +4,7 @@
 //! See `docs/AGENT_MODE_DESIGN.md` for the schema rationale. Field names are
 //! camelCase in JSON.
 
-use lbm_core::multiphase::{Psi, ShanChen};
+use lbm_core::multiphase::ShanChen;
 use lbm_core::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +89,10 @@ pub enum EdgeSpec {
     VelocityInlet { u: [f64; 2] },
     PressureOutlet { rho: f64 },
     Outflow,
+    /// Convective (radiation) outflow: far less pressure-reflective than
+    /// `Outflow`. `uConv` is the expected mean outflow speed, in (0, 1].
+    #[serde(rename_all = "camelCase")]
+    ConvectiveOutflow { u_conv: f64 },
 }
 
 impl EdgeSpec {
@@ -104,6 +108,9 @@ impl EdgeSpec {
             },
             EdgeSpec::PressureOutlet { rho } => EdgeBC::PressureOutlet { rho: T::r(rho) },
             EdgeSpec::Outflow => EdgeBC::Outflow,
+            EdgeSpec::ConvectiveOutflow { u_conv } => EdgeBC::ConvectiveOutflow {
+                u_conv: T::r(u_conv),
+            },
         }
     }
 }
@@ -189,6 +196,11 @@ pub struct MultiphaseSpec {
     pub g: f64,
     #[serde(default)]
     pub g_wall: f64,
+    /// Virtual wall density for full-range contact-angle control (preferred
+    /// over `gWall`): values near the liquid density wet the wall (θ → 0°),
+    /// near the vapour density de-wet it (θ → 180°). See VALIDATION.md T11c.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_rho: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -248,6 +260,8 @@ pub struct OutputSpec {
 pub enum OutputFormat {
     Png,
     Csv,
+    /// VTK legacy structured points (ASCII), openable in ParaView etc.
+    Vtk,
 }
 
 // ---------------------------------------------------------------- validation
@@ -304,6 +318,24 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 "multiphase.g",
                 format!("G = {} は臨界値 -4 より弱く、相分離しません（推奨 -5.0）", mp.g),
             );
+        }
+    }
+    for (name, spec) in [
+        ("edges.left", sc.edges.left),
+        ("edges.right", sc.edges.right),
+        ("edges.bottom", sc.edges.bottom),
+        ("edges.top", sc.edges.top),
+    ] {
+        if let EdgeSpec::ConvectiveOutflow { u_conv } = spec {
+            if !(u_conv > 0.0 && u_conv <= 1.0) {
+                warn(
+                    name,
+                    format!(
+                        "uConv = {u_conv} は (0,1] の範囲外で、構築時にエラーになります。\
+                         期待される平均流出速度（例: 流入速度と同程度の 0.05〜0.15）を指定してください"
+                    ),
+                );
+            }
         }
     }
     warnings
@@ -441,10 +473,13 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
         });
     }
 
-    let mp = sc
-        .multiphase
-        .as_ref()
-        .map(|m| ShanChen::<T>::new(m.g).with_wall(m.g_wall));
+    let mp = sc.multiphase.as_ref().map(|m| {
+        let mut model = ShanChen::<T>::new(m.g).with_wall(m.g_wall);
+        if let Some(rho_w) = m.wall_rho {
+            model = model.with_wall_rho(rho_w);
+        }
+        model
+    });
     Ok((sim, mp))
 }
 
@@ -560,6 +595,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         multiphase: Some(MultiphaseSpec {
             g: -5.0,
             g_wall: 0.0,
+            wall_rho: None,
         }),
         run: RunSpec {
             steps: 20_000,
@@ -572,10 +608,65 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             every: 0,
         }],
     };
+    // T11c geometry: half-disk on the bottom wall, virtual wall density 1.0
+    // relaxes to a spherical cap with contact angle ~63 deg.
+    let droplet_on_wall = Scenario {
+        version: 0,
+        name: "droplet-on-wall".into(),
+        grid: Grid { nx: 160, ny: 100 },
+        physics: Physics {
+            nu: 1.0 / 6.0,
+            collision: CollisionSpec::Trt,
+            force: [0.0, 0.0],
+            precision: Precision::F64,
+        },
+        edges: EdgesSpec {
+            left: EdgeSpec::Periodic,
+            right: EdgeSpec::Periodic,
+            bottom: EdgeSpec::BounceBack,
+            top: EdgeSpec::BounceBack,
+        },
+        inlet_profile: None,
+        obstacles: vec![],
+        init: InitSpec::Droplet {
+            cx: 80.0,
+            cy: 1.0,
+            r: 22.0,
+            rho_liquid: 2.0,
+            rho_vapor: 0.15,
+        },
+        multiphase: Some(MultiphaseSpec {
+            g: -5.0,
+            g_wall: 0.0,
+            wall_rho: Some(1.0),
+        }),
+        run: RunSpec {
+            steps: 30_000,
+            stop_when_steady: None,
+        },
+        probes: vec![],
+        outputs: vec![
+            OutputSpec {
+                field: FieldKind::Rho,
+                format: OutputFormat::Png,
+                every: 0,
+            },
+            OutputSpec {
+                field: FieldKind::Rho,
+                format: OutputFormat::Vtk,
+                every: 0,
+            },
+        ],
+    };
     vec![
         ("cavity", "リッド駆動キャビティ（定常判定つき）", cavity),
         ("cylinder-karman", "円柱まわりのカルマン渦列 + 抗力プローブ", cylinder),
         ("two-phase-droplet", "Shan-Chen 二相液滴の平衡化", droplet),
+        (
+            "droplet-on-wall",
+            "壁上液滴の接触角デモ（仮想壁密度 wallRho=1.0 → θ≈63°）",
+            droplet_on_wall,
+        ),
     ]
 }
 
@@ -601,5 +692,59 @@ mod tests {
         let warnings = validate(&sc);
         assert!(warnings.iter().any(|w| w.field == "physics"), "{warnings:?}");
         assert!(warnings.iter().any(|w| w.field == "edges"), "{warnings:?}");
+    }
+
+    fn preset(name: &str) -> Scenario {
+        presets()
+            .into_iter()
+            .find(|(n, _, _)| *n == name)
+            .unwrap_or_else(|| panic!("preset {name} not found"))
+            .2
+    }
+
+    #[test]
+    fn convective_outflow_roundtrip_and_hints() {
+        // camelCase JSON tag/field
+        let spec: EdgeSpec =
+            serde_json::from_str(r#"{ "type": "convectiveOutflow", "uConv": 0.08 }"#).unwrap();
+        assert!(matches!(spec, EdgeSpec::ConvectiveOutflow { u_conv } if u_conv == 0.08));
+        let text = serde_json::to_string(&spec).unwrap();
+        assert!(text.contains("\"uConv\":0.08"), "{text}");
+
+        // valid uConv: builds, no edge warnings
+        let mut sc = preset("cylinder-karman");
+        sc.edges.right = EdgeSpec::ConvectiveOutflow { u_conv: 0.1 };
+        build(&sc).unwrap();
+        assert!(
+            validate(&sc).iter().all(|w| !w.field.starts_with("edges.")),
+            "{:?}",
+            validate(&sc)
+        );
+
+        // uConv out of (0,1]: validate warns with a hint, core build rejects
+        for bad in [0.0, -0.1, 1.5] {
+            sc.edges.right = EdgeSpec::ConvectiveOutflow { u_conv: bad };
+            let warnings = validate(&sc);
+            assert!(
+                warnings.iter().any(|w| w.field == "edges.right"),
+                "uConv={bad}: {warnings:?}"
+            );
+            assert!(build(&sc).is_err(), "uConv={bad} should fail to build");
+        }
+    }
+
+    #[test]
+    fn wall_rho_wires_into_shan_chen() {
+        let sc = preset("droplet-on-wall");
+        match build(&sc).unwrap() {
+            SimHandle::F64(_, Some(mp)) => assert_eq!(mp.wall_rho, Some(1.0)),
+            _ => panic!("expected an f64 multiphase build"),
+        }
+        // omitted wallRho stays None (legacy scenarios unchanged)
+        let sc = preset("two-phase-droplet");
+        match build(&sc).unwrap() {
+            SimHandle::F64(_, Some(mp)) => assert_eq!(mp.wall_rho, None),
+            _ => panic!("expected an f64 multiphase build"),
+        }
     }
 }

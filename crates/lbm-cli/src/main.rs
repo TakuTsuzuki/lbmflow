@@ -3,6 +3,7 @@
 //! エージェント向け設計原則: 自己記述（`lbm schema` / `lbm presets`）、
 //! 構造化エラー（JSON）、決定論。
 
+mod gallery;
 mod mcp;
 mod render;
 mod runner;
@@ -45,6 +46,12 @@ enum Command {
     Presets {
         #[command(subcommand)]
         action: PresetAction,
+    },
+    /// 全プリセットを順に実行し、自己完結 HTML ギャラリー（index.html）を生成する
+    Gallery {
+        /// 出力ディレクトリ（既定: out/gallery）
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// シナリオ JSON の書式説明を出力する（エージェントの自己発見用）
     Schema,
@@ -148,6 +155,10 @@ fn main() -> Result<()> {
                 run_and_report(&found.2, out, false)?;
             }
         },
+        Command::Gallery { out } => {
+            let out_root = out.unwrap_or_else(|| PathBuf::from("out").join("gallery"));
+            gallery::run(&out_root)?;
+        }
         Command::Schema => {
             println!("{}", SCHEMA_DOC);
         }
@@ -176,8 +187,11 @@ const SCHEMA_DOC: &str = r#"シナリオ JSON (v0) — lbm run <file.json>
     "bottom": { "type": "bounceBack" },
     "top":    { "type": "bounceBack" }
     // 他: {"type":"periodic"}（対辺ペア必須）, {"type":"movingWall","u":[ux,uy]},
-    //     {"type":"outflow"}
-    // 制約: 開境界(velocityInlet/pressureOutlet/outflow)同士は直交して隣接不可
+    //     {"type":"outflow"},
+    //     {"type":"convectiveOutflow","uConv":0.1}  // 対流流出。outflow より圧力反射が
+    //       小さい。uConv = 期待平均流出速度（0 < uConv <= 1、流入速度と同程度が目安）
+    // 制約: 開境界(velocityInlet/pressureOutlet/outflow/convectiveOutflow)同士は
+    //       直交して隣接不可
   },
   "inletProfile": {                        // 省略可: 放物線流入
     "edge": "left", "kind": "parabolic", "umax": 0.15
@@ -188,7 +202,12 @@ const SCHEMA_DOC: &str = r#"シナリオ JSON (v0) — lbm run <file.json>
   ],
   "init": { "kind": "rest" },              // rest | droplet{cx,cy,r,rhoLiquid,rhoVapor}
                                            // | pool{heightFrac,rhoLiquid,rhoVapor}
-  "multiphase": { "g": -5.0, "gWall": 0.0 }, // 省略可: Shan-Chen 単成分多相
+  "multiphase": {                          // 省略可: Shan-Chen 単成分多相
+    "g": -5.0,                             // 凝集強度（負。-5.0 が検証済み既定）
+    "gWall": 0.0,                          // 壁付着（負=濡れ性）。wallRho の方を推奨
+    "wallRho": 1.0                         // 省略可: 仮想壁密度による接触角制御
+                                           // （液密度側 → 濡れる。0.3:~180°, 0.6:~107°, 1.0:~63°）
+  },
   "run": {
     "steps": 20000,
     "stopWhenSteady": { "epsilon": 1e-8, "checkEvery": 500 }  // 省略可
@@ -199,11 +218,13 @@ const SCHEMA_DOC: &str = r#"シナリオ JSON (v0) — lbm run <file.json>
   ],
   "outputs": [                             // 省略可: 場のスナップショット
     { "field": "speed", "format": "png", "every": 0 }   // every=0 は終了時のみ
-    // field: speed | ux | uy | rho | vorticity, format: png | csv
+    // field: speed | ux | uy | rho | vorticity
+    // format: png | csv | vtk（VTK legacy structured points。ParaView 等で開ける）
   ]
 }
 
 結果: <out>/manifest.json（status/steps/mlups/診断/警告/ファイル一覧）
 status: completed | steady（定常判定で早期終了）| diverged（NaN 検出）
-実例: lbm presets show cavity | cylinder-karman | two-phase-droplet
+実例: lbm presets show cavity | cylinder-karman | two-phase-droplet | droplet-on-wall
+一括実行: lbm gallery --out DIR（全プリセット + 自己完結 HTML ギャラリー）
 "#;
