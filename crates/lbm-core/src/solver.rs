@@ -138,10 +138,7 @@ pub fn partition(
         if a >= d {
             assert_eq!(decomp[a], 1, "cannot split inactive axis {a}");
         }
-        assert!(
-            decomp[a] <= dims[a],
-            "more parts than cells on axis {a}"
-        );
+        assert!(decomp[a] <= dims[a], "more parts than cells on axis {a}");
     }
     // Per-axis part extents and origins.
     let mut extents: [Vec<usize>; 3] = [vec![], vec![], vec![]];
@@ -399,9 +396,12 @@ where
     fn stream_part(&mut self, i: usize) -> [T; 3] {
         let sub = &self.subs[i];
         if !self.two_pass {
-            return self
-                .backend
-                .stream(sub, &mut self.parts[i], &self.params, CellRange::full(sub));
+            return self.backend.stream(
+                sub,
+                &mut self.parts[i],
+                &self.params,
+                CellRange::full(sub),
+            );
         }
         // Interior pass first (would overlap an async exchange), then the
         // one-cell boundary shell. Field results are identical to the full
@@ -412,7 +412,11 @@ where
             hi: [
                 c[0].saturating_sub(1),
                 c[1].saturating_sub(1),
-                if sub.geom.d == 3 { c[2].saturating_sub(1) } else { c[2] },
+                if sub.geom.d == 3 {
+                    c[2].saturating_sub(1)
+                } else {
+                    c[2]
+                },
             ],
         };
         let sub = sub.clone();
@@ -470,11 +474,7 @@ where
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
-                        let (r, u) = init(
-                            sub.origin[0] + x,
-                            sub.origin[1] + y,
-                            sub.origin[2] + z,
-                        );
+                        let (r, u) = init(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
                         let c = g.cidx(x, y, z);
                         fields.rho[c] = r;
                         fields.ux[c] = u[0];
@@ -509,8 +509,7 @@ where
                                 gpos[a] = [x, y, z][a] as isize + sub.origin[a] as isize + da[a];
                                 if gpos[a] < 0 || gpos[a] >= dims[a] as isize {
                                     if a < L::D && periodic[a] {
-                                        gpos[a] =
-                                            (gpos[a] + dims[a] as isize) % dims[a] as isize;
+                                        gpos[a] = (gpos[a] + dims[a] as isize) % dims[a] as isize;
                                     } else {
                                         return None;
                                     }
@@ -525,15 +524,11 @@ where
                             if fields.solid[lp] {
                                 return None;
                             }
-                            let (_, u) =
-                                init(gpos[0] as usize, gpos[1] as usize, gpos[2] as usize);
+                            let (_, u) = init(gpos[0] as usize, gpos[1] as usize, gpos[2] as usize);
                             Some(u)
                         };
                         let own = [fields.ux[c], fields.uy[c], fields.uz[c]];
-                        let diff = |plus: Option<[T; 3]>,
-                                    minus: Option<[T; 3]>,
-                                    b: usize|
-                         -> T {
+                        let diff = |plus: Option<[T; 3]>, minus: Option<[T; 3]>, b: usize| -> T {
                             match (plus, minus) {
                                 (Some(pv), Some(mv)) => (pv[b] - mv[b]) * half,
                                 (Some(pv), None) => pv[b] - own[b],
@@ -570,13 +565,11 @@ where
                                     if a == b {
                                         ccgu = ccgu + cq[a] * cq[a] * grad[a][a];
                                     } else {
-                                        ccgu = ccgu
-                                            + cq[a] * cq[b] * (grad[a][b] + grad[b][a]);
+                                        ccgu = ccgu + cq[a] * cq[b] * (grad[a][b] + grad[b][a]);
                                     }
                                 }
                             }
-                            let fneq =
-                                -kp.wr[q] * fields.rho[c] * tau * (three * ccgu - div);
+                            let fneq = -kp.wr[q] * fields.rho[c] * tau * (three * ccgu - div);
                             fields.f[q * np + pi] = fields.f[q * np + pi] + fneq;
                         }
                     }
@@ -607,11 +600,8 @@ where
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
-                        mask[g.pidx(x, y, z)] = pred(
-                            sub.origin[0] + x,
-                            sub.origin[1] + y,
-                            sub.origin[2] + z,
-                        );
+                        mask[g.pidx(x, y, z)] =
+                            pred(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
                     }
                 }
             }
@@ -658,11 +648,7 @@ where
     /// (`(t1, t2) = face.tangents()`; 2D faces always pass `c2 = 0`).
     /// The natural way to build e.g. a rectangular-duct profile
     /// `u(y, z) = umax f(y) g(z)` on an X face.
-    pub fn set_inlet_profile_with(
-        &mut self,
-        face: Face,
-        profile: impl Fn(usize, usize) -> [T; 3],
-    ) {
+    pub fn set_inlet_profile_with(&mut self, face: Face, profile: impl Fn(usize, usize) -> [T; 3]) {
         let (t1, t2) = face.tangents();
         let mut values = Vec::with_capacity(self.dims[t1] * self.dims[t2]);
         for c2 in 0..self.dims[t2] {
@@ -866,7 +852,11 @@ where
         let (i, lx, ly, lz) = self.locate(x, y, z);
         let g = self.subs[i].geom;
         let c = g.cidx(lx, ly, lz);
-        [self.parts[i].ux[c], self.parts[i].uy[c], self.parts[i].uz[c]]
+        [
+            self.parts[i].ux[c],
+            self.parts[i].uy[c],
+            self.parts[i].uz[c],
+        ]
     }
     /// Whether a global cell is solid.
     pub fn is_solid(&self, x: usize, y: usize, z: usize) -> bool {

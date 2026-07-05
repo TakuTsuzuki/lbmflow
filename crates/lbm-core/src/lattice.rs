@@ -146,9 +146,7 @@ pub trait Lattice: Copy + Send + Sync + 'static {
     fn dir_index(c: [i8; 3]) -> usize {
         (0..Self::Q)
             .find(|&q| Self::C[q] == c)
-            .unwrap_or_else(|| {
-                panic!("({},{},{}) is not a lattice direction", c[0], c[1], c[2])
-            })
+            .unwrap_or_else(|| panic!("({},{},{}) is not a lattice direction", c[0], c[1], c[2]))
     }
 }
 
@@ -425,8 +423,7 @@ mod tests {
                     let m3: f64 = (0..L::Q)
                         .map(|q| {
                             L::W[q]
-                                * (L::C[q][a] as i32 * L::C[q][b] as i32 * L::C[q][c] as i32)
-                                    as f64
+                                * (L::C[q][a] as i32 * L::C[q][b] as i32 * L::C[q][c] as i32) as f64
                         })
                         .sum();
                     assert!(m3.abs() < 1e-15, "third moment [{a}][{b}][{c}] = {m3}");
@@ -452,8 +449,9 @@ mod tests {
                                         as f64
                             })
                             .sum();
-                        let expect =
-                            L::CS2 * L::CS2 * (d(a, b) * d(c, e) + d(a, c) * d(b, e) + d(a, e) * d(b, c));
+                        let expect = L::CS2
+                            * L::CS2
+                            * (d(a, b) * d(c, e) + d(a, c) * d(b, e) + d(a, e) * d(b, c));
                         assert!(
                             (m4 - expect).abs() < 1e-15,
                             "4th moment [{a}{b}{c}{e}] = {m4}, expect {expect}"

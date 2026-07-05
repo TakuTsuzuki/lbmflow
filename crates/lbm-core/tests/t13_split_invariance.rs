@@ -97,7 +97,12 @@ const DECOMPS: [[usize; 3]; 3] = [[2, 1, 1], [1, 2, 1], [2, 2, 1]];
 
 /// Run `steps`, comparing the split runs against the monolithic baseline at
 /// several checkpoints (bit-exact fields at every checkpoint).
-fn check_case(case: &Case, steps: usize, init: Option<&dyn Fn(usize, usize) -> (f64, [f64; 3])>, what: &str) {
+fn check_case(
+    case: &Case,
+    steps: usize,
+    init: Option<&dyn Fn(usize, usize) -> (f64, [f64; 3])>,
+    what: &str,
+) {
     let mut base = build(case, [1, 1, 1], LocalPeriodic, false);
     if let Some(f) = init {
         base.init_with(|x, y, _| f(x, y));
@@ -131,7 +136,10 @@ fn check_case(case: &Case, steps: usize, init: Option<&dyn Fn(usize, usize) -> (
             assert_diagnostics_close(&base, s, 1e-12, &format!("{name} t={t}"));
         }
     }
-    println!("{what}: fields bit-exact across {:?} (+two-pass) over {steps} steps", DECOMPS);
+    println!(
+        "{what}: fields bit-exact across {:?} (+two-pass) over {steps} steps",
+        DECOMPS
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +399,10 @@ fn t13_shan_chen_droplet_native_split_invariant() {
     // Smooth droplet: liquid ~1.9 inside r0, vapour ~0.16 outside (classic
     // ψ = 1 - exp(-rho), G = -5 two-phase state).
     let init = move |x: usize, y: usize| {
-        let (dx, dy) = (x as f64 + 0.5 - n as f64 / 2.0, y as f64 + 0.5 - n as f64 / 2.0);
+        let (dx, dy) = (
+            x as f64 + 0.5 - n as f64 / 2.0,
+            y as f64 + 0.5 - n as f64 / 2.0,
+        );
         let r = (dx * dx + dy * dy).sqrt();
         let rho = 0.16 + (1.90 - 0.16) * 0.5 * (1.0 - ((r - 10.0) / 2.0).tanh());
         (rho, [0.0, 0.0, 0.0])
@@ -412,7 +423,12 @@ fn t13_shan_chen_droplet_native_split_invariant() {
             s.step();
             if t < 3 || t % 50 == 49 {
                 assert_fields_equal(&b, &s, &format!("shan-chen droplet {decomp:?} t={}", t + 1));
-                assert_diagnostics_close(&b, &s, 1e-12, &format!("shan-chen droplet {decomp:?} t={}", t + 1));
+                assert_diagnostics_close(
+                    &b,
+                    &s,
+                    1e-12,
+                    &format!("shan-chen droplet {decomp:?} t={}", t + 1),
+                );
             }
         }
     }
@@ -540,7 +556,9 @@ fn t13_shan_chen_wall_adhesion_native_matches_compat_and_split() {
             }
         }
     }
-    println!("Shan-Chen wall adhesion (g_wall/wall_rho): native == compat bit-exact, split-invariant");
+    println!(
+        "Shan-Chen wall adhesion (g_wall/wall_rho): native == compat bit-exact, split-invariant"
+    );
 }
 
 #[test]

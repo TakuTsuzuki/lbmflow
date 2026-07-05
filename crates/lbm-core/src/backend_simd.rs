@@ -66,8 +66,8 @@
 //! steps, asserted at 1e-11 / 1e-6 by `tests/backend_simd_equiv.rs`.
 
 use crate::backend::{
-    apply_open_faces_impl, read_moments_impl, reduce_impl, update_moments_impl, Backend,
-    CellRange, HostMoments, PARALLEL_MIN_CELLS,
+    apply_open_faces_impl, read_moments_impl, reduce_impl, update_moments_impl, Backend, CellRange,
+    HostMoments, PARALLEL_MIN_CELLS,
 };
 use crate::fields::{FusedScratch, LocalGeom, SoaFields};
 use crate::kernels::{for_face_cells, RawSlice};
@@ -142,12 +142,7 @@ fn solid_runs_row(solid_row: &[bool], out: &mut Vec<(u32, u32)>) {
 /// coordinates. `runs` must be sorted and disjoint (as produced by
 /// [`solid_runs_row`]).
 #[inline]
-fn for_fluid_spans(
-    runs: &[(u32, u32)],
-    w0: usize,
-    w1: usize,
-    mut body: impl FnMut(usize, usize),
-) {
+fn for_fluid_spans(runs: &[(u32, u32)], w0: usize, w1: usize, mut body: impl FnMut(usize, usize)) {
     let mut cursor = w0;
     for &(a, b) in runs {
         let (a, b) = (a as usize, b as usize);
@@ -347,8 +342,10 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
                 let sp = wa * (nine * cu * cf - uf3);
                 let sm = wa * (three * cf);
                 unsafe {
-                    dst.planes.set(dst.idx(a, x), fa - rp - rm + cp * sp + cm * sm);
-                    dst.planes.set(dst.idx(b, x), fb - rp + rm + cp * sp - cm * sm);
+                    dst.planes
+                        .set(dst.idx(a, x), fa - rp - rm + cp * sp + cm * sm);
+                    dst.planes
+                        .set(dst.idx(b, x), fb - rp + rm + cp * sp - cm * sm);
                 }
             } else {
                 unsafe {
@@ -744,7 +741,8 @@ impl<'a, L: Lattice, T: Real> FusedCtx<'a, L, T> {
             || (pos[0] == c[0] - 1 && self.halo[1])
             || (pos[1] == 0 && self.halo[2])
             || (pos[1] == c[1] - 1 && self.halo[3])
-            || (L::D == 3 && ((pos[2] == 0 && self.halo[4]) || (pos[2] == c[2] - 1 && self.halo[5])))
+            || (L::D == 3
+                && ((pos[2] == 0 && self.halo[4]) || (pos[2] == c[2] - 1 && self.halo[5])))
     }
 }
 
@@ -827,7 +825,10 @@ impl<T: Real> Ring<T> {
 
     #[inline(always)]
     fn slot_of(&self, s: usize) -> usize {
-        self.tags.iter().position(|&t| t == s).expect("resident slab")
+        self.tags
+            .iter()
+            .position(|&t| t == s)
+            .expect("resident slab")
     }
 }
 
@@ -1159,28 +1160,27 @@ fn sweep_window<L: Lattice, T: Real>(
                     0
                 };
                 // (src row data, its solid runs, padded f-offset of the row)
-                let (src_row, runs_src, src_row_f): (&[T], &[(u32, u32)], usize) = if ss < 0
-                    || ss >= n_slabs as isize
-                {
-                    let hf = if ss < 0 { lo_face } else { hi_face };
-                    if !ctx.halo[hf] {
-                        continue;
-                    }
-                    let hidx = usize::from(ss >= 0);
-                    let base = ctx.row_base_f(ss, sy);
-                    (
-                        &ctx.f[q * ctx.np + base..][..pnx],
-                        &halo_runs[hidx][rr],
-                        base,
-                    )
-                } else {
-                    let slot = ring.slot_of(ss as usize);
-                    (
-                        &ring.data[(slot * L::Q + q) * cap_len + rr * pnx..][..pnx],
-                        &ring.runs[slot * cap_rows + rr],
-                        ctx.row_base_f(ss, sy),
-                    )
-                };
+                let (src_row, runs_src, src_row_f): (&[T], &[(u32, u32)], usize) =
+                    if ss < 0 || ss >= n_slabs as isize {
+                        let hf = if ss < 0 { lo_face } else { hi_face };
+                        if !ctx.halo[hf] {
+                            continue;
+                        }
+                        let hidx = usize::from(ss >= 0);
+                        let base = ctx.row_base_f(ss, sy);
+                        (
+                            &ctx.f[q * ctx.np + base..][..pnx],
+                            &halo_runs[hidx][rr],
+                            base,
+                        )
+                    } else {
+                        let slot = ring.slot_of(ss as usize);
+                        (
+                            &ring.data[(slot * L::Q + q) * cap_len + rr * pnx..][..pnx],
+                            &ring.runs[slot * cap_rows + rr],
+                            ctx.row_base_f(ss, sy),
+                        )
+                    };
                 // Destination clamps: the step range, tightened at the x
                 // boundary when the crossed face has no halo (open-face
                 // unknown slots keep their prior out-buffer contents).
@@ -1203,7 +1203,8 @@ fn sweep_window<L: Lattice, T: Real>(
                         // SAFETY: this band is the only writer of its
                         // destination rows; ranges are in bounds.
                         unsafe {
-                            ctx.out.copy_from(out_base + d0, &src_row[s0x..s0x + (d1 - d0)]);
+                            ctx.out
+                                .copy_from(out_base + d0, &src_row[s0x..s0x + (d1 - d0)]);
                         }
                     }
                     // Solid run [a, b): half-way bounce-back into the
@@ -1267,12 +1268,22 @@ fn sweep_window<L: Lattice, T: Real>(
                 unsafe {
                     match ffrow {
                         Some(fr) => moments_span_fused::<L, T, true>(
-                            ctx.out, ctx.np, pb, x0, x1, c0, ctx.rho2, ctx.ux2, ctx.uy2,
-                            ctx.uz2, fr, ctx.kp,
+                            ctx.out, ctx.np, pb, x0, x1, c0, ctx.rho2, ctx.ux2, ctx.uy2, ctx.uz2,
+                            fr, ctx.kp,
                         ),
                         None => moments_span_fused::<L, T, false>(
-                            ctx.out, ctx.np, pb, x0, x1, c0, ctx.rho2, ctx.ux2, ctx.uy2,
-                            ctx.uz2, &[], ctx.kp,
+                            ctx.out,
+                            ctx.np,
+                            pb,
+                            x0,
+                            x1,
+                            c0,
+                            ctx.rho2,
+                            ctx.ux2,
+                            ctx.uy2,
+                            ctx.uz2,
+                            &[],
+                            ctx.kp,
                         ),
                     }
                 }
@@ -1475,7 +1486,9 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
                         );
                     }
                 }
-                flush(&mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g);
+                flush(
+                    &mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g,
+                );
             }
         };
         let col_cells = 2 * ny * nz;
@@ -1597,10 +1610,22 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
                     .collect(),
             )
         } else {
-            fold(rings.iter_mut().enumerate().map(|(b, r)| body(b, r)).collect())
+            fold(
+                rings
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(b, r)| body(b, r))
+                    .collect(),
+            )
         };
         #[cfg(not(feature = "parallel"))]
-        let pf = fold(rings.iter_mut().enumerate().map(|(b, r)| body(b, r)).collect());
+        let pf = fold(
+            rings
+                .iter_mut()
+                .enumerate()
+                .map(|(b, r)| body(b, r))
+                .collect(),
+        );
         // Capture the stale-slot memory for the *next* step's BC pass: the
         // post-collide unknown populations of every open-face cell in range
         // (V1 capture_conv_stale, generalised to every open face).
@@ -1705,9 +1730,7 @@ fn capture_stale<L: Lattice, T: Real>(
     let g = ctx.g;
     let np = ctx.np;
     for face in Face::ALL {
-        if face.axis() >= L::D
-            || !sub.touches_global_face(face)
-            || !p.faces[face.index()].is_open()
+        if face.axis() >= L::D || !sub.touches_global_face(face) || !p.faces[face.index()].is_open()
         {
             continue;
         }
@@ -1784,9 +1807,7 @@ fn fix_open_face_moments<L: Lattice, T: Real>(
     let np = g.n_padded();
     let half = T::r(0.5);
     for face in Face::ALL {
-        if face.axis() >= L::D
-            || !sub.touches_global_face(face)
-            || !p.faces[face.index()].is_open()
+        if face.axis() >= L::D || !sub.touches_global_face(face) || !p.faces[face.index()].is_open()
         {
             continue;
         }

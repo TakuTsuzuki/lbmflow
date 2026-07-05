@@ -110,11 +110,18 @@ struct Pipelines {
 enum Op {
     ClearProbe,
     /// Fused collide+stream, reading buffer parity `bg`.
-    Fused { bg: usize },
+    Fused {
+        bg: usize,
+    },
     /// Open-face BC on `face`, operating on buffer parity `bg`.
-    Bc { face: usize, bg: usize },
+    Bc {
+        face: usize,
+        bg: usize,
+    },
     /// Moments refresh from buffer parity `bg`.
-    Moments { bg: usize },
+    Moments {
+        bg: usize,
+    },
 }
 
 /// Interior-mutable recorder state (readback methods take `&Fields`).
@@ -676,17 +683,23 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         let mask = buf("mask", (n * 4) as u64, U::STORAGE | U::COPY_DST);
         let wall_u = buf("wall_u", (n * 8) as u64, U::STORAGE | U::COPY_DST);
         let force_field = buf("force_field", (n * 8) as u64, U::STORAGE | U::COPY_DST);
-        let rho = buf("rho", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
+        let rho = buf(
+            "rho",
+            (n * 4) as u64,
+            U::STORAGE | U::COPY_DST | U::COPY_SRC,
+        );
         let ux = buf("ux", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let uy = buf("uy", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let probe_acc = buf("probe_acc", 12, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let params_ub = buf("params", 48, U::UNIFORM | U::COPY_DST);
-        let bc_ub = std::array::from_fn(|i| {
-            buf(&format!("bc{i}"), 128, U::UNIFORM | U::COPY_DST)
-        });
+        let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 128, U::UNIFORM | U::COPY_DST));
         let profiles = std::array::from_fn(|i| {
             let ext = if i < 2 { ny } else { nx } as u64;
-            buf(&format!("profile{i}"), (ext * 8).max(8), U::STORAGE | U::COPY_DST)
+            buf(
+                &format!("profile{i}"),
+                (ext * 8).max(8),
+                U::STORAGE | U::COPY_DST,
+            )
         });
         let staging = buf("staging", fbytes, U::MAP_READ | U::COPY_DST);
         let staging_small = buf("staging-small", 12, U::MAP_READ | U::COPY_DST);
