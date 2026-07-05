@@ -754,7 +754,6 @@ mod tests {
                 force: [0.0, 0.0],
                 gravity: None,
                 precision: Precision::F64,
-                gravity: None,
             },
             units: None,
             compute: None,
@@ -773,9 +772,6 @@ mod tests {
             obstacles: vec![],
             init: Default::default(),
             multiphase: None,
-            wall: None,
-            rotor: None,
-            particles: None,
             run: RunSpec {
                 steps: 1,
                 stop_when_steady: None,
