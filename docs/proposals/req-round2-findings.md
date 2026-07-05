@@ -1,181 +1,181 @@
-# REQ_STIRRED_REACTOR.md rev.1b 第2次敵対的レビュー所見
+# REQ_STIRRED_REACTOR.md rev.1b Second-Round Adversarial Review Findings
 
-対象: `docs/REQ_STIRRED_REACTOR.md` rev.1b  
-範囲: 文書レビューのみ。コード変更・cargo 実行なし。
+Target: `docs/REQ_STIRRED_REACTOR.md` rev.1b
+Scope: Document review only. No code changes, no cargo execution.
 
-## 番号付き所見
+## Numbered Findings
 
-1. **Critical — 緩和拡張の「忠実度基準解に対する許容誤差」が §8/T17 に未定義**
+1. **Critical — The "tolerance against the fidelity reference solution" for relaxed extensions is undefined in §8/T17**
 
-   該当箇所:
+   Relevant locations:
 
-   > L22: 緩和モードは対応する忠実度基準解に対する許容誤差（§8 VR に閾値定義）で検証する。
+   > L22: Relaxed modes are validated by tolerance against the corresponding fidelity reference solution (thresholds defined in §8 VR).
 
-   > L26-L33: MRF / point-bubble / passive / one-way / block-AMR / 積極的 f32 を緩和拡張として列挙。
+   > L26-L33: MRF / point-bubble / passive / one-way / block-AMR / aggressive f32 are listed as relaxed extensions.
 
-   > L221-L227: VR-STR-01〜07 は物理ベンチ・保存則・初期化非依存性のみ。
+   > L221-L227: VR-STR-01–07 covers only physics benchmarks, conservation laws, and initialization independence.
 
-   > `docs/VALIDATION.md` L322-L330: T17 に VR-STR-01〜07 の表のみ。
+   > `docs/VALIDATION.md` L322-L330: T17 has only the VR-STR-01–07 table.
 
-   問題: §1 は緩和モードを「忠実度基準解に対する許容誤差」で検証すると宣言しているが、§8/T17 には緩和モード別の比較対象・測定量・許容差が存在しない。特に `MRF-frozen-rotor` vs `IBM-inertial/sliding-overset`、`point-bubble` vs `resolved-phasefield`、`one-way` vs `two-way`、`block-AMR` vs `uniform`、積極的 `f32` vs 忠実度プロファイルの相対劣化判定が未定義で、§1 の受入条件が実行不能。
+   Problem: §1 declares that relaxed modes are validated by "tolerance against the fidelity reference solution," but §8/T17 has no comparison target, measured quantity, or tolerance defined per relaxed mode. In particular, the relative-degradation judgment for `MRF-frozen-rotor` vs `IBM-inertial/sliding-overset`, `point-bubble` vs `resolved-phasefield`, `one-way` vs `two-way`, `block-AMR` vs `uniform`, and aggressive `f32` vs the fidelity profile is undefined, making §1's acceptance criteria unexecutable.
 
-   具体的修正案: §8 に VR-STR-08 以降、または VR-STR-RELAX-* として「緩和モード同等性」群を追加し、各軸に以下を固定する。
+   Concrete fix: Add a "relaxed-mode equivalence" group to §8 as VR-STR-08 onward, or as VR-STR-RELAX-*, fixing the following for each axis:
 
-   - MRF: 同一幾何・同一 Re の IBM/overset 基準に対し、`Np`、吐出速度測線、平均速度場、トルクの許容差。
-   - point-bubble: resolved-phasefield 基準に対し、`ε_g`、`d_32`、`k_La`、運動量・スカラー収支の許容差。ただし適用範囲を `d_b/Δx`、`d_b/W`、`α_g` で限定。
-   - one-way: two-way 基準に対し、粒子統計・流体運動量反作用無視による許容 mass-loading 範囲。
-   - AMR: uniform 基準に対し、保存量、界面位置、トルク、速度場ノルム、coarse-fine 通過時の収支誤差。
-   - 積極的 f32: 忠実度プロファイルまたは全 f64 基準に対し、保存量ドリフト、`Ca_spurious`、`Np`、界面曲率、縮約量の許容差。
+   - MRF: tolerance for `Np`, discharge velocity profile, mean velocity field, and torque against an IBM/overset reference at the same geometry and Re.
+   - point-bubble: tolerance for `ε_g`, `d_32`, `k_La`, and momentum/scalar budgets against a resolved-phasefield reference. However, bound the range of applicability by `d_b/Δx`, `d_b/W`, and `α_g`.
+   - one-way: allowable mass-loading range for particle statistics and neglect of fluid momentum reaction, against a two-way reference.
+   - AMR: tolerance for conserved quantities, interface position, torque, velocity-field norms, and budget error at coarse-fine crossings, against a uniform reference.
+   - Aggressive f32: tolerance for conserved-quantity drift, `Ca_spurious`, `Np`, interface curvature, and reduced quantities, against the fidelity profile or a full-f64 reference.
 
-2. **Major — 「一括全サブシステム実装」と「緩和拡張（後日）」がスコープ上で衝突**
+2. **Major — "batch full-subsystem implementation" and "relaxed extensions (later)" conflict in scope**
 
-   該当箇所:
+   Relevant locations:
 
-   > L14: 納品スコープは一括（全サブシステム同時実装）を維持する。
+   > L14: The delivery scope maintains batch (all subsystems implemented simultaneously).
 
-   > L22: 低コスト近似（MRF・point-bubble・one-way・AMR・積極的 f32）は同一 trait 背後の後付け拡張として追加する。
+   > L22: Low-cost approximations (MRF, point-bubble, one-way, AMR, aggressive f32) are added as deferred extensions behind the same trait.
 
-   > L26: 緩和拡張（後日）／基準級
+   > L26: Relaxed extensions (later) / reference-grade
 
-   問題: rev.1a の忠実度既定方針では、低コスト近似は後付け拡張点である。一方、L14 は全サブシステム同時実装を維持するとしており、MRF、point-bubble、one-way、AMR、積極的 f32 まで初回納品対象に読める。納品スコープと trait/API 予約範囲が混線している。
+   Problem: Under rev.1a's fidelity-default policy, low-cost approximations are a deferred extension point. However, L14 maintains simultaneous implementation of all subsystems, which reads as if MRF, point-bubble, one-way, AMR, and aggressive f32 are also targets for the initial delivery. The delivery scope and the trait/API reservation scope are conflated.
 
-   具体的修正案: L14 を「忠実度既定サブシステムは一括実装。緩和拡張は trait 境界・設定スキーマ・検証項目を初版で予約し、実装は後付け」と明文化する。§1 表の「緩和拡張（後日）」と §4 の FR 項目にも、初版必須か API 予約かを列として追加する。
+   Concrete fix: Clarify L14 to state "fidelity-default subsystems are implemented in a batch. Relaxed extensions reserve the trait boundaries, config schema, and validation items in the first version; implementation is deferred." Also add a column to the §1 table's "relaxed extensions (later)" row and the §4 FR items indicating whether each is mandatory for the first version or merely API-reserved.
 
-3. **Major — active σ 変数時の表面張力規約が REQ §3 と active-scalar 提案で矛盾**
+3. **Major — The surface-tension convention when active σ is variable contradicts REQ §3 and the active-scalar proposal**
 
-   該当箇所:
+   Relevant locations:
 
-   > L84-L87: 表面張力（化学ポテンシャル形式に固定） ... `F_s = μ_φ ∇φ`
+   > L84-L87: Surface tension (fixed to chemical-potential form) ... `F_s = μ_φ ∇φ`
 
-   > L255: `active` スカラーの帰還対象（σ・粘性・密度・[温度]）の具体式と安定化（Marangoni 含む）。
+   > L255: Concrete formulas and stabilization (including Marangoni) for the `active` scalar's feedback targets (σ, viscosity, density, [temperature]).
 
-   > `docs/proposals/active-scalar-feedback.md` L42-L48: 変数 σ 時は `F_s = μ_φ∇φ` を使わず、well-balanced CSF/chemical-potential 併用形へ切替。
+   > `docs/proposals/active-scalar-feedback.md` L42-L48: When σ is variable, do not use `F_s = μ_φ∇φ`; switch to the well-balanced CSF/chemical-potential-combined form instead.
 
-   問題: REQ §3 は表面張力を `F_s = μ_φ∇φ` に固定しているが、active σ では Marangoni 接線力と法線毛管力の二重計上回避のため、提案文書はこの式を使わない規約を採用している。REQ 側が「σ 一定時のみ」と条件付けていないため、active 既定と衝突する。
+   Problem: REQ §3 fixes surface tension to `F_s = μ_φ∇φ`, but for active σ, the proposal document adopts a convention that does not use this formula, in order to avoid double-counting the Marangoni tangential force and the normal capillary force. Since the REQ side does not condition this on "only when σ is constant," it conflicts with the active default.
 
-   具体的修正案: §3 の表面張力節を次の構造に修正する。
+   Concrete fix: Revise the surface-tension section of §3 to the following structure:
 
-   - σ 一定: 既存どおり `μ_φ` と `F_s = μ_φ∇φ` を基準形とする。
-   - σ が `C_k` または温度に依存: `F_s = μ_φ∇φ` は直接使用せず、well-balanced CSF/chemical-potential 併用形に一本化する。
-   - σ 一定へ退化した時に既存形と一致する退化テストを §8/T17 に追加する。
-   - 係数は REQ の `(κ,β,W,σ)` 規約へ導出してから凍結する、と明記する。
+   - σ constant: as before, take `μ_φ` and `F_s = μ_φ∇φ` as the baseline form.
+   - σ depends on `C_k` or temperature: do not directly use `F_s = μ_φ∇φ`; unify on the well-balanced CSF/chemical-potential-combined form.
+   - Add a degeneracy test to §8/T17 confirming agreement with the existing form when degenerating to σ=constant.
+   - State explicitly that the coefficients must be derived against REQ's `(κ,β,W,σ)` convention and then frozen.
 
-4. **Major — active 密度帰還/Boussinesq 力が REQ の支配方程式・連成フローに未反映**
+4. **Major — Active density feedback / Boussinesq force is not reflected in REQ's governing equations or coupling flow**
 
-   該当箇所:
+   Relevant locations:
 
    > L75: `+ F_s + ρ g + F_g^{disp} + F_p + F_rot`
 
-   > L98-L101: スカラー・反応式は ADE と界面物質移動のみ。
+   > L98-L101: Scalar/reaction equations cover only ADE and interfacial mass transfer.
 
-   > L167: 力源合成(`F_s+ρg+F_g+F_p+F_rot`)
+   > L167: Force-source composition (`F_s+ρg+F_g+F_p+F_rot`)
 
-   > L255: `active` スカラーの帰還対象（σ・粘性・密度・[温度]）
+   > L255: `active` scalar's feedback targets (σ, viscosity, density, [temperature])
 
-   > `docs/proposals/active-scalar-feedback.md` L85-L97: `F_b = ρ_0 β_C (C − C_0) g` を Boussinesq 摂動力として追加。
+   > `docs/proposals/active-scalar-feedback.md` L85-L97: `F_b = ρ_0 β_C (C − C_0) g` is added as a Boussinesq perturbation force.
 
-   問題: §1 で `active` が既定、§10 で密度帰還を残実装詳細としているが、§3 の運動量式と §5 の力源合成にはスカラー由来 Boussinesq 力がない。active-scalar 提案は `ρ(φ)g` とは別の摂動力として扱うため、REQ 側にも `F_b^{scalar}` の位置と well-balanced 重力との分離規約が必要。
+   Problem: §1 defaults to `active`, and §10 lists density feedback as a remaining implementation detail, yet §3's momentum equation and §5's force-source composition have no scalar-derived Boussinesq force. Since the active-scalar proposal treats this as a perturbation force separate from `ρ(φ)g`, the REQ side also needs a position for `F_b^{scalar}` and a convention separating it from well-balanced gravity.
 
-   具体的修正案: §3 運動量式と §5 FR-COUP-01 の力源合成に `F_b^{scalar}` を追加し、「`C=C_0` で厳密に 0、`ρ(φ)g` の静水圧 well-balanced 相殺とは混ぜない」と明記する。§8 には active ON かつ `C≡C_0` で VR-STR-06 と同じ静止性を満たす退化検証を追加する。
+   Concrete fix: Add `F_b^{scalar}` to §3's momentum equation and §5's FR-COUP-01 force-source composition, and state explicitly that it is "exactly 0 at `C=C_0`, and not mixed with the well-balanced hydrostatic cancellation of `ρ(φ)g`." Add a degeneracy validation to §8 confirming the same static behavior as VR-STR-06 when active is ON and `C≡C_0`.
 
-5. **Major — VALIDATION T17 が REQ VR-STR-05 の「エネルギー様量」ドリフトを落としている**
+5. **Major — VALIDATION T17 drops the "energy-like quantity" drift from REQ VR-STR-05**
 
-   該当箇所:
+   Relevant locations:
 
-   > L225: 質量・運動量・スカラー総量・気相体積・粒子数・エネルギー様量のドリフト閾値を個別設定。
+   > L225: Set individual drift thresholds for mass, momentum, total scalar amount, gas-phase volume, particle count, and energy-like quantities.
 
-   > `docs/VALIDATION.md` L328: 質量・運動量・スカラー総量・気相体積・粒子数のドリフト閾値を個別設定。
+   > `docs/VALIDATION.md` L328: Set individual drift thresholds for mass, momentum, total scalar amount, gas-phase volume, and particle count.
 
-   問題: REQ §8 では「エネルギー様量」も保存/回帰診断に含めているが、VALIDATION T17 への転記で欠落している。T17 配線済みという rev.1b の主張に対して、受入表が REQ と一致していない。
+   Problem: REQ §8 includes "energy-like quantities" among the conservation/regression diagnostics, but this is missing from the transcription into VALIDATION T17. This makes the acceptance table inconsistent with REQ, despite rev.1b's claim that T17 is already wired up.
 
-   具体的修正案: `docs/VALIDATION.md` T17 の VR-STR-05 行に「エネルギー様量」を追加し、REQ 側にもエネルギー様量の定義候補、例えば運動エネルギー、界面自由エネルギー、粒子運動エネルギーを「厳密保存ではなく非物理ドリフト監視」として限定する。
+   Concrete fix: Add "energy-like quantities" to the VR-STR-05 row of `docs/VALIDATION.md` T17, and on the REQ side, add candidate definitions for energy-like quantities — e.g., kinetic energy, interfacial free energy, particle kinetic energy — scoped as "monitored for unphysical drift, not strict conservation."
 
-6. **Major — 気泡群検証の分離粒度が REQ §8 と T17 表で弱くなっている**
+6. **Major — The granularity of bubble-swarm validation separation is weaker in the REQ §8 and T17 table**
 
-   該当箇所:
+   Relevant locations:
 
-   > L222: 単一気泡（`U_t` ...）／気泡群／撹拌槽通気（`ε_g, d_32, k_L a` ...）を別検証に分離
+   > L222: Separate validations for single bubble (`U_t` ...) / bubble swarm / stirred-tank aeration (`ε_g, d_32, k_L a` ...).
 
-   > `docs/VALIDATION.md` L325: 気液（単一気泡 / 気泡群 / 通気撹拌の 3 分離） ... 単一気泡 `U_t` ... `ε_g, d_32, k_L a` は実験相関比
+   > `docs/VALIDATION.md` L325: Gas-liquid (3-way separation: single bubble / bubble swarm / aerated stirred tank) ... single bubble `U_t` ... `ε_g, d_32, k_L a` are experimental correlation ratios.
 
-   問題: T17 の対象欄では 3 分離を維持しているが、受入基準欄は単一気泡と通気撹拌の指標だけで、気泡群単体の測定量がない。気泡群の合体・分裂・群速度・ホールドアップ・BIT などをどの検証で見るかが曖昧。
+   Problem: T17's target column maintains the 3-way separation, but the acceptance-criteria column only has metrics for single bubble and aerated stirred tank, with none for bubble swarm alone. It is ambiguous which validation covers bubble-swarm coalescence, breakup, swarm rise velocity, holdup, and BIT.
 
-   具体的修正案: VR-STR-02 を 02a/02b/02c に分け、02b 気泡群には少なくとも `ε_g` 分布、群上昇速度、合体/分裂を含む場合の `d_32`、BIT 生成を使う場合の乱流強度または `ν_t` 応答を設定する。point-bubble と resolved-phasefield の比較を行う場合は所見 1 の緩和同等性検証にもリンクする。
+   Concrete fix: Split VR-STR-02 into 02a/02b/02c, and for 02b (bubble swarm), set at least `ε_g` distribution, swarm rise velocity, `d_32` (if coalescence/breakup is included), and turbulence intensity or `ν_t` response (if BIT generation is included). When comparing point-bubble and resolved-phasefield, also link to the relaxed-mode-equivalence validation in Finding 1.
 
-7. **Major — 精度既定と NFR-02 の「f32 既定」記述が旧方針を残している**
+7. **Major — The precision default and NFR-02's "f32 default" wording retain the old policy**
 
-   該当箇所:
+   Relevant locations:
 
-   > L32: 忠実度プロファイル: 界面近傍・保存量・トルク・界面曲率・縮約は `f64`、遠方バルクのみ `f32`
+   > L32: Fidelity profile: near-interface, conserved quantities, torque, interface curvature, and reductions use `f64`; only the far-field bulk uses `f32`.
 
-   > L209: `f32-bulk` ＋ 保存量・トルク・界面曲率・縮約は f64。f32 既定の適用範囲を「単相/弱連成」に限定。
+   > L209: `f32-bulk` + conserved quantities/torque/interface curvature/reductions use f64. The f32 default's range of applicability is limited to "single-phase/weakly coupled."
 
-   問題: L32 の既定は「忠実度プロファイル」であり、遠方バルクのみ f32 である。一方 L209 は「f32 既定」という表現を残しており、積極的 f32 が既定だった旧方針に読める。rev.1a の PM 決定「既定は忠実度最優先」と語彙がずれている。
+   Problem: L32's default is the "fidelity profile," where only the far-field bulk uses f32. Meanwhile, L209 retains the phrase "f32 default," which reads as if the old policy — where aggressive f32 was the default — still applies. This is inconsistent in terminology with rev.1a's PM decision that "the default is fidelity-first."
 
-   具体的修正案: L209 を「積極的 f32 緩和モードの適用範囲は単相/弱連成に限定。忠実度既定は `f32-bulk + critical f64` プロファイル」と書き換える。§8 には積極的 f32 の相対劣化検証を追加する。
+   Concrete fix: Rewrite L209 as "the aggressive-f32 relaxed mode's range of applicability is limited to single-phase/weakly coupled. The fidelity default is the `f32-bulk + critical f64` profile." Add a relative-degradation validation for aggressive f32 to §8.
 
-8. **Minor — §7 メモリ表の界面帯 f64 昇格の償却値が 5–10% 想定と完全には合わない**
+8. **Minor — The amortized value for f64 promotion of the interface band in the §7 memory table does not fully match the assumed 5–10%**
 
-   該当箇所:
+   Relevant locations:
 
-   > L192-L193: 流体分布 f = 216 B/セル、相場分布 g = 152 B/セル
+   > L192-L193: Fluid distribution f = 216 B/cell, phase-field distribution g = 152 B/cell.
 
-   > L198: 界面帯 f64 昇格（帯幅 ~2W、全セルの 5–10% を想定、f+g 相当） | +30–40
+   > L198: f64 promotion of the interface band (band width ~2W, assuming 5–10% of all cells, f+g equivalent) | +30–40
 
-   検算: `f+g` の f32 ping-pong は `216+152=368 B/セル`。これを f64 に昇格する追加分は同量の +368 B/界面帯セルなので、全セル 5–10% 償却では `+18.4–36.8 B/セル`。表の `+30–40` は界面帯 8–11% 程度、または `f+g` 以外も昇格する想定に相当する。
+   Verification: The f32 ping-pong of `f+g` is `216+152=368 B/cell`. Promoting this to f64 adds the same amount, +368 B/interface-band cell, so amortized over 5–10% of all cells this is `+18.4–36.8 B/cell`. The table's `+30–40` corresponds to roughly 8–11% of the interface band, or to a scenario where something beyond `f+g` is also promoted.
 
-   具体的修正案: 5–10% 想定を維持するなら `+18–37 B/セル` に修正する。`+30–40` を維持するなら、帯割合を `~8–11%` にするか、昇格対象に `μ_φ, ∇φ, 曲率/縮約作業領域` などを含むと明記する。合計 `≈560–620 B/セル` は現在の表では上振れ側に寄せた丸めであるため、内訳と丸め方を合わせる。
+   Concrete fix: If keeping the 5–10% assumption, revise to `+18–37 B/cell`. If keeping `+30–40`, either set the band fraction to `~8–11%`, or state explicitly that the promotion target also includes `μ_φ, ∇φ, curvature/reduction working arrays`, etc. The total `≈560–620 B/cell` is currently rounded toward the high side in the table, so align the breakdown and the rounding method.
 
-9. **Minor — NFR-01 冒頭の「1e9 格子×多分布は数 TB 級」が同じ節の換算と不整合**
+9. **Minor — NFR-01's opening statement that "1e9-cell grids with multiple distributions are TB-class" is inconsistent with the conversion in the same section**
 
-   該当箇所:
+   Relevant locations:
 
-   > L186: 1e9 格子×多分布は数 TB 級
+   > L186: 1e9-cell grids with multiple distributions are TB-class.
 
-   > L201-L202: 1e9 格子 ≈ 0.56–0.62 TB、全 f64 基準級で ≈ 1.1–1.2 TB
+   > L201-L202: 1e9 cells ≈ 0.56–0.62 TB; even at the full-f64 reference grade, ≈ 1.1–1.2 TB.
 
-   問題: 同一節の予算表では忠実度既定が 0.56–0.62 TB、全 f64 でも 1.1–1.2 TB であり、「数 TB 級」とは言いにくい。複数スカラー、チェックポイント同時保持、作業バッファ、統計履歴を含めれば数 TB になりうるが、その条件が L186 にはない。
+   Problem: The budget table in the same section has the fidelity default at 0.56–0.62 TB, and even full f64 at 1.1–1.2 TB, which is hard to describe as "TB-class" (plural). It could reach several TB when including multiple scalars, simultaneous checkpoint retention, working buffers, and statistics history, but L186 does not state these conditions.
 
-   具体的修正案: L186 を「1e9 格子×多分布は 0.6 TB 級、全 f64・複数スカラー・I/O バッファ込みでは TB〜数 TB 級」に修正する。
+   Concrete fix: Revise L186 to "1e9-cell grids with multiple distributions are 0.6-TB class; with full f64, multiple scalars, and I/O buffers included, this reaches TB to several-TB class."
 
-10. **Minor — §2 の見出しが表題中立化後の位置づけとずれている**
+10. **Minor — The §2 heading is out of alignment with its positioning after title neutralization**
 
-    該当箇所:
+    Relevant locations:
 
-    > L7-L8: 代表適用問題: 撹拌槽反応器（機能要求はドメイン中立に定義し、§2 と §8 の検証ベンチがこの適用を具体化する）
+    > L7-L8: Representative application problem: stirred-tank reactor (functional requirements are defined domain-neutrally; §2 and §8's validation benches instantiate this application).
 
-    > L37: 対象問題・代表量・無次元数
+    > L37: Target problem, representative quantities, dimensionless numbers.
 
-    > L39: 3D 円筒（または角柱）容器... 下部スパージャ... 一定角速度 `Ω` 剛体回転翼...
+    > L39: 3D cylindrical (or rectangular) vessel ... bottom sparger ... constant-angular-velocity `Ω` rigid-body-rotation impeller ...
 
-    問題: 表題はドメイン中立化され、L7-L8 も撹拌槽を「代表適用問題」としているが、§2 見出しは「対象問題」となっており、本文も撹拌槽固有条件のみで始まる。読者には文書全体の対象が撹拌槽に固定されたように見える。
+    Problem: The title has been neutralized to be domain-independent, and L7-L8 also frames the stirred tank as a "representative application problem," yet the §2 heading remains "target problem," and the body text begins with stirred-tank-specific conditions only. This makes it appear to the reader that the entire document's target is fixed to the stirred tank.
 
-    具体的修正案: §2 見出しを「代表適用問題・代表量・無次元数（撹拌槽反応器）」へ変更し、冒頭に「以下は §8 検証ベンチの代表適用であり、§4 の機能要求は回転境界・高密度比二相・LES 連成一般に適用する」と一文を追加する。
+    Concrete fix: Change the §2 heading to "Representative application, representative quantities, and dimensionless numbers (stirred-tank reactor)," and add a sentence at the opening stating "the following is a representative application of the §8 validation benches; the functional requirements in §4 apply generally to rotating boundaries, high-density-ratio two-phase flow, and LES coupling."
 
-11. **Minor — D3Q27 既定条件と忠実度既定の関係が曖昧**
+11. **Minor — The relationship between the D3Q27 default condition and the fidelity default is ambiguous**
 
-    該当箇所:
+    Relevant locations:
 
-    > L22: 既定は各軸とも忠実度最優先の実装（＝基準解）
+    > L22: The default for each axis is the fidelity-first implementation (= the reference solution).
 
-    > L114: D3Q27 を既定とする条件を「多相 or 強 forcing or cumulant 使用時」と限定
+    > L114: The condition for defaulting to D3Q27 is limited to "multiphase, or strong forcing, or when using cumulant."
 
-    問題: M-F の忠実度既定構成は高密度比二相・強 forcing・cumulant 候補を含むため実質 D3Q27 になるはずだが、FR-CORE-01 は一般コア要求として条件付き既定になっている。単相弱 forcing では D3Q19 が許されるのか、M-F 忠実度基準解では常に D3Q27 なのかが §1 と §4 の間で明示されていない。
+    Problem: Since the M-F fidelity-default configuration includes high-density-ratio two-phase flow, strong forcing, and cumulant candidates, it should effectively always be D3Q27, yet FR-CORE-01 makes this a conditional default as a general core requirement. Whether D3Q19 is permitted for single-phase, weak forcing, or whether the M-F fidelity reference solution is always D3Q27, is not made explicit between §1 and §4.
 
-    具体的修正案: §1 または FR-CORE-01 に「M-F 忠実度既定シナリオでは多相/強 forcing 条件に該当するため D3Q27 を選ぶ。単相・弱 forcing の派生シナリオでは D3Q19 を許可」と追記する。
+    Concrete fix: Add to §1 or FR-CORE-01 the statement "the M-F fidelity-default scenario falls under the multiphase/strong-forcing condition and therefore selects D3Q27. Derived scenarios with single-phase, weak forcing may use D3Q19."
 
-## 観点別確認
+## Perspective-by-Perspective Confirmation
 
-- §1 構成マトリクス vs §4 機能要求 vs §8 VR: 所見 1、2、7、11。特に緩和拡張の相対誤差検証が未配線。
-- §7 メモリ予算表の算術: 主要行 `D3Q27×2×f32=216 B`、`D3Q19×2×f32=152 B`、`D3Q7×2×f32=56 B`、`12×f32=48 B`、`1e8=56–62 GB`、`1e9=0.56–0.62 TB`、GPU `1.3–2.6e7` セル/枚・`40–80` 枚は確認済み。界面帯 f64 償却と「数 TB 級」表現のみ所見 8、9。
-- 全数式の次元・係数: `τ_eff` 一般式、`Np=P/(ρN^3D^5)` と `P=ΩT_q`、Allen-Cahn の `M[length²/time]` と `Pe_φ=UW/M`、`σ=√(2κβ)/6`・`W=4√(κ/(2β))`・`μ_φ` の内部整合は確認済み・所見なし。Boussinesq は REQ 本体への反映漏れとして所見 4。
-- 表題中立化後の §2 と代表適用問題の整合: 所見 10。
-- `docs/VALIDATION.md` T17 と REQ §8: 所見 5、6。
-- `docs/proposals/active-scalar-feedback.md` と REQ §3/§4: 所見 3、4。特に変数 σ 時の表面張力規約は REQ 側の条件分岐が必要。
+- §1 configuration matrix vs §4 functional requirements vs §8 VR: Findings 1, 2, 7, 11. In particular, relative-error validation for relaxed extensions is not wired up.
+- §7 memory-budget table arithmetic: the main rows `D3Q27×2×f32=216 B`, `D3Q19×2×f32=152 B`, `D3Q7×2×f32=56 B`, `12×f32=48 B`, `1e8=56–62 GB`, `1e9=0.56–0.62 TB`, and GPU `1.3–2.6e7` cells/card × `40–80` cards, are all confirmed. Only the interface-band f64 amortization and the "TB-class" (plural) wording are Findings 8, 9.
+- Dimensions and coefficients of all formulas: the general `τ_eff` form, `Np=P/(ρN^3D^5)` and `P=ΩT_q`, Allen-Cahn's `M[length²/time]` and `Pe_φ=UW/M`, and the internal consistency of `σ=√(2κβ)/6`, `W=4√(κ/(2β))`, and `μ_φ` are confirmed with no findings. Boussinesq is a finding (Finding 4) as a gap in reflecting it into the REQ body.
+- Consistency between §2 after title neutralization and the representative application problem: Finding 10.
+- `docs/VALIDATION.md` T17 and REQ §8: Findings 5, 6.
+- `docs/proposals/active-scalar-feedback.md` and REQ §3/§4: Findings 3, 4. In particular, the surface-tension convention when σ is variable requires a conditional branch on the REQ side.
 
-## 所見件数サマリ
+## Findings Count Summary
 
-- Critical: 1 件
-- Major: 6 件
-- Minor: 4 件
-- 合計: 11 件
+- Critical: 1
+- Major: 6
+- Minor: 4
+- Total: 11

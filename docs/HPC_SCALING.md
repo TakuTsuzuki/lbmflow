@@ -1,44 +1,44 @@
-# HPC スケーリング設計ノート（2026-07-05）
+# HPC Scaling Design Note (2026-07-05)
 
-「スパコンにスケールするか」への現状回答（M-D 更新）: **分散メモリ対応済み
-（lbm-core feature `mpi`。単一ノード内マルチランクの検証・弱スケーリング参考値まで）。
-マルチノード実測はクラスタ待ち。** 段階計画 1〜3 は実装済み（3 のうち通信オーバー
-ラップと並列 I/O は M-E 送り）— 手順・実測・クラスタ測定リストは docs/MPI_GUIDE.md。
-以下は当初の設計指針（記録として保持）。
+Current answer to "does it scale to a supercomputer" (M-D update): **distributed-memory support is done
+(lbm-core feature `mpi`; through single-node multi-rank validation and weak-scaling reference values).
+Multi-node measurement awaits a cluster.** Staged plan 1–3 are implemented (of 3, communication overlap
+and parallel I/O are deferred to M-E) — the procedure, measurements, and cluster-measurement list are in docs/MPI_GUIDE.md.
+The following is the original design guidance (kept as a record).
 
-## 現状の資産（分散化に効く設計済み事項）
+## Current assets (design items already in place that help distribution)
 
-| 資産 | 分散化での意味 |
+| Asset | Meaning for distribution |
 |---|---|
-| pull 方式 + ダブルバッファ | ハロー交換パターンとそのまま同型 |
-| 衝突・Shan-Chen 力が完全セル局所 | サブドメイン内で閉じる（ψ のハロー 1 層のみ追加） |
-| 境界条件 = エッジ仕様 + solid マスク（データ） | サブドメインへの分配が自明 |
-| 偏差格納（f−w） | ハロー通信の f32 化で帯域半減が現実的 |
-| シナリオ JSON 層 | 分散ランナーへの差し替えで入口不変 |
+| pull scheme + double buffering | isomorphic to the halo-exchange pattern as-is |
+| collision / Shan-Chen force are fully cell-local | closes within a subdomain (only adds 1 halo layer of ψ) |
+| boundary conditions = edge spec + solid mask (data) | distribution to subdomains is trivial |
+| deviation storage (f−w) | f32-izing halo communication to halve bandwidth is realistic |
+| scenario JSON layer | the entry point is unchanged by swapping in a distributed runner |
 
-## ブロッカー
+## Blockers
 
-1. 領域分割抽象なし（グローバル nx×ny、周期はグローバル modulo）
-2. ハロー/ゴースト層なし（stream がグローバル近傍を直接読む）
-3. プロセス間通信なし（rayon 共有メモリのみ）
-4. 診断が全域直列リダクション（total_mass / 定常判定 / プローブ）
-5. 出力が全場一括前提（PNG/CSV/manifest）
-6. wgpu は単一ノード/Web 向き。マルチ GPU・RDMA は CUDA/HIP/SYCL 系
+1. No domain-decomposition abstraction (global nx×ny, periodicity is global modulo)
+2. No halo/ghost layer (stream reads the global neighborhood directly)
+3. No inter-process communication (rayon shared memory only)
+4. Diagnostics are whole-domain serial reductions (total_mass / steady-state criterion / probes)
+5. Output assumes whole-field bulk (PNG/CSV/manifest)
+6. wgpu is oriented to single-node/Web. Multi-GPU / RDMA are in the CUDA/HIP/SYCL family
 
-## 段階計画（Phase 10 と共設計）
+## Staged plan (co-designed with Phase 10)
 
-1. **Subdomain 抽象**: ローカル格子 + 幅1ハロー + 隣接リンク + `HaloExchange` trait。
-   現行 = 単一サブドメイン実装。3D 化のインデックス抽象と同時に行う（二度手間回避）。
-2. **プロセス内マルチサブドメイン**: 分割実行 ≡ 一枚岩実行の一致テスト
-   （f64 でほぼビット一致を要求できる。codex 敵対スイートの新カテゴリ T13 候補）。
-3. **MPI バックエンド**（rsmpi）: 交換 trait の実装 + Allreduce 診断 +
-   並列 I/O（VTK 並列 or HDF5）。通信と内部計算のオーバーラップ
-   （境界層を後回しにする 2 パス構造は現行 stream の行分割と親和）。
-4. **ランク毎アクセラレータ**: wgpu 評価（phase9-wgpu ブランチ）の結果を踏まえ、
-   HPC 本命なら cudarc/HIP を交換可能バックエンドとして検討。
+1. **Subdomain abstraction**: local grid + width-1 halo + neighbor links + `HaloExchange` trait.
+   Current = single-subdomain implementation. Do it at the same time as the 3D-ization index abstraction (avoids doing the work twice).
+2. **In-process multi-subdomain**: a match test that partitioned execution ≡ monolithic execution
+   (near-bit match can be required in f64; a candidate for the new T13 category of the codex adversarial suite).
+3. **MPI backend** (rsmpi): implement the exchange trait + Allreduce diagnostics +
+   parallel I/O (parallel VTK or HDF5). Overlap of communication and internal computation
+   (the 2-pass structure that defers the boundary layer is compatible with the current stream's row partitioning).
+4. **Per-rank accelerator**: based on the results of the wgpu evaluation (phase9-wgpu branch),
+   if HPC is the real target, consider cudarc/HIP as an interchangeable backend.
 
-## ROI 注記
+## ROI note
 
-2D LBM は単一ノードで足りる（現状でも 1024² を 380 MLUPS）。分散化の価値は
-3D（D3Q19、10⁹ 格子級）で初めて出る。**Phase 10 の設計フェーズで Subdomain
-抽象を必須要件に含める**こと（3D 単体で作ってから分散化すると作り直しになる）。
+2D LBM is enough on a single node (even now, 1024² at 380 MLUPS). The value of distribution
+first appears in 3D (D3Q19, 10⁹-lattice class). **Include the Subdomain abstraction as a mandatory
+requirement in the Phase 10 design phase** (building 3D standalone first and then distributing it means a rewrite).

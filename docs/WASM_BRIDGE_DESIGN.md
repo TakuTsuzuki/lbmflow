@@ -1,16 +1,17 @@
-# WASM ブリッジ設計（Phase 5）
+# WASM Bridge Design (Phase 5)
 
-GUI（web/, TypeScript）の `Engine` インターフェースに `lbm-core` を接続する層。
+The layer that connects `lbm-core` to the GUI's (web/, TypeScript) `Engine` interface.
 
-## クレート: crates/lbm-wasm
+## Crate: crates/lbm-wasm
 
-- `wasm-bindgen` + `lbm-core`（`default-features = false`、rayon 無効 =
-  シングルスレッド。ブラウザの 1 フレーム内で回せる規模が対象）
-- 精度は **f32 固定**（メモリ半減・WASM では十分。JS 側の Float32Array と無コピー整合）
-- ビルド: `wasm-pack build crates/lbm-wasm --target web --release`
-  → `web/src/engine/pkg/` に出力し、`WasmEngine implements Engine` アダプタで包む
+- `wasm-bindgen` + `lbm-core` (`default-features = false`, rayon disabled =
+  single-threaded. Targets the scale that can run within a single browser frame)
+- Precision is **fixed at f32** (halves memory, sufficient for WASM. Copy-free alignment
+  with the JS-side Float32Array)
+- Build: `wasm-pack build crates/lbm-wasm --target web --release`
+  → outputs to `web/src/engine/pkg/`, wrapped by the `WasmEngine implements Engine` adapter
 
-## 公開 API（TS の Engine インターフェースと 1:1）
+## Public API (1:1 with the TS Engine interface)
 
 ```rust
 #[wasm_bindgen]
@@ -20,14 +21,14 @@ pub struct WasmSim { inner: Option<Simulation<f32>>, cfg: ... }
 impl WasmSim {
     #[wasm_bindgen(constructor)]
     pub fn new() -> WasmSim;
-    /// cfg_json: GUI の EngineConfig をそのまま JSON.stringify したもの。
-    /// エラーは JsError（日本語メッセージ）で返す。
+    /// cfg_json: the GUI's EngineConfig, JSON.stringify'd as-is.
+    /// Errors are returned as JsError (Japanese message).
     pub fn init(&mut self, cfg_json: &str) -> Result<(), JsError>;
     pub fn step(&mut self, n: u32);
     pub fn nx(&self) -> u32;  pub fn ny(&self) -> u32;  pub fn time(&self) -> f64;
-    /// フィールドはコピーせず wasm メモリのビューを返す（Float32Array::view 相当、
-    /// ドキュメントに「次の step まで有効」の注意書き）
-    pub fn rho_ptr(&self) -> *const f32;   // + len は nx*ny（JS 側でビュー生成）
+    /// Fields are returned as a view into wasm memory without copying (equivalent to
+    /// Float32Array::view; document the caveat "valid only until the next step")
+    pub fn rho_ptr(&self) -> *const f32;   // + len is nx*ny (view constructed on the JS side)
     pub fn ux_ptr(&self) -> *const f32;
     pub fn uy_ptr(&self) -> *const f32;
     pub fn solid_ptr(&self) -> *const u8;
@@ -36,27 +37,28 @@ impl WasmSim {
 }
 ```
 
-### EngineConfig(JSON) → SimConfig 変換
+### EngineConfig(JSON) → SimConfig conversion
 
 - `collision: "bgk" | "trt"` → `Collision::Bgk | Trt{magic: 3/16}`
-- edges の tagged union → `EdgeBC`（serde でデシリアライズ、lbm-wasm 内に定義）
-- **この JSON 表現は Agent モードのシナリオ JSON（docs/AGENT_MODE_DESIGN.md）の
-  `edges`/`physics` 節と同一形**にし、変換コードを共有できるようにする
-  （共有クレート `lbm-scenario` に serde 型を置く — lbm-cli と lbm-wasm 両方が依存）
+- edges' tagged union → `EdgeBC` (deserialized via serde, defined inside lbm-wasm)
+- **This JSON representation is made identical in shape to the `edges`/`physics` sections of
+  Agent Mode's scenario JSON (docs/AGENT_MODE_DESIGN.md)**, so the conversion code can be shared
+  (serde types live in the shared crate `lbm-scenario` — both lbm-cli and lbm-wasm depend on it)
 
-## setSolid の「消す」対応
+## Handling setSolid's "erase" operation
 
-`Simulation` は unset_solid を持たない（リム保護のため）。GUI の消しゴムは:
-- lbm-wasm 側で「ユーザー描画レイヤ」(Vec<bool>) を別途保持
-- 消去操作 = ユーザーレイヤ更新 → `init(cfg)` 相当の再構築 + ユーザーレイヤ再適用
-  （数十ms、ペイント中はまとめて 1 回）
-- または Phase 5 で lbm-core に `clear_solid(x,y)`（開境界・リム上は panic）を追加し、
-  周辺セルの f を局所 feq で埋める。**こちらを採用予定**（流れを止めずに編集できる
-  体験のほうが初学者に楽しいため）。VALIDATION に「clear_solid 後も質量が有限で
-  NaN が出ない」ロバスト性テストを追加する。
+`Simulation` has no unset_solid (to protect the rim). The GUI's eraser works as follows:
+- On the lbm-wasm side, separately maintain a "user drawing layer" (Vec<bool>)
+- Erase operation = update the user layer → rebuild equivalent to `init(cfg)` + reapply the
+  user layer (tens of ms; batched to a single rebuild during painting)
+- Alternatively, in Phase 5 add `clear_solid(x,y)` to lbm-core (panics on open boundary/rim cells)
+  and fill the surrounding cells' f with the local feq. **This is the planned approach** (an
+  experience where editing doesn't stop the flow is more enjoyable for beginners). Add a
+  robustness test to VALIDATION confirming "mass stays finite and no NaN appears after clear_solid."
 
-## パフォーマンス目安
+## Performance target
 
-- 256×128 (32k cells) f32 シングルスレッド: 目標 ≥ 30 MLUPS → 60fps で
-  ~15 step/frame。GUI 既定は 192×96 か 256×128 に設定。
-- 大きい格子・3D・混相の重い計算はネイティブ（CLI/MCP）へ誘導する UI 文言を用意。
+- 256×128 (32k cells) f32 single-threaded: target ≥ 30 MLUPS → ~15 step/frame at 60fps.
+  GUI default is set to either 192×96 or 256×128.
+- Prepare UI copy that directs users toward native (CLI/MCP) for larger grids, 3D, and heavy
+  multiphase computation.

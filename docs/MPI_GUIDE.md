@@ -1,39 +1,46 @@
-# MPI 分散ガイド（M-D, 2026-07-05）
+# MPI Distributed Guide (M-D, 2026-07-05)
 
-lbm-core の feature `mpi` は HaloExchange の MPI 実装（`dist::MpiExchange`）と
-1ランク=1サブドメインのドライバ（`dist::MpiSolver`）を提供する。
-設計は docs/ARCHITECTURE_V2.md §2.3 / docs/HPC_SCALING.md 段階計画 3 に対応。
+The lbm-core `mpi` feature provides an MPI implementation of HaloExchange
+(`dist::MpiExchange`) and a 1-rank = 1-subdomain driver (`dist::MpiSolver`).
+The design corresponds to docs/ARCHITECTURE_V2.md §2.3 / docs/HPC_SCALING.md
+staged plan 3.
 
-## 現状スコープ（正直な現在地）
+## Current scope (honest current state)
 
-- **検証済み**: 単一ノード内マルチランク（Open MPI 5.0.9 / arm64 macOS、
-  共有メモリ BTL 経由）。T13-MPI で分散実行 ≡ 単一ランク実行を確認済み
-  （場はビット一致、診断は f64 再結合差のみ。下記）。
-- **未対応**:
-  - GPU バックエンドとの併用（`--features mpi,gpu` はビルドは通るが
-    `MpiSolver` は `CpuScalar` 系 `SoaFields` バックエンド前提。
-    device-resident ハロー転送・GPUDirect は M-E 以降）。
-  - 通信と計算のオーバーラップ（`exchange_f` は各軸位相で同期完結。
-    two-pass ストリーミングの縫い目は Solver に既設なので、
-    Isend 発行→内部計算→wait→境界計算への差し替えが M-E 候補）。
-  - 並列 I/O（rank-0 gather 経由の全場復元まで。VTK 並列/HDF5 は未着手）。
-  - マルチノード実測（クラスタアクセス待ち。§クラスタ測定リスト参照）。
+- **Verified**: Multi-rank within a single node (Open MPI 5.0.9 / arm64 macOS,
+  via shared-memory BTL). T13-MPI confirmed distributed execution ≡
+  single-rank execution (fields are bit-identical, diagnostics show only
+  f64 recombination differences. See below).
+- **Not yet supported**:
+  - Combined use with the GPU backend (`--features mpi,gpu` builds, but
+    `MpiSolver` assumes a `CpuScalar`-family `SoaFields` backend.
+    Device-resident halo transfer and GPUDirect are M-E or later).
+  - Overlap of communication and computation (`exchange_f` completes
+    synchronously within each axis phase. The two-pass streaming seam
+    already exists in the Solver, so switching to Isend issue → internal
+    computation → wait → boundary computation is an M-E candidate).
+  - Parallel I/O (only full-field reconstruction via rank-0 gather.
+    Parallel VTK/HDF5 not yet started).
+  - Multi-node measurements (awaiting cluster access. See §Cluster
+    measurement checklist).
 
-## ビルド
+## Build
 
-rsmpi（crate `mpi` 0.8）はビルド時に `mpicc` を探す。**arm64 ネイティブの
-MPI が PATH の先頭に必要**（/usr/local に x86_64 版 MPI が居る環境では
-PATH 順で事故る。`file $(which mpirun)` で arm64 を確認すること）。
+rsmpi (crate `mpi` 0.8) looks for `mpicc` at build time. **A native arm64
+MPI must be first in PATH** (in environments where an x86_64 MPI lives in
+/usr/local, PATH ordering causes trouble. Confirm arm64 with
+`file $(which mpirun)`).
 
 ```bash
-# ソースビルドした Open MPI（例: $HOME/.local/openmpi）を使う
+# Use a source-built Open MPI (e.g. $HOME/.local/openmpi)
 export PATH=$HOME/.local/openmpi/bin:$PATH
-file $(which mpirun)   # → Mach-O 64-bit executable arm64 を確認
+file $(which mpirun)   # → confirm Mach-O 64-bit executable arm64
 
 cargo build -p lbm-core --release --features mpi
 ```
 
-Open MPI のソースビルド手順（参考。5.0.9 / arm64、Fortran 無効で ~15分）:
+Open MPI source build steps (reference: 5.0.9 / arm64, Fortran disabled,
+~15 minutes):
 
 ```bash
 mkdir -p ~/.local/src && cd ~/.local/src
@@ -43,20 +50,22 @@ cd openmpi-5.0.9
 make -j$(sysctl -n hw.ncpu) && make install
 ```
 
-既定ビルド（feature 無し）は rsmpi に一切依存しない。`cargo test --workspace`
-は MPI 環境なしで従来どおり通る。
+The default build (no feature) has zero dependency on rsmpi.
+`cargo test --workspace` continues to pass without an MPI environment,
+as before.
 
-## 実行
+## Run
 
 ```bash
-# T13-MPI 検証（-n 1,2,4: 2D 4ケース / -n 8: 3D TGV 2x2x2。非ゼロ exit で失敗）
+# T13-MPI verification (-n 1,2,4: 2D 4 cases / -n 8: 3D TGV 2x2x2. nonzero exit = failure)
 ./scripts/test_mpi.sh
 
-# 弱スケーリング（ランクあたり 512^2、ranks {1,2,4,8}、表出力）
-./scripts/bench_mpi.sh          # LOCAL=512 STEPS=200 RANKS="1 2 4 8" で調整可
+# Weak scaling (512^2 per rank, ranks {1,2,4,8}, table output)
+./scripts/bench_mpi.sh          # tune via LOCAL=512 STEPS=200 RANKS="1 2 4 8"
 ```
 
-API 最小例（1ランク=1パート。デカルト分割はランク数と一致させる）:
+Minimal API example (1 rank = 1 part. Cartesian decomposition must match
+the rank count):
 
 ```rust
 use lbm_core::dist::MpiSolver;
@@ -69,101 +78,124 @@ let mut s: MpiSolver<D2Q9, f64, CpuScalar> =
     MpiSolver::new(&world, &spec, &[], &[], [world.size() as usize, 1, 1],
                    CpuScalar::default());
 s.init_with(|x, y, _| (1.0, [0.0, 0.0, 0.0]));
-s.run(1000);                       // step/診断/gather は全て collective
-let mass = s.total_mass();         // Allreduce（全ランクで同値）
-let rho = s.gather_rho();          // rank 0 のみ Some(全体場)
-drop(s);                           // 複製コミュニケータを finalize 前に解放
+s.run(1000);                       // step/diagnostics/gather are all collective
+let mass = s.total_mass();         // Allreduce (same value on all ranks)
+let rho = s.gather_rho();          // Some(full field) only on rank 0
+drop(s);                           // release the duplicated communicator before finalize
 ```
 
-**collective 契約**: `step` / `init_with` / `update_shan_chen_force` /
-診断（`total_mass` / `total_momentum` / `nonfinite_count`）/ `gather_*` /
-マスク編集は全ランクが同じ順序で呼ぶこと。`set_solid` は**全ランクが同じ
-座標列で呼ぶ**（所有ランクが格納、他ランクはハロー再交換の予約だけ行う）。
-`MpiSolver` は複製コミュニケータを保持するため、`mpi::initialize()` の
-Universe を drop（= MPI_Finalize）する**前に** solver を drop すること。
+**Collective contract**: `step` / `init_with` / `update_shan_chen_force` /
+diagnostics (`total_mass` / `total_momentum` / `nonfinite_count`) /
+`gather_*` / mask edits must be called by all ranks in the same order.
+`set_solid` must be **called by all ranks with the same coordinate
+sequence** (the owning rank stores it, other ranks only reserve the halo
+re-exchange). Since `MpiSolver` holds a duplicated communicator, drop the
+solver **before** dropping the `mpi::initialize()` Universe (i.e. before
+MPI_Finalize).
 
-## 交換プロトコル（実装メモ）
+## Exchange protocol (implementation notes)
 
-- InProcess と**同一の x → y → z 位相・同一の pack/unpack**（`halo.rs` の
-  共有ヘルパを両実装が呼ぶ）。コーナー/エッジは面隣接経由の前送で、位相ごとに
-  先行軸のハロー込み層を転送（MPI でも面リンク 6 本のみ）。
-- 各軸位相で両側 2 面の層を Irecv → Isend 発行 → 全完了待ち → unpack。
-  受信面 `F` 宛メッセージのタグは `base + F.index()`（f: 100, ψ: 200,
-  マスク: 300/400, gather: 500）。周期軸で decomp=1 の自己ラップは MPI を
-  介さずローカルコピー。
-- 転送はスカラ型の生バイト（f64/f32 とも可逆）なので、分割実行の場は
-  単一ランク実行と**ビット一致**する。診断のみ rank 部分和 → Allreduce の
-  f64 再結合差を許容（T13 流儀: atol + rtol、1e-11）。
-- ランク配置は `solver::partition` のデカルト分割そのまま
-  （part id = `(pz·dy+py)·dx+px` = rank）。MPI_Cart は不使用。
+- **Identical x → y → z phase order and identical pack/unpack** as
+  InProcess (both implementations call the shared helper in `halo.rs`).
+  Corners/edges are forwarded via face adjacency: each phase transfers the
+  halo-inclusive layer of preceding axes (only the 6 face links are used
+  even with MPI).
+- For each axis phase, the layers on both of the two faces are issued as
+  Irecv → Isend → wait for all completions → unpack. The tag for a
+  message addressed to receiving face `F` is `base + F.index()`
+  (f: 100, ψ: 200, mask: 300/400, gather: 500). For a periodic axis with
+  decomp=1, self-wrap is a local copy that bypasses MPI.
+- Since the transfer is raw bytes of a scalar type (reversible for both
+  f64/f32), the partitioned-execution field is **bit-identical** to the
+  single-rank execution. Only diagnostics allow a difference from
+  rank partial-sum → Allreduce f64 recombination (T13 convention:
+  atol + rtol, 1e-11).
+- Rank placement follows `solver::partition`'s Cartesian decomposition
+  as-is (part id = `(pz·dy+py)·dx+px` = rank). MPI_Cart is not used.
 
-## T13-MPI 実測（2026-07-05, M5 Max / Open MPI 5.0.9）
+## T13-MPI measurements (2026-07-05, M5 Max / Open MPI 5.0.9)
 
-| ケース | -n | decomp | 場 max\|Δ\| | 診断 max\|Δ\| |
+| Case | -n | decomp | field max\|Δ\| | diagnostic max\|Δ\| |
 |---|---|---|---|---|
-| 2D TGV 96×64 | 1/2/4 | 1×1 / 2×1 / 2×2 | **0.0**（ビット一致） | ≤ 3.3e-14 |
-| キャビティ 64×64（蓋が縫い目跨ぎ） | 1/2/4 | 同上 | **0.0** | ≤ 2.3e-14 |
-| 円柱+力プローブ（縫い目上）+ 放物線流入 | 1/2/4 | 同上 | **0.0** | ≤ 9.1e-13 |
-| Shan-Chen 液滴（ψ を exchange_scalar、2×2 コーナー） | 1/2/4 | 同上 | **0.0** | ≤ 4.5e-11* |
+| 2D TGV 96×64 | 1/2/4 | 1×1 / 2×1 / 2×2 | **0.0** (bit-identical) | ≤ 3.3e-14 |
+| Cavity 64×64 (lid crosses the seam) | 1/2/4 | same as above | **0.0** | ≤ 2.3e-14 |
+| Cylinder + force probe (on the seam) + parabolic inflow | 1/2/4 | same as above | **0.0** | ≤ 9.1e-13 |
+| Shan-Chen droplet (ψ via exchange_scalar, 2×2 corner) | 1/2/4 | same as above | **0.0** | ≤ 4.5e-11* |
 | 3D TGV 24³ (D3Q19) | 8 | 2×2×2 | **0.0** | ≤ 4.6e-15 |
 
-\* 液滴の診断差は total_mass ≈ 1.5e3 に対する再結合差（相対 ~3e-14）。
-合否は `atol + rtol·|ref|`（両 1e-11）で判定し全 PASS。
+\* The droplet's diagnostic difference is the recombination difference
+relative to total_mass ≈ 1.5e3 (relative ~3e-14). Pass/fail is judged by
+`atol + rtol·|ref|` (both 1e-11) and all cases PASS.
 
-## 弱スケーリング（単一ノード実測、2026-07-05）
+## Weak scaling (single-node measurement, 2026-07-05)
 
-ランクあたり 512²（D2Q9 f64 TGV、ランク内は**直列**バックエンド、
-decomp [n,1,1]、200 step 計測・20 step ウォームアップ）:
+512² per rank (D2Q9 f64 TGV, **serial** backend within each rank,
+decomp [n,1,1], 200-step measurement, 20-step warmup):
 
-| ranks | time | MLUPS 合計 | MLUPS/rank | 効率 |
+| ranks | time | total MLUPS | MLUPS/rank | efficiency |
 |---|---|---|---|---|
 | 1 | 1.304 s | 40.2 | 40.2 | 100% |
 | 2 | 1.313 s | 79.9 | 40.0 | 99.4% |
 | 4 | 1.346 s | 155.9 | 39.0 | 97.0% |
 | 8 | 1.781 s | 235.5 | 29.4 | 73.2% |
 
-**読み方（重要）**: この測定は Open MPI の**共有メモリ経由**であり、
-インターコネクトの実測ではない。さらに測定機（M5 Max）は 6 Super + 12
-Performance の異種コア構成で、対照実験（通信ゼロの独立 1 ランクジョブ ×8
-並走）でも 33.7 MLUPS/rank（= 84% 相当）までしか出ない。つまり n=8 の
-73.2% の内訳は「ハード（異種コア+帯域競合）の天井 84%」×「MPI 化による
-残り ~87.5%（ロックステップで最遅ランクに同期するジッタ結合が主、
-通信量自体は ~50 KB/step/rank で無視できる）」。均質コア内に収まる
-n≤4 は R3 のローカル合格線 ≥85% を満たす（97-99%）。
-**真の弱スケーリングはクラスタ実測が必要**（下記）。
+**How to read this (important)**: this measurement goes through Open MPI's
+**shared memory**, not a real interconnect measurement. Furthermore, the
+measurement machine (M5 Max) has a heterogeneous core configuration of
+6 Efficiency + 12 Performance cores, and even a control experiment
+(8 independent single-rank jobs run concurrently with zero communication)
+only reaches 33.7 MLUPS/rank (= equivalent to 84%). In other words, the
+breakdown of n=8's 73.2% is "the ceiling from hardware (heterogeneous
+cores + bandwidth contention) at 84%" × "the remaining ~87.5% from
+MPI-ization (mainly jitter coupling from lockstep synchronization to the
+slowest rank; the communication volume itself is ~50 KB/step/rank and
+negligible)." n≤4, which stays within the homogeneous cores, meets R3's
+local pass line of ≥85% (97-99%). **True weak scaling requires cluster
+measurements** (see below).
 
-## クラスタでやるべき測定リスト（R3 完了条件）
+## Checklist of measurements to do on a cluster (R3 completion criteria)
 
-1. **弱スケーリング本測定**: ランクあたり 3D 128³（D3Q19）を 1→64 ランク
-   （ノード内→複数ノード）で。R3 合格線: 64 ランクで効率 ≥80%。
-   2D 512² 版も比較用に（本ガイドの単一ノード表と接続する）。
-2. **強スケーリング**: 固定 1024³ を 8→512 ランクで（表面積/体積比の劣化点）。
-3. **通信/計算比の実測**: MPI_T プロファイル or mpiP で exchange_f の
-   占有率。>10% なら two-pass オーバーラップ（M-E）を前倒し。
-4. **ノード間 BTL/MTL 確認**: UCX/OFI の選択、eager/rendezvous 閾値
-   （層メッセージは ~10-200 KB 帯）とタグマッチング競合の有無。
-5. **ランク×スレッドのハイブリッド最適点**: 本ガイドの測定はランク内直列。
-   ノードあたり「ランク数 × rayon スレッド数」の格子を振る
-   （`CpuScalar::parallel_min_cells` 閾値はそのまま使える）。
-6. **プロセス配置/バインド**: `--map-by`/`--bind-to`（macOS では不可、
-   Linux クラスタで必須）。NUMA ノード跨ぎの層 pack/unpack 帯域も確認。
-7. **正しさの再確認**: scripts/test_mpi.sh をクラスタの MPI 実装
-  （Open MPI 以外に MPICH/Cray MPICH）でも全 PASS させる
-  （rsmpi は両対応。ビット一致要件は実装非依存のはず）。
-8. **大規模での診断コスト**: Allreduce（診断）と rank-0 gather（出力）の
-   スケール限界。出力は並列 I/O（HDF5/ADIOS2 系）への移行判断材料を取る。
+1. **Full weak-scaling measurement**: 3D 128³ per rank (D3Q19) from
+   1→64 ranks (within-node → multi-node). R3 pass line: efficiency
+   ≥80% at 64 ranks. Also do a 2D 512² version for comparison
+   (to connect with this guide's single-node table).
+2. **Strong scaling**: fixed 1024³ from 8→512 ranks (the point where
+   surface-area/volume ratio degrades).
+3. **Measured communication/computation ratio**: the share occupied by
+   exchange_f via an MPI_T profile or mpiP. If >10%, bring forward the
+   two-pass overlap (M-E).
+4. **Inter-node BTL/MTL confirmation**: UCX/OFI selection, eager/rendezvous
+   thresholds (layer messages are in the ~10-200 KB band), and presence
+   of tag-matching contention.
+5. **Optimal rank × thread hybrid point**: this guide's measurements use
+   serial execution within each rank. Sweep a grid of
+   "rank count × rayon thread count" per node (the
+   `CpuScalar::parallel_min_cells` threshold can be reused as-is).
+6. **Process placement/binding**: `--map-by`/`--bind-to` (not possible on
+   macOS, required on Linux clusters). Also check layer pack/unpack
+   bandwidth across NUMA nodes.
+7. **Re-confirm correctness**: make scripts/test_mpi.sh pass fully on the
+   cluster's MPI implementation too (MPICH/Cray MPICH in addition to
+   Open MPI) (rsmpi supports both. The bit-identity requirement should be
+   implementation-independent).
+8. **Diagnostic cost at scale**: the scaling limits of Allreduce
+   (diagnostics) and rank-0 gather (output). For output, gather material
+   for a decision on migrating to parallel I/O (HDF5/ADIOS2-family).
 
-## 既知の罠（今回踏んだもの）
+## Known pitfalls (hit this time)
 
-- **x86_64 MPI との同居**: /usr/local の Homebrew (x86_64) 版 mpicc が
-  PATH 先頭にあると rsmpi のプローブが x86_64 フラグを拾いリンクに失敗するか、
-  Rosetta 経由の mpirun で起動が壊れる。常に arm64 版を PATH 先頭に。
-- **MPI_Finalize 後の MPI_Comm_free**: `MpiSolver`（と `MpiExchange`）は
-  複製コミュニケータを Drop で解放する。`mpi::initialize()` の Universe より
-  **先に** drop されるスコープ設計にすること（examples 参照）。
-- **マスク編集の collective 性**: `set_solid` を所有ランクだけで呼ぶと
-  ハロー再交換（collective）の呼び出し回数がランク間でずれてデッドロックする。
-  `MpiSolver::set_solid` は非所有ランクでも dirty マークだけ立てる設計。
-  `Solver` を直接使う場合は `mark_masks_dirty()` を全ランクで呼ぶこと。
-- **プローブの Allreduce タイミング**: probed_force は step 毎の Allreduce。
-  プローブ未設定時は省略される（ベンチに余計な collective を入れない）。
+- **Coexistence with x86_64 MPI**: if the Homebrew (x86_64) mpicc in
+  /usr/local is first in PATH, rsmpi's probe picks up x86_64 flags and
+  either fails to link, or launching breaks via a Rosetta-mediated
+  mpirun. Always keep the arm64 version first in PATH.
+- **MPI_Comm_free after MPI_Finalize**: `MpiSolver` (and `MpiExchange`)
+  release the duplicated communicator on Drop. Design the scope so it is
+  dropped **before** the `mpi::initialize()` Universe (see examples).
+- **Collectiveness of mask edits**: calling `set_solid` only on the
+  owning rank causes the halo re-exchange (collective) call count to
+  drift between ranks, causing a deadlock. `MpiSolver::set_solid` is
+  designed so that non-owning ranks only set the dirty mark. When using
+  `Solver` directly, call `mark_masks_dirty()` on all ranks.
+- **Allreduce timing for probes**: probed_force is an Allreduce on every
+  step. It is omitted when no probe is configured (so as not to add
+  extraneous collectives to the benchmark).

@@ -1,207 +1,207 @@
-# 提案: active スカラーの物性帰還と安定化仕様
+# Proposal: Active Scalar Property Feedback and Stabilization Spec
 
-**文書ID**: PROP-ACTIVE-SCALAR / **状態**: draft（文献調査に基づく仕様起草。実装未着手）
-**上位**: [REQ_STIRRED_REACTOR.md](../REQ_STIRRED_REACTOR.md) §10 残実装詳細「`active` スカラーの帰還対象（σ・粘性・密度・[温度]）の具体式と安定化（Marangoni 含む）」
-**記法**: REQ §3 に準拠。φ∈[0,1]（φ=1:液, φ=0:気）、σ=√(2κβ)/6、W=4√(κ/(2β))、μ_φ=4β φ(φ−1)(φ−1/2)−κ∇²φ、Sc_t 既定 0.7。成分濃度 C_k、既定基準濃度 C_0。
-**凡例**: 「**要導出**」= 文献で式の裏が取れず、実装前に係数を自前で Chapman-Enskog / 平衡プロファイル積分から確定する必要がある箇所。
-
----
-
-## 0. スコープと前提
-
-REQ §1 でスカラー既定は `active`（σ・粘性・密度・[温度] への帰還を有効）に確定。本書は各帰還の**具体式・二重計上回避・安定化・検証・API**を起草する。相場は保存型 Allen-Cahn（Fakhari 2017 系, REQ §3 に固定）、表面張力は化学ポテンシャル形式 F_s = μ_φ∇φ を基準とする。帰還は「物性場を C_k に依存させる」ことであり、相場 φ の発展則そのものは変えない（界面追跡の等価性凍結値を壊さないため）。
-
-**REQ の係数関係の確認**（矛盾しないことの明示）: 二重井戸 f_b = β φ²(1−φ)² に対し μ_φ = df_b/dφ − κ∇²φ = 2β φ(1−φ)(1−2φ) − κ∇²φ = 4β φ(φ−1)(φ−1/2) − κ∇²φ（REQ §3 と一致）。平衡プロファイル φ_eq(x) = ½[1+tanh(2x/W)]、W = 4√(κ/(2β)) = √(8κ/β)、σ = ∫ κ(dφ/dx)² dx = √(2κβ)/6。以降この (σ,W)↔(κ,β) を唯一の正とする。
+**Document ID**: PROP-ACTIVE-SCALAR / **Status**: draft (spec drafted based on literature survey. Implementation not started)
+**Parent**: [REQ_STIRRED_REACTOR.md](../REQ_STIRRED_REACTOR.md) §10 remaining implementation details, "concrete formulas and stabilization (including Marangoni) for the `active` scalar's feedback targets (σ, viscosity, density, [temperature])"
+**Notation**: Follows REQ §3. φ∈[0,1] (φ=1: liquid, φ=0: gas), σ=√(2κβ)/6, W=4√(κ/(2β)), μ_φ=4β φ(φ−1)(φ−1/2)−κ∇²φ, Sc_t default 0.7. Component concentration C_k, default reference concentration C_0.
+**Legend**: "**derivation required**" = places where the literature does not substantiate the formula, and the coefficients must be determined in-house from Chapman-Enskog / equilibrium profile integration before implementation.
 
 ---
 
-## 1. σ(C): 界面活性依存と Marangoni 力
+## 0. Scope and Premises
 
-### 1.1 吸着等温式の選択
+REQ §1 fixes the scalar default to `active` (feedback to σ, viscosity, density, [temperature] enabled). This document drafts the **concrete formulas, double-counting avoidance, stabilization, validation, and API** for each feedback. The phase field follows the conservative Allen-Cahn form (Fakhari 2017 lineage, fixed in REQ §3), and surface tension is based on the chemical-potential form F_s = μ_φ∇φ. Feedback means "making property fields depend on C_k" — it does not change the evolution law of the phase field φ itself (so as not to break the interface-tracking equivalence-freeze values).
 
-界面活性剤被覆率 Γ（無次元 Γ=Γ*/Γ_∞*、Γ_∞*=飽和吸着量）に対する**状態方程式**は 2 系統を用意し、既定を Langmuir とする:
+**Confirmation of REQ's coefficient relations** (making explicit that there is no contradiction): For the double-well f_b = β φ²(1−φ)², μ_φ = df_b/dφ − κ∇²φ = 2β φ(1−φ)(1−2φ) − κ∇²φ = 4β φ(φ−1)(φ−1/2) − κ∇²φ (consistent with REQ §3). The equilibrium profile φ_eq(x) = ½[1+tanh(2x/W)], W = 4√(κ/(2β)) = √(8κ/β), σ = ∫ κ(dφ/dx)² dx = √(2κβ)/6. Hereafter this (σ,W)↔(κ,β) correspondence is taken as the sole source of truth.
 
-- **線形（既定の下位・低被覆域 Γ≲0.3）**: σ(Γ) = σ_0 (1 − E·Γ)。弾性数 E = 𝓡T Γ_∞*/σ_0（Langmuir を Γ→0 で展開した一次項）。
-- **Langmuir（既定, 全被覆域）**: σ*(Γ*) = σ_0 [1 + (𝓡T Γ_∞*/σ_0) ln(1 − Γ*/Γ_∞*)]、無次元形 σ(Γ) = 1 + E ln(1−Γ)（Kwakkel/Prosperetti 系, van der Sman & van der Graaf 2006 の状態方程式に対応。出典: arXiv:2409.19374, Springer Rheol. Acta 44:365 (2005)）。適用範囲: Γ<1（Γ→1 で σ→−∞ ゆえ §1.4 の下限クリップ必須）。
+---
 
-### 1.2 バルク C と界面吸着量 Γ の扱い（M-F 初版の単純化）
+## 1. σ(C): Surfactant Dependence and Marangoni Force
 
-厳密には Γ は界面に拘束された独立場で、バルク C との間を吸着/脱着（Langmuir 動力学 dΓ/dt = k_a C_s(Γ_∞−Γ) − k_d Γ）で結ぶ（Teigen ら 2011, van der Sman 2006）。**M-F 初版では以下の 2 段階を提案**:
+### 1.1 Choice of Adsorption Isotherm
 
-- **Tier-A（初版既定, 単純化）**: 平衡吸着を仮定し、界面局所のバルク濃度 C から Langmuir 平衡等温 Γ_eq(C) = Γ_∞ K C/(1+K C)（K=k_a/k_d）で Γ を代数決定し、σ(Γ_eq(C)) を使う。**バルク C 直接依存を許す**（可溶性・準平衡界面活性剤の近似）。追加スカラー場は不要で、既存の C_k ADE 基盤（REQ §3）をそのまま流用できる。適用範囲の明示: 界面吸着の時間スケール τ_ads=1/(k_a C+k_d) が界面変形の時間スケールより十分速い場合のみ妥当。
-- **Tier-B（後付け拡張点）**: 界面拘束場 Γ̂=δ_Σ Γ を保存型輸送（∂Γ̂/∂t + ∇·(Γ̂u) = (1/Pe_Γ)∇·[∇Γ̂ − (1−2φ)Γ̂/(√2 Cn)·∇φ/|∇φ|]、profile-preserving, arXiv:2409.19374）で解き、非平衡吸着（可溶/不溶）に対応。初版では非対応と明記。
+For the surfactant coverage Γ (dimensionless Γ=Γ*/Γ_∞*, Γ_∞*=saturation adsorption amount), two **equations of state** are provided, with Langmuir as the default:
 
-### 1.3 Marangoni 力の相場整合形（二重計上回避）
+- **Linear (default sub-tier, low-coverage regime Γ≲0.3)**: σ(Γ) = σ_0 (1 − E·Γ). Elasticity number E = 𝓡T Γ_∞*/σ_0 (the first-order term of a Langmuir expansion at Γ→0).
+- **Langmuir (default, full coverage range)**: σ*(Γ*) = σ_0 [1 + (𝓡T Γ_∞*/σ_0) ln(1 − Γ*/Γ_∞*)], dimensionless form σ(Γ) = 1 + E ln(1−Γ) (Kwakkel/Prosperetti lineage, corresponds to the equation of state in van der Sman & van der Graaf 2006. Sources: arXiv:2409.19374, Springer Rheol. Acta 44:365 (2005)). Range of applicability: Γ<1 (since σ→−∞ as Γ→1, the lower-bound clip in §1.4 is mandatory).
 
-**基準（well-balanced, 既定）**: 変数 σ の界面力は法線（毛管）＋接線（Marangoni）に分解される:
+### 1.2 Handling of Bulk C and Interfacial Adsorption Γ (Simplification for the M-F First Version)
+
+Strictly speaking, Γ is an independent field constrained to the interface, coupled to bulk C via adsorption/desorption (Langmuir kinetics dΓ/dt = k_a C_s(Γ_∞−Γ) − k_d Γ) (Teigen et al. 2011, van der Sman 2006). **The M-F first version proposes the following two tiers**:
+
+- **Tier-A (first-version default, simplified)**: Assume equilibrium adsorption, and algebraically determine Γ from the local interfacial bulk concentration C via the Langmuir equilibrium isotherm Γ_eq(C) = Γ_∞ K C/(1+K C) (K=k_a/k_d), using σ(Γ_eq(C)). **This allows direct dependence on bulk C** (an approximation for soluble, quasi-equilibrium surfactants). No additional scalar field is needed — the existing C_k ADE infrastructure (REQ §3) can be reused as-is. Explicit range of applicability: valid only when the interfacial adsorption timescale τ_ads=1/(k_a C+k_d) is sufficiently faster than the interface deformation timescale.
+- **Tier-B (deferred extension point)**: Solve the interface-constrained field Γ̂=δ_Σ Γ via conservative transport (∂Γ̂/∂t + ∇·(Γ̂u) = (1/Pe_Γ)∇·[∇Γ̂ − (1−2φ)Γ̂/(√2 Cn)·∇φ/|∇φ|], profile-preserving, arXiv:2409.19374), to handle non-equilibrium adsorption (soluble/insoluble). Explicitly marked as unsupported in the first version.
+
+### 1.3 Phase-Field-Consistent Form of the Marangoni Force (Double-Counting Avoidance)
+
+**Baseline (well-balanced, default)**: The interfacial force for variable σ decomposes into normal (capillary) and tangential (Marangoni) components:
 
   F_s = [ −σ κ_φ n̂ + (I − n̂⊗n̂)·∇σ ] δ_Σ,  n̂ = ∇φ/(|∇φ|+ε),  δ_Σ = (3√2/4) W |∇φ|²
 
-（出典: Liu, Wu, Ba, Xi ら, Phys. Rev. E 108, 055306 (2023) = arXiv:2306.11320。δ_Σ の係数は同論文の well-balanced 相場離散に対応）。
+(Source: Liu, Wu, Ba, Xi et al., Phys. Rev. E 108, 055306 (2023) = arXiv:2306.11320. The coefficient of δ_Σ corresponds to the well-balanced phase-field discretization in that paper).
 
-REQ の化学ポテンシャル形式 F_s = μ_φ∇φ は σ=一定を前提とした**法線成分のみ**の等価表現である。σ が変数のとき、これに接線成分を単純加算すると法線寄与を二重計上する。**二重計上回避の規約を次に固定**する:
+REQ's chemical-potential form F_s = μ_φ∇φ is a **normal-component-only** equivalent expression that presumes σ=constant. When σ is variable, simply adding a tangential term to this double-counts the normal contribution. **The double-counting avoidance convention is fixed as follows**:
 
-- **規約 D1（採用）**: 界面力全体を σ(x) の場として上式の CSF 形で評価する。すなわち**変数 σ 時は F_s = μ_φ∇φ を使わず**、potential 形の代替として Liu ら (2306.11320) の chemical-potential 併用形
+- **Convention D1 (adopted)**: Evaluate the entire interfacial force as a field of σ(x) in the CSF form above. That is, **when σ is variable, do not use F_s = μ_φ∇φ**; instead, as a substitute in potential form, use the chemical-potential-combined form from Liu et al. (2306.11320):
   F_s = (3√2/4) W [ |∇φ|² ∇σ − (∇σ·∇φ) ∇φ + (σ/W²) M_φ ∇φ ]
-  を使う。第 1・2 項が接線 Marangoni（(I−n̂n̂)∇σ の |∇φ|² 重み付け展開）、第 3 項が曲率を陽に計算しない法線毛管項（M_φ は化学ポテンシャル、この論文表記では μ_φ に相当）。**注意**: この論文の μ_φ 定義は界面幅パラメータに W² を用いており、REQ の (κ,β) 規約と係数が一致するかは**要導出**（W²↔κ の対応を平衡プロファイルで突き合わせて確定すること。安易に流用しない）。
-- **規約 D2（σ=一定に退化した時の整合）**: ∇σ=0 なら第 1・2 項が消え、第 3 項のみ残り、既存の F_s = μ_φ∇φ（法線毛管）と一致しなければならない（退化テストを検証項に入れる。§6 VR-STR-06 系）。
-- **σ=一定の passive/非界面活性ケースでは従来どおり F_s = μ_φ∇φ を使い**、変数 σ 経路（規約 D1）へは feedback.sigma が有効な時のみ切替える（分岐を 1 箇所に限定し等価性凍結を保護）。
+  The 1st and 2nd terms are the tangential Marangoni term (the |∇φ|²-weighted expansion of (I−n̂n̂)∇σ), and the 3rd term is the normal capillary term that does not explicitly compute curvature (M_φ is the chemical potential, corresponding to μ_φ in this paper's notation). **Caution**: this paper's definition of μ_φ uses W² for the interface-width parameter, and whether the coefficients match REQ's (κ,β) convention is **derivation required** (the W²↔κ correspondence must be confirmed via the equilibrium profile — do not casually reuse it).
+- **Convention D2 (consistency when degenerating to σ=constant)**: When ∇σ=0, the 1st and 2nd terms vanish, leaving only the 3rd term, which must match the existing F_s = μ_φ∇φ (normal capillary) form (this degeneracy test is included as a validation item; §6 VR-STR-06 lineage).
+- **For σ=constant passive/non-surfactant cases, continue using F_s = μ_φ∇φ as before**, and switch to the variable-σ path (Convention D1) only when feedback.sigma is enabled (limiting the branch to a single location protects the equivalence freeze).
 
-### 1.4 安定化
+### 1.4 Stabilization
 
-- **σ 下限クリップ**: σ_min = c_σ·σ_0（既定 c_σ=0.05、要チューニング）を課し、Langmuir の σ→−∞ 発散と負表面張力（界面数値崩壊）を防ぐ。クリップ発動率を監視量に追加。
-- **∇σ の格子勾配評価**: σ は φ と C の合成関数ゆえ ∇σ = (∂σ/∂C)∇C を等方性重み付き中心差分（D2Q9/D3Q19 の格子勾配 ∇ψ ≈ (1/c_s²Δt)Σ_i w_i c_i ψ(x+c_i)）で評価。非平衡モーメントからの勾配復元（∇C ∝ Σ(g_i−g_i^eq)）も選択肢だが、SGS 拡散が入る active スカラーでは C の格子勾配評価を既定とする（REQ FR-STRESS の勾配復元と整合、**要検証**）。
-- **時間スケール制約**: Marangoni 対流速度 U_Ma ~ |∇σ|·W/μ に対する CFL と capillary dt（§5）を両立。E（弾性数）が大きい系では Marangoni dt が律速になりうる。
+- **σ lower-bound clip**: Impose σ_min = c_σ·σ_0 (default c_σ=0.05, needs tuning) to prevent the Langmuir σ→−∞ divergence and negative surface tension (interface numerical collapse). Add the clip activation rate to the monitored quantities.
+- **Lattice gradient evaluation of ∇σ**: Since σ is a composite function of φ and C, evaluate ∇σ = (∂σ/∂C)∇C using an isotropically weighted central difference (the lattice gradient ∇ψ ≈ (1/c_s²Δt)Σ_i w_i c_i ψ(x+c_i) for D2Q9/D3Q19). Gradient reconstruction from non-equilibrium moments (∇C ∝ Σ(g_i−g_i^eq)) is also an option, but for active scalars where SGS diffusion is present, the default is lattice-gradient evaluation of C (consistent with the gradient reconstruction in REQ FR-STRESS, **validation required**).
+- **Timescale constraint**: Balance the CFL for Marangoni convective velocity U_Ma ~ |∇σ|·W/μ against the capillary dt (§5). In systems with large E (elasticity number), the Marangoni dt can become rate-limiting.
 
-**主要文献**: Teigen, Song, Lowengrub, Voigt, *J. Comput. Phys.* 230:375 (2011)（可溶性界面活性剤 phase-field, Γ 独立場）; van der Sman & van der Graaf, *Rheol. Acta* 44:365 (2005) / *Comput. Phys. Commun.* (2006)（Langmuir 等温を持つ diffuse-interface 自由エネルギー）; Liu ら Phys. Rev. E 108, 055306 (2023)（相場 LBM の well-balanced 変数 σ 力）; Kwakkel ら, arXiv:2409.19374 (2024)（profile-preserving surfactant + Marangoni, 状態方程式 σ=1+E ln(1−Γ)）; Far­hat/Lee 系, Zheng-Shu-Chew, *J. Comput. Phys.* 218:353 (2006)（相場 LBM Marangoni の古典実装）。
+**Key literature**: Teigen, Song, Lowengrub, Voigt, *J. Comput. Phys.* 230:375 (2011) (soluble surfactant phase-field, independent Γ field); van der Sman & van der Graaf, *Rheol. Acta* 44:365 (2005) / *Comput. Phys. Commun.* (2006) (diffuse-interface free energy with Langmuir isotherm); Liu et al., Phys. Rev. E 108, 055306 (2023) (well-balanced variable-σ force for phase-field LBM); Kwakkel et al., arXiv:2409.19374 (2024) (profile-preserving surfactant + Marangoni, equation of state σ=1+E ln(1−Γ)); Farhat/Lee lineage, Zheng-Shu-Chew, *J. Comput. Phys.* 218:353 (2006) (classical implementation of phase-field LBM Marangoni).
 
 ---
 
-## 2. μ(C): 粘性依存
+## 2. μ(C): Viscosity Dependence
 
-### 2.1 典型形（3 種を用意、既定=指数）
+### 2.1 Typical Forms (3 types provided, default = exponential)
 
-- **線形（希薄・弱依存）**: μ(C) = μ_0 [1 + k_μ (C−C_0)]。適用範囲: k_μ(C−C_0)≪1。
-- **指数（Arrhenius 型, 既定）**: μ(C) = μ_0 exp[A(C−C_0)]。η=η_0 exp(A C_w) の形（出典: 液体・コロイド分散の Arrhenius 型濃度依存。ScienceDirect "Arrhenius Equation" overview, ternary mixture 系 ResearchGate 321081670）。正値保証・広域で安定。
-- **Krieger-Dougherty（懸濁・高充填, 溶質が固体分率 φ_p 的な時）**: μ(C) = μ_0 (1 − C/C_max)^(−[η]C_max)、[η]=2.5（球）、C_max=最大充填率（単分散 ~0.64, 多分散はより大）。出典: Krieger & Dougherty (1959), Anton-Paar wiki, Springer Rheol. Acta。適用範囲: C を体積分率とみなせる懸濁のみ。C→C_max で発散ゆえ §5 の τ 上限クリップ必須。
+- **Linear (dilute, weak dependence)**: μ(C) = μ_0 [1 + k_μ (C−C_0)]. Range of applicability: k_μ(C−C_0)≪1.
+- **Exponential (Arrhenius type, default)**: μ(C) = μ_0 exp[A(C−C_0)]. Of the form η=η_0 exp(A C_w) (Source: Arrhenius-type concentration dependence for liquids/colloidal dispersions. ScienceDirect "Arrhenius Equation" overview, ternary mixture systems ResearchGate 321081670). Guarantees positivity, stable over a wide range.
+- **Krieger-Dougherty (suspensions/high loading, when the solute is akin to a solid volume fraction φ_p)**: μ(C) = μ_0 (1 − C/C_max)^(−[η]C_max), [η]=2.5 (spheres), C_max=maximum packing fraction (monodisperse ~0.64, polydisperse higher). Source: Krieger & Dougherty (1959), Anton-Paar wiki, Springer Rheol. Acta. Range of applicability: only suspensions where C can be regarded as a volume fraction. Since it diverges as C→C_max, the τ upper-bound clip in §5 is mandatory.
 
-### 2.2 τ_eff への合成順序（REQ FR-LES-02 との整合）
+### 2.2 Composition Order into τ_eff (Consistency with REQ FR-LES-02)
 
-REQ FR-LES-02 の一般式 τ_eff = 1/2 + (ν_0+ν_t)/(c_s²Δt)。粘性帰還はここに**分子動粘性の乗算補正**として入る。合成則（**乗算・分子側で合成してから τ に一度だけ反映**、二重計上回避）:
+REQ FR-LES-02's general form: τ_eff = 1/2 + (ν_0+ν_t)/(c_s²Δt). Viscosity feedback enters here as a **multiplicative correction on molecular kinematic viscosity**. Composition rule (**compose multiplicatively on the molecular side, then reflect into τ exactly once**, to avoid double-counting):
 
   ν_mol(γ̇, C) = [μ(γ̇) · f_C(C)] / ρ(C),   f_C(C) = μ(C)/μ_0
 
   ν_eff = ν_mol(γ̇, C) + ν_t,   τ_eff = 1/2 + ν_eff/(c_s²Δt)
 
-- **合成順序（確定案）**: (1) 非 Newton せん断依存 μ(γ̇)（REQ FR-STRESS-04 の反復で γ̇ から確定）→ (2) 濃度係数 f_C(C) を乗算 → (3) ρ(C) で割り動粘性化 → (4) SGS ν_t を加算 → (5) τ_eff。μ(γ̇) と μ(C) はいずれも分子粘性の因子なので**乗算合成**が物理的（μ_t は渦粘性で加算）。非 Newton の反復収束基準（FR-STRESS-04）は f_C(C) を固定した内側ループで回し、C は 1 ステップ陽的に凍結（演算子分割）。
-- **τ の上下限クリップとの関係**: REQ FR-LES-03 の [τ_min, τ_max] は最終 τ_eff に対して適用。μ(C) が KD 型で発散側に振れた時はクリップが先に効くため、クリップ発動を「物性が適用範囲外」の診断として監視（§5）。τ_min 側（低粘性・高 C 希釈）も同様。
+- **Composition order (fixed proposal)**: (1) non-Newtonian shear dependence μ(γ̇) (determined from γ̇ via the iteration in REQ FR-STRESS-04) → (2) multiply by the concentration factor f_C(C) → (3) divide by ρ(C) to convert to kinematic viscosity → (4) add the SGS ν_t → (5) τ_eff. Since both μ(γ̇) and μ(C) are factors of molecular viscosity, **multiplicative composition** is physically appropriate (μ_t, the eddy viscosity, is additive). The non-Newtonian iterative convergence criterion (FR-STRESS-04) runs in an inner loop with f_C(C) held fixed, while C is frozen explicitly for one step (operator splitting).
+- **Relationship to τ upper/lower-bound clipping**: REQ FR-LES-03's [τ_min, τ_max] is applied to the final τ_eff. When μ(C) is of KD type and swings toward divergence, the clip takes effect first, so monitor clip activation as a diagnostic for "property outside its valid range" (§5). The same applies on the τ_min side (low viscosity / high-C dilution).
 
 ---
 
-## 3. ρ(C): 密度依存（溶質浮力）
+## 3. ρ(C): Density Dependence (Solutal Buoyancy)
 
-### 3.1 Boussinesq 近似形
+### 3.1 Boussinesq Approximation Form
 
-溶質濃度差による浮力は **Boussinesq 体積力** として運動量式に加算:
+Buoyancy due to solute concentration differences is added to the momentum equation as a **Boussinesq body force**:
 
-  F_b = ρ_0 β_C (C − C_0) g,   β_C = −(1/ρ_0)(∂ρ/∂C)|_{T,p}（溶質膨張係数）
+  F_b = ρ_0 β_C (C − C_0) g,   β_C = −(1/ρ_0)(∂ρ/∂C)|_{T,p} (solutal expansion coefficient)
 
-（REQ の要求どおり。二相の相密度 ρ(φ) とは別に、液相内の溶質密度変調を摂動として扱う。double-diffusive LBM の標準形。出典: LBM double-diffusive natural convection レビュー Springer JTAC 10973-022-11354-z, ResearchGate 6331163）。無次元では溶質 Grashof/Rayleigh 数 Ra_C = β_C ΔC g L³/(ν D_m) で特徴づけ。
+(As required by REQ. Distinct from the two-phase phase density ρ(φ), this treats solute density modulation within the liquid phase as a perturbation. The standard form for double-diffusive LBM. Source: LBM double-diffusive natural convection review, Springer JTAC 10973-022-11354-z, ResearchGate 6331163). In dimensionless form, characterized by the solutal Grashof/Rayleigh number Ra_C = β_C ΔC g L³/(ν D_m).
 
-### 3.2 高密度比二相の well-balanced 重力との整合（VR-STR-06 を壊さない条件）
+### 3.2 Consistency with Well-Balanced Gravity for High-Density-Ratio Two-Phase Flow (Condition for Not Breaking VR-STR-06)
 
-REQ FR-BC-02 の well-balanced 静水圧離散は「静止成層で |u|<ε」を要求（VR-STR-06）。溶質浮力を追加する際の**整合条件**:
+REQ FR-BC-02's well-balanced hydrostatic discretization requires "static stratification with |u|<ε" (VR-STR-06). **Consistency conditions** when adding solutal buoyancy:
 
-- **条件 C-B1**: F_b は基準状態 (C=C_0) で厳密に 0。well-balanced 化は基準密度 ρ(φ) の静水圧 ∇p_hydro=ρ(φ)g に対して行い、F_b は**その上の摂動力**として別途加算する。C≡C_0 の一様場では F_b≡0 ゆえ VR-STR-06 の静止成層テストは C 帰還 ON でも変化しない（これを退化テストとして VR に追加, §6）。
-- **条件 C-B2**: F_b と ρ(φ)g を混ぜて 1 本の well-balanced 力に畳まない（Boussinesq 摂動は非平衡起動力ゆえ、well-balanced 相殺の対象にすると成層が壊れる）。実装上、力源合成 F_s+ρg+F_b+… の段（REQ FR-COUP-01）で F_b を独立項として保持。
-- **符号・方向**: g は下向き。β_C>0（重い溶質）なら C>C_0 の流体塊は下降。溶質 RT（§6）で符号を検証。
+- **Condition C-B1**: F_b is exactly 0 at the reference state (C=C_0). Well-balancing is performed against the hydrostatic pressure ∇p_hydro=ρ(φ)g of the reference density ρ(φ), and F_b is added separately as a **perturbation force on top of that**. In a uniform field with C≡C_0, F_b≡0, so the static stratification test of VR-STR-06 must remain unchanged even with C feedback ON (this is added as a degeneracy test to the VR, §6).
+- **Condition C-B2**: Do not fold F_b and ρ(φ)g together into a single well-balanced force (since the Boussinesq perturbation is a non-equilibrium driving force, treating it as a target of well-balanced cancellation would break the stratification). Implementation-wise, retain F_b as an independent term at the force-source composition stage (F_s+ρg+F_b+… , REQ FR-COUP-01).
+- **Sign/direction**: g points downward. If β_C>0 (heavy solute), fluid parcels with C>C_0 sink. Verify the sign with solutal RT (§6).
 
-### 3.3 非 Boussinesq が必要になる濃度域の判定
+### 3.3 Determining the Concentration Range Where Non-Boussinesq Treatment Is Needed
 
-Boussinesq 近似は密度変調 |Δρ/ρ_0| = |β_C ΔC| ≲ 0.1 で妥当（慣用値）。これを超える濃度域では:
+The Boussinesq approximation is valid for density modulation |Δρ/ρ_0| = |β_C ΔC| ≲ 0.1 (conventional value). For concentration ranges exceeding this:
 
-- **判定基準**: |β_C(C_max−C_min)| > 0.1 を検出したら feasibility check（REQ §2.2）で警告し、(a) 相密度補間 ρ(φ,C) を運動量・連続式に直接反映する低 Mach 可変密度経路へ切替、または (b) 対象濃度範囲を縮小する。M-F 初版は Boussinesq 経路を既定とし、非 Boussinesq は後付け拡張点と明記（理由: 可変密度を連続相 LBM に厳密反映すると圧力・質量保存の追加検証が要り、スコープ膨張）。
-
----
-
-## 4. [温度]（オプション軸）
-
-### 4.1 温度 ADE と物性帰還式
-
-温度場 T をスカラー ADE 基盤（REQ §3 の C_k と同型）で追加した場合:
-
-  ∂T/∂t + u·∇T = ∇·[(α + ν_t/Pr_t) ∇T] + Ṡ_T,   Pr_t=乱流 Prandtl 数（REQ FR-LES-04 と対）
-
-熱物性帰還:
-
-- **ν(T)**: μ(T) = μ_0 exp[B(1/T − 1/T_0)]（Arrhenius, 液体粘性の標準）または線形 μ(T)=μ_0[1−b(T−T_0)]。§2 の合成則に f_T(T)=μ(T)/μ_0 を追加乗算。
-- **σ(T)（熱 Marangoni）**: σ(T) = σ_0 + σ_T(T−T_0)、σ_T=∂σ/∂T（純物質で通常 <0）。出典: Liu ら Phys. Rev. E 108, 055306 (2023)（線形 σ-T と phase-field LBM thermocapillary）。Marangoni 力は §1.3 の CSF 形で ∇σ=(∂σ/∂T)∇T として同一機構で評価（界面活性剤 ∇σ=(∂σ/∂C)∇C と加算可能、線形重畳）。
-- **ρ(T)**: 熱浮力 F_b^T = ρ_0 β_T(T−T_0)g、β_T=熱膨張係数（§3 の溶質 Boussinesq と加算 → double-diffusive）。
-
-### 4.2 スカラー ADE 基盤の共有と実装可否推奨
-
-温度は C_k と**同一の ADE-LBM 分布・緩和時間機構**を共有できる（唯一の差は帰還先が σ_T/β_T/μ(T) である点、および Ṡ_T が反応熱・相変化潜熱を含みうる点）。共有可能性は高い。
-
-**推奨（PM 判断材料）**: 温度軸は **M-F 初版では「後付け拡張点」とし、初版スコープには [温度] を含めず設計フックのみ用意**する。理由: (1) 熱 Marangoni・熱浮力の式形は溶質版と数学的に同型で、ADE 基盤・CSF 力・Boussinesq 力を共有できるため後付けコストが低い（初版で無理に入れる必然性が薄い）。(2) 潜熱・反応熱・壁熱境界（Neumann/Robin）・Pr_t の検証が追加で必要になり、初版の撹拌槽検証（VR-STR-01〜07）の焦点をぼかす。(3) REQ §1 でも [温度] は角括弧付き（条件付き軸）。→ **API に温度フックを予約し（§7）、式は本書に確定して残す**のが最小リスク。
+- **Criterion**: Upon detecting |β_C(C_max−C_min)| > 0.1, warn via the feasibility check (REQ §2.2), and either (a) switch to a low-Mach variable-density path that directly reflects phase-density interpolation ρ(φ,C) into the momentum/continuity equations, or (b) narrow the target concentration range. The M-F first version defaults to the Boussinesq path, and non-Boussinesq is explicitly a deferred extension point (reason: rigorously reflecting variable density into the continuous-phase LBM requires additional pressure/mass-conservation validation, causing scope expansion).
 
 ---
 
-## 5. 安定化の横断方針
+## 4. [Temperature] (Optional Axis)
 
-### 5.1 明示的時間積分の安定条件
+### 4.1 Temperature ADE and Property Feedback Formulas
 
-帰還力はいずれも陽的に加算するため、以下の dt 制約の**最小値**を採用（REQ FR-COUP-01 の capillary dt を拡張）:
+When the temperature field T is added on the scalar ADE infrastructure (isomorphic to REQ §3's C_k):
 
-- **capillary dt**: Δt_σ ≤ √(ρ̄ Δx³/(2π σ))（REQ 記載どおり。最短毛管波を解像。出典: 一般に Δt ≤ √(ρ_m Δ³/(π σ_max)), Brackbill 系）。σ は**変数 σ 時は σ_max（最小 σ ではなく最大）** を使う（波速 √(σk³/ρ) が σ で増大）。
-- **Marangoni dt**: Δt_Ma ≤ C_Ma · μ̄ Δx / (|∇σ|_max W)（Marangoni 対流速度 U_Ma~|∇σ|W/μ の移流 CFL。C_Ma≈0.5、**係数は要導出/要チューニング** — 文献に定式化された相場 Marangoni CFL は見当たらず、移流スケールからの見積り）。
-- **浮力 dt**: Δt_b ≤ C_b · √(Δx / |β_C ΔC g|)（浮力加速度 a=|β_C ΔC|g に対する √(Δx/a) 制約。熱浮力 β_T も同様。C_b≈0.5、要チューニング）。
+  ∂T/∂t + u·∇T = ∇·[(α + ν_t/Pr_t) ∇T] + Ṡ_T,   Pr_t=turbulent Prandtl number (paired with REQ FR-LES-04)
 
-### 5.2 帰還量のクリップ／緩和
+Thermal property feedback:
 
-- **σ クリップ**: §1.4 の σ_min。
-- **τ クリップ**: §2.2、REQ [τ_min,τ_max]。
-- **under-relaxation**: 物性場を C から更新する際、急変時は χ^(n+1) = (1−ω)χ^(n) + ω χ_target(C)（χ∈{σ,μ,ρ_pert}, ω∈(0,1]、既定 ω=1、剛直時 ω<1）。強連成・反復（REQ FR-COUP-01）と併用。
-- **開始 ramp**: 帰還強度を助走中に 0→1 へ線形 ramp（REQ FR-INIT-01 のインペラ/ガス ramp と同期）。初期過渡の非物理的 Marangoni スパイクを抑制。ramp 時間は準定常判定前に完了。
+- **ν(T)**: μ(T) = μ_0 exp[B(1/T − 1/T_0)] (Arrhenius, standard for liquid viscosity), or linear μ(T)=μ_0[1−b(T−T_0)]. Add f_T(T)=μ(T)/μ_0 as an additional multiplicative factor to §2's composition rule.
+- **σ(T) (thermal Marangoni)**: σ(T) = σ_0 + σ_T(T−T_0), σ_T=∂σ/∂T (usually <0 for pure substances). Source: Liu et al., Phys. Rev. E 108, 055306 (2023) (linear σ-T and phase-field LBM thermocapillary). The Marangoni force is evaluated via the same mechanism as §1.3's CSF form, with ∇σ=(∂σ/∂T)∇T (additive with surfactant ∇σ=(∂σ/∂C)∇C, linear superposition).
+- **ρ(T)**: Thermal buoyancy F_b^T = ρ_0 β_T(T−T_0)g, β_T=thermal expansion coefficient (additive with §3's solutal Boussinesq → double-diffusive).
 
-### 5.3 発散検知に足す監視量
+### 4.2 Sharing the Scalar ADE Infrastructure and Implementation Recommendation
 
-REQ の既存監視に加え: σ_min 到達率・τ クリップ発動率・|β_C ΔC|（Boussinesq 妥当性）・Marangoni Reynolds/CFL 実効値・∇σ の最大値・弾性数 E 実効値・（Tier-B 時）Γ の [0,1] 逸脱量・界面上 Σσ の総和ドリフト。いずれも閾値超で警告、発散前に検出。
+Temperature can share the **same ADE-LBM distribution and relaxation-time mechanism** as C_k (the only differences being that the feedback targets are σ_T/β_T/μ(T), and that Ṡ_T may include reaction heat/phase-change latent heat). Sharing potential is high.
+
+**Recommendation (material for PM decision)**: The temperature axis should be treated as a **"deferred extension point" in the M-F first version, with only design hooks provided, excluding [temperature] from the first-version scope**. Reasons: (1) The formulas for thermal Marangoni/thermal buoyancy are mathematically isomorphic to the solutal versions, and can share the ADE infrastructure, CSF force, and Boussinesq force, so the cost of adding it later is low (little necessity to force it into the first version). (2) Latent heat, reaction heat, wall thermal boundary conditions (Neumann/Robin), and Pr_t validation would additionally be required, blurring the focus of the first version's stirred-reactor validation (VR-STR-01–07). (3) REQ §1 also brackets [temperature] as a conditional axis. → Reserving a temperature hook in the API (§7) while fixing the formulas in this document is the minimum-risk approach.
 
 ---
 
-## 6. 検証案（VR-STR 系列への追加, 各 3〜5 本）
+## 5. Cross-Cutting Stabilization Policy
 
-| ID(案) | 検証問題 | 測定量 | 許容誤差(初期案) | 格子/パラメータ(初期案) |
+### 5.1 Stability Conditions for Explicit Time Integration
+
+Since all feedback forces are added explicitly, adopt the **minimum** of the following dt constraints (extending REQ FR-COUP-01's capillary dt):
+
+- **Capillary dt**: Δt_σ ≤ √(ρ̄ Δx³/(2π σ)) (as stated in REQ. Resolves the shortest capillary wave. Source: generally Δt ≤ √(ρ_m Δ³/(π σ_max)), Brackbill lineage). For σ, **when σ is variable, use σ_max (not the minimum σ)** (the wave speed √(σk³/ρ) increases with σ).
+- **Marangoni dt**: Δt_Ma ≤ C_Ma · μ̄ Δx / (|∇σ|_max W) (the advective CFL for Marangoni convective velocity U_Ma~|∇σ|W/μ. C_Ma≈0.5, **coefficient is derivation required/needs tuning** — no formulated phase-field Marangoni CFL was found in the literature; this is an estimate from advective scaling).
+- **Buoyancy dt**: Δt_b ≤ C_b · √(Δx / |β_C ΔC g|) (the √(Δx/a) constraint for buoyancy acceleration a=|β_C ΔC|g. Thermal buoyancy β_T is analogous. C_b≈0.5, needs tuning).
+
+### 5.2 Clipping/Relaxation of Feedback Quantities
+
+- **σ clip**: §1.4's σ_min.
+- **τ clip**: §2.2, REQ's [τ_min,τ_max].
+- **Under-relaxation**: When updating property fields from C, in rapidly changing situations use χ^(n+1) = (1−ω)χ^(n) + ω χ_target(C) (χ∈{σ,μ,ρ_pert}, ω∈(0,1], default ω=1, ω<1 under stiff conditions). Used together with strong coupling/iteration (REQ FR-COUP-01).
+- **Startup ramp**: Linearly ramp feedback strength 0→1 during startup (synchronized with REQ FR-INIT-01's impeller/gas ramp). Suppresses unphysical Marangoni spikes during the initial transient. The ramp time completes before the quasi-steady-state judgment.
+
+### 5.3 Monitored Quantities to Add for Divergence Detection
+
+In addition to REQ's existing monitoring: σ_min hit rate, τ clip activation rate, |β_C ΔC| (Boussinesq validity), effective Marangoni Reynolds/CFL number, maximum ∇σ, effective elasticity number E, (for Tier-B) Γ's excursion outside [0,1], and drift of the sum of Σσ over the interface. All trigger warnings above threshold, detected before divergence.
+
+---
+
+## 6. Validation Proposals (Additions to the VR-STR Series, 3–5 items each)
+
+| ID (proposed) | Validation problem | Measured quantity | Tolerance (initial proposal) | Grid/parameters (initial proposal) |
 |---|---|---|---|---|
-| **VR-STR-08** | 熱毛管液滴移動（Young-Goldstein-Block, 微小 Ma,Re）| 終端速度 V vs V_YGB = 2U/[(2+k̃)(2+3μ̃)], U=−σ_T G_T R/μ_B | L2rel(V) < 5%（Ma→0）、勾配収束 2 次 | 液滴 R=20〜40 格子, μ̃=1, k̃=1, G_T 一定, Ma=Re=O(0.1)。出典: Young, Goldstein & Block (1959), J. Fluid Mech. 6:350 |
-| **VR-STR-09** | 界面活性剤 Marangoni 液滴移動 / 定常界面張力勾配駆動 | 定常 Marangoni 対流速度 vs 弾性数 E スケーリング | 速度の E 線形域で L2rel < 10% | 静止流体中の被覆勾配液滴。E=0.1〜0.5, Langmuir σ=1+E ln(1−Γ)。出典: arXiv:2409.19374 |
-| **VR-STR-10** | 粘性成層 Poiseuille（μ(C) 二層）| 速度プロファイル vs 解析解（二層粘性 Poiseuille）| L2rel(u) < 2%、界面速度連続 | 平行平板, 上下で C 段差→μ 比 2〜10, 定常。μ(C)=指数形。解析: 二層 Couette/Poiseuille 連続応力解 |
-| **VR-STR-11** | 溶質 Rayleigh-Taylor / 溶質指状不安定 | 成長率・混合層厚 vs 線形安定性/文献 | 成長率 rel < 15%（初期線形域）| Ra_C 指定, β_C 一定, 2D/3D。Boussinesq F_b。VR-STR-06 の非成層版として符号確認込み |
-| **VR-STR-06+（退化）** | active 帰還 ON の静止成層 | \|u\|_max | < ε（VR-STR-06 と同値）| C≡C_0 一様で F_b≡0、σ=一定で規約 D2 を満たすこと。§3.2 C-B1 の退化テスト |
+| **VR-STR-08** | Thermal capillary droplet migration (Young-Goldstein-Block, small Ma, Re) | Terminal velocity V vs V_YGB = 2U/[(2+k̃)(2+3μ̃)], U=−σ_T G_T R/μ_B | L2rel(V) < 5% (Ma→0), 2nd-order gradient convergence | Droplet R=20–40 lattice units, μ̃=1, k̃=1, G_T constant, Ma=Re=O(0.1). Source: Young, Goldstein & Block (1959), J. Fluid Mech. 6:350 |
+| **VR-STR-09** | Surfactant Marangoni droplet migration / steady surface-tension-gradient driving | Steady Marangoni convective velocity vs elasticity number E scaling | L2rel < 10% in the linear-E regime of velocity | Coverage-gradient droplet in quiescent fluid. E=0.1–0.5, Langmuir σ=1+E ln(1−Γ). Source: arXiv:2409.19374 |
+| **VR-STR-10** | Viscosity-stratified Poiseuille flow (μ(C) two-layer) | Velocity profile vs analytical solution (two-layer viscosity Poiseuille) | L2rel(u) < 2%, interfacial velocity continuity | Parallel plates, C step upper/lower → viscosity ratio 2–10, steady state. μ(C) exponential form. Analytical: two-layer Couette/Poiseuille continuous-stress solution |
+| **VR-STR-11** | Solutal Rayleigh-Taylor / solutal fingering instability | Growth rate, mixing-layer thickness vs linear stability/literature | Growth rate rel < 15% (early linear regime) | Specified Ra_C, constant β_C, 2D/3D. Boussinesq F_b. Sign check included as the non-stratified variant of VR-STR-06 |
+| **VR-STR-06+ (degeneracy)** | Static stratification with active feedback ON | \|u\|_max | < ε (equal to VR-STR-06) | Uniform C≡C_0 giving F_b≡0, satisfying Convention D2 with σ=constant. Degeneracy test for §3.2 C-B1 |
 
-推奨採用: 最小構成として VR-STR-08（熱 Marangoni, 解析解あり最強）・VR-STR-10（粘性帰還, 解析解あり）・VR-STR-06+（退化, 二重計上/成層破壊の回帰）を必須。VR-STR-09（界面活性剤）・VR-STR-11（溶質浮力）は対応帰還を実装する場合に追加。
+Recommended adoption: as a minimum configuration, VR-STR-08 (thermal Marangoni, strongest since an analytical solution exists), VR-STR-10 (viscosity feedback, analytical solution exists), and VR-STR-06+ (degeneracy, regression for double-counting/stratification breakage) are mandatory. VR-STR-09 (surfactant) and VR-STR-11 (solutal buoyancy) are added when the corresponding feedback is implemented.
 
 ---
 
-## 7. API / シナリオ表現の素案
+## 7. Draft API / Scenario Representation
 
-シナリオ JSON の `scalars[k]` に `feedback` オブジェクトを追加（既定は全 null=passive 相当、REQ の active 既定では最低 1 つ有効）:
+Add a `feedback` object to `scalars[k]` in the scenario JSON (default is all null = passive equivalent; under REQ's active default, at least one must be enabled):
 
 ```jsonc
 "scalars": [{
   "name": "O2",
   "feedback": {
-    "sigma":     { "model": "langmuir", "sigma0": <σ_0>, "E": <弾性数>,
+    "sigma":     { "model": "langmuir", "sigma0": <σ_0>, "E": <elasticity number>,
                    "adsorption": { "K": <k_a/k_d>, "gamma_inf": <Γ_∞> },
-                   "sigma_min_ratio": 0.05, "tier": "A" },   // A=バルクC平衡, B=界面Γ場(後付け)
+                   "sigma_min_ratio": 0.05, "tier": "A" },   // A=bulk-C equilibrium, B=interfacial-Γ field (deferred)
     "viscosity": { "model": "exponential", "A": <A>, "C0": <C_0>,
                    "clip": "inherit_tau_bounds" },           // linear|exponential|krieger_dougherty
     "buoyancy":  { "model": "boussinesq", "beta_C": <β_C>, "C0": <C_0>,
-                   "g": [0,0,-9.81] }                        // non_boussinesq は後付け
+                   "g": [0,0,-9.81] }                        // non_boussinesq is deferred
   }
 }],
-"temperature": {                                             // オプション軸(初版は無効化フックのみ)
+"temperature": {                                             // optional axis (first version is disable-hook only)
   "enabled": false,
   "feedback": { "sigma_T": <∂σ/∂T>, "beta_T": <β_T>, "viscosity": {"model":"arrhenius","B":<B>} },
   "pr_t": 0.85
 }
 ```
 
-**適用範囲・相互排他の検証事項（コンフィグ検証層 REQ §1 に追加）**:
+**Range of applicability / mutual-exclusion validation items (additions to the config validation layer, REQ §1)**:
 
-- `sigma.model=langmuir` かつ `sigma.tier=A` は「界面吸着が準平衡」の前提。τ_ads と界面変形時間の比を warning 表示（棄却はしない）。
-- `viscosity.model=krieger_dougherty` は C を体積分率解釈するため、同一 C_k を `buoyancy=boussinesq`（希薄溶質前提）と併用する場合に整合警告（希薄と高充填は排他的物理）。
-- `sigma` 帰還が有効な相場スカラーは、界面（`resolved-phasefield`）が有効なモードでのみ意味を持つ（`point-bubble` 単独時は Marangoni 力を界面デルタで定義できない → 棄却 or k_L a 側へ委譲）。
-- `buoyancy` は well-balanced 重力（REQ FR-BC-02）と§3.2 C-B2 の分離を前提。有効時は VR-STR-06+ 退化テストを CI 必須化。
-- 複数スカラーの σ 帰還（界面活性剤 + 温度）は ∇σ を線形重畳（§4.1）。同一界面に複数 σ モデルを与えた場合の合成則（加算か最小か）を明示要（初版は加算=線形重畳）。
-- Sc_t は REQ 既定 0.7 を継承（`scalars[k]` 個別上書き可）。温度は Pr_t（既定 0.85 提案、要文献確認）。
+- `sigma.model=langmuir` with `sigma.tier=A` presumes "interfacial adsorption is quasi-equilibrium." Display a warning (do not reject) based on the ratio of τ_ads to the interface deformation timescale.
+- `viscosity.model=krieger_dougherty` interprets C as a volume fraction, so when the same C_k is used together with `buoyancy=boussinesq` (which presumes a dilute solute), issue a consistency warning (dilute and high-loading are mutually exclusive physics).
+- `sigma` feedback is only meaningful for phase-field scalars in modes where the interface (`resolved-phasefield`) is enabled (in `point-bubble`-only mode, the Marangoni force cannot be defined via an interfacial delta → reject, or delegate to the k_L a side).
+- `buoyancy` presumes separation from well-balanced gravity (REQ FR-BC-02) per §3.2 C-B2. When enabled, make the VR-STR-06+ degeneracy test mandatory in CI.
+- For multiple scalars' σ feedback (surfactant + temperature), ∇σ is linearly superposed (§4.1). The composition rule when multiple σ models are given to the same interface (additive or minimum) must be made explicit (first version: additive = linear superposition).
+- Sc_t inherits the REQ default of 0.7 (overridable per `scalars[k]`). Temperature uses Pr_t (default 0.85 proposed, needs literature confirmation).
 
 ---
 
-## 8. 残論点（PM 判断が必要）
+## 8. Remaining Open Points (Require PM Decision)
 
-1. **規約 D1 の係数整合（最重要）**: Liu ら (2306.11320) の chemical-potential 併用 Marangoni 形は界面幅に W² を用いており、REQ の (κ,β)（σ=√(2κβ)/6, W=4√(κ/(2β))）と係数が一致するか**未確認（要導出）**。実装前に平衡プロファイルで W²↔κ を突き合わせ、退化テスト（規約 D2, VR-STR-06+）で数値検証すること。
-2. **界面活性剤の Tier-A 単純化（バルク C 直接依存）を初版で許容するか**: 準平衡吸着の近似ゆえ非平衡・強変形界面では誤差。Tier-B（Γ 独立場）を初版に含めるか後付けにするかは物質移動忠実度要求（REQ §1 界面既定=resolved 忠実度優先）との緊張。本書は Tier-A 初版・Tier-B 後付けを提案。
-3. **温度軸をスコープに含めるか**: §4.2 で「後付け拡張点＋API フック予約」を推奨。含める場合は VR（熱毛管対流 + 熱境界）とメモリ予算（追加分布）の追記が必要。
-4. **Marangoni/浮力 dt の係数**（C_Ma, C_b）は文献に定式がなく見積り。実装後にキャリブレーション必要（VR-STR-08/11 で逆算）。
-5. **KD 型粘性と Boussinesq 浮力の物理的排他**: 同一スカラーが「高充填懸濁」と「希薄溶質浮力」を同時に満たすことは通常ない。C_k ごとに帰還モデルの物理的一貫性をどこまで検証層で強制するか。
+1. **Coefficient consistency for Convention D1 (most important)**: The chemical-potential-combined Marangoni form from Liu et al. (2306.11320) uses W² for the interface width, and whether the coefficients match REQ's (κ,β) (σ=√(2κβ)/6, W=4√(κ/(2β))) is **unconfirmed (derivation required)**. Before implementation, cross-check W²↔κ via the equilibrium profile, and numerically verify via the degeneracy test (Convention D2, VR-STR-06+).
+2. **Whether to allow the Tier-A simplification for surfactants (direct bulk-C dependence) in the first version**: Since it is a quasi-equilibrium adsorption approximation, it introduces error in non-equilibrium, strongly deforming interfaces. Whether to include Tier-B (independent Γ field) in the first version or defer it is in tension with mass-transfer fidelity requirements (REQ §1's interface default = fidelity priority). This document proposes Tier-A for the first version, Tier-B deferred.
+3. **Whether to include the temperature axis in scope**: §4.2 recommends "deferred extension point + API hook reservation." If included, additional VR (thermal capillary convection + thermal boundary) and memory budget (additional distributions) entries are needed.
+4. **Coefficients for Marangoni/buoyancy dt** (C_Ma, C_b) are estimates, with no formula in the literature. Calibration is needed after implementation (back-calculated via VR-STR-08/11).
+5. **Physical exclusivity of KD-type viscosity and Boussinesq buoyancy**: A single scalar simultaneously satisfying "high-loading suspension" and "dilute solutal buoyancy" is not typical. The question is how strongly the validation layer should enforce physical consistency of the feedback model per C_k.

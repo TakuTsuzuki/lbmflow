@@ -1,149 +1,149 @@
-# LBMFlow 実装プラン
+# LBMFlow Implementation Plan
 
-> **2026-07-05 改定**: ユーザー指示により 3D・スパコンスケール・GPU を必須要件へ昇格。
-> 以降の計画は [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md)（勝ち筋4本柱 + R1-R5）と
-> [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md)（次元×格子×精度×バックエンド×分割の直交設計）
-> に従う。マイルストーンは M-A（CPU SIMD/wgpu 評価, 進行中）→ M-B（コアV2）→
-> M-C（3D）→ M-D（MPI分散）→ M-E（FP16/マルチGPU/公開ベンチ）→ M-F（垂直機能）。
+> **2026-07-05 revision**: per user directive, 3D, supercomputer-scale, and GPU are promoted to mandatory requirements.
+> Subsequent plans follow [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md) (4 pillars of the winning edge + R1-R5) and
+> [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) (orthogonal design of dimension × lattice × precision × backend × partitioning).
+> Milestones are M-A (CPU SIMD/wgpu evaluation, in progress) → M-B (core V2) →
+> M-C (3D) → M-D (MPI distributed) → M-E (FP16/multi-GPU/public benchmarks) → M-F (vertical features).
 
-**目標**: 商用グレードの格子ボルツマン法（LBM）流体シミュレータ。
-精度と速度のトレードオフを明示的に制御でき、混相流に対応し、初学者でも迷わず使える
-GUI モードと、エージェントから操作できる Agent モードの両方を備える。
+**Goal**: A commercial-grade lattice Boltzmann method (LBM) fluid simulator.
+It can explicitly control the accuracy-vs-speed tradeoff, supports multiphase flow, and provides both a
+GUI mode that even beginners can use without getting lost and an Agent mode operable from agents.
 
-**技術スタック**: Rust（コアエンジン / CLI / MCP）+ TypeScript（GUI, Vite）+ WASM（ブラウザ実行）
+**Technology stack**: Rust (core engine / CLI / MCP) + TypeScript (GUI, Vite) + WASM (browser execution)
 
-**体制**: Fable = PM / アーキテクト / 統合検証。実装は Claude サブエージェント・Codex に
-実行可能な粒度で委任。**境界条件テストスイートは Codex が敵対的に作成**し、
-エンジン側はそれを全て通過するまで修正する（テスト作者と実装者を分離して仕様バグを検出）。
+**Team structure**: Fable = PM / architect / integration validation. Implementation is delegated to Claude subagents and Codex
+at an executable granularity. **The boundary-condition test suite is created adversarially by Codex**, and
+the engine side is fixed until it passes them all (separating test authors from implementers to detect specification bugs).
 
 ---
 
-## アーキテクチャ
+## Architecture
 
 ```
-流体シミュレータ/
+LBMFlow/
 ├── Cargo.toml              # workspace
 ├── crates/
-│   ├── lbm-core/           # コアエンジン（純Rustライブラリ、no I/O）
+│   ├── lbm-core/           # core engine (pure Rust library, no I/O)
 │   │   ├── src/
-│   │   │   ├── lattice.rs      # D2Q9 定数（速度・重み・反対方向）
-│   │   │   ├── real.rs         # f32/f64 ジェネリック（Real トレイト）
-│   │   │   ├── domain.rs       # 領域・エッジ境界条件・障害物マスク
-│   │   │   ├── collision.rs    # BGK / TRT（/ 将来 MRT・cumulant）
-│   │   │   ├── sim.rs          # Simulation: collide→stream→BC の1ステップ
-│   │   │   ├── multiphase.rs   # Shan-Chen（Phase 4）
-│   │   │   └── analysis.rs     # 誤差ノルム・保存量・力測定ヘルパ
-│   │   └── tests/          # 検証テスト（codex 作成の敵対的スイート含む）
-│   ├── lbm-cli/            # JSONシナリオ実行 CLI（Agent モードの土台）
-│   └── lbm-wasm/           # wasm-bindgen バインディング
+│   │   │   ├── lattice.rs      # D2Q9 constants (velocities, weights, opposite directions)
+│   │   │   ├── real.rs         # f32/f64 generic (Real trait)
+│   │   │   ├── domain.rs       # domain, edge boundary conditions, obstacle mask
+│   │   │   ├── collision.rs    # BGK / TRT (/ future MRT, cumulant)
+│   │   │   ├── sim.rs          # Simulation: one step of collide→stream→BC
+│   │   │   ├── multiphase.rs   # Shan-Chen (Phase 4)
+│   │   │   └── analysis.rs     # error norms, conserved quantities, force-measurement helpers
+│   │   └── tests/          # validation tests (including the codex-authored adversarial suite)
+│   ├── lbm-cli/            # JSON scenario execution CLI (foundation of Agent mode)
+│   └── lbm-wasm/           # wasm-bindgen bindings
 ├── web/                    # TypeScript GUI (Vite)
-├── mcp/                    # MCP サーバー（Agent モード）
+├── mcp/                    # MCP server (Agent mode)
 └── docs/
-    ├── PLAN.md             # 本ファイル
-    ├── VALIDATION.md       # 検証テスト仕様マトリクス（codex への発注仕様）
-    └── PHYSICS.md          # 採用した物理モデル・数式の根拠（随時追記）
+    ├── PLAN.md             # this file
+    ├── VALIDATION.md       # validation-test specification matrix (commissioning spec for codex)
+    └── PHYSICS.md          # rationale for adopted physics models and formulas (appended as needed)
 ```
 
-### コア設計の要点
+### Core design highlights
 
-- **格子**: D2Q9（2D）から開始。データ配置は cell-major AoS `f[cell*9 + q]`
-  （rayon 行並列と安全に両立、WASM でも同一コード）。
-- **ストリーミング**: pull 方式（gather）。collide（in-place）→ stream（f→f_tmp）→ swap。
-- **衝突演算子**: BGK（速い/低安定）と TRT（magic Λ=3/16 で壁位置厳密・推奨デフォルト）。
-  精度と速度のトレードオフ軸①。将来 MRT / cumulant を追加。
-- **精度**: `Simulation<T: Real>` で f32/f64 を切替（トレードオフ軸②）。
-- **並列**: rayon（feature "parallel"、WASM では off）。トレードオフ軸③（スレッド数）。
-- **体積力**: Guo forcing（2次精度、u は F/2 補正込み）。Shan-Chen でも使う。
-- **壁**: half-way bounce-back（静止壁・移動壁）。エッジ指定の壁は 1 セルのソリッド
-  リムとして実現 → Zou-He とのコーナー特殊処理が不要になる。
-- **開境界**: Zou-He（速度流入・圧力流出）を面法線パラメタ化した単一実装で 4 辺対応。
-  Outflow（ゼロ勾配コピー）も提供。
-- **力測定**: momentum-exchange 法（円柱 Cd/St ベンチに必要）。
+- **Lattice**: start from D2Q9 (2D). Data layout is cell-major AoS `f[cell*9 + q]`
+  (safely compatible with rayon row-parallelism, identical code on WASM too).
+- **Streaming**: pull scheme (gather). collide (in-place) → stream (f→f_tmp) → swap.
+- **Collision operator**: BGK (fast/low stability) and TRT (with magic Λ=3/16, wall position is exact, recommended default).
+  Accuracy-vs-speed tradeoff axis (1). Add MRT / cumulant in the future.
+- **Precision**: switch f32/f64 via `Simulation<T: Real>` (tradeoff axis (2)).
+- **Parallelism**: rayon (feature "parallel", off on WASM). Tradeoff axis (3) (thread count).
+- **Body force**: Guo forcing (2nd-order accurate, u includes F/2 correction). Used in Shan-Chen too.
+- **Walls**: half-way bounce-back (stationary walls, moving walls). Edge-specified walls are realized as a 1-cell solid
+  rim → the corner special-casing with Zou-He becomes unnecessary.
+- **Open boundaries**: a single implementation of Zou-He (velocity inflow, pressure outflow) parameterized by face normal handles all 4 edges.
+  Outflow (zero-gradient copy) is also provided.
+- **Force measurement**: momentum-exchange method (required for the cylinder Cd/St benchmark).
 
-### 境界条件の組合せ規則（仕様）
+### Boundary-condition combination rules (specification)
 
-- Periodic は対向エッジでペア必須。
-- Zou-He / Outflow エッジの直交エッジは Wall（リム）か Periodic であること
-  （エッジ同士が裸で接するコーナーは非サポート、構築時にエラー）。
-- τ ≤ 0.5 は構築時エラー。|u| > 0.3（格子単位）は警告。
+- Periodic requires a pair on opposing edges.
+- The edges orthogonal to a Zou-He / Outflow edge must be Wall (rim) or Periodic
+  (corners where edges meet bare are unsupported, error at construction time).
+- τ ≤ 0.5 is a construction-time error. |u| > 0.3 (lattice units) is a warning.
 
 ---
 
-## フェーズ計画
+## Phase plan
 
-| Phase | 内容 | 完了条件 |
+| Phase | Content | Completion criteria |
 |---|---|---|
-| 0 | 基盤: git / workspace / PLAN / VALIDATION / CLAUDE.md | 文書コミット済み |
-| 1 | lbm-core 縦切り（D2Q9, BGK/TRT, Guo力, BB/移動壁/周期/Zou-He/Outflow, 力測定）+ スモークテスト | TGV 収束次数≈2、Poiseuille(TRT)厳密、Couette 厳密、保存則テスト green |
-| 2 | **codex に VALIDATION.md の敵対的テストスイートを実装させる** → 全通過までエンジン修正。キャビティ(Ghia)・円柱(Cd/St) ベンチ含む | `cargo test --release` 全 green |
-| 3 | 精度×速度: f32 検証、MLUPS ベンチ、スレッドスケーリング、モード選択ガイド、**偏差格納方式**（f−w を保持して f32 の有効精度を引き上げる。BB は線形なので偏差空間で不変、Zou-He は定数項の折込みが必要、ρ = 1+Σdev） | トレードオフ実測表が docs に載る。f32 の T6 誤差が改善 |
-| 4 | 混相流: Shan-Chen（単成分多相 + 二成分）+ codex 検証（Laplace 則、接触角、Rayleigh-Taylor） | 混相テスト全 green |
-| 5 | GUI: wasm-pack + Vite + TS。プリセット駆動、障害物ペイント、リアルタイム可視化、日本語 UI | プリセット 5 種がワンクリックで動く |
-| 6 | Agent モード: lbm-cli（JSON シナリオ→構造化出力）+ MCP サーバー | エージェントがシナリオ実行→結果取得できる |
-| 7 | 総合レビュー → 次期プラン（3D/GPU/LES/cumulant 等）策定 → 継続改善 | レビュー文書 + 次期プラン |
+| 0 | Foundation: git / workspace / PLAN / VALIDATION / CLAUDE.md | Documents committed |
+| 1 | lbm-core vertical slice (D2Q9, BGK/TRT, Guo force, BB/moving wall/periodic/Zou-He/Outflow, force measurement) + smoke tests | TGV convergence order ≈2, Poiseuille(TRT) exact, Couette exact, conservation-law tests green |
+| 2 | **Have codex implement the adversarial test suite from VALIDATION.md** → fix the engine until all pass. Includes the cavity (Ghia) and cylinder (Cd/St) benchmarks | `cargo test --release` all green |
+| 3 | Accuracy × speed: f32 validation, MLUPS benchmarks, thread scaling, mode-selection guide, **deviation-storage scheme** (keep f−w to raise the effective precision of f32. BB is linear so it is invariant in deviation space, Zou-He needs the constant term folded in, ρ = 1+Σdev) | The measured tradeoff table appears in docs. The T6 error for f32 improves |
+| 4 | Multiphase flow: Shan-Chen (single-component multiphase + two-component) + codex validation (Laplace law, contact angle, Rayleigh-Taylor) | Multiphase tests all green |
+| 5 | GUI: wasm-pack + Vite + TS. Preset-driven, obstacle painting, real-time visualization, Japanese UI | 5 presets run with one click |
+| 6 | Agent mode: lbm-cli (JSON scenario → structured output) + MCP server | An agent can run a scenario and retrieve results |
+| 7 | Comprehensive review → formulate the next plan (3D/GPU/LES/cumulant, etc.) → continuous improvement | Review document + next plan |
 
-### 検証駆動の開発プロトコル
+### Validation-driven development protocol
 
-1. 仕様（VALIDATION.md）に受入基準を数値で明記。
-2. codex がテストを書く（実装を見ずに仕様から書くことを原則とする）。
-3. エンジンが落ちたら: (a) エンジンのバグ → 修正、(b) 仕様の物理が誤り → 実験して仕様を修正
-   （修正理由を PHYSICS.md に記録）、(c) テストのバグ → codex に差し戻し。
-4. 全 green で次フェーズへ。フェーズ末に `git commit`。
+1. State acceptance criteria numerically in the specification (VALIDATION.md).
+2. codex writes the tests (in principle written from the specification without looking at the implementation).
+3. If the engine fails: (a) engine bug → fix, (b) specification physics is wrong → experiment and fix the specification
+   (record the reason for the fix in PHYSICS.md), (c) test bug → send back to codex.
+4. Move to the next phase when all green. Run `git commit` at the end of each phase.
 
-## 現行キュー: 改善フェーズ（R-Phase）と M-F（2026-07-05 制定）
+## Current queue: improvement phase (R-Phase) and M-F (established 2026-07-05)
 
-原典 2 本: [SOLVER_IMPROVEMENT_SPEC.md](SOLVER_IMPROVEMENT_SPEC.md)（並走レビューの
-41 項目・実験 E1〜E10 で全主張検証済み・main 取込済み）と
-[REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md)（M-F 要求 rev.1b、codex 敵対レビュー
-48 件反映済み、受入は VALIDATION.md **T17**）。
+2 source documents: [SOLVER_IMPROVEMENT_SPEC.md](SOLVER_IMPROVEMENT_SPEC.md) (41 items from the
+concurrent review, all claims validated by experiments E1–E10, merged into main) and
+[REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md) (M-F requirement rev.1b, 48 codex adversarial-review
+items reflected, acceptance is VALIDATION.md **T17**).
 
-### R-Phase（改善仕様書 §4 の実施順序に従う）
+### R-Phase (follows the execution order in §4 of the improvement spec)
 
-- **R-Phase 1（実行中 2026-07-05〜）**: A-2〜A-10 = 入口ガード・正しさ。
-  worktree `r-phase1`、Opus 委任。共通 DoD = 既存テスト無修正 green・合法設定ビット不変。
-  D-6/D-7（文書整合）は PM 直轄で適用済み（COMPETITIVE_SPEC 改定履歴・VALIDATION T13/T14 節）。
-- **R-Phase 2（R-1 着地後・~1.5 週）**: B-1（Fields 一般化 + GpuSolver 統合）→ B-2
-  （同期点契約）→ 並行 B-3 / B-5〜B-8、C-9〜C-11、D-1〜D-5。
-  **M-F からの追加要求**: B-1 の設計は複数分布セット（相場 g・スカラー h）・per-cell
-  物性場（B-6 の一般化）・Lagrangian バッファ（IBM マーカー/粒子/点気泡）を収容できる
-  こと — M-F の構造前提であり、M-E（FP16/マルチ GPU）と共通の土台。
-- **R-Phase 3（M-E と並走可）**: C-1（MPI セットアップのローカル化 = 10⁹ 格子 OOM 解消）、
-  C-2（通信オーバーラップ。前提: E8 の probe 二重計上シェル修正）、C-4〜C-8、
-  C-12〜C-16、D-8〜D-10。
-- **M-E は B-1/B-2/C-9/C-12/C-13/D-9 完了が前提**（仕様書 §4 の依存関係）。
+- **R-Phase 1 (in progress 2026-07-05–)**: A-2–A-10 = entry guards, correctness.
+  worktree `r-phase1`, delegated to Opus. Common DoD = existing tests green without modification, legal-configuration bits invariant.
+  D-6/D-7 (document consistency) already applied under direct PM control (COMPETITIVE_SPEC revision history, VALIDATION T13/T14 sections).
+- **R-Phase 2 (after R-1 lands, ~1.5 weeks)**: B-1 (Fields generalization + GpuSolver integration) → B-2
+  (sync-point contract) → concurrent B-3 / B-5–B-8, C-9–C-11, D-1–D-5.
+  **Additional requirement from M-F**: the B-1 design must accommodate multiple distribution sets (phase-field g, scalar h), per-cell
+  material-property fields (generalization of B-6), and Lagrangian buffers (IBM markers/particles/point bubbles)
+  — this is a structural premise of M-F and a foundation shared with M-E (FP16/multi-GPU).
+- **R-Phase 3 (can run concurrently with M-E)**: C-1 (localizing the MPI setup = resolving 10⁹-lattice OOM),
+  C-2 (communication overlap. Premise: the E8 probe double-counting shell fix), C-4–C-8,
+  C-12–C-16, D-8–D-10.
+- **M-E is premised on completion of B-1/B-2/C-9/C-12/C-13/D-9** (dependency relations in §4 of the spec).
 
-### M-F: 回転境界・高密度比二相・LES 連成 3D（REQ-M-F-STR rev.1b）
+### M-F: rotating boundary, high-density-ratio two-phase, LES-coupled 3D (REQ-M-F-STR rev.1b)
 
-確定済み設計判断（プロジェクトオーナー決定）: **スコープ一括**（サブシステムを段階分割
-せず同時実装）/ **忠実度既定**（IBM-inertial・resolved-phasefield・active スカラー・
-two-way 粒子・uniform 格子・界面近傍 f64+バルク f32）、低コスト近似（MRF・point-bubble・
-one-way・AMR・積極 f32）は同一 trait 背後の後付け拡張 / 物理競合モードは構成検証で
-実行時相互排他（A-4 の `GlobalSpec::validate` を拡張）。
+Confirmed design decisions (decided by the project owner): **scope all-at-once** (implement subsystems simultaneously
+without staged splitting) / **fidelity defaults** (IBM-inertial, resolved-phasefield, active scalar,
+two-way particles, uniform lattice, f64 near the interface + f32 in the bulk); low-cost approximations (MRF, point-bubble,
+one-way, AMR, aggressive f32) are add-on extensions behind the same trait / physics-conflicting modes are
+mutually exclusive at runtime via configuration validation (extending A-4's `GlobalSpec::validate`).
 
-実装トラック（R-Phase 2 着地後に並列発注。worktree 分離・実装 Opus/Sonnet・
-**検証テストは codex が REQ/T17 から敵対的に作成**の従来体制）:
+Implementation tracks (commissioned in parallel after R-Phase 2 lands. Conventional team structure of worktree separation, implementation by Opus/Sonnet,
+**validation tests created adversarially by codex from REQ/T17**):
 
-| トラック | 内容 | 主要 FR | 検証 | 依存 |
+| Track | Content | Primary FR | Validation | Dependency |
 |---|---|---|---|---|
-| MF-α | D3Q27 格子 + 中心モーメント/cumulant 衝突 | FR-CORE-01/02 | モーメント等方性・TGV3D 次数・ガリレイ不変帯 | R-2 |
-| MF-β | LES（WALE 既定）+ 非 Newton μ(γ̇) + 応力場評価（規約 FR-STRESS-01 固定済み） | FR-LES-*, FR-STRESS-* | VR-STR-03、チャネル Re_τ=180 vs DNS | R-2（B-6） |
-| MF-γ | 保存型 Allen-Cahn 高密度比二相（10³）+ well-balanced 重力 + スパージャ/脱気 BC | FR-VOF-*, FR-BC-* | VR-STR-02/06、Laplace・寄生流 Ca<10⁻³・単一気泡 Grace | R-2（B-1 複数分布） |
-| MF-δ | IBM-inertial 回転境界 + トルク/Np 測定 | FR-ROT-* | VR-STR-01、Taylor-Couette トルク・IBM 球抗力 vs T15 基準 | R-2（B-1 Lagrangian） |
-| MF-ε | スカラー ADE（active 帰還）+ Lagrangian 粒子（せん断曝露記録） | FR-LES-04, FR-PART-* | VR-STR-04、Taylor-Aris・沈降終端速度 vs SN | R-2（B-1） |
-| MF-ζ | 連成統合（§5 データフロー・dt 制約）+ 構成排他 + I/O/統計/GUI 3D 表示 + 受入ラン | FR-COUP-*, FR-INIT, FR-IO-* | VR-STR-05/07 + 01/02 の連成系 | MF-α〜ε |
+| MF-α | D3Q27 lattice + central-moment/cumulant collision | FR-CORE-01/02 | moment isotropy, TGV3D order, Galilean-invariance band | R-2 |
+| MF-β | LES (WALE default) + non-Newtonian μ(γ̇) + stress-field evaluation (convention FR-STRESS-01 fixed) | FR-LES-*, FR-STRESS-* | VR-STR-03, channel Re_τ=180 vs DNS | R-2 (B-6) |
+| MF-γ | conservative Allen-Cahn high-density-ratio two-phase (10³) + well-balanced gravity + sparger/degassing BC | FR-VOF-*, FR-BC-* | VR-STR-02/06, Laplace, parasitic current Ca<10⁻³, single-bubble Grace | R-2 (B-1 multiple distributions) |
+| MF-δ | IBM-inertial rotating boundary + torque/Np measurement | FR-ROT-* | VR-STR-01, Taylor-Couette torque, IBM sphere drag vs T15 reference | R-2 (B-1 Lagrangian) |
+| MF-ε | scalar ADE (active feedback) + Lagrangian particles (shear-exposure recording) | FR-LES-04, FR-PART-* | VR-STR-04, Taylor-Aris, settling terminal velocity vs SN | R-2 (B-1) |
+| MF-ζ | coupling integration (§5 dataflow, dt constraints) + configuration exclusivity + I/O/statistics/GUI 3D display + acceptance run | FR-COUP-*, FR-INIT, FR-IO-* | VR-STR-05/07 + coupled system of 01/02 | MF-α–ε |
 
-残仕様詰めの状況（2026-07-05 深夜）: **active スカラー帰還式** = リサーチ完了
-（docs/proposals/active-scalar-feedback.md。**実装前必須の要導出 1 件**: Liu ら
-Marangoni 形の W²↔(κ,β) 係数整合 — REQ §3 に明記済み）/
-**f64/f32 界面帯幅** = MF-γ 実装時に実験で凍結（characterize→freeze）/
-**trait 境界 API** = R-Phase 2 の B-1 設計と同時に確定（ARCHITECTURE_V2 に追記）/
-**REQ 第 2 次 codex 検証** = 完了・11 件全採択 → **rev.2 適用済み**
-（VR-STR-RELAX 新設・納品スコープ明確化・変数 σ 規約ほか。
-所見原本: docs/proposals/req-round2-findings.md）。
+Status of remaining spec details (late night 2026-07-05): **active scalar feedback formula** = research complete
+(docs/proposals/active-scalar-feedback.md. **1 derivation required before implementation**: consistency of the
+Liu et al. Marangoni-form W²↔(κ,β) coefficients — already stated in REQ §3) /
+**f64/f32 interface band width** = frozen by experiment at MF-γ implementation time (characterize→freeze) /
+**trait boundary API** = confirmed together with the B-1 design of R-Phase 2 (appended to ARCHITECTURE_V2) /
+**REQ 2nd-round codex validation** = complete, all 11 items adopted → **rev.2 applied**
+(new VR-STR-RELAX, delivery-scope clarification, variable-σ convention, and others.
+Findings original: docs/proposals/req-round2-findings.md).
 
-工数感（並列エージェント前提）: R-2 ~1.5 週 → MF-α〜ε 並列 ~1-2 週 → MF-ζ 統合 ~1 週。
-1e9 格子級はメモリ予算表（REQ §7）により**クラスタ専用**（単機開発線は ≤256³）—
-実測はクラスタ計画（CLUSTER_OPTIONS.md、ユーザー判断待ち）に統合。
+Effort sense (assuming parallel agents): R-2 ~1.5 weeks → MF-α–ε parallel ~1-2 weeks → MF-ζ integration ~1 week.
+The 1e9-lattice class is **cluster-only** per the memory budget table (REQ §7) (the single-machine development line is ≤256³) —
+measurements are consolidated into the cluster plan (CLUSTER_OPTIONS.md, awaiting user decision).
 
 **Fine-grained scheduling (rev.3)**: the authoritative dependency DAG is
 **REQ_STIRRED_REACTOR.md §11** (W-items; MF-α〜ζ above are the delegation bundles,
@@ -159,61 +159,60 @@ two consumers). Validation (W-VAL) stays codex-adversarial and implementation-se
 (code, docs, commit messages, UI/CLI strings). Legacy Japanese content is being
 translated by a dedicated spawned session; this file will be fully translated there.
 
-## 進捗メモ
+## Progress notes
 
-- 2026-07-05 深夜: **並走レビューセッションの成果を main へ統合**。改善仕様書 v1 +
-  実験クレート取込（E2/E7 が改名後 main で数値一致再現）。PM 判断 4 件確定:
-  (a) 仕様書取込 = PM 実施済み (b) R-Phase 2 は R-1 直後・M-E/M-F 共通前提
-  (c) D-6 = PM 直轄で適用済み（COMPETITIVE_SPEC 改定履歴参照）(d) codex D-8 発注は
-  R-1 着地後。**R-Phase 1 発注**（worktree r-phase1・Opus・A-2〜A-10）。
-  **M-F 要求 rev.1b 確定**（表題中立化・メモリ予算表・T17 配線）と実装トラック計画
-  （上表）。codex #7（T15.5 3D キャビティ）実行中。
-- 2026-07-05 晩: **R1/R2/R3 全達成を公式判定**（REVIEW_2026-07-05_2.md。
-  ※受入帯は 2026-07-05 D-6 改定を正とする: 球抗力 ±10%・D_h 正規化、弱スケ
-  85% 線は n≤4 局所、3D キャビティ T15.5 は codex #7 で追実装中）。
-  M-D MPI 完了（T13-MPI 全ケースビット一致、弱スケ 97-99% n≤4、MPI_GUIDE 完備）。
-  CpuSimd 融合バックエンド（2D 新記録 1,183 MLUPS、3D 2-3x、等価 ~6e-14）。
-  ワークスペース 205 テスト緑。進行中: V1 引退（v1-retirement）+ リサーチ 3 本
-  （公開ベンチ比較 / 3D キャビティ参照 / クラスタ選択肢）。CI workflow 準備済み。
-- 2026-07-05 夕: **M-C 3D物理 完了（R1達成）**。D3Q19 Zou-He 面境界（未知5本+接線補正、
-  2D退化 8.9e-16）、ダクト厳密級数 2.3e-4、球抗力は流体力学的ペア (r+½, Re(D+1)/D)
-  正規化で +7.1%/+0.6%/+2.3%（重量級D=24含む全合格）、TGV3D 次数1.910。
-  シナリオ/CLI nz 対応（VTK 3D/断面PNG）。**Wgpuバックエンド統合（R2）**: push型融合で
-  CPU と演算子順序厳密一致、T14 6構成 ≤1e-5、5.9〜11.4 GLUPS。ワークスペース184緑。
-  進行中: M-D MPI分散（arm64 Open MPI 5.0.9 を ~/.local にソースビルド済み）。
-- 2026-07-05 午後: **M-B コアV2 完了・統合**（V1と物理等価、T13分割不変は敵対攻撃
-  8種＋3D 2×2×2までビット一致級、D3Q19スモーク動作、V1暗黙仕様8件をテスト凍結）。
-  **Phase 9 完了**: CPU融合カーネル 3.2〜7倍（f32峰1,124 MLUPS）+ GPU実測
-  6,975〜12,152 MLUPS。MCP非同期ジョブAPI（R4）。codex #6 の敵対T13は全て耐えた。
-  進行中: Wgpuバックエンド本実装（m-b-wgpu）と3D物理 M-C（m-c-3d）の2並列。
-- 2026-07-05 昼: **Phase 8 完了**（T12 RT γ比1.118・T11c 接触角フルレンジ・T9b 対流流出は
-  反射ケースで16倍改善、67テスト緑）。**GPU 実測完了**: M5 Max Metal で 6,975〜12,152
-  MLUPS（CPU比16〜42倍、検証L∞ 7e-6、GPU_EVALUATION.md、R2目標を4-8倍超過）。
-  シナリオ/CLI に convectiveOutflow・wallRho・VTK・gallery。GUI にシナリオ書き出し
-  （→lbm run E2E確認）・発散ガード・MLUPS。SoA/SIMD は WIP（phase9-perf、クォータ
-  回復後に再開）。次: M-B コアV2 の並列発注。
+- 2026-07-05 late night: **Integrated the results of the concurrent review session into main**. Improvement spec v1 +
+  experiment crate merged (E2/E7 reproduce numerically matching values on main after renaming). 4 PM decisions confirmed:
+  (a) spec merge = done by PM (b) R-Phase 2 is right after R-1, a common premise of M-E/M-F
+  (c) D-6 = applied under direct PM control (see COMPETITIVE_SPEC revision history) (d) codex D-8 commissioning is
+  after R-1 lands. **R-Phase 1 commissioned** (worktree r-phase1, Opus, A-2–A-10).
+  **M-F requirement rev.1b confirmed** (neutral title, memory budget table, T17 wiring) and the implementation-track plan
+  (table above). codex #7 (T15.5 3D cavity) in progress.
+- 2026-07-05 evening: **Officially judged R1/R2/R3 all achieved** (REVIEW_2026-07-05_2.md.
+  Note: the acceptance band takes the 2026-07-05 D-6 revision as authoritative: sphere drag ±10%, D_h normalization, the weak-scaling
+  85% line is n≤4 local, 3D cavity T15.5 is being additionally implemented in codex #7).
+  M-D MPI complete (T13-MPI bit-identical in all cases, weak scaling 97-99% n≤4, MPI_GUIDE complete).
+  CpuSimd fused backend (2D new record 1,183 MLUPS, 3D 2-3x, equivalence ~6e-14).
+  Workspace 205 tests green. In progress: V1 retirement (v1-retirement) + 3 research items
+  (public benchmark comparison / 3D cavity reference / cluster options). CI workflow prepared.
+- 2026-07-05 evening: **M-C 3D physics complete (R1 achieved)**. D3Q19 Zou-He face boundary (5 unknowns + tangential correction,
+  2D degeneration 8.9e-16), duct exact series 2.3e-4, sphere drag with hydrodynamic-pair (r+½, Re(D+1)/D)
+  normalization gives +7.1%/+0.6%/+2.3% (all pass including the heavyweight D=24), TGV3D order 1.910.
+  Scenario/CLI nz support (VTK 3D / cross-section PNG). **Wgpu backend integration (R2)**: with push-type fusion,
+  strict operator-order match with CPU, T14 6 configurations ≤1e-5, 5.9–11.4 GLUPS. Workspace 184 green.
+  In progress: M-D MPI distribution (arm64 Open MPI 5.0.9 already source-built into ~/.local).
+- 2026-07-05 afternoon: **M-B core V2 complete and integrated** (physically equivalent to V1, T13 partition invariance is bit-identical-class up to 8 adversarial attacks + 3D 2×2×2, D3Q19 smoke works, 8 V1 implicit-spec items frozen as tests).
+  **Phase 9 complete**: CPU fused kernel 3.2–7x (f32 peak 1,124 MLUPS) + GPU measured
+  6,975–12,152 MLUPS. MCP asynchronous job API (R4). Survived all of codex #6's adversarial T13.
+  In progress: 2-way parallel of the Wgpu backend real implementation (m-b-wgpu) and 3D physics M-C (m-c-3d).
+- 2026-07-05 midday: **Phase 8 complete** (T12 RT γ ratio 1.118, T11c contact-angle full range, T9b convective outflow
+  improved 16x in the reflection case, 67 tests green). **GPU measurement complete**: 6,975–12,152
+  MLUPS on M5 Max Metal (16–42x vs CPU, validation L∞ 7e-6, GPU_EVALUATION.md, exceeds the R2 target by 4-8x).
+  Scenario/CLI gains convectiveOutflow, wallRho, VTK, gallery. GUI gains scenario export
+  (→lbm run E2E confirmed), divergence guard, MLUPS. SoA/SIMD is WIP (phase9-perf, resumes after quota
+  recovery). Next: parallel commissioning of M-B core V2.
 
-- 2026-07-05: **Phase 4a/5/6 完了（三モード統一達成）**。codex #4 の多相検証
-  全緑（共存密度・EOS 圧力平衡・Laplace・接触角回帰 133/160/164°・f32 強化 1e-5）。
-  GUI: WASM 実エンジンでキャビティ/カルマン渦/二相液滴が動作（~600 steps/s）。
-  Agent モード: lbm CLI（run/validate/presets/schema, manifest+PNG/CSV）+
-  MCP サーバー（run_scenario 等 4 ツール）。ワークスペース 56 テスト全緑。
-- 2026-07-04: プロジェクト開始。Phase 0 着手。
-- 2026-07-04: Phase 1 完了。lbm-core（D2Q9, BGK/TRT, Guo力, half-way BB/移動壁,
-  Zou-He, Outflow, 力測定, f32/f64, rayon+小格子シリアルフォールバック）実装。
-  スモークテスト 21 件 green: TGV 2次収束（1.91/1.98）、Poiseuille TRT 厳密
-  (<1e-10)、Couette 厳密、保存則 ~1e-13。実験知見 4 件を PHYSICS.md に記録。
-- 2026-07-05: **Phase 4a 実装完了**（検証は codex #4 待ち）。セル別力場 API +
-  Shan-Chen SCMP。実測: 密度比 15.8、圧力平衡 8.5e-6、疑似速度 1.3e-3、
-  Laplace R²=0.9999。**スコープ再編**: MCMP+RT（Phase 4b）は初回レビュー後へ。
-  GUI（Phase 5）/ Agent モード（Phase 6）を先行し 3 モード統一を先に完成させる。
-- 2026-07-05: **Phase 3 完了**。偏差格納方式（f−w）導入で f32 が検証グレードに
-  （運動量誤差 4800 倍改善・TGV で f64 同等）。MLUPS 実測: 峰 381（f32/1024²/18T）、
-  シングル 35、TRT は BGK と同速。PERFORMANCE.md にトレードオフガイド。
-  全 49 テスト green 維持。
-- 2026-07-05: **Phase 2 完了**。codex 敵対テスト 3 巡（計 9 指摘を triage:
-  エンジンバグ 2 = Zou-He 圧力符号・リムコーナー異方性 / 仕様バグ 5 / 参照データ
-  誤植 1 / f32 特性 1）。デフォルト 49 テスト・フル 53 テスト全 green。
-  Ghia キャビティ Re=100/400/1000、Schäfer-Turek 円柱 2D-1/2D-2、
-  厳密等変性（機械精度 4e-16）、Zou-He 4 方向、保存則を通過。
-  GUI シェル（Vite+TS+モック）も先行完成（Phase 5a）。
+- 2026-07-05: **Phase 4a/5/6 complete (three-mode unification achieved)**. codex #4 multiphase validation
+  all green (coexistence densities, EOS pressure equilibrium, Laplace, contact-angle regression 133/160/164°, f32 hardening 1e-5).
+  GUI: cavity/Karman vortex/two-phase droplet run on the real WASM engine (~600 steps/s).
+  Agent mode: lbm CLI (run/validate/presets/schema, manifest + PNG/CSV) +
+  MCP server (4 tools including run_scenario). Workspace 56 tests all green.
+- 2026-07-04: Project started. Phase 0 begun.
+- 2026-07-04: Phase 1 complete. Implemented lbm-core (D2Q9, BGK/TRT, Guo force, half-way BB/moving wall,
+  Zou-He, Outflow, force measurement, f32/f64, rayon + small-lattice serial fallback).
+  21 smoke tests green: TGV 2nd-order convergence (1.91/1.98), Poiseuille TRT exact
+  (<1e-10), Couette exact, conservation laws ~1e-13. Recorded 4 experimental findings in PHYSICS.md.
+- 2026-07-05: **Phase 4a implementation complete** (validation awaiting codex #4). Per-cell force-field API +
+  Shan-Chen SCMP. Measured: density ratio 15.8, pressure equilibrium 8.5e-6, spurious velocity 1.3e-3,
+  Laplace R²=0.9999. **Scope reorganization**: MCMP+RT (Phase 4b) moved to after the first review.
+  Do GUI (Phase 5) / Agent mode (Phase 6) first and complete the three-mode unification first.
+- 2026-07-05: **Phase 3 complete**. Introducing the deviation-storage scheme (f−w) brought f32 to validation grade
+  (momentum error improved 4800x, on par with f64 in TGV). MLUPS measured: peak 381 (f32/1024²/18T),
+  single 35, TRT is the same speed as BGK. Tradeoff guide in PERFORMANCE.md.
+  Maintained all 49 tests green.
+- 2026-07-05: **Phase 2 complete**. 3 rounds of codex adversarial tests (triaged 9 findings total:
+  2 engine bugs = Zou-He pressure sign, rim-corner anisotropy / 5 specification bugs / 1 reference-data
+  typo / 1 f32 characteristic). Default 49 tests, full 53 tests all green.
+  Passed Ghia cavity Re=100/400/1000, Schäfer-Turek cylinder 2D-1/2D-2,
+  exact equivariance (machine precision 4e-16), Zou-He 4 directions, conservation laws.
+  The GUI shell (Vite+TS+mock) was also completed ahead (Phase 5a).

@@ -1,148 +1,172 @@
-# GPU_EVALUATION.md — Phase 9c: wgpu compute バックエンド実測評価
+# GPU_EVALUATION.md — Phase 9c: wgpu compute backend measured evaluation
 
-**結論: 本採用を推奨（条件付き yes）。** D2Q9 f32 で **1024² 7,584 MLUPS / 2048² 6,975 MLUPS**
-（CPU 全コア比 **19〜16 倍**、512² では 42 倍）。検証は lbm-core と同一初期条件・2000 ステップで
-**L∞ 相対 7.0e-6**（許容 1e-4 の 1/14）— GPU の物理はCPUと実質同一トラジェクトリ。
-条件は「f32 のみ」「データ GPU 常駐設計」の 2 点（後述のリスク参照）。
+**Conclusion: recommend adoption (conditional yes).** For D2Q9 f32, **1024² 7,584 MLUPS / 2048² 6,975 MLUPS**
+(**19–16x** vs full-core CPU, 42x at 512²). Verified with the same initial conditions and 2000 steps as
+lbm-core: **L∞ relative 7.0e-6** (1/14 of the 1e-4 tolerance) — the GPU's physics is effectively the same
+trajectory as the CPU's. The conditions are two: "f32 only" and "data GPU-resident design" (see risks below).
 
-- 測定日: 2026-07-05。環境: Apple M5 Max（GPU, Metal）/ CPU 18 コア / 128 GB、
-  macOS、rustc 1.93.0、wgpu 26.0.1、`--release`（thin LTO, cu=1）。
-- プロトタイプ: `crates/lbm-gpu-proto`（**ワークスペース外**の使い捨て評価クレート。
-  ルート Cargo.toml の exclude に登録済み — 本番ビルドグラフは wgpu に依存しない）。
-- 再現: `cd crates/lbm-gpu-proto && cargo run --release`（検証+ベンチ一括、markdown 表を出力。
-  `--cpu-only` / `--gpu-only` で分割測定可）。
-- 測定条件の注記: この機械は他エージェントの検証スイートが断続的に走るため、
-  CPU 基準値は「重負荷プロセスゼロを前後で確認した窓」で採取（PERFORMANCE.md の
-  既録値 285/376-381 MLUPS と 512²/1024² で一致することを確認済み）。GPU 値は
-  CPU 負荷にほぼ非感応で、5 回の実行で ±10% 以内。
+- Measurement date: 2026-07-05. Environment: Apple M5 Max (GPU, Metal) / CPU 18 cores / 128 GB,
+  macOS, rustc 1.93.0, wgpu 26.0.1, `--release` (thin LTO, cu=1).
+- Prototype: `crates/lbm-gpu-proto` (a throwaway evaluation crate **outside the workspace**;
+  already registered in the root Cargo.toml's exclude — the production build graph does not
+  depend on wgpu).
+- Reproduce: `cd crates/lbm-gpu-proto && cargo run --release` (runs verification+benchmark
+  together, outputs a markdown table. Use `--cpu-only` / `--gpu-only` to measure separately).
+- Note on measurement conditions: since other agents' verification suites run intermittently
+  on this machine, the CPU baseline was taken in "a window confirmed to have zero heavy-load
+  processes before and after" (confirmed to match the already-recorded values of 285/376-381
+  MLUPS in PERFORMANCE.md at 512²/1024²). GPU values are nearly insensitive to CPU load,
+  within ±10% across 5 runs.
 
-## 1. 実測: MLUPS（TRT, f32, submit→wait 込み実効値、ウォームアップ後）
+## 1. Measured: MLUPS (TRT, f32, effective value including submit→wait, after warmup)
 
-| grid | GPU MLUPS | CPU MLUPS（同日同機、lbm-core f32/TRT 全コア） | 倍率 |
+| grid | GPU MLUPS | CPU MLUPS (same day/machine, lbm-core f32/TRT full-core) | ratio |
 |---|---|---|---|
 | 512² | **12,152** | 290 | **41.9x** |
 | 1024² | **7,584** | 397 | **19.1x** |
 | 2048² | **6,975** | 441 | **15.8x** |
 
-- PERFORMANCE.md の代表値（1024² ≈ 380 MLUPS）に対しても **~20 倍**。
-- 実効メモリトラフィックは 72 B/cell/step（9 方向 f32 の read+write）なので、
-  2048² で **~502 GB/s**、1024² で ~546 GB/s。512² だけ 12.1 GLUPS（=875 GB/s 相当）に
-  跳ねるのは作業セット ~19 MB がオンチップキャッシュ（SLC）に乗るため。
-  つまり**完全に帯域律速**であり、演算（TRT）はタダ同然 — CPU と同じ結論が GPU でも成り立つ。
-- 1024² で ~7,200 step/s。GUI 60 fps なら **1 フレームに ~120 ステップ**回せる
-  （現行 WASM CPU は 256×128 で ~600 step/s）。
-- 参考（D3Q19 への外挿）: 152 B/cell/step として ~500 GB/s → **~3,300 MLUPS**、
-  128³ ≈ 2.1M セルで ~1,500 step/s。3D（Phase 10）こそ GPU の本命。
+- Also **~20x** against PERFORMANCE.md's representative value (1024² ≈ 380 MLUPS).
+- Effective memory traffic is 72 B/cell/step (read+write of 9 directions of f32), so
+  that's **~502 GB/s** at 2048² and ~546 GB/s at 1024². The jump to 12.1 GLUPS
+  (equivalent to 875 GB/s) at 512² alone is because the ~19 MB working set fits
+  on-chip cache (SLC).
+  In other words this is **entirely bandwidth-bound**, and compute (TRT) is essentially
+  free — the same conclusion as on CPU also holds on GPU.
+- ~7,200 steps/s at 1024². At GUI 60 fps, that's **~120 steps per frame**
+  (the current WASM CPU does ~600 steps/s at 256×128).
+- Reference (extrapolation to D3Q19): at 152 B/cell/step, ~500 GB/s → **~3,300 MLUPS**,
+  ~1,500 steps/s at 128³ ≈ 2.1M cells. 3D (Phase 10) is exactly where GPU pays off most.
 
-## 2. 検証: lbm-core と同一初期条件・2000 ステップ比較（f32 同士）
+## 2. Verification: comparison against lbm-core with identical initial conditions, 2000 steps (f32 vs f32)
 
-TGV（周期境界、nu=0.02, u0=0.05, TRT magic 3/16）。GPU は CPU と**同一の f32 初期分布**
-（feq+f_neq の 2 次整合初期化をホスト側で忠実に再現）から出発。
+TGV (periodic boundary, nu=0.02, u0=0.05, TRT magic 3/16). The GPU starts from the
+**same f32 initial distribution** as the CPU (faithfully reproducing the second-order
+consistent feq+f_neq initialization on the host side).
 
-| grid | L∞(Δu)/max‖u‖ | L2 相対差 | GPU vs 解析解 L2 | CPU vs 解析解 L2 | 判定 |
+| grid | L∞(Δu)/max‖u‖ | L2 relative diff | GPU vs analytical L2 | CPU vs analytical L2 | verdict |
 |---|---|---|---|---|---|
 | 256² | 6.21e-6 | 3.60e-6 | 8.834e-4 | 8.826e-4 | PASS |
 | 512² | 7.01e-6 | 3.87e-6 | 4.487e-4 | 4.483e-4 | PASS |
 
-- 合格基準 L∞ < 1e-4 に対し **14 倍のマージン**。差分は f32 丸めの蓄積のみ
-  （Metal コンパイラの FMA/再結合起因）で、解析解に対する精度は CPU と 4 桁目まで一致。
-  **偏差格納方式（f−w 保持）を GPU にそのまま持ち込んだことが効いている** — 静止背景が
-  厳密ゼロなので、f32 丸めが揺らぎスケールに対してのみ働く。
-- 演算子順序の同値化: 融合カーネル（pull→collide）は 1 ステップが C∘S で、CPU の S∘C と
-  合成順が逆。**初期状態に衝突を 1 回ホスト適用してからアップロード**すると
-  k ステップ後の GPU 状態は C(cpu_k) になり、衝突は密度・運動量の不変量なので
-  速度場が 1:1 で比較できる（(C∘S)^k∘C = C∘(S∘C)^k）。本採用時の回帰テストにも使える恒等式。
+- **14x margin** against the pass criterion L∞ < 1e-4. The difference is only
+  f32 rounding accumulation (from Metal compiler FMA/reassociation), and accuracy
+  against the analytical solution matches the CPU to the 4th significant digit.
+  **Carrying the deviation-storage scheme (keeping f−w) over to the GPU as-is is what
+  makes this work** — since the stationary background is exactly zero, f32 rounding
+  only acts on the fluctuation scale.
+- Equivalence of operator ordering: for the fused kernel (pull→collide), one step is
+  C∘S, whose composition order is reversed from the CPU's S∘C. Applying collision once
+  on the host **to the initial state before upload** makes the GPU state after k steps
+  equal to C(cpu_k); since collision is invariant for density/momentum, the velocity
+  field can be compared 1:1 ((C∘S)^k∘C = C∘(S∘C)^k). This identity can also be used
+  for regression tests at adoption time.
 
-## 3. 実装の勘所（プロトタイプで確定した設計）
+## 3. Implementation insights (design decisions settled by the prototype)
 
-計測に基づく要点。カーネルは `crates/lbm-gpu-proto/src/shader.wgsl`。
+Key points based on measurement. Kernel is `crates/lbm-gpu-proto/src/shader.wgsl`.
 
-1. **メモリレイアウトは SoA（方向別プレーン `f[q*n + i]`）**。CPU の cell-major AoS を
-   そのまま持ち込むとコアレッシングが全滅する。転送 72 B/cell/step の下限に張り付けたのは
-   SoA + 融合カーネルの組み合わせ。
-2. **collide+stream 融合 1 カーネル**（pull 方式、ping-pong 2 バッファ）。中間書き出しが
-   消えるので帯域半減。共有メモリ・タイル化は**不要**だった（gather の局所性で足りる）。
-3. **ワークグループは横長が最速だが差は小さい**: 256×1 = 7,550 / 128×1 = 7,394 /
-   8×8 = 6,567 MLUPS（1024²、±8% の帯）。SoA 行方向連続アクセスと整合する形が良い。
-   WebGPU デフォルト上限（256 invocations）内の 128×1〜256×1 を既定にすれば十分。
-4. **submit 粒度が最大の落とし穴**（1024²、wg 256×1）:
+1. **Memory layout is SoA (per-direction planes `f[q*n + i]`)**. Bringing over the CPU's
+   cell-major AoS as-is would completely kill coalescing. Sticking to the 72 B/cell/step
+   transfer floor is thanks to the combination of SoA + fused kernel.
+2. **Single fused collide+stream kernel** (pull method, ping-pong double buffer).
+   Intermediate write-out disappears, halving bandwidth. Shared memory/tiling turned out
+   to be **unnecessary** (locality of the gather is sufficient).
+3. **Wide workgroups are fastest, but the difference is small**: 256×1 = 7,550 / 128×1 =
+   7,394 / 8×8 = 6,567 MLUPS (at 1024², within a ±8% band). A shape consistent with SoA
+   row-direction contiguous access is good. 128×1–256×1, within the WebGPU default limit
+   (256 invocations), is enough as the default.
+4. **Submit granularity is the biggest pitfall** (1024², wg 256×1):
 
-   | dispatch/submit | submit 毎に wait | MLUPS |
+   | dispatch/submit | wait on every submit | MLUPS |
    |---|---|---|
-   | 1 | **する** | **821**（9 倍遅い） |
-   | 1 | しない | 7,036 |
-   | 10 | しない | 7,297 |
-   | 100 | しない | 7,416 |
+   | 1 | **yes** | **821** (9x slower) |
+   | 1 | no | 7,036 |
+   | 10 | no | 7,297 |
+   | 100 | no | 7,416 |
 
-   ステップ毎に CPU で完了同期すると台無しになる。**「N ステップまとめて encode →
-   1 回 submit → 必要時のみ wait」を API 形状として強制**すべき（`run(steps)` が
-   まさにこの形）。
-5. **速度場 readback は 1.3〜1.9 ms**（moments カーネル + copy + map、ブロッキング、
-   2048² の 33.6 MB でも 1.9 ms）。フレーム毎 1 回なら 60 fps 予算内。ただし
-   ステップ毎に読むと (4) と合わせて崩壊するので、モーメントは要求時のみ計算・取得。
-6. **2048² は単一バインディング 151 MB** → WebGPU デフォルト limit
-   （max_storage_buffer_binding_size = 128 MiB）超過。ネイティブはアダプタ上限を
-   request すれば良い（Metal は GB 級）。ブラウザ対応時は上限 request か
-   方向プレーンをバインディング分割。
-7. uniform 1 個（nx, ny, ω+, ω−）+ ストレージ 2 面で完結。push constants も
-   タイムスタンプクエリも不要だった。
+   Synchronizing completion on the CPU every step ruins everything. **"Encode N steps
+   together → 1 submit → wait only when needed" should be enforced as the API shape**
+   (`run(steps)` is exactly this shape).
+5. **Velocity-field readback is 1.3–1.9 ms** (moments kernel + copy + map, blocking;
+   1.9 ms even for the 33.6 MB of 2048²). Once per frame is within the 60 fps budget.
+   However, reading every step collapses along with (4), so moments should only be
+   computed/fetched on demand.
+6. **2048² is a single binding of 151 MB** → exceeds the WebGPU default limit
+   (max_storage_buffer_binding_size = 128 MiB). On native, requesting the adapter's
+   limit is fine (Metal is GB-scale). For browser support, either request a higher
+   limit or split the direction planes across bindings.
+7. One uniform (nx, ny, ω+, ω−) + 2 storage faces is sufficient. Neither push
+   constants nor timestamp queries were needed.
 
-## 4. 本採用時のアーキテクチャ提案
+## 4. Proposed architecture for adoption
 
-方針: **Simulation API の後ろにバックエンド差し替え**。scenario/CLI/MCP/GUI は不変。
+Policy: **swap the backend behind the Simulation API**. scenario/CLI/MCP/GUI stay unchanged.
 
 ```
 lbm-scenario / lbm-cli / lbm-wasm / GUI
-        │  （既存の公開 API 面 = trait に抽出）
+        │  (existing public API surface = extracted into a trait)
         ▼
-trait LbmEngine {            // run(steps), rho/ux/uy 取得, set_solid, init_with, …
-    // フィールド取得は「要求時読み出し」を明示する形（&mut self か Cow 返し）にし、
-    // GPU 常駐データの lazy readback を許す
+trait LbmEngine {            // run(steps), rho/ux/uy access, set_solid, init_with, …
+    // Field access is shaped to make "read on demand" explicit (either &mut self or
+    // returning Cow), to allow lazy readback of GPU-resident data
 }
-        ├─ CpuSimulation<T=f32|f64>   … 現 lbm-core::Simulation（無変更で wrap）
-        └─ GpuSimulation (f32)        … 新クレート lbm-gpu（wgpu; core とは分離し
-                                          ワークスペース既定ビルドから外す選択も可）
+        ├─ CpuSimulation<T=f32|f64>   … current lbm-core::Simulation (wrap unchanged)
+        └─ GpuSimulation (f32)        … new crate lbm-gpu (wgpu; kept separate from core,
+                                          with the option to exclude it from the default
+                                          workspace build)
 ```
 
-- **段階導入**: ① trait 抽出（CLI/GUI が使う面だけ: run / moments / solid / init）
-  → ② lbm-gpu で「周期 + 壁 bounce-back + BGK/TRT 単相」実装（本プロトの拡張。
-  solid マスクは u8 バッファ 1 枚、壁は pull 時に反転読みするだけ）
-  → ③ Zou–He / outflow はエッジセルのみの小カーネルを後段に 1 dispatch 追加
-  → ④ Guo forcing・Shan–Chen（force 場計算はもう 1 カーネル。混相はフェーズ 2）。
-- **能力フラグ**: scenario の validate で「GPU バックエンドが未対応の機能」（f64、
-  一部 BC、probe 等）を明示的に reject / CPU フォールバック。silent degrade はしない。
-- **検証**: 本評価の「同一初期条件 2000 步 L∞」方式を CPU↔GPU 回帰テストとして凍結し、
-  さらに既存 VALIDATION.md の主要ケース（TGV 収束次数・Poiseuille・キャビティ）を
-  GPU 実装にも走らせる（f32 CPU 実測と同水準が出るはず — 偏差格納の実績どおり）。
-- **GUI/WASM**: wgpu は WebGPU 上でそのまま動く。ブラウザでは readback せず
-  **同一 device の render pass で密度/速度バッファを直接描画**できるのが本命
-  （readback ゼロ、1024² 級のリアルタイム GUI が射程に入る）。
-- **wgpu バージョン**: プロトは 26.0.1 に固定。採用実装時は最新（30.x）へ —
-  compute 用途の API 面は小さく、移行コストは低い。
+- **Staged introduction**: (1) trait extraction (only the surface used by CLI/GUI:
+  run / moments / solid / init)
+  → (2) implement in lbm-gpu "periodic + wall bounce-back + BGK/TRT single-phase"
+  (extension of this prototype; the solid mask is a single u8 buffer, walls are just
+  a reversed read at pull time)
+  → (3) add Zou–He / outflow as a small kernel touching only edge cells, appended as
+  one more dispatch in a later stage
+  → (4) Guo forcing / Shan–Chen (force-field computation is yet another kernel;
+  multiphase is phase 2).
+- **Capability flags**: scenario's validate step explicitly rejects or CPU-falls-back
+  "features the GPU backend doesn't yet support" (f64, some BCs, probes, etc.).
+  No silent degrade.
+- **Verification**: freeze this evaluation's "identical initial conditions, 2000-step L∞"
+  method as a CPU↔GPU regression test, and additionally run the existing
+  VALIDATION.md's main cases (TGV convergence order, Poiseuille, cavity) on the GPU
+  implementation too (should come out at the same level as the measured f32 CPU results
+  — consistent with the deviation-storage track record).
+- **GUI/WASM**: wgpu runs as-is on WebGPU. In the browser, the real prize is **rendering
+  the density/velocity buffer directly in the same device's render pass without
+  readback** (zero readback, putting a 1024²-class real-time GUI within reach).
+- **wgpu version**: the prototype is pinned to 26.0.1. At adoption time, move to the
+  latest (30.x) — the API surface for compute usage is small, so migration cost is low.
 
-## 5. リスク・限界（正直に）
+## 5. Risks and limitations (honestly)
 
-| リスク | 実測/事実 | 緩和 |
+| Risk | Measurement/fact | Mitigation |
 |---|---|---|
-| **f64 が無い**（WGSL/Metal に f64 なし） | f32 偏差格納で TGV 2000 步 L∞ 7e-6、解析解精度は CPU f32 と同一。PHYSICS.md の f32 実績（運動量誤差 2.8e-7）も追い風 | 検証グレード計算・長時間積分は CPU f64 経路を残す（trait で共存）。必要なら double-single（2×f32）エミュレーションという選択肢もある（~2-3 倍コスト） |
-| **readback コスト** | 1.3〜1.9 ms/回（〜33.6 MB）。ステップ毎同期なら 9 倍減速（821 MLUPS） | データ GPU 常駐 + バッチ実行を API で強制。可視化は GPU 内 render で readback ゼロに |
-| **小格子では勝てない** | 256² 以下は CPU が数十 µs/step で回り、dispatch/同期オーバーヘッドが相対的に大きい（submit 粒度表参照） | 格子サイズでバックエンド自動選択（~256² を閾値の目安に実測で決める） |
-| **ビット再現性はデバイス間で無い** | 同一機では再現（本評価の検証値は run 間で一致）。ただし FMA/再結合はコンパイラ依存で、別 GPU では最下位ビットが変わる | 回帰テストは許容誤差ベース（既存方針と同じ）。ゴールデン値の bit-exact 比較はしない |
-| **WASM/WebGPU への道** | wgpu API はそのまま動く見込みだが、①バインディング 128 MiB 上限（→2048² は要 limit request or 分割）② Safari の WebGPU 成熟度 ③ ブラウザでは map_async が真に非同期 | 1024² までを既定・上限 request、フィールドは描画直結で readback 回避。CPU-WASM フォールバックは既存資産 |
-| **プロトの未実装範囲** | 周期境界 + TGV のみ（壁・開境界・障害物・force・混相・probe は未実装）。BGK/TRT は実装済み | §4 の段階導入プラン。壁 bounce-back は pull 分岐 1 個で原理は単純（性能影響は要再測、分岐は warp 一様なら軽い） |
-| **wgpu の API 変化速度** | メジャー年 4 回。プロトは 26 固定 | 採用時に最新へ上げ、以後は年 1-2 回追随で足りる（compute 面は安定） |
+| **No f64** (WGSL/Metal have no f64) | With f32 deviation storage, TGV 2000 steps gives L∞ 7e-6; accuracy against the analytical solution is identical to CPU f32. PHYSICS.md's f32 track record (momentum error 2.8e-7) is also a tailwind | Keep a CPU f64 path for verification-grade computation and long-time integration (coexisting via the trait). If needed, double-single (2×f32) emulation is also an option (~2-3x cost) |
+| **Readback cost** | 1.3–1.9 ms/call (~33.6 MB). A 9x slowdown (821 MLUPS) if synced every step | Enforce GPU-resident data + batched execution via the API. Visualization avoids readback entirely via in-GPU rendering |
+| **Doesn't win at small grids** | At 256² and below, the CPU runs in tens of µs/step, and dispatch/sync overhead is relatively large (see submit granularity table) | Auto-select backend by grid size (decide the ~256² threshold with measurement) |
+| **No bit-reproducibility across devices** | Reproducible on the same machine (this evaluation's verification values match run to run). But FMA/reassociation is compiler-dependent, so the lowest bits change on a different GPU | Regression tests are tolerance-based (same policy as existing). No bit-exact comparison against golden values |
+| **Path to WASM/WebGPU** | The wgpu API is expected to work as-is, but (1) the 128 MiB binding limit (→2048² needs a limit request or splitting) (2) Safari's WebGPU maturity (3) in the browser, map_async is genuinely asynchronous | Default to up to 1024² with a limit request, and route fields directly to rendering to avoid readback. The existing CPU-WASM fallback remains available |
+| **Unimplemented scope of the prototype** | Only periodic boundary + TGV (walls, open boundaries, obstacles, forces, multiphase, probes are unimplemented). BGK/TRT are implemented | The staged introduction plan in §4. Wall bounce-back is conceptually simple as a single pull-side branch (performance impact needs remeasurement; the branch should be cheap if warp-uniform) |
+| **Pace of wgpu API change** | 4 major releases per year. Prototype is pinned to 26 | Upgrade to latest at adoption; thereafter following once or twice a year should suffice (the compute surface is stable) |
 
-## 6. 判断
+## 6. Verdict
 
-**条件付き採用推奨（yes）**。根拠:
+**Recommend conditional adoption (yes)**. Rationale:
 
-1. **性能**: 実測 16〜42 倍（帯域律速の素直な結果）。SoA+SIMD の CPU 最適化（Phase 9a/9b、
-   期待 2-3 倍）を一足飛びに超え、**3D（Phase 10）を現実的な速度で回す唯一の経路**。
-2. **精度**: 偏差格納 f32 が GPU でもそのまま検証グレード。CPU との差は 1e-5 オーダーの
-   丸め蓄積のみで、「同一物理」を実測で示せた。
-3. **統合コスト**: カーネル本体は ~150 行の WGSL。リスクは全て設計で回避可能な性質
-   （常駐化・能力フラグ・f64 は CPU 併存）で、未知の壁は見つからなかった。
+1. **Performance**: measured 16–42x (a straightforward result of being bandwidth-bound).
+   This leaps past the CPU optimization via SoA+SIMD (Phase 9a/9b, expected 2-3x), and is
+   **the only path to run 3D (Phase 10) at a realistic speed**.
+2. **Accuracy**: deviation-storage f32 carries over to verification-grade as-is on GPU.
+   The difference from CPU is only rounding accumulation on the order of 1e-5, and
+   "same physics" has been shown by measurement.
+3. **Integration cost**: the kernel body is ~150 lines of WGSL. All risks are of a kind
+   that design can avoid (residency, capability flags, f64 coexists on CPU), and no
+   unknown showstoppers were found.
 
-条件: (a) f32 専用である事を能力フラグで明示し CPU f64 経路を維持する、
-(b) API はバッチ実行・GPU 常駐を前提に設計する（ステップ毎同期を許さない）、
-(c) 壁/開境界を足した段階で本評価と同じ CPU↔GPU 回帰を必ず通す。
+Conditions: (a) explicitly flag f32-only via a capability flag and keep the CPU f64 path,
+(b) design the API assuming batched execution and GPU residency (disallow per-step sync),
+(c) once walls/open boundaries are added, always run the same CPU↔GPU regression as this
+evaluation.

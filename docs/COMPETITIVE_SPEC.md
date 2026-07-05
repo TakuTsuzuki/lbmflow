@@ -1,92 +1,94 @@
-# 競争優位仕様（2026-07-05 制定）
+# Competitive Advantage Spec (established 2026-07-05)
 
-ユーザー指示による必須要件: **3D対応・スパコンスケール・GPU対応は必須**。
-本書は市場の主要プレイヤーと比較した「勝ち筋」を定義し、以降の全設計は本書に従う。
+Required requirements per user directive: **3D support, supercomputer scale, and GPU support are mandatory**.
+This document defines the "winning strategy" relative to the market's major players, and all subsequent design follows this document.
 
-## 1. 競合ランドスケープ（LBM系CFD）
+## 1. Competitive landscape (LBM-based CFD)
 
-| 製品/コード | 強み | 弱み（我々の攻め所） |
+| Product/Code | Strengths | Weaknesses (our angle of attack) |
 |---|---|---|
-| **M-Star CFD**（商用・本命比較対象） | GPUネイティブ過渡解析LBM+LES。撹拌槽/製薬バイオの垂直特化。CAD→自動格子（メッシュレス）。粒子・スカラー輸送・自由表面・非ニュートン。Python API。産業実績 | **CUDA/NVIDIAロックイン**。クローズド。ライセンス高額。検証は公開ベンチ集だが**再実行可能な形では提供されない**。エージェント連携なし |
-| FluidX3D（OSS） | 単ノードGPUの速度王（FP16メモリ圧縮、Esoteric-Pull、RTX級で数千MLUPS）。自由表面 | 非商用ライセンス。マルチノード（MPI）なし。UX研究者向け。検証スイート最小限 |
-| waLBerla（OSS/HPC） | 真のスパコン実績（数兆格子、SuperMUC等）。MPI+GPU、コード生成 | 専門家向けフレームワーク。C++/コード生成の学習曲線が急峻。製品UXなし |
-| Palabos / OpenLB（OSS） | 学術で成熟、機能広い | ノード性能が古典的、GPU弱い、UX古い |
-| PowerFLOW / XFlow（商用） | 車体空力・空力音響でOEM実績 | 超高額・クローズド・特定業界向け |
+| **M-Star CFD** (commercial, primary comparison target) | GPU-native transient LBM+LES. Vertical specialization in stirred tanks/pharma-bio. CAD→automatic meshing (meshless). Particles, scalar transport, free surface, non-Newtonian. Python API. Industrial track record | **CUDA/NVIDIA lock-in**. Closed-source. High licensing cost. Validation is a published benchmark set but **not provided in a re-runnable form**. No agent integration |
+| FluidX3D (OSS) | Single-node GPU speed king (FP16 memory compression, Esoteric-Pull, thousands of MLUPS on RTX-class hardware). Free surface | Non-commercial license. No multi-node (MPI). Oriented toward UX researchers. Minimal validation suite |
+| waLBerla (OSS/HPC) | Genuine supercomputer track record (trillions of cells, SuperMUC, etc.). MPI+GPU, code generation | Framework for experts. Steep learning curve for C++/code generation. No product UX |
+| Palabos / OpenLB (OSS) | Academically mature, broad feature set | Classical node performance, weak GPU, dated UX |
+| PowerFLOW / XFlow (commercial) | Track record in vehicle aerodynamics/aeroacoustics with OEMs | Extremely expensive, closed-source, niche-industry oriented |
 
-**読み**: 「GPU速度（FluidX3D級）」「スパコン分散（waLBerla級）」「製品UX（M-Star級）」の
-3つを同時に持つプレイヤーは存在しない。さらに全員が持っていない第4軸がある —
-**AIエージェントネイティブ**と**再実行可能な検証**。
+**Reading**: No player simultaneously holds "GPU speed (FluidX3D class)," "supercomputer
+distribution (waLBerla class)," and "product UX (M-Star class)" all at once. Furthermore,
+there is a 4th axis nobody holds —
+**AI-agent-native** and **re-runnable validation**.
 
-## 2. 我々の差別化仕様（勝ち筋 = 4本柱）
+## 2. Our differentiation spec (winning strategy = 4 pillars)
 
-### 柱1: エージェントネイティブCFD（業界初枠）
-- 自己記述シナリオ契約（JSON Schema + `lbm schema` + MCP 4ツール）は実装済み。
-  これを**第一級のプロダクト面**として維持・拡張する
-- 要件: パラメータスイープ/最適化ループをエージェントが無人実行できる非同期ジョブAPI、
-  実行結果の構造化診断（発散理由・安定性ヒント含む）、決定論保証
-- M-Star の Python API は「人間のスクリプト」向け。我々は「LLMエージェントの自律運転」向け
-  （スキーマ自己発見・警告の機械可読性・失敗の説明可能性）
+### Pillar 1: Agent-native CFD (an industry-first category)
+- The self-describing scenario contract (JSON Schema + `lbm schema` + 4 MCP tools) is already implemented.
+  Maintain and expand this as a **first-class product surface**
+- Requirements: an asynchronous job API letting agents run parameter sweeps/optimization loops
+  unattended, structured diagnostics of run results (including divergence reasons and stability hints),
+  and a determinism guarantee
+- M-Star's Python API is oriented toward "human scripting." We are oriented toward "autonomous
+  operation by LLM agents" (schema self-discovery, machine-readable warnings, explainability of failures)
 
-### 柱2: 証拠駆動の信頼（Adversarial Validation as a Product）
-- 敵対的検証スイート（現56+テスト、Ghia/Schäfer-Turek/RT成長率/厳密等変性4e-16）を
-  **出荷物として同梱**し、顧客環境でワンコマンド再実行可能にする
-- 全性能・精度主張は PHYSICS.md / PERFORMANCE.md の実測に紐づける（現運用を継続）
-- 新規追加される全バックエンド/次元に等価性テストを義務付ける（§4）
+### Pillar 2: Evidence-driven trust (Adversarial Validation as a Product)
+- **Ship the adversarial validation suite as a shipped artifact** (currently 56+ tests, Ghia/Schäfer-Turek/RT growth
+  rate/exact isotropy 4e-16), re-runnable in the customer's environment with a single command
+- Tie every performance/accuracy claim to measurements in PHYSICS.md / PERFORMANCE.md (continue current practice)
+- Mandate equivalence tests for every newly added backend/dimension (§4)
 
-### 柱3: どこでも動くポータビリティ・ラダー（CUDA非ロックイン）
-- **同一シナリオJSONが** ブラウザ(WASM) → ラップトップ(CPU SIMD / Metal GPU) →
-  ワークステーション(マルチGPU) → クラスタ(MPI+GPU) で走る
-- GPU第一実装は **wgpu**（Metal/Vulkan/DX12 = Apple/AMD/Intel/NVIDIA全対応）。
-  NVIDIAスパコン向けに CUDA バックエンドを**差し替え可能な追加実装**として持つ
-  （コアはバックエンドtraitで抽象化 — ARCHITECTURE_V2）
-- M-Star が構造的に取れない Apple Silicon / AMD / ブラウザ市場を無償で取る
+### Pillar 3: A portability ladder that runs anywhere (no CUDA lock-in)
+- **The same scenario JSON** runs on browser (WASM) → laptop (CPU SIMD / Metal GPU) →
+  workstation (multi-GPU) → cluster (MPI+GPU)
+- The first-class GPU implementation is **wgpu** (Metal/Vulkan/DX12 = full coverage of Apple/AMD/Intel/NVIDIA).
+  A CUDA backend is held as a **swappable additional implementation** for NVIDIA supercomputers
+  (the core is abstracted via a backend trait — ARCHITECTURE_V2)
+- Capture the Apple Silicon / AMD / browser markets that M-Star structurally cannot reach, at no cost
 
-### 柱4: 精度の透明性（Precision Dials）
-- 偏差格納f32=検証グレード（実証済み）を土台に、**FP16格納/FP32計算**の
-  メモリ圧縮モード（FluidX3D流）を検証付きで提供 — GPUメモリで倍の格子
-- 全精度モードが検証スイートの対象（「速いモードは何を失うか」を数値で明示）
+### Pillar 4: Precision transparency (Precision Dials)
+- Building on deviational-storage f32 = validation-grade (already proven), provide a **FP16 storage/FP32
+  compute** memory-compression mode (FluidX3D-style) with validation — doubling the grid within GPU memory
+- Every precision mode is subject to the validation suite (numerically stating exactly "what the fast mode gives up")
 
-### 非目標（正直に; 当面M-Starと戦わない領域）
-- CAD インポート/自動ボクセル化の成熟度、粒子/DEM連成、燃焼、産業向け自由表面、
-  非ニュートン — Phase 13 以降の逐次判断。まず物理コアの4本柱で確立する
+### Non-goals (stated honestly; areas where we do not compete with M-Star for now)
+- Maturity of CAD import/automatic voxelization, particle/DEM coupling, combustion, industrial-grade free
+  surface, non-Newtonian — sequential decisions from Phase 13 onward. First establish the 4 pillars of the physics core
 
-## 3. 必須要件（ユーザー指示 2026-07-05）
+## 3. Required requirements (per user directive, 2026-07-05)
 
-| ID | 要件 | 測定可能な受入基準 |
+| ID | Requirement | Measurable acceptance criteria |
 |---|---|---|
-| R1 | **3D (D3Q19/Q27)** | 3D検証スイート合格: TGV3D（拡散極限参照 ±2%・収束次数 ≥1.7）、球抗力（Re∈{20,100}, Schiller-Naumann 相関 **±10%・流体力学的ペア正規化 D_h=D+1, Re_h=Re(D+1)/D**）、3Dキャビティ（T15.5 = A&K 2005 Re=1000、RMS≤0.030U）、乱流チャネル Re_τ=180 vs DNS(Moser+) は LES 導入後（M-F） |
-| R2 | **GPU対応** | wgpu バックエンドで CPU と f32 等価（T14: 場の一致 ≤1e-5 相対）。単GPU D3Q19 f32 ≥ 1,500 MLUPS（M4 Max級 or RTX 4070級）。FP16格納モードで格子2倍 |
-| R3 | **スパコンスケール** | Subdomain+MPI: 分割≡一枚岩の一致（T13）。単一ノード内マルチランク弱スケーリング **≥85%（均質コア n≤4 の局所線。実測 97-99%**。n=8 は M5 Max 異種コア+帯域天井で 73%、通信ゼロ対照でも 84% が上限 — ノード内 SMP の物性であり MPI 実装の欠陥でないことを対照実験で確認済み）。クラスタ実測（要マシンアクセス、§5・CLUSTER_OPTIONS.md）で 64ランク弱スケーリング ≥80% — **未測** |
+| R1 | **3D (D3Q19/Q27)** | Pass the 3D validation suite: TGV3D (diffusion-limit reference ±2%, convergence order ≥1.7), sphere drag (Re∈{20,100}, Schiller-Naumann correlation **±10%, hydrodynamic-pair normalization D_h=D+1, Re_h=Re(D+1)/D**), 3D cavity (T15.5 = A&K 2005 Re=1000, RMS≤0.030U), turbulent channel Re_τ=180 vs DNS (Moser+) after LES is introduced (M-F) |
+| R2 | **GPU support** | wgpu backend equivalent to CPU at f32 (T14: field agreement ≤1e-5 relative). Single-GPU D3Q19 f32 ≥ 1,500 MLUPS (M4 Max class or RTX 4070 class). 2x grid size in FP16 storage mode |
+| R3 | **Supercomputer scale** | Subdomain+MPI: partitioned run ≡ monolithic run agreement (T13). Single-node intra-node multi-rank weak scaling **≥85% (local line for homogeneous cores, n≤4; measured 97-99%**. n=8 is 73% due to M5 Max's heterogeneous cores + bandwidth ceiling, with 84% as the ceiling even under a zero-communication control — confirmed via control experiment to be a property of intra-node SMP, not an MPI implementation defect). Cluster measurement (requires machine access, §5, CLUSTER_OPTIONS.md) for 64-rank weak scaling ≥80% — **not yet measured** |
 
-> **改定履歴（D-6, 2026-07-05）**: R1 球抗力 ±5%→**±10%**（half-way BB の壁は solid セル半リンク外側にあり、公称 D 正規化は ~+2/D バイアスを持つ。流体力学的ペア D_h 正規化の採用と併せ実測 +0.6〜7.1% を包含する帯に改定。根拠: TESTING_NOTES 2026-07-05 triage・PHYSICS.md）。R1 3Dキャビティは「文献比較」を T15.5（A&K 2005）の定量帯に具体化。R3 弱スケ ≥85% は「単一ノード n≤4 局所」に射程を明確化し、クラスタ 64 ランク線は未測のまま維持（測定計画: CLUSTER_OPTIONS.md）。
-| R4 | エージェントネイティブ維持 | 新機能は全てシナリオJSON+MCPから制御可能。非同期ジョブAPI |
-| R5 | 検証の连続性 | 既存2Dスイート56+は**コア刷新後も無修正で緑**（APIファサード維持） |
+> **Revision history (D-6, 2026-07-05)**: R1 sphere drag ±5%→**±10%** (the half-way BB wall sits half a link outside the solid cell, so nominal D normalization carries a ~+2/D bias. Revised to a band incorporating the measured +0.6–7.1% together with adoption of hydrodynamic-pair D_h normalization. Basis: TESTING_NOTES 2026-07-05 triage, PHYSICS.md). R1 3D cavity's "literature comparison" is made concrete as T15.5's (A&K 2005) quantitative band. R3 weak scaling ≥85% is clarified in scope as "single-node, n≤4, local," while the cluster 64-rank line remains unmeasured (measurement plan: CLUSTER_OPTIONS.md).
+| R4 | Maintain agent-nativeness | All new features must be controllable from scenario JSON+MCP. Asynchronous job API |
+| R5 | Validation continuity | The existing 2D suite of 56+ **stays green without modification after the core overhaul** (API facade maintained) |
 
-## 4. 等価性テスト体系（新カテゴリ、codex発注対象）
+## 4. Equivalence test framework (new category, for codex commissioning)
 
-- **T13 分割不変性**: 1×1 / 2×2 / 4×1 分割の実行結果が一枚岩と一致
-  （f64でビット一致目標、少なくとも ≤1e-12）
-- **T14 バックエンド等価性**: CPU-SIMD vs wgpu vs (将来CUDA) が同一シナリオで
-  f32 相対 ≤1e-5 / 統計量一致
-- **T15 3D物理**: R1 記載の各ベンチ
-- **T16 精度モード**: FP16格納 vs f32 の劣化を定量凍結（許容帯を仕様化）
+- **T13 partition invariance**: results of 1×1 / 2×2 / 4×1 partitioned runs match the monolithic run
+  (bit-match target at f64, at least ≤1e-12)
+- **T14 backend equivalence**: CPU-SIMD vs wgpu vs (future CUDA) match on the same scenario
+  at f32 relative ≤1e-5 / statistical agreement
+- **T15 3D physics**: each benchmark listed under R1
+- **T16 precision modes**: quantitatively freeze the degradation of FP16 storage vs f32 (tolerance band specified)
 
-## 5. 前提・依存（ユーザーへの連絡事項）
+## 5. Assumptions and dependencies (items to communicate to the user)
 
-- マルチノード実測にはクラスタ/クラウドHPCのアクセスが必要（ローカルでは
-  MPI 複数ランクの機能検証まで）。必要になった時点で相談する
-- CUDA バックエンドの実測は NVIDIA GPU が必要（本機は Apple Silicon/Metal のみ。
-  wgpu 実測は本機で可能）
-- FP16 は wgpu の shader-f16 対応 GPU で検証（Apple Silicon は対応）
+- Multi-node measurement requires access to a cluster/cloud HPC (locally we can only go as far
+  as functional verification of multiple MPI ranks). Will consult once this becomes necessary
+- CUDA backend measurement requires an NVIDIA GPU (this machine is Apple Silicon/Metal only;
+  wgpu measurement is possible on this machine)
+- FP16 is validated on a GPU with wgpu shader-f16 support (Apple Silicon supports this)
 
-## 6. マイルストーン再編（PLAN.md を上書きする現行計画）
+## 6. Milestone reorganization (current plan, supersedes PLAN.md)
 
-- **M-A（進行中）**: CPU SoA/SIMD 高速化 + wgpu 実測評価（phase9-perf / phase9-wgpu ブランチ）
-- **M-B: コアV2** — 次元・格子・バックエンド・Subdomain 抽象（ARCHITECTURE_V2.md）。
-  2Dスイート緑のまま載せ替え。T13/T14 の枠組み
-- **M-C: 3D物理** — D3Q19 + 3D検証（R1）。CPU/GPU両方
-- **M-D: 分散** — HaloExchange=MPI、並列I/O、弱スケーリング実測（R3）
-- **M-E: 性能タイトル** — FP16格納、マルチGPU、公開ベンチ表で FluidX3D/M-Star と
-  同条件比較を文書化
-- **M-F: 垂直機能の選定** — LES(Smagorinsky)→移動境界(IBM)→スカラー輸送の順を想定
-  （M-Star の中核ユースケース=撹拌槽に最短で届く並び）
+- **M-A (in progress)**: CPU SoA/SIMD speedup + wgpu measured evaluation (phase9-perf / phase9-wgpu branches)
+- **M-B: Core V2** — dimension/lattice/backend/Subdomain abstraction (ARCHITECTURE_V2.md).
+  Swap in while keeping the 2D suite green. Framework for T13/T14
+- **M-C: 3D physics** — D3Q19 + 3D validation (R1). Both CPU/GPU
+- **M-D: Distribution** — HaloExchange=MPI, parallel I/O, measured weak scaling (R3)
+- **M-E: Performance headline** — FP16 storage, multi-GPU, document same-condition comparison
+  against FluidX3D/M-Star in the public benchmark table
+- **M-F: Selection of vertical features** — assumes the order LES (Smagorinsky) → moving boundary (IBM) → scalar transport
+  (the ordering that most quickly reaches M-Star's core use case = stirred tanks)
