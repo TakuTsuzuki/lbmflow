@@ -131,6 +131,33 @@ pub(crate) fn layer_indices(
     phase_axis: usize,
     unpack: bool,
 ) -> Vec<usize> {
+    let mut out = Vec::with_capacity(layer_cell_count_for_phase(geom, recv_face, phase_axis));
+    for_each_layer_index(geom, recv_face, phase_axis, unpack, |cell| out.push(cell));
+    out
+}
+
+fn layer_cell_count_for_phase(geom: &LocalGeom, recv_face: Face, phase_axis: usize) -> usize {
+    let a = recv_face.axis();
+    debug_assert_eq!(a, phase_axis);
+    let h = 2 * geom.halo;
+    let ext = |t: usize| -> usize {
+        if t < phase_axis && t < geom.d {
+            geom.core[t] + h
+        } else {
+            geom.core[t]
+        }
+    };
+    let (t1, t2) = recv_face.tangents();
+    ext(t1) * ext(t2)
+}
+
+pub(crate) fn for_each_layer_index(
+    geom: &LocalGeom,
+    recv_face: Face,
+    phase_axis: usize,
+    unpack: bool,
+    mut f: impl FnMut(usize),
+) {
     let a = recv_face.axis();
     debug_assert_eq!(a, phase_axis);
     let h = geom.halo as isize;
@@ -155,17 +182,15 @@ pub(crate) fn layer_indices(
         _ => (0, 1),
     };
     let (r1, r2) = (range(t1), range(t2));
-    let mut out = Vec::with_capacity(((r1.1 - r1.0) * (r2.1 - r2.0)) as usize);
     for c2 in r2.0..r2.1 {
         for c1 in r1.0..r1.1 {
             let mut pos = [0isize; 3];
             pos[a] = fixed;
             pos[t1] = c1;
             pos[t2] = c2;
-            out.push(geom.pidx_i(pos[0], pos[1], pos[2]));
+            f(geom.pidx_i(pos[0], pos[1], pos[2]));
         }
     }
-    out
 }
 
 /// Number of cells in one exchange layer behind `recv_face`. Pack and unpack
@@ -202,15 +227,14 @@ pub(crate) fn pack_f_layer<L: Lattice, T: Real>(
     buf: &mut Vec<T>,
 ) {
     let dirs = L::unknowns(recv_face);
-    let idx = layer_indices(&fields.geom, recv_face, recv_face.axis(), false);
     let np = fields.plane_len();
     buf.clear();
-    buf.reserve(idx.len() * dirs.len());
-    for &cell in &idx {
+    buf.reserve(layer_cell_count(&fields.geom, recv_face) * dirs.len());
+    for_each_layer_index(&fields.geom, recv_face, recv_face.axis(), false, |cell| {
         for &q in dirs {
             buf.push(fields.f[q * np + cell]);
         }
-    }
+    });
 }
 
 /// Unpack a population layer received through `recv_face` into this part's
@@ -221,16 +245,18 @@ pub(crate) fn unpack_f_layer<L: Lattice, T: Real>(
     buf: &[T],
 ) {
     let dirs = L::unknowns(recv_face);
-    let idx = layer_indices(&fields.geom, recv_face, recv_face.axis(), true);
-    debug_assert_eq!(buf.len(), idx.len() * dirs.len());
+    debug_assert_eq!(
+        buf.len(),
+        layer_cell_count(&fields.geom, recv_face) * dirs.len()
+    );
     let np = fields.plane_len();
     let mut k = 0;
-    for &cell in &idx {
+    for_each_layer_index(&fields.geom, recv_face, recv_face.axis(), true, |cell| {
         for &q in dirs {
             fields.f[q * np + cell] = buf[k];
             k += 1;
         }
-    }
+    });
 }
 
 /// Pack one scalar-plane layer for the neighbour behind `recv_face`.
@@ -240,12 +266,11 @@ pub(crate) fn pack_scalar_layer<T: Real>(
     recv_face: Face,
     buf: &mut Vec<T>,
 ) {
-    let idx = layer_indices(geom, recv_face, recv_face.axis(), false);
     buf.clear();
-    buf.reserve(idx.len());
-    for &cell in &idx {
+    buf.reserve(layer_cell_count(geom, recv_face));
+    for_each_layer_index(geom, recv_face, recv_face.axis(), false, |cell| {
         buf.push(plane[cell]);
-    }
+    });
 }
 
 /// Unpack a scalar-plane layer received through `recv_face`.
@@ -255,11 +280,12 @@ pub(crate) fn unpack_scalar_layer<T: Real>(
     recv_face: Face,
     buf: &[T],
 ) {
-    let idx = layer_indices(geom, recv_face, recv_face.axis(), true);
-    debug_assert_eq!(buf.len(), idx.len());
-    for (k, &cell) in idx.iter().enumerate() {
+    debug_assert_eq!(buf.len(), layer_cell_count(geom, recv_face));
+    let mut k = 0;
+    for_each_layer_index(geom, recv_face, recv_face.axis(), true, |cell| {
         plane[cell] = buf[k];
-    }
+        k += 1;
+    });
 }
 
 /// Assert the Cartesian-decomposition invariant: sender and receiver share

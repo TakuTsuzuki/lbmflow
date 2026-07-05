@@ -527,6 +527,7 @@ where
     time: u64,
     probed_force: [T; 3],
     masks_dirty: bool,
+    psi_planes: Vec<Vec<T>>,
     /// Split streaming into interior + boundary-shell passes (the overlap
     /// seam for asynchronous exchanges). Off by default: the single full
     /// pass reproduces V1's probe summation order bit-for-bit.
@@ -660,9 +661,15 @@ where
             time: 0,
             probed_force: [T::zero(); 3],
             masks_dirty: true,
+            psi_planes: Vec::new(),
             two_pass: false,
             _lattice: std::marker::PhantomData,
         };
+        solver.psi_planes = solver
+            .subs
+            .iter()
+            .map(|sub| vec![T::zero(); sub.geom.n_padded()])
+            .collect();
         solver.sync_masks();
         // V1 from_config ends with update_moments (u(t=0) = force/2 on fluid).
         for i in 0..solver.parts.len() {
@@ -1103,34 +1110,43 @@ where
         // ψ planes, padded: core = ψ(rho) (0 on solids), halo = 0 until the
         // exchange fills it (stays 0 outside non-periodic global edges,
         // matching V1's "out-of-domain contributes nothing").
-        let mut planes: Vec<Vec<T>> = self
+        for ((sub, fields), plane) in self
             .subs
             .iter()
             .zip(self.parts.iter())
-            .map(|(sub, fields)| {
-                let geo = sub.geom;
-                let mut plane = vec![T::zero(); geo.n_padded()];
-                for z in 0..geo.core[2] {
-                    for y in 0..geo.core[1] {
-                        for x in 0..geo.core[0] {
-                            let pi = geo.pidx(x, y, z);
-                            if !fields.solid[pi] {
-                                plane[pi] = psi(fields.rho[geo.cidx(x, y, z)]);
-                            }
+            .zip(self.psi_planes.iter_mut())
+        {
+            let geo = sub.geom;
+            plane.fill(T::zero());
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        if !fields.solid[pi] {
+                            plane[pi] = psi(fields.rho[geo.cidx(x, y, z)]);
                         }
                     }
                 }
-                plane
-            })
-            .collect();
-        let mut refs: Vec<&mut [T]> = planes.iter_mut().map(|p| p.as_mut_slice()).collect();
-        self.exchange.exchange_scalar(&self.subs, &mut refs);
+            }
+        }
+        if self.psi_planes.len() == 1 {
+            let mut plane = self.psi_planes[0].as_mut_slice();
+            self.exchange
+                .exchange_scalar(&self.subs, std::slice::from_mut(&mut plane));
+        } else {
+            let mut refs: Vec<&mut [T]> = self
+                .psi_planes
+                .iter_mut()
+                .map(|p| p.as_mut_slice())
+                .collect();
+            self.exchange.exchange_scalar(&self.subs, &mut refs);
+        }
         // Neutral walls keep the exact historical expression (no adhesion
         // term appended), so pre-walls callers stay bit-identical.
         let wet = g_wall != T::zero() || psi_wall != T::zero();
         for (i, (sub, fields)) in self.subs.iter().zip(self.parts.iter_mut()).enumerate() {
             let geo = sub.geom;
-            let plane = &planes[i];
+            let plane = &self.psi_planes[i];
             let ff = fields
                 .force_field
                 .get_or_insert_with(|| vec![[T::zero(); 3]; geo.n_core()]);

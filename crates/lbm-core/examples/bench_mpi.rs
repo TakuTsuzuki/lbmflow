@@ -17,7 +17,7 @@
 //! Usage: `mpirun -n <ranks> bench_mpi [local_edge] [steps]`
 //! (defaults 512, 200; 20 warm-up steps are excluded from timing).
 
-use lbm_core::dist::MpiSolver;
+use lbm_core::dist::{choose_decomp, MpiSolver};
 use lbm_core::lattice::D2Q9;
 use lbm_core::prelude::*;
 use mpi::traits::*;
@@ -44,8 +44,14 @@ fn main() {
     let backend = CpuScalar {
         parallel_min_cells: usize::MAX,
     };
-    let mut s: MpiSolver<D2Q9, f64, CpuScalar> =
-        MpiSolver::new(&world, &spec, &[], &[], [n, 1, 1], backend);
+    let mut s: MpiSolver<D2Q9, f64, CpuScalar> = MpiSolver::new(
+        &world,
+        &spec,
+        &[],
+        &[],
+        choose_decomp(D2Q9::D, dims, n),
+        backend,
+    );
     let (kx, ky) = (
         2.0 * std::f64::consts::PI / dims[0] as f64,
         2.0 * std::f64::consts::PI / dims[1] as f64,
