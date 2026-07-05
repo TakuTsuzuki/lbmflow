@@ -1569,11 +1569,13 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         };
         #[cfg(not(feature = "parallel"))]
         let threads = 1;
-        // One band per thread: oversubscribing bands for work stealing was
-        // measured net-negative (2x bands: -8% at 128^3 12T — the extra
-        // band-edge recollides outweigh the balance gain).
+        // One band per worker, capped on asymmetric Apple Silicon: the last
+        // E-core workers extend the 3D tail more than their bands repay, and
+        // every extra band also recollides two shared edge slabs. On the
+        // M5 Max 128^3 f32 bench, 16 bands beat the 18-band split in the
+        // same overloaded window (146.7 vs 121.7 MLUPS; see TESTING_NOTES).
         let nbands = if L::D == 3 {
-            threads.clamp(1, (n_range / 4).max(1))
+            threads.min(16).clamp(1, (n_range / 4).max(1))
         } else {
             threads.clamp(1, (n_range / 16).max(1))
         };
