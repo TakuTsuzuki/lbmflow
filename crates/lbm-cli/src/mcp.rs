@@ -56,7 +56,10 @@ pub fn serve() -> Result<()> {
                 continue;
             }
         };
-        write_msg(&mut stdout, &json!({ "jsonrpc": "2.0", "id": id, "result": reply }))?;
+        write_msg(
+            &mut stdout,
+            &json!({ "jsonrpc": "2.0", "id": id, "result": reply }),
+        )?;
     }
     Ok(())
 }
@@ -157,9 +160,13 @@ fn tools_call(params: &Value) -> Result<Value> {
         "list_presets" => {
             let list: Vec<Value> = lbm_scenario::presets()
                 .into_iter()
-                .map(|(name, desc, sc)| json!({ "name": name, "description": desc, "scenario": sc }))
+                .map(
+                    |(name, desc, sc)| json!({ "name": name, "description": desc, "scenario": sc }),
+                )
                 .collect();
-            Ok(text_result(serde_json::to_string_pretty(&Value::Array(list))?))
+            Ok(text_result(serde_json::to_string_pretty(&Value::Array(
+                list,
+            ))?))
         }
         "get_schema" => Ok(text_result(crate::SCHEMA_DOC.to_string())),
         other => anyhow::bail!("unknown tool: {other}"),

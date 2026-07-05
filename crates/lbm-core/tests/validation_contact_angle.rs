@@ -9,10 +9,21 @@ const NU_TAU_1: f64 = 1.0 / 6.0;
 const NX: usize = 96;
 const NY: usize = 72;
 const CONTACT_STEPS: usize = 20_000;
+const WALL_RHO_NX: usize = 160;
+const WALL_RHO_NY: usize = 100;
+const WALL_RHO_STEPS: usize = 30_000;
 
 #[derive(Clone, Copy, Debug)]
 struct ContactStats {
     g_wall: f64,
+    theta_deg: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WallRhoStats {
+    wall_rho: f64,
     theta_deg: f64,
     width: f64,
     height: f64,
@@ -118,6 +129,72 @@ fn assert_angle(stats: ContactStats, expected: f64) {
     );
 }
 
+fn run_wall_rho_droplet(wall_rho: f64) -> WallRhoStats {
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: WALL_RHO_NX,
+        ny: WALL_RHO_NY,
+        nu: NU_TAU_1,
+        edges: Edges {
+            left: EdgeBC::Periodic,
+            right: EdgeBC::Periodic,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    let (cx, cy, r0) = (WALL_RHO_NX as f64 / 2.0, 1.0, 22.0);
+    sim.init_with(|x, y| {
+        let d2 = (x as f64 - cx).powi(2) + (y as f64 - cy).powi(2);
+        (if d2 < r0 * r0 { 2.0 } else { 0.15 }, 0.0, 0.0)
+    });
+    let sc = ShanChen::new(G).with_wall_rho(wall_rho);
+    for _ in 0..WALL_RHO_STEPS {
+        sc.update_force(&mut sim);
+        sim.step();
+    }
+    measure_wall_rho_contact_angle(&sim, wall_rho)
+}
+
+fn measure_wall_rho_contact_angle(sim: &Simulation<f64>, wall_rho: f64) -> WallRhoStats {
+    let rho_half = 1.0;
+    let width = (0..WALL_RHO_NX)
+        .filter(|&x| sim.rho(x, 1) > rho_half)
+        .count() as f64;
+    let mut height = 0.0;
+    for y in 1..WALL_RHO_NY - 1 {
+        if sim.rho(WALL_RHO_NX / 2, y) > rho_half {
+            height = y as f64 - 0.5;
+        }
+    }
+    let theta_deg = if width > 0.0 {
+        2.0 * (2.0 * height / width).atan() * 180.0 / PI
+    } else {
+        180.0
+    };
+    WallRhoStats {
+        wall_rho,
+        theta_deg,
+        width,
+        height,
+    }
+}
+
+fn assert_wall_rho_angle(stats: WallRhoStats, expected: f64) {
+    let err = (stats.theta_deg - expected).abs();
+    assert!(
+        err <= 8.0,
+        "T11c wall_rho = {:.3}, theta = {:.3} deg, frozen = {:.3} deg, err = {:.3} deg, width = {:.3}, height = {:.3}",
+        stats.wall_rho,
+        stats.theta_deg,
+        expected,
+        err,
+        stats.width,
+        stats.height
+    );
+}
+
 #[test]
 fn t11b_wall_adhesion_contact_angles_are_monotone_and_frozen() {
     let wet = run_wall_droplet(-1.5, CONTACT_STEPS);
@@ -148,4 +225,50 @@ fn t11b_wall_adhesion_contact_angles_are_monotone_and_frozen() {
     assert_angle(wet, 133.191);
     assert_angle(neutral, 160.435);
     assert_angle(dry, 163.740);
+}
+
+#[test]
+#[ignore = "160x100 x 30k x 3 virtual-wall-density sweep is outside the default runtime budget"]
+fn t11c_virtual_wall_density_contact_angles_are_monotone_and_frozen() {
+    let dry = run_wall_rho_droplet(0.3);
+    let neutralish = run_wall_rho_droplet(0.6);
+    let wet = run_wall_rho_droplet(1.0);
+    eprintln!(
+        "T11c measured contact angles: wall_rho=0.3 theta={:.3} width={:.3} height={:.3}; wall_rho=0.6 theta={:.3} width={:.3} height={:.3}; wall_rho=1.0 theta={:.3} width={:.3} height={:.3}",
+        dry.theta_deg,
+        dry.width,
+        dry.height,
+        neutralish.theta_deg,
+        neutralish.width,
+        neutralish.height,
+        wet.theta_deg,
+        wet.width,
+        wet.height
+    );
+    assert!(
+        dry.theta_deg > neutralish.theta_deg && neutralish.theta_deg > wet.theta_deg,
+        "T11c monotonicity failed: wall_rho=0.3 theta={:.3}, wall_rho=0.6 theta={:.3}, wall_rho=1.0 theta={:.3}",
+        dry.theta_deg,
+        neutralish.theta_deg,
+        wet.theta_deg
+    );
+
+    // Regression values measured 2026-07-05 by this test geometry
+    // (160x100, G=-5, liquid/vapour 2.0/0.15, 30k steps).
+    assert_wall_rho_angle(dry, 180.000);
+    assert_wall_rho_angle(neutralish, 106.594);
+    assert_wall_rho_angle(wet, 62.928);
+}
+
+#[test]
+fn t11c_virtual_wall_density_1p6_completely_wets_wall() {
+    let film = run_wall_rho_droplet(1.6);
+    assert!(
+        film.width == WALL_RHO_NX as f64,
+        "T11c wall_rho=1.6 contact width = {:.3}, expected full row {}, theta = {:.3}, height = {:.3}",
+        film.width,
+        WALL_RHO_NX,
+        film.theta_deg,
+        film.height
+    );
 }

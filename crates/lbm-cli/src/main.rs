@@ -110,7 +110,11 @@ fn run_and_report(sc: &Scenario, out: Option<PathBuf>, json: bool) -> Result<()>
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { scenario, out, json } => {
+        Command::Run {
+            scenario,
+            out,
+            json,
+        } => {
             let sc = load_scenario(&scenario)?;
             run_and_report(&sc, out, json)?;
         }
@@ -142,9 +146,10 @@ fn main() -> Result<()> {
             }
             PresetAction::Run { name, out } => {
                 let all = lbm_scenario::presets();
-                let found = all.iter().find(|(n, _, _)| *n == name).ok_or_else(|| {
-                    anyhow::anyhow!("プリセット '{name}' はありません")
-                })?;
+                let found = all
+                    .iter()
+                    .find(|(n, _, _)| *n == name)
+                    .ok_or_else(|| anyhow::anyhow!("プリセット '{name}' はありません"))?;
                 run_and_report(&found.2, out, false)?;
             }
         },

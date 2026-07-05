@@ -44,7 +44,7 @@ fn outlet_reflection(convective: bool) -> f64 {
         dx * dx + dy * dy <= r * r
     });
     sim.run(30_000); // develop shedding
-    // collect pressure time series at near-outlet and mid points
+                     // collect pressure time series at near-outlet and mid points
     let mut near = Vec::new();
     let mut mid = Vec::new();
     for _ in 0..4000 {
@@ -59,7 +59,11 @@ fn outlet_reflection(convective: bool) -> f64 {
     let ratio = rms(&near) / rms(&mid).max(1e-30);
     println!(
         "[outlet {}] near_rms/mid_rms = {ratio:.2}",
-        if convective { "convective" } else { "zero-grad " }
+        if convective {
+            "convective"
+        } else {
+            "zero-grad "
+        }
     );
     ratio
 }

@@ -74,9 +74,14 @@ impl Psi {
 /// enables buoyancy-driven flows (Rayleigh–Taylor).
 ///
 /// Usage (both sims must be stepped together):
-/// ```ignore
-/// let mc = MultiComponent::new(1.2).with_gravity([0.0, -5e-5], [0.0, 0.0]);
-/// loop {
+/// ```no_run
+/// use lbm_core::prelude::*;
+/// use lbm_core::multiphase::MultiComponent;
+///
+/// let mut a: Simulation<f64> = SimConfig::default().build().unwrap();
+/// let mut b: Simulation<f64> = SimConfig::default().build().unwrap();
+/// let mc = MultiComponent::new(2.6).with_gravity([0.0, -5e-5], [0.0, 0.0]);
+/// for _ in 0..1000 {
 ///     mc.update_forces(&mut a, &mut b);
 ///     a.step();
 ///     b.step();

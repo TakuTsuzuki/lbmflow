@@ -16,6 +16,10 @@ struct OutflowCase {
 }
 
 fn build_case(case: OutflowCase) -> Simulation<f64> {
+    build_case_with_right(case, EdgeBC::Outflow)
+}
+
+fn build_case_with_right(case: OutflowCase, right: EdgeBC<f64>) -> Simulation<f64> {
     let nu = case.u * case.d / case.re;
     let mut sim: Simulation<f64> = SimConfig {
         nx: case.nx,
@@ -24,7 +28,7 @@ fn build_case(case: OutflowCase) -> Simulation<f64> {
         collision: Collision::Trt { magic: 3.0 / 16.0 },
         edges: Edges {
             left: EdgeBC::VelocityInlet { u: [case.u, 0.0] },
-            right: EdgeBC::Outflow,
+            right,
             bottom: EdgeBC::BounceBack,
             top: EdgeBC::BounceBack,
         },
@@ -105,6 +109,18 @@ fn pressure_rms(sim: &Simulation<f64>, x0: usize, x1: usize) -> f64 {
     (vals.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / vals.len() as f64).sqrt()
 }
 
+fn run_outflow_case(case: OutflowCase, right: EdgeBC<f64>, label: &str) -> (f64, f64, f64, f64) {
+    let mut sim = build_case_with_right(case, right);
+    sim.run(case.steps);
+    assert_finite(&sim, label);
+    let (frac, backflow, inflow) = backflow_fraction(&sim);
+    let (ratio, near, mid) = pressure_rms_ratio(&sim);
+    eprintln!(
+        "{label}: backflow_frac={frac:.8e}, pressure_rms_ratio={ratio:.8e}, near={near:.8e}, mid={mid:.8e}"
+    );
+    (frac, backflow, inflow, ratio)
+}
+
 #[test]
 fn t9_outflow_cylinder_wake_smoke_stays_finite_with_limited_backflow() {
     let case = OutflowCase {
@@ -121,6 +137,10 @@ fn t9_outflow_cylinder_wake_smoke_stays_finite_with_limited_backflow() {
     sim.run(case.steps);
     assert_finite(&sim, "smoke");
     let (frac, backflow, inflow) = backflow_fraction(&sim);
+    let (ratio, near, mid) = pressure_rms_ratio(&sim);
+    eprintln!(
+        "T9 outflow smoke: backflow_frac={frac:.8e}, pressure_rms_ratio={ratio:.8e}, near={near:.8e}, mid={mid:.8e}"
+    );
     assert!(
         frac <= 0.05,
         "T9 smoke backflow fraction = {frac:e}, backflow = {backflow:e}, inflow = {inflow:e}, steps = {}",
@@ -156,6 +176,79 @@ fn t9_outflow_cylinder_wake_long_run_stays_sane() {
     assert!(
         ratio <= 15.0,
         "T9 pressure RMS ratio = {ratio:e}, near = {near:e}, mid = {mid:e}, steps = {}",
+        case.steps
+    );
+}
+
+#[test]
+fn t9b_convective_outflow_cylinder_wake_stays_finite_with_limited_backflow() {
+    let case = OutflowCase {
+        nx: 260,
+        ny: 88,
+        d: 16.0,
+        cx: 64.0,
+        cy: 44.0,
+        u: 0.05,
+        re: 100.0,
+        steps: 20_000,
+    };
+    let (frac, backflow, inflow, ratio) = run_outflow_case(
+        case,
+        EdgeBC::ConvectiveOutflow { u_conv: case.u },
+        "T9b convective smoke",
+    );
+    assert!(
+        frac <= 0.05,
+        "T9b convective backflow fraction = {frac:e}, backflow = {backflow:e}, inflow = {inflow:e}, steps = {}",
+        case.steps
+    );
+    // Measured 2026-07-05 on the T9 smoke geometry: ConvectiveOutflow
+    // ratio = 7.96079611, while the matching Outflow ratio = 5.81418778.
+    // This freezes observed behaviour without requiring convective to win.
+    assert!(
+        (ratio - 7.96079611).abs() <= 0.25,
+        "T9b convective pressure RMS ratio = {ratio:e}, frozen = 7.96079611, steps = {}",
+        case.steps
+    );
+}
+
+#[test]
+#[ignore]
+fn t9b_convective_outflow_long_run_pressure_ratio_is_frozen() {
+    let case = OutflowCase {
+        nx: 440,
+        ny: 160,
+        d: 20.0,
+        cx: 110.0,
+        cy: 81.0,
+        u: 0.05,
+        re: 100.0,
+        steps: 100_000,
+    };
+    let mut outflow = build_case(case);
+    outflow.run(case.steps);
+    assert_finite(&outflow, "T9b outflow comparison long");
+    let (out_ratio, out_near, out_mid) = pressure_rms_ratio(&outflow);
+    eprintln!(
+        "T9b outflow comparison long: pressure_rms_ratio={out_ratio:.8e}, near={out_near:.8e}, mid={out_mid:.8e}"
+    );
+    let (frac, backflow, inflow, conv_ratio) = run_outflow_case(
+        case,
+        EdgeBC::ConvectiveOutflow { u_conv: case.u },
+        "T9b convective long",
+    );
+    assert!(
+        frac <= 0.05,
+        "T9b long convective backflow fraction = {frac:e}, backflow = {backflow:e}, inflow = {inflow:e}, steps = {}",
+        case.steps
+    );
+    // Measured 2026-07-05 on this T9 long geometry: ConvectiveOutflow
+    // ratio = 0.714127152, while the matching Outflow ratio = 11.3253818.
+    // This records reality for this geometry without making a general claim
+    // that convective is always better.
+    assert!(
+        (conv_ratio - 0.714127152).abs() <= 0.05,
+        "T9b long convective pressure RMS ratio = {conv_ratio:e}, frozen = 0.714127152; Outflow ratio = {out_ratio:e}, near = {out_near:e}, mid = {out_mid:e}, steps = {}",
         case.steps
     );
 }

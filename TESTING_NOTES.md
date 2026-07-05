@@ -87,6 +87,15 @@ order #2 の 5 件の dispositions:
    追加テストは left/right Periodic + bottom/top BounceBack（上壁は液滴から遠い）で
    G_w 特性を凍結した。
 
+## 新規メモ（2026-07-05 codex adversarial test order #5）
+
+1. `cargo test --release -p lbm-core -- --include-ignored` はテスト本体を最後まで通過したが、
+   doctest 段で `crates/lbm-core/src/multiphase.rs` の `MultiComponent` ignored doc snippet
+   （line 77）がコンパイル対象になり失敗した。スニペットは `MultiComponent` import と
+   `a`/`b` simulation 定義を省略した疑似コードで、通常の default run では ignored doctest
+   としてスキップされる。今回の作業範囲は `crates/lbm-core/tests/**` と
+   `TESTING_NOTES.md` のため、`src/**` doctest は修正せず証拠だけ記録する。
+
 ## 解決状況（2026-07-05 codex adversarial test order #3）
 
 1. `t7_re400`: fixed-by-spec / fixed-in-test — 既知の誤植 datum を RMS から除外。

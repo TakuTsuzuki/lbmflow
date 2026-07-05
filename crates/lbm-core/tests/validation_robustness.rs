@@ -83,6 +83,32 @@ fn t10_every_config_error_path_is_reported() {
         |e| matches!(e, ConfigError::NonPositiveDensity { rho } if *rho == 0.0),
         "non-positive density",
     );
+    expect_err(
+        SimConfig {
+            edges: Edges {
+                left: EdgeBC::VelocityInlet { u: [0.02, 0.0] },
+                right: EdgeBC::ConvectiveOutflow { u_conv: 0.0 },
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        },
+        |e| matches!(e, ConfigError::InvalidParameter { what, value } if *what == "u_conv" && *value == 0.0),
+        "convective u_conv zero",
+    );
+    expect_err(
+        SimConfig {
+            edges: Edges {
+                left: EdgeBC::VelocityInlet { u: [0.02, 0.0] },
+                right: EdgeBC::ConvectiveOutflow { u_conv: 1.5 },
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        },
+        |e| matches!(e, ConfigError::InvalidParameter { what, value } if *what == "u_conv" && *value == 1.5),
+        "convective u_conv too high",
+    );
 }
 
 #[test]

@@ -155,8 +155,17 @@ pub enum ProfileKind {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "camelCase")]
 pub enum Obstacle {
-    Circle { cx: f64, cy: f64, r: f64 },
-    Rect { x0: usize, y0: usize, x1: usize, y1: usize },
+    Circle {
+        cx: f64,
+        cy: f64,
+        r: f64,
+    },
+    Rect {
+        x0: usize,
+        y0: usize,
+        x1: usize,
+        y1: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -288,7 +297,9 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         if grid_re > 15.0 {
             warn(
                 "physics",
-                format!("グリッドレイノルズ数 U/ν = {grid_re:.1} > 15: 発散の恐れ（PHYSICS.md 参照）"),
+                format!(
+                    "グリッドレイノルズ数 U/ν = {grid_re:.1} > 15: 発散の恐れ（PHYSICS.md 参照）"
+                ),
             );
         }
     }
@@ -302,7 +313,10 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         if mp.g > -4.0 {
             warn(
                 "multiphase.g",
-                format!("G = {} は臨界値 -4 より弱く、相分離しません（推奨 -5.0）", mp.g),
+                format!(
+                    "G = {} は臨界値 -4 より弱く、相分離しません（推奨 -5.0）",
+                    mp.g
+                ),
             );
         }
     }
@@ -432,7 +446,11 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
         }
     }
 
-    if sc.probes.iter().any(|p| matches!(p, ProbeSpec::Force { .. })) {
+    if sc
+        .probes
+        .iter()
+        .any(|p| matches!(p, ProbeSpec::Force { .. }))
+    {
         // probe all obstacle solids (rims excluded: only cells strictly inside)
         let (nx, ny) = (sim.nx(), sim.ny());
         let solid: Vec<bool> = sim.solid_field().to_vec();
@@ -574,7 +592,11 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
     };
     vec![
         ("cavity", "リッド駆動キャビティ（定常判定つき）", cavity),
-        ("cylinder-karman", "円柱まわりのカルマン渦列 + 抗力プローブ", cylinder),
+        (
+            "cylinder-karman",
+            "円柱まわりのカルマン渦列 + 抗力プローブ",
+            cylinder,
+        ),
         ("two-phase-droplet", "Shan-Chen 二相液滴の平衡化", droplet),
     ]
 }
@@ -599,7 +621,10 @@ mod tests {
         sc.physics.nu = 0.005;
         sc.edges.top = EdgeSpec::MovingWall { u: [0.2, 0.0] };
         let warnings = validate(&sc);
-        assert!(warnings.iter().any(|w| w.field == "physics"), "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.field == "physics"),
+            "{warnings:?}"
+        );
         assert!(warnings.iter().any(|w| w.field == "edges"), "{warnings:?}");
     }
 }

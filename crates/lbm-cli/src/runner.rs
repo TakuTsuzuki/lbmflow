@@ -5,9 +5,7 @@ use crate::render::write_png;
 use anyhow::{Context, Result};
 use lbm_core::multiphase::ShanChen;
 use lbm_core::prelude::*;
-use lbm_scenario::{
-    FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, SimHandle,
-};
+use lbm_scenario::{FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, SimHandle};
 use serde::Serialize;
 use std::fs;
 use std::io::Write as _;
@@ -130,10 +128,7 @@ fn run_t<T: Real>(
         }
 
         if step % 1000 == 0 {
-            let bad = sim
-                .rho_field()
-                .iter()
-                .any(|v| !v.as_f64().is_finite());
+            let bad = sim.rho_field().iter().any(|v| !v.as_f64().is_finite());
             if bad {
                 status = "diverged";
                 break 'main;
@@ -240,18 +235,22 @@ fn write_output<T: Real>(
         OutputFormat::Png => {
             let name = format!("{kind_name}_{step}.png");
             let path: PathBuf = out_dir.join(&name);
-            let diverging = matches!(o.field, FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy);
+            let diverging = matches!(
+                o.field,
+                FieldKind::Vorticity | FieldKind::Ux | FieldKind::Uy
+            );
             write_png(&path, &values, &solid, nx, ny, diverging)?;
             Ok(name)
         }
         OutputFormat::Csv => {
             let name = format!("{kind_name}_{step}.csv");
             let mut file = fs::File::create(out_dir.join(&name))?;
-            writeln!(file, "# {kind_name}, nx={nx}, ny={ny}, row-major y*nx+x, step={step}")?;
+            writeln!(
+                file,
+                "# {kind_name}, nx={nx}, ny={ny}, row-major y*nx+x, step={step}"
+            )?;
             for y in 0..ny {
-                let row: Vec<String> = (0..nx)
-                    .map(|x| format!("{}", values[y * nx + x]))
-                    .collect();
+                let row: Vec<String> = (0..nx).map(|x| format!("{}", values[y * nx + x])).collect();
                 writeln!(file, "{}", row.join(","))?;
             }
             let _ = index;
