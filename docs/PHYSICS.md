@@ -196,3 +196,51 @@ Margins vs measured: 2.5–7 pt. The convergence-tendency test stays as the guar
 that the gap closes with N. Tightening later (e.g., after cumulant collision in
 MF-α, which should sharpen the core) is free; loosening again requires a new
 entry here (band governance, REQ rev.4 §8).
+
+## 2026-07-06 rotor penalization stability envelope
+
+**Model**: 2D compat rotating-impeller volume penalization, called before
+`Simulation::step()` and added into the per-cell Guo force field. The force is
+`F = 2 rho chi (u_target - u_star)`, where `u_star` is the bare first-moment
+velocity without the Guo half-force shift. Therefore, with no other forces,
+`u_phys = u_star + F/(2 rho) = u_star + chi (u_target - u_star)` exactly: `chi=1`
+pins blade cells to solid-body rotation without overshoot, and `0<chi<1` is a
+monotone blend.
+
+**Experiment**: closed 128x128 tank, bounce-back on all four edges, `nu=0.02`,
+TRT `magic=3/16`, 4 blades centered at `(64,64)`, `r_hub=4`, `r_blade=40`,
+`blade_thickness=3`, 30k steps per cell. `omega = Ma_tip / r_blade`.
+
+| chi | omega ramp steps | Ma_tip=0.1 | final max\|u\| | Ma_tip=0.2 | final max\|u\| |
+|---:|---:|---|---:|---|---:|
+| 0.25 | 0 | stable | 0.098229 | stable | 0.195214 |
+| 0.25 | 200 | stable | 0.097794 | stable | 0.194952 |
+| 0.25 | 1500 | stable | 0.097987 | stable | 0.195669 |
+| 0.50 | 0 | stable | 0.098665 | stable | 0.196840 |
+| 0.50 | 200 | stable | 0.099253 | stable | 0.196148 |
+| 0.50 | 1500 | stable | 0.098555 | stable | 0.197030 |
+| 1.00 | 0 | stable | 0.100374 | NaN by 500-step check | - |
+| 1.00 | 200 | stable | 0.100092 | stable | 0.199422 |
+| 1.00 | 1500 | stable | 0.100624 | stable | 0.200348 |
+
+**Default**: `chi=1.0`, `omega_ramp_steps=200`. This is the most aggressive
+tested blade pinning (`chi=1`) with a finite analytic spin-up ramp that remains
+stable at `Ma_tip=0.2`; the no-ramp `chi=1, Ma_tip=0.2` cell is unstable, so
+zero-ramp is not the default. The result retires the F4 empirical force cap:
+stability comes from the implicit-style Guo force balance, not from clipping.
+
+**Comparison to the previous explicit-alpha interim**: the example-side scheme
+used `F = 2 alpha (v_target - u)` with `alpha=0.32`, ramp `1500`, and a
+load-bearing per-cell cap `f_cap = 0.25 u_tip`; without the cap it produced NaN
+within about 1000 steps. The new penalization keeps the analytic ramp but removes
+the empirical cap and makes the no-overshoot condition algebraic.
+
+**Torque sign convention**: `Rotor::torque()` reports reaction torque on the
+rotor, `sum r x (-F)`. For positive angular velocity, the torque applied to the
+fluid during spin-up is positive and the reported reaction torque is negative.
+
+**Solid-body tracking regression**: with `chi=1`, `omega=0.0025`, `r_hub=3`,
+`r_blade=16`, `blade_thickness=5`, and a 200-step ramp on a 64x64 closed tank,
+the strict interior blade cells after 5k steps measured
+`max |u_phys - u_target| / u_tip = 0.000928` over 116 cells. The unit test freezes
+the bound at `0.01` (about 10x headroom).
