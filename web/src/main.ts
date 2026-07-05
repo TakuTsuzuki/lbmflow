@@ -11,6 +11,8 @@ import {
   type BrushPreview,
   type VisMode,
 } from "./render.ts";
+import { buildScenario } from "./scenario.ts";
+import { showToast } from "./toast.ts";
 
 // ------------------------------------------------------------- DOM ヘルパ
 
@@ -46,8 +48,13 @@ const spfValue = $<HTMLSpanElement>("spf-value");
 const collisionSelect = $<HTMLSelectElement>("collision-select");
 const statusStep = $<HTMLElement>("status-step");
 const statusSps = $<HTMLElement>("status-sps");
+const statusMlups = $<HTMLElement>("status-mlups");
 const statusGrid = $<HTMLElement>("status-grid");
 const statusMode = $<HTMLElement>("status-mode");
+const colorbarMid = $<HTMLSpanElement>("colorbar-mid");
+const btnExport = $<HTMLButtonElement>("btn-export");
+const firstHint = $<HTMLDivElement>("first-hint");
+const firstHintClose = $<HTMLButtonElement>("first-hint-close");
 
 // ------------------------------------------------------------- 状態
 
@@ -56,6 +63,7 @@ const renderer = new FieldRenderer(canvas);
 
 let currentPreset: Preset = PRESETS[0]!;
 let running = false;
+let diverged = false;
 let visMode: VisMode = "speed";
 let stepsPerFrame = Number(spfSlider.value);
 let brushErase = false;
@@ -153,9 +161,11 @@ function resetSim(preserveSolids: boolean): void {
   }
 
   renderer.resetRange();
+  diverged = false;
   spsSteps = 0;
   spsT0 = performance.now();
   statusSps.textContent = "—";
+  statusMlups.textContent = "—";
   statusGrid.textContent = `${engine.nx}×${engine.ny}`;
   fitCanvas();
 }
@@ -183,9 +193,57 @@ function setRunning(v: boolean): void {
   btnRunLabel.textContent = v ? "停止" : "実行";
   btnRun.classList.toggle("btn-primary", !v);
   btnRun.classList.toggle("btn-running", v);
-  if (!v) statusSps.textContent = "—";
+  if (!v) {
+    statusSps.textContent = "—";
+    statusMlups.textContent = "—";
+  } else {
+    dismissFirstHint(true);
+  }
   spsSteps = 0;
   spsT0 = performance.now();
+}
+
+// ------------------------------------------------------------ 発散検出
+
+/**
+ * フィールドに NaN / Inf / 物理的にあり得ない速度（|u| > 5）が現れたら
+ * 発散とみなす。NaN は比較演算が常に false になるため isFinite で拾う。
+ */
+function fieldsDiverged(): boolean {
+  const ux = engine.ux();
+  const uy = engine.uy();
+  const rho = engine.rho();
+  for (let i = 0; i < ux.length; i++) {
+    const a = ux[i]!;
+    const b = uy[i]!;
+    const sp2 = a * a + b * b;
+    if (!Number.isFinite(sp2) || sp2 > 25 || !Number.isFinite(rho[i]!)) return true;
+  }
+  return false;
+}
+
+/** 発散（またはエンジン例外）時: 自動停止してリカバリ手段を提示する */
+function handleDivergence(fromError: boolean): void {
+  if (diverged) return;
+  diverged = true;
+  setRunning(false);
+  console.warn("LBMFlow: 発散を検出しました", { fromError });
+  showToast(
+    "発散しました。粘性 ν を上げるか流速を下げて、リセットしてください。",
+    "danger",
+    {
+      label: "↺ リセット",
+      onClick: () => {
+        try {
+          resetSim(true);
+        } catch (err) {
+          console.error("LBMFlow: リセットに失敗しました", err);
+          showToast("復旧できませんでした。ページを再読み込みしてください。", "danger");
+        }
+      },
+    },
+    15000,
+  );
 }
 
 // ------------------------------------------------------- キャンバスサイズ
@@ -263,6 +321,7 @@ canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 && e.button !== 2) return;
   e.preventDefault();
+  dismissFirstHint(true);
   canvas.setPointerCapture(e.pointerId);
   painting = true;
   paintEraseOverride = e.button === 2 ? true : null;
@@ -291,6 +350,65 @@ canvas.addEventListener("pointerup", (e) => {
 
 canvas.addEventListener("pointerleave", () => {
   brushPreview = null;
+});
+
+// ------------------------------------------------------- 初回ヒント表示
+
+const HINT_STORAGE_KEY = "lbmflow.first-hint-dismissed";
+
+function safeStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // プライベートモード等では保存できなくてもよい
+  }
+}
+
+function dismissFirstHint(persist: boolean): void {
+  if (!firstHint.hidden) firstHint.hidden = true;
+  if (persist) safeStorageSet(HINT_STORAGE_KEY, "1");
+}
+
+if (safeStorageGet(HINT_STORAGE_KEY) === null) firstHint.hidden = false;
+firstHintClose.addEventListener("click", () => dismissFirstHint(true));
+
+// --------------------------------------------------- シナリオ JSON 書き出し
+
+function downloadJson(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+btnExport.addEventListener("click", () => {
+  try {
+    const scenario = buildScenario(
+      engine,
+      buildConfig(currentPreset),
+      `${currentPreset.id}-gui`,
+    );
+    downloadJson(`lbmflow-${currentPreset.id}.json`, scenario);
+    showToast("シナリオ JSON を保存しました。CLI の lbm run でそのまま実行できます。", "success");
+  } catch (err) {
+    console.error("LBMFlow: シナリオの書き出しに失敗しました", err);
+    showToast("シナリオの書き出しに失敗しました。", "danger");
+  }
 });
 
 // ------------------------------------------------------------- UI 配線
@@ -372,21 +490,40 @@ document.addEventListener("visibilitychange", () => {
 
 function frame(): void {
   if (running) {
-    engine.step(stepsPerFrame);
-    spsSteps += stepsPerFrame;
-    const now = performance.now();
-    const dt = now - spsT0;
-    if (dt >= 500) {
-      statusSps.textContent = Math.round((spsSteps * 1000) / dt).toLocaleString("ja-JP");
-      spsSteps = 0;
-      spsT0 = now;
+    try {
+      engine.step(stepsPerFrame);
+      spsSteps += stepsPerFrame;
+      const now = performance.now();
+      const dt = now - spsT0;
+      if (dt >= 500) {
+        const sps = (spsSteps * 1000) / dt;
+        statusSps.textContent = Math.round(sps).toLocaleString("ja-JP");
+        // MLUPS = 1 秒あたりの格子点更新数（百万単位）
+        statusMlups.textContent = ((sps * engine.nx * engine.ny) / 1e6).toFixed(1);
+        spsSteps = 0;
+        spsT0 = now;
+      }
+      if (fieldsDiverged()) handleDivergence(false);
+    } catch (err) {
+      console.error("LBMFlow: エンジンの実行に失敗しました", err);
+      handleDivergence(true);
     }
   }
 
-  const range = renderer.render(engine, visMode, brushPreview);
-  colorbarMin.textContent = formatRange(range.lo);
-  colorbarMax.textContent = formatRange(range.hi);
-  statusStep.textContent = engine.time.toLocaleString("ja-JP");
+  // NaN は描画側で最小色に落とす防御があるため、発散後もフィールドは
+  // 表示され続ける。エンジンが例外を投げる状態でも白画面にしない。
+  try {
+    const range = renderer.render(engine, visMode, brushPreview);
+    colorbarMin.textContent = formatRange(range.lo);
+    colorbarMid.textContent = formatRange((range.lo + range.hi) / 2);
+    colorbarMax.textContent = formatRange(range.hi);
+    statusStep.textContent = engine.time.toLocaleString("ja-JP");
+  } catch (err) {
+    if (!diverged) {
+      console.error("LBMFlow: 描画に失敗しました", err);
+      handleDivergence(true);
+    }
+  }
 
   requestAnimationFrame(frame);
 }

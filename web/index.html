@@ -34,6 +34,10 @@
         <section class="canvas-area">
           <div id="canvas-wrap" class="canvas-wrap">
             <canvas id="sim-canvas"></canvas>
+            <div id="first-hint" class="first-hint" role="note" hidden>
+              <span>プリセットを選んで <strong>▶ 実行</strong> — キャンバスをドラッグすると障害物を描けます</span>
+              <button id="first-hint-close" class="hint-close" type="button" aria-label="ヒントを閉じる">✕</button>
+            </div>
           </div>
           <p id="preset-desc" class="preset-desc"></p>
         </section>
@@ -53,6 +57,7 @@
               <canvas id="colorbar" width="256" height="12"></canvas>
               <div class="colorbar-labels">
                 <span id="colorbar-min">0</span>
+                <span id="colorbar-mid" class="colorbar-mid"></span>
                 <span id="colorbar-max">1</span>
               </div>
             </div>
@@ -109,12 +114,22 @@
               <p class="hint">パラメータの変更はシミュレーションをリセットします（描いた障害物は保持）。</p>
             </details>
           </section>
+
+          <section class="panel-section">
+            <h2>シナリオ</h2>
+            <button id="btn-export" class="btn btn-small"
+                    title="現在の解像度・粘性・境界条件・障害物を Agent モードのシナリオ JSON として保存します">
+              ⤓ JSONで書き出す
+            </button>
+            <p class="hint">現在の設定を CLI（<code>lbm run</code>）でそのまま再現できるシナリオ JSON をダウンロードします。</p>
+          </section>
         </aside>
       </main>
 
       <footer class="status-bar">
         <span class="status-item">ステップ: <strong id="status-step">0</strong></span>
         <span class="status-item"><strong id="status-sps">—</strong> steps/s</span>
+        <span class="status-item" title="Million Lattice Updates per Second — 1秒あたりの格子点更新数（百万単位）"><strong id="status-mlups">—</strong> MLUPS</span>
         <span class="status-item">格子: <strong id="status-grid">—</strong></span>
         <span class="status-item status-mode">表示: <strong id="status-mode">速さ |u|</strong></span>
       </footer>

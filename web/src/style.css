@@ -145,9 +145,11 @@ select:hover {
 
 select:focus-visible,
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+summary:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .btn {
@@ -170,6 +172,7 @@ input:focus-visible {
 
 .btn:active {
   transform: translateY(1px);
+  background: color-mix(in srgb, var(--accent-soft) 65%, var(--panel-2));
 }
 
 .btn-primary {
@@ -182,6 +185,11 @@ input:focus-visible {
 .btn-primary:hover {
   background: linear-gradient(180deg, #5ec6ff, var(--accent));
   border-color: transparent;
+}
+
+.btn-primary:active {
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent-strong));
+  filter: brightness(0.94);
 }
 
 .btn-running {
@@ -248,6 +256,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .canvas-wrap {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -342,6 +351,16 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-faint);
 }
 
+.hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 .segmented {
   display: flex;
   border: 1px solid var(--border-strong);
@@ -361,6 +380,15 @@ input[type="range"]::-moz-range-thumb {
 
 .seg-btn + .seg-btn {
   border-left: 1px solid var(--border-strong);
+}
+
+.seg-btn:hover:not(.active) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.seg-btn:active {
+  background: var(--accent-soft);
 }
 
 .seg-btn.active {
@@ -387,7 +415,26 @@ input[type="range"]::-moz-range-thumb {
   font-size: 10.5px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
-  margin-top: 2px;
+  letter-spacing: 0.02em;
+  margin-top: 3px;
+}
+
+.colorbar-labels span {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+#colorbar-min {
+  text-align: left;
+}
+
+.colorbar-mid {
+  text-align: center;
+}
+
+#colorbar-max {
+  text-align: right;
 }
 
 .advanced {
@@ -409,6 +456,169 @@ input[type="range"]::-moz-range-thumb {
 
 .advanced[open] summary {
   margin-bottom: 10px;
+}
+
+/* --------------------------------------------------------- 初回ヒント */
+
+.first-hint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* abspos + left:50% は残り半分の幅で折り返してしまうため max-content 指定 */
+  width: max-content;
+  max-width: calc(100% - 20px);
+  background: color-mix(in srgb, var(--panel-2) 92%, transparent);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 7px 8px 7px 15px;
+  font-size: 12.5px;
+  color: var(--text);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 0 3px var(--accent-soft);
+  z-index: 5;
+  animation: hint-in 0.3s ease;
+}
+
+@keyframes hint-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.first-hint[hidden] {
+  display: none;
+}
+
+.first-hint strong {
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.hint-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 7px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.hint-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ------------------------------------------------------------- トースト */
+
+#toast-region {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(92vw, 520px);
+  z-index: 50;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 10px 10px 10px 13px;
+  font-size: 12.5px;
+  color: var(--text);
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  animation: rise-in 0.22s ease;
+}
+
+.toast-out {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.toast-danger {
+  border-left-color: var(--danger);
+}
+
+.toast-success {
+  border-left-color: var(--ok);
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-action {
+  flex-shrink: 0;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.toast-action:hover {
+  border-color: var(--accent);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 7px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.toast-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* -------------------------------------------------------- ステータスバー */
@@ -437,13 +647,40 @@ input[type="range"]::-moz-range-thumb {
 /* --------------------------------------------------------- レスポンシブ */
 
 @media (max-width: 880px) {
+  .app-header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .header-controls {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+
+  #preset-select {
+    flex: 1 1 130px;
+    min-width: 110px;
+  }
+
+  .run-controls {
+    flex-shrink: 0;
+  }
+
   .app-main {
     flex-direction: column;
     overflow-y: auto;
   }
 
   .canvas-area {
-    min-height: 55vh;
+    min-height: 52vh;
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .preset-desc {
+    font-size: 12px;
+    padding: 8px 12px;
   }
 
   .side-panel {
@@ -451,10 +688,70 @@ input[type="range"]::-moz-range-thumb {
     border-left: none;
     border-top: 1px solid var(--border);
     overflow-y: visible;
+    padding: 12px;
+    gap: 12px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
 
   .brand-sub {
     display: none;
+  }
+
+  .status-bar {
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    padding: 6px 12px;
+  }
+
+  .status-mode {
+    margin-left: 0;
+  }
+
+  .first-hint {
+    font-size: 12px;
+  }
+
+  #toast-region {
+    bottom: 58px;
+  }
+}
+
+/* タッチ端末: 当たり判定を広げる */
+@media (pointer: coarse) {
+  .btn {
+    padding: 10px 16px;
+  }
+
+  .btn-small {
+    padding: 9px 10px;
+  }
+
+  .seg-btn {
+    padding: 10px 0;
+  }
+
+  select {
+    padding: 10px 32px 10px 12px;
+  }
+
+  input[type="range"] {
+    height: 6px;
+    margin: 12px 0 6px;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+  }
+
+  .hint-close,
+  .toast-close {
+    padding: 8px 10px;
   }
 }
 

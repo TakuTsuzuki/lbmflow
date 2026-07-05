@@ -135,6 +135,9 @@ export class FieldRenderer {
       target = Math.max(1e-4, m * (mode === "vorticity" ? 0.7 : 1));
     }
 
+    // 発散（Inf）してもレンジが壊れないように直前の値へフォールバック
+    if (!Number.isFinite(target)) target = this.emaHi > 0 ? this.emaHi : 1;
+
     this.emaHi = this.emaHi === 0 ? target : this.emaHi * 0.92 + target * 0.08;
     const hi = this.emaHi;
 
@@ -172,7 +175,8 @@ export class FieldRenderer {
           continue;
         }
         let t = (scalar[si]! - range.lo) * inv;
-        if (t < 0) t = 0;
+        // !(t > 0) は NaN も拾う: 発散時に描画が乱れない防御
+        if (!(t > 0)) t = 0;
         else if (t > 1) t = 1;
         const li = ((t * 255) | 0) * 3;
         px[di] = lut[li]!;
@@ -235,6 +239,7 @@ export function drawColorbar(canvas: HTMLCanvasElement, mode: VisMode): void {
 
 /** カラーバーの端ラベル用フォーマッタ */
 export function formatRange(v: number): string {
+  if (!Number.isFinite(v)) return "—";
   const a = Math.abs(v);
   if (a === 0) return "0";
   if (a >= 0.01 && a < 1000) return v.toPrecision(2);
