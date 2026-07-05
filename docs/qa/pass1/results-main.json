@@ -1,0 +1,1185 @@
+[
+  {
+    "id": "t6-momentum-periodic",
+    "track": "conservation",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.002, totalMass=4096",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.002",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "momentum growth",
+        "ok": true,
+        "expected": "du/dstep = F = 1e-06 (rel err <= 1e-10)",
+        "observed": "max rel err = 8.15e-14",
+        "detail": "4 snapshots",
+        "source": "VALIDATION T6 (momentum grows N_fluid*F per step, rel 1e-10)"
+      },
+      {
+        "check": "field uniformity",
+        "ok": true,
+        "expected": "max-min <= 1e-12 (ux, all snapshots)",
+        "observed": "max-min = 0",
+        "detail": "",
+        "source": "analytic (uniform force on periodic box keeps u uniform)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 1e-11 over 1500 steps (1e-11/1e4 steps, region=all)",
+        "observed": "rel drift = 0",
+        "detail": "mass[first]=4096, mass[last]=4096",
+        "source": "VALIDATION T6 (rel 1e-11 / 1e4 steps)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 2000,
+      "wallSeconds": 0.427128,
+      "mlups": 19.179262422505666,
+      "diagnostics": {
+        "totalMass": 4096.0,
+        "maxSpeed": 0.002000499999999922,
+        "tau": 0.56
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "poiseuille-trt-h32",
+    "track": "channel-analytic",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.001279, totalMass=512",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.001279",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Poiseuille exactness",
+        "ok": true,
+        "expected": "LInf_rel <= 1e-10 vs u(y)=g/(2nu) y_w(H-y_w)",
+        "observed": "LInf_rel = 1.35e-11",
+        "detail": "u_max sim=0.00127875 ref=0.00127875",
+        "source": "VALIDATION T2 (TRT Lambda=3/16 exact, LInf_rel <= 1e-10)"
+      },
+      {
+        "check": "top/bottom symmetry",
+        "ok": true,
+        "expected": "|ux(j) - ux(H+1-j)| <= 1e-13 (T2 absolute)",
+        "observed": "max asym = 1.41e-18 (umax=0.00128)",
+        "detail": "",
+        "source": "VALIDATION T2 (top/bottom symmetry <= 1e-13)"
+      },
+      {
+        "check": "mass drift",
+        "ok": false,
+        "expected": ">=2 rho snapshots",
+        "observed": "1 snapshot(s)",
+        "detail": "collection gap",
+        "source": "VALIDATION T6",
+        "severity": "S1"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 26000,
+      "wallSeconds": 0.707727625,
+      "mlups": 19.985089602797405,
+      "diagnostics": {
+        "totalMass": 512.0,
+        "maxSpeed": 0.0012787499999827373,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "poiseuille-bgk-h8",
+    "track": "channel-analytic",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=7.81e-05, totalMass=96",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 7.81e-05",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Poiseuille L2rel (order input)",
+        "ok": true,
+        "expected": "recorded",
+        "observed": "L2rel = 0.01112",
+        "detail": "",
+        "l2rel": 0.011124426295871287,
+        "source": "VALIDATION T2 (BGK: order input, paired with h16)"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 2500,
+      "wallSeconds": 0.013766375,
+      "mlups": 21.79222925425175,
+      "diagnostics": {
+        "totalMass": 96.0,
+        "maxSpeed": 7.809999999999852e-05,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "poiseuille-bgk-h16",
+    "track": "channel-analytic",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.0003181, totalMass=192",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.0003181",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Poiseuille L2rel (order input)",
+        "ok": true,
+        "expected": "recorded",
+        "observed": "L2rel = 0.002781",
+        "detail": "",
+        "l2rel": 0.0027813850448758443,
+        "source": "VALIDATION T2 (BGK: order input, paired with h8)"
+      },
+      {
+        "check": "BGK convergence order",
+        "ok": true,
+        "expected": "order >= 1.7 for H=8->16 (VALIDATION T2)",
+        "observed": "order = 2.000 (L2rel 0.0111 -> 0.00278)",
+        "severity": null,
+        "source": "VALIDATION T2"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 7500,
+      "wallSeconds": 0.078477167,
+      "mlups": 20.64294701158109,
+      "diagnostics": {
+        "totalMass": 192.0,
+        "maxSpeed": 0.0003180999999999156,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "couette-trt-tau08",
+    "track": "channel-analytic",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.09844, totalMass=512",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.09844",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Couette exactness",
+        "ok": true,
+        "expected": "LInf_rel <= 1e-10 vs u(y)=U y_w/H",
+        "observed": "LInf_rel = 1.35e-11",
+        "detail": "",
+        "source": "VALIDATION T3 (LInf_rel <= 1e-10)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 1e-12 over 10000 steps (1e-12/1e4 steps, region=interior)",
+        "observed": "rel drift = 0",
+        "detail": "mass[first]=448, mass[last]=448",
+        "source": "VALIDATION T3 (moving-wall mass drift <= 1e-12 rel / 1e4 steps)"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 25500,
+      "wallSeconds": 0.5878455,
+      "mlups": 23.598037239376673,
+      "diagnostics": {
+        "totalMass": 512.0,
+        "maxSpeed": 0.0984374999999334,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "couette-bgk-tau06",
+    "track": "channel-analytic",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.09844, totalMass=512",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.09844",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Couette exactness",
+        "ok": true,
+        "expected": "LInf_rel <= 1e-10 vs u(y)=U y_w/H",
+        "observed": "LInf_rel = 5.63e-11",
+        "detail": "",
+        "source": "VALIDATION T3 (holds for BGK too, tau in {0.6,1.0,1.4})"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 72000,
+      "wallSeconds": 1.676759084,
+      "mlups": 23.35934862303689,
+      "diagnostics": {
+        "totalMass": 512.0,
+        "maxSpeed": 0.09843749999972272,
+        "tau": 0.6
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "channel-zouhe-t4",
+    "track": "open-boundary",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.05116, totalMass=3080.65",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.05116",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "T4 bulk flow-rate constancy",
+        "ok": true,
+        "expected": "max|Q-Qbar|/Qbar <= 1e-04 (bulk x in [1,71]; measured 2.4e-5 in spec)",
+        "observed": "max dev = 1.99e-05",
+        "detail": "Qbar = 1.07319",
+        "source": "VALIDATION T4 (bulk mass-flux constancy <= 1e-4; measured 2.4e-5)"
+      },
+      {
+        "check": "T4 central profile",
+        "ok": false,
+        "expected": "L2rel <= 2e-03 vs parabola",
+        "observed": "L2rel = 0.00275",
+        "detail": "",
+        "source": "VALIDATION T4 (central profile L2rel <= 2e-3 vs parabola)",
+        "severity": "S2"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 35000,
+      "wallSeconds": 4.658269208,
+      "mlups": 24.52413007900165,
+      "diagnostics": {
+        "totalMass": 3080.6459241861385,
+        "maxSpeed": 0.05116107926829305,
+        "tau": 0.65
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "cavity-re100",
+    "track": "cavity",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.09761, totalMass=16129",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.09761",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Ghia RMS (Re=100)",
+        "ok": true,
+        "expected": "RMS <= 0.02 * U = 0.002",
+        "observed": "RMS = 0.0005297 (0.0053 U)",
+        "detail": "",
+        "source": "VALIDATION T7 (RMS <= 0.02*U, Ghia 1982 17 pts)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 1e-10 over 100000 steps (1e-11/1e4 steps, region=interior)",
+        "observed": "rel drift = 2.26e-16",
+        "detail": "mass[first]=16129, mass[last]=16129",
+        "source": "VALIDATION T6"
+      },
+      {
+        "check": "|u| scale sanity",
+        "ok": true,
+        "expected": "max|u| <= 0.12 (1.2x driving speed)",
+        "observed": "max|u| = 0.09761",
+        "detail": "",
+        "source": "sanity (|u| should not exceed lid speed by >20%)"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 188000,
+      "wallSeconds": 219.745923667,
+      "mlups": 14.23693303517611,
+      "diagnostics": {
+        "totalMass": 16129.000000000007,
+        "maxSpeed": 0.09760563540020695,
+        "tau": 0.881
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "cavity-re400",
+    "track": "cavity",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.09633, totalMass=16129",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.09633",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Ghia RMS (Re=400)",
+        "ok": true,
+        "expected": "RMS <= 0.02 * U = 0.002",
+        "observed": "RMS = 0.0008759 (0.0088 U)",
+        "detail": "",
+        "source": "VALIDATION T7 (RMS <= 0.02*U, v(0.9063) typo excluded)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 2.5e-10 over 250000 steps (1e-11/1e4 steps, region=interior)",
+        "observed": "rel drift = 5.64e-16",
+        "detail": "mass[first]=16129, mass[last]=16129",
+        "source": "VALIDATION T6"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 300000,
+      "wallSeconds": 326.185891375,
+      "mlups": 15.305076436493069,
+      "diagnostics": {
+        "totalMass": 16129.000000000011,
+        "maxSpeed": 0.09633169820665297,
+        "tau": 0.5952500000000001
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "cavity-re1000",
+    "track": "cavity",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": [
+        {
+          "field": "physics.nu",
+          "message": "tau = 0.538 is close to the stability limit (below 0.55). Increase the viscosity or the resolution"
+        }
+      ]
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.09445, totalMass=16129",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.09445",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on ['physics.nu']",
+        "observed": "got ['physics.nu']",
+        "detail": ""
+      },
+      {
+        "check": "Ghia RMS (Re=1000)",
+        "ok": true,
+        "expected": "RMS <= 0.03 * U = 0.003",
+        "observed": "RMS = 0.001329 (0.0133 U)",
+        "detail": "",
+        "source": "VALIDATION T7 (RMS <= 0.03*U at Re=1000)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 2.5e-10 over 250000 steps (1e-11/1e4 steps, region=interior)",
+        "observed": "rel drift = 1.69e-15",
+        "detail": "mass[first]=16129, mass[last]=16129",
+        "source": "VALIDATION T6"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 300000,
+      "wallSeconds": 340.8810045,
+      "mlups": 14.645286578296268,
+      "diagnostics": {
+        "totalMass": 16129.000000000035,
+        "maxSpeed": 0.0944523789849667,
+        "tau": 0.5381
+      },
+      "warnings": [
+        {
+          "field": "physics.nu",
+          "message": "tau = 0.538 is close to the stability limit (below 0.55). Increase the viscosity or the resolution"
+        }
+      ]
+    }
+  },
+  {
+    "id": "cylinder-re20-t8",
+    "track": "cylinder",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.1029, totalMass=35071.6",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.1029",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "T8 Cd band",
+        "ok": true,
+        "expected": "Cd in [5.2, 6.0] (ref 5.5795)",
+        "observed": "Cd = 5.8510",
+        "detail": "1001 samples from step 20000",
+        "source": "VALIDATION T8 2D-1 D=20 (staircase coarse-grid band)"
+      },
+      {
+        "check": "T8 Cl band",
+        "ok": true,
+        "expected": "Cl in [-0.05, 0.08] (ref 0.0106)",
+        "observed": "Cl = 0.0092",
+        "detail": "",
+        "source": "VALIDATION T8 2D-1 D=20 (staircase coarse-grid band)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 30000,
+      "wallSeconds": 45.103053792,
+      "mlups": 23.99837503224642,
+      "diagnostics": {
+        "totalMass": 35071.62179036691,
+        "maxSpeed": 0.10291931204482978,
+        "tau": 0.65
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "cylinder-re100-karman-t8",
+    "track": "cylinder",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.2281, totalMass=141871",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.2281",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Karman saturation guard",
+        "ok": true,
+        "expected": "Cl amplitude change <= 15% between window halves",
+        "observed": "amp1=1.079, amp2=1.078",
+        "detail": "if false: shedding not yet saturated -> St/Cd inconclusive",
+        "source": "VALIDATION T8 2D-2 D=40 (St/Cd_max/Cl_max/periodicity)"
+      },
+      {
+        "check": "Strouhal",
+        "ok": true,
+        "expected": "St in [0.28, 0.32] (ref 0.295-0.305)",
+        "observed": "St = 0.3066 (period 1304.6 steps, n=29)",
+        "detail": "",
+        "source": "VALIDATION T8 2D-2 D=40 (St/Cd_max/Cl_max/periodicity)"
+      },
+      {
+        "check": "period regularity",
+        "ok": true,
+        "expected": "consecutive-period variation <= 2%",
+        "observed": "max variation = 0.06%",
+        "detail": "",
+        "source": "VALIDATION T8 2D-2 D=40 (St/Cd_max/Cl_max/periodicity)"
+      },
+      {
+        "check": "Cd_max band",
+        "ok": true,
+        "expected": "Cd_max in [3.0, 3.5]",
+        "observed": "Cd_max = 3.4473",
+        "detail": "",
+        "source": "VALIDATION T8 2D-2 D=40 (St/Cd_max/Cl_max/periodicity)"
+      },
+      {
+        "check": "Cl_max band",
+        "ok": true,
+        "expected": "|Cl|_max in [0.8, 1.2]",
+        "observed": "|Cl|_max = 1.0912",
+        "detail": "",
+        "source": "VALIDATION T8 2D-2 D=40 (St/Cd_max/Cl_max/periodicity)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 150000,
+      "wallSeconds": 336.209365125,
+      "mlups": 64.38845030967964,
+      "diagnostics": {
+        "totalMass": 141870.70827019084,
+        "maxSpeed": 0.22805361458349863,
+        "tau": 0.62
+      },
+      "warnings": []
+    },
+    "note": "spec test runs 120k with a seeded perturbation; from rest we run 150k and measure on the last 40k with a saturation guard"
+  },
+  {
+    "id": "outflow-karman-t9",
+    "track": "open-boundary",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.2273, totalMass=182077",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.2273",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "T9 reverse flow @step 20000",
+        "ok": true,
+        "expected": "reverse mass flux <= 5% of inflow",
+        "observed": "0.04%",
+        "detail": "",
+        "source": "VALIDATION T9 (reverse-flow mass flux <= 5% of inflow)"
+      },
+      {
+        "check": "T9 reverse flow @step 40000",
+        "ok": true,
+        "expected": "reverse mass flux <= 5% of inflow",
+        "observed": "-0.00%",
+        "detail": "",
+        "source": "VALIDATION T9 (reverse-flow mass flux <= 5% of inflow)"
+      },
+      {
+        "check": "T9 reverse flow @step 60000",
+        "ok": true,
+        "expected": "reverse mass flux <= 5% of inflow",
+        "observed": "0.42%",
+        "detail": "",
+        "source": "VALIDATION T9 (reverse-flow mass flux <= 5% of inflow)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 60000,
+      "wallSeconds": 188.538360166,
+      "mlups": 45.928054070142245,
+      "diagnostics": {
+        "totalMass": 182077.40979509367,
+        "maxSpeed": 0.22726809079541566,
+        "tau": 0.62
+      },
+      "warnings": []
+    },
+    "note": "T9 spec horizon is 1e5 steps; pass-1 runs 60k (time cap), full horizon deferred to pass 2"
+  },
+  {
+    "id": "duct3d-t15",
+    "track": "3d",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.000753, totalMass=12288",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.000753",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "duct series exactness",
+        "ok": true,
+        "expected": "LInf_rel <= 1e-03 vs Fourier series (n<=99)",
+        "observed": "LInf_rel = 0.0002306",
+        "detail": "",
+        "source": "VALIDATION T15.2 (TRT LInf_rel <= 1e-3; measured 2.3e-4 at 32^2)"
+      },
+      {
+        "check": "duct flow rate",
+        "ok": true,
+        "expected": "|Q-Q_ref|/Q_ref <= 0.5% (measured 0.094%)",
+        "observed": "dev = 0.094%",
+        "detail": "Q=0.36886 Q_ref=0.368514",
+        "source": "VALIDATION T15.2 (Q within +-0.5%; measured 0.094%)"
+      },
+      {
+        "check": "duct y<->z symmetry",
+        "ok": true,
+        "expected": "|u(y,z)-u(z,y)| <= 1e-11 * umax",
+        "observed": "max asym = 3.25e-19 (umax=0.000753)",
+        "detail": "",
+        "source": "square-duct y<->z exchange symmetry (discrete-exact)"
+      },
+      {
+        "check": "mass drift",
+        "ok": false,
+        "expected": ">=2 rho snapshots",
+        "observed": "1 snapshot(s)",
+        "detail": "collection gap",
+        "source": "VALIDATION T6",
+        "severity": "S1"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 13500,
+      "wallSeconds": 19.311100167,
+      "mlups": 9.697634955051496,
+      "diagnostics": {
+        "totalMass": 12287.999999999898,
+        "maxSpeed": 0.0007529995790225973,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "cavity3d-re1000-n64",
+    "track": "3d",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": [
+        {
+          "field": "physics.nu",
+          "message": "tau = 0.519 is close to the stability limit (below 0.55). Increase the viscosity or the resolution"
+        },
+        {
+          "field": "physics",
+          "message": "grid Reynolds number U/\u03bd = 16.1 > 15: risk of divergence (see PHYSICS.md)"
+        }
+      ]
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.08734, totalMass=238328",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.08734",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on ['physics', 'physics.nu']",
+        "observed": "got ['physics', 'physics.nu']",
+        "detail": ""
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 3e-11 over 30000 steps (1e-11/1e4 steps, region=interior3d)",
+        "observed": "rel drift = 1.22e-16",
+        "detail": "mass[first]=238328, mass[last]=238328",
+        "source": "VALIDATION T15.5 (N=64 sentinel: mass drift ~1e-16)"
+      },
+      {
+        "check": "3D cavity z-mirror symmetry",
+        "ok": true,
+        "expected": "max|f(z)-f(mirror)|/U <= 1e-08 (T15.5 sentinel measured ~2e-15)",
+        "observed": "rel asym = 4.02e-15",
+        "detail": "",
+        "source": "VALIDATION T15.5 (midplane symmetry ~2e-15 at N=64)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 40000,
+      "wallSeconds": 433.5019995,
+      "mlups": 24.18849281455275,
+      "diagnostics": {
+        "totalMass": 238328.00000000006,
+        "maxSpeed": 0.08733741980287729,
+        "tau": 0.5186
+      },
+      "warnings": [
+        {
+          "field": "physics.nu",
+          "message": "tau = 0.519 is close to the stability limit (below 0.55). Increase the viscosity or the resolution"
+        },
+        {
+          "field": "physics",
+          "message": "grid Reynolds number U/\u03bd = 16.1 > 15: risk of divergence (see PHYSICS.md)"
+        }
+      ]
+    },
+    "note": "qualitative sentinel per T15.5 default suite; spec-grade profile RMS needs N=72 + full steady (pass 2 / heavy)"
+  },
+  {
+    "id": "droplet-t11",
+    "track": "multiphase",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.00433, totalMass=4783.05",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.00433",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "spurious currents",
+        "ok": true,
+        "expected": "max|u| <= 5e-03 at equilibrium (T11; flat-interface measured 1.26e-3)",
+        "observed": "max|u| = 0.00433",
+        "detail": "",
+        "source": "VALIDATION T11 (max|u| <= 5e-3; measured 1.26e-3 flat)"
+      },
+      {
+        "check": "Laplace sigma",
+        "ok": true,
+        "expected": "sigma = 0.0332 +- 15% (T11 slope band)",
+        "observed": "sigma = 0.03488 (dev 5.1%)",
+        "detail": "R_fit = 22.26, dp = 0.001567",
+        "source": "VALIDATION T11 Laplace (sigma = 3.32e-2 +-10% slope, +-5% per droplet; +-15% single-droplet combined)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 2.5e-10 over 25000 steps (1e-10/1e4 steps, region=all)",
+        "observed": "rel drift = 3.9e-12",
+        "detail": "mass[first]=4783.05, mass[last]=4783.05000002",
+        "source": "VALIDATION T11 (total-mass drift <= 1e-10 rel)"
+      },
+      {
+        "check": "droplet x/y mirror symmetry",
+        "ok": false,
+        "expected": "max mirror asym <= 1e-09 (observation band)",
+        "observed": "max asym = 0.564",
+        "detail": "",
+        "source": "symmetric IC + symmetric stencil (observation band)",
+        "severity": "S2"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 30000,
+      "wallSeconds": 117.059928166,
+      "mlups": 4.1988749497862905,
+      "diagnostics": {
+        "totalMass": 4783.050000022653,
+        "maxSpeed": 0.004330486534457929,
+        "tau": 1.0
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "droplet-on-wall-t11c",
+    "track": "multiphase",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.008823, totalMass=3796.85",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.008823",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "contact angle (spherical cap)",
+        "ok": true,
+        "expected": "theta = 63.0 +- 8.0 deg (T11c, wallRho=1.0)",
+        "observed": "theta = 64.5 deg",
+        "detail": "h=20.5, w=65",
+        "source": "VALIDATION T11c (wallRho=1.0 -> 63 deg +- 8)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 30000,
+      "wallSeconds": 30.938589542,
+      "mlups": 15.51460512924762,
+      "diagnostics": {
+        "totalMass": 3796.8500000222284,
+        "maxSpeed": 0.00882260445102388,
+        "tau": 1.0
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "tau-margin-cavity-t10",
+    "track": "robustness",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": [
+        {
+          "field": "physics.nu",
+          "message": "tau = 0.510 is close to the stability limit (below 0.55). Increase the viscosity or the resolution"
+        }
+      ]
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.04586, totalMass=15876",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.04586",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on ['physics.nu']",
+        "observed": "got ['physics.nu']",
+        "detail": ""
+      },
+      {
+        "check": "|u| scale sanity",
+        "ok": true,
+        "expected": "max|u| <= 0.1 (2.0x driving speed)",
+        "observed": "max|u| = 0.04586",
+        "detail": "",
+        "source": "VALIDATION T10 (tau=0.51 N=128 U=0.05 stable, max|u|=0.046)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 10000,
+      "wallSeconds": 29.209179416,
+      "mlups": 5.609195577409918,
+      "diagnostics": {
+        "totalMass": 15876.0,
+        "maxSpeed": 0.0458610154135904,
+        "tau": 0.51
+      },
+      "warnings": [
+        {
+          "field": "physics.nu",
+          "message": "tau = 0.510 is close to the stability limit (below 0.55). Increase the viscosity or the resolution"
+        }
+      ]
+    }
+  }
+]
