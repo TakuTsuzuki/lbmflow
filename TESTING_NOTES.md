@@ -573,6 +573,51 @@ untouched T13/T14/backend_simd gates.
 8. **A-10f**: `equilibrium()` vs collide's inline feq pinned to bit identity
    via the fixed-point property (equilibrium state must survive forceless
    collision bit-exactly), D2Q9/D3Q19 x f32/f64.
+
+## Stirred-tank demo — measured behavior (MF-δ precursor, 2026-07-05)
+
+3D baffled Rushton stirred tank, `crates/lbm-cli/examples/stirred_tank_3d.rs`
+(kept UNTRACKED per PM until the raster/product framing is resolved). Ran on the
+primary checkout `feat/body-force-field-api @ d7c4053` — NO branch switch. Backend
+CpuScalar, D3Q19, TRT (MAGIC_STD). The impeller is volume-penalization, NOT a
+resolved moving solid: a Guo body force (public `set_body_force_field`, b74298e)
+drags turbine-footprint cells toward `v = omega x r`. This is the sanctioned interim
+before IBM-inertial (REQ §4.3 FR-ROT-01 / W-ROT, MF-δ). Baffles + round wall are
+true no-slip solids (half-way bounce-back). Shear here is an EXAMPLE-SIDE finite-
+difference proxy `nu*sqrt(2 S:S)` (central diff) — the core exposes no strain-rate
+field yet; replace with the non-equilibrium-moment field when order A / FR-STRESS-01
+(branch cx-strain-rate) lands, then re-baseline shear_max.
+
+Config (n^3 default 80): tip_r=12.33 (D=T/3), 6 blades, 4 baffles, spin-up ramp
+1500 steps, penalization gain alpha=0.32, force cap 0.02. Added backward-compatible
+CLI args `u_tip` (arg5) and `nu` (arg6) + a SUMMARY line + divergence early-break
+for the sweeps below (defaults 0.08 / 0.02 unchanged).
+
+Measured (n=48 fast sweep + n=80 reference/edge):
+- **omega / Ma_tip is NOT the binding limit.** STABLE across the whole u_tip sweep
+  0.04..0.20 (Ma_tip 0.069..0.346) at nu=0.02, and at Ma_tip=0.277 (u_tip=0.16,
+  nu=0.01). `final_max|u| ~= 0.96*u_tip` (penalization reaches ~96% of rigid tip
+  speed). Compressibility error ~O(Ma^2) is the real cap: recommend Ma_tip <= 0.1
+  (u_tip <= ~0.058) for quantitative use; default u_tip=0.08 (Ma_tip=0.139) is a
+  visualization compromise (~2% Ma^2 error).
+- **tau / Re edge IS the binding limit** (80^3, no SGS model): STABLE down to
+  tau~=0.507 (nu=0.0025, Re~789); **DIVERGES at tau~=0.504 (nu=0.00125, Re~1579)**,
+  max|u| -> 2.4e6 at step ~2500. Practical envelope: tau >~ 0.51 (nu >~ 0.0025),
+  Re <~ ~800 at 80^3 without a subgrid model. Above this needs W-LES/cumulant —
+  concrete motivation for REQ risk #2 (§4.2) before any high-Re stirred run.
+  NB the default 80^3 config is Re~99 (laminar); Re scales with n (tip_r).
+- **Shear-field sanity**: monotonic with u_tip and nu in the stable regime;
+  explodes to shear_max=1772 at divergence (clean blow-up signature). Spatially
+  correct: six blade-tip shear lobes decaying into the bulk (textbook Rushton
+  discharge), velocity mirrors it with a six-lobe radial jet, baffles break the
+  swirl. Reference (80^3, u_tip=0.08, nu=0.02, 4000 steps): speed_max=0.0767,
+  shear_max=6.3e-4; PNG slices + subsampled volume.bin/json emitted.
+
+Feeds MF-δ: penalization gives the right qualitative discharge/shear topology and a
+bounded, well-characterized stable envelope; the tau-floor divergence at Re~1579 is
+the numeric evidence that W-LES must precede high-Re stirred validation. Next: swap
+the FD shear proxy for FR-STRESS-01 once cx-strain-rate lands, then IBM-inertial
+(W-ROT) supersedes penalization for torque/Np fidelity.
 9. **A-1 residual**: not needed — no AUTO-GENERATED headers remain under
    crates/lbm-core/tests/ (sync-tests.sh deleted; suites are compat-native).
    A-10a/b: not applicable on main (V1 deleted; facade carries neither the
