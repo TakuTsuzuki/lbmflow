@@ -751,3 +751,23 @@ F3 resolved rotating boundary → MF-δ (FR-ROT-01/02; penalization stays sancti
    (SPEC_UNIT_CONVERTER; ADD the effective-viscosity regime caveat to the
    echo-back: report the Re_physical/Re_effective matching ratio explicitly).
 F7 stirred-tank validation → VR-STR-01/T17, post-MF-δ.
+
+## MF-δ interim seeds + strain-observable field validation (viewer session data, 2026-07-06)
+
+**F4 — penalization band-aid values (recorded on the session's behalf)**: example
+stirred_tank_3d.rs, D3Q19 TRT, nu=0.02 (tau=0.56), Re_imp≈100, Ma_tip≤0.21:
+alpha=0.32 (F=2α(v_target−u)), linear spin-up ramp over 1500 steps on the target
+velocity, per-cell |F| cap f_cap=0.25·u_tip. Without ramp+cap: max|u|=0.18 at step 0
+→ NaN within ~1000 steps; **the cap is the load-bearing fix, the ramp alone is
+insufficient**. Conclusion for MF-δ: the interim needs an implicit (Brinkman-type)
+forcing with documented stability bounds, not empirical knobs.
+
+**F5 — FD vs exact (f_neq) shear on the full 80³ field (native gather = reference)**:
+FD reconstruction systematically UNDER-reports peak shear, worst where gradients are
+sharpest: u_tip 0.045 → mean|Δ| 3.6%, peak −13%; 0.080 → 5.1%, peak −22%;
+0.120 → 7.1%, peak −35%. Blade-tip thresholds ("% over τc") shift up accordingly
+(Med peak 12→14 Pa @150 rpm equivalent). This is the quantitative case for
+LBM-native non-equilibrium stress evaluation (FR-STRESS-01 / order A) over
+post-hoc FD — paper-grade datum (claims ledger GREEN list candidate once the
+CLI channel ships). Viewer now consumes gather_shear_rate; vorticity/Q swap
+pending the FieldKind channel.
