@@ -1314,6 +1314,21 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         fields.state.borrow_mut().steps_recorded += 1;
     }
 
+    fn run_chunk_size(&self) -> usize {
+        self.submit_chunk.max(1)
+    }
+
+    fn finish_run_chunk(&mut self, fields: &[GpuFields], steps: usize) {
+        let start = std::time::Instant::now();
+        for field in fields {
+            self.flush(field);
+        }
+        self.ctx.wait_idle();
+        if !self.submit_chunk_calibrated {
+            self.calibrate_submit_chunk(steps, start.elapsed());
+        }
+    }
+
     fn reduce(
         &self,
         _sub: &Subdomain,

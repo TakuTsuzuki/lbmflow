@@ -804,8 +804,14 @@ where
 
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
-        for _ in 0..steps {
-            self.step();
+        let mut remaining = steps;
+        while remaining > 0 {
+            let chunk = self.backend.run_chunk_size().max(1).min(remaining);
+            for _ in 0..chunk {
+                self.step();
+            }
+            self.backend.finish_run_chunk(&self.parts, chunk);
+            remaining -= chunk;
         }
     }
 

@@ -159,6 +159,17 @@ pub trait Backend<L: Lattice, T: Real> {
     /// Recompute macroscopic moments from the populations.
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
 
+    /// Maximum number of steps the orchestrator should record before calling
+    /// [`Backend::finish_run_chunk`]. CPU backends execute immediately, so the
+    /// default runs the requested span as one chunk.
+    fn run_chunk_size(&self) -> usize {
+        usize::MAX
+    }
+
+    /// End-of-chunk hook used by asynchronous backends to submit recorded
+    /// device work and, when needed, block until that chunk is complete.
+    fn finish_run_chunk(&mut self, _fields: &[Self::Fields], _steps: usize) {}
+
     /// Backend-side reduction over fluid core cells, accumulated in `f64`
     /// in compact cell order (V1 diagnostic convention).
     fn reduce(
