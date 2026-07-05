@@ -171,6 +171,24 @@ fn for_fluid_spans(
 // Span kernels (branch-free inner loops over solid-free spans)
 // ---------------------------------------------------------------------------
 
+/// Cells per kernel block for the high-`Q` (3D) span kernels: they stage
+/// shared per-cell pieces in `[T; BLOCK]` stack rows and sweep the block
+/// once per direction pair / plane, so every inner loop is a unit-stride
+/// sweep with loop-invariant lattice constants — vectorization no longer
+/// depends on `L::Q`. The flat per-cell form (used for D2Q9, where LLVM
+/// fully unrolls the 4 pairs and vectorizes the cell loop) left D3Q19
+/// essentially scalar: measured 18 vs 285 vector/scalar instructions and
+/// 22 vs 43 MLUPS at 128³ f32 1T. Conversely, block staging costs D2Q9
+/// ~1.2x (extra scratch traffic against only 4 pair sweeps), so each
+/// lattice gets the form that measures faster.
+const BLOCK: usize = 64;
+
+/// Whether lattice `L` uses the blocked span kernels (see [`BLOCK`]).
+#[inline(always)]
+fn use_blocked<L: Lattice>() -> bool {
+    L::Q > 9
+}
+
 /// TRT collision with Guo forcing over core cells `x0..x1` of one row stored
 /// as `L::Q` planes at stride `q_stride` inside `planes` (`base` = index of
 /// the row's core `x = 0` cell in plane 0).
@@ -179,11 +197,11 @@ fn for_fluid_spans(
 /// pair decomposition works directly on the shared `base`/`r3`/`r45`
 /// equilibrium pieces — on D2Q9, `dotc`'s folded ±1/0 constants reproduce
 /// V1's hand-written `vx`/`vy`/`vx+vy`/`vy-vx` bitwise), generalised to any
-/// lattice via `L::PAIRS`. This is an exact algebraic regrouping of
+/// lattice via `L::PAIRS` and staged through per-block scratch rows (which
+/// does not change any rounding). It is an exact algebraic regrouping of
 /// `kernels::collide_row`, differing from it by last-ulp rounding only (see
 /// the module docs for the measured cost of the literal DAG). The caller
-/// decomposes rows into solid-free spans, so the loop is branch-free and
-/// auto-vectorizes.
+/// decomposes rows into solid-free spans, so the loops are branch-free.
 ///
 /// # Safety
 /// The caller must be the only concurrent accessor of the addressed cells,
@@ -206,11 +224,46 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
     if x0 >= x1 {
         return;
     }
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if use_blocked::<L>() {
+            collide_span_blocked::<L, T, FORCE, FF>(
+                planes, q_stride, base, x0, x1, rho, ux, uy, uz, field, kp,
+            );
+        } else {
+            collide_span_flat::<L, T, FORCE, FF>(
+                planes, q_stride, base, x0, x1, rho, ux, uy, uz, field, kp,
+            );
+        }
+    }
+}
+
+/// Flat per-cell form of [`collide_span_fused`] (D2Q9: LLVM unrolls the
+/// pair loop into the cell body and vectorizes the cell loop — V1
+/// `collide_span`'s exact shape and arithmetic).
+///
+/// # Safety
+/// See [`collide_span_fused`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bool>(
+    planes: RawSlice<T>,
+    q_stride: usize,
+    base: usize,
+    x0: usize,
+    x1: usize,
+    rho: &[T],
+    ux: &[T],
+    uy: &[T],
+    uz: &[T],
+    field: &[[T; 3]],
+    kp: &KParams<T>,
+) {
     let three = T::r(3.0);
     let f45 = T::r(4.5);
     let f15 = T::r(1.5);
     let nine = T::r(9.0);
     let half = T::r(0.5);
+    let one = T::one();
     let (op, om, cp, cm) = (kp.omega_p, kp.omega_m, kp.cp, kp.cm);
     for x in x0..x1 {
         let r = rho[x];
@@ -232,22 +285,21 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
         for d in 1..L::D {
             usq = usq + u[d] * u[d];
         }
-        let uf = if FORCE {
-            let mut uf = u[0] * fv[0];
-            for d in 1..L::D {
-                uf = uf + u[d] * fv[d];
-            }
-            uf
-        } else {
-            T::zero()
-        };
-        let drho = r - T::one();
+        let drho = r - one;
         let i = base + x;
         // Shared equilibrium pieces (V1: base / r3 / r45 / uf3).
         let eq_base = drho - f15 * r * usq;
         let r3 = three * r;
         let r45 = f45 * r;
-        let uf3 = if FORCE { three * uf } else { T::zero() };
+        let uf3 = if FORCE {
+            let mut uf = u[0] * fv[0];
+            for d in 1..L::D {
+                uf = uf + u[d] * fv[d];
+            }
+            three * uf
+        } else {
+            T::zero()
+        };
         // Rest population: feq0 = w0 * base, src0 = -w0 * uf3.
         {
             let w0 = T::r(L::W[L::REST]);
@@ -288,6 +340,124 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
                 }
             }
         }
+    }
+}
+
+/// Blocked form of [`collide_span_fused`] (D3Q19; see [`BLOCK`]).
+///
+/// # Safety
+/// See [`collide_span_fused`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF: bool>(
+    planes: RawSlice<T>,
+    q_stride: usize,
+    base: usize,
+    x0: usize,
+    x1: usize,
+    rho: &[T],
+    ux: &[T],
+    uy: &[T],
+    uz: &[T],
+    field: &[[T; 3]],
+    kp: &KParams<T>,
+) {
+    let three = T::r(3.0);
+    let f45 = T::r(4.5);
+    let f15 = T::r(1.5);
+    let nine = T::r(9.0);
+    let half = T::r(0.5);
+    let one = T::one();
+    let (op, om, cp, cm) = (kp.omega_p, kp.omega_m, kp.cp, kp.cm);
+    let mut xb = x0;
+    while xb < x1 {
+        let blen = (x1 - xb).min(BLOCK);
+        // Pass A: shared per-cell equilibrium/forcing pieces
+        // (V1: base / r3 / r45 / uf3).
+        let mut eqb = [T::zero(); BLOCK];
+        let mut r3v = [T::zero(); BLOCK];
+        let mut r45v = [T::zero(); BLOCK];
+        let mut uf3v = [T::zero(); BLOCK];
+        let mut fvr = [[T::zero(); 3]; BLOCK];
+        for j in 0..blen {
+            let x = xb + j;
+            let r = rho[x];
+            let u = [ux[x], uy[x], uz[x]];
+            let mut usq = u[0] * u[0];
+            for d in 1..L::D {
+                usq = usq + u[d] * u[d];
+            }
+            let drho = r - one;
+            eqb[j] = drho - f15 * r * usq;
+            r3v[j] = three * r;
+            r45v[j] = f45 * r;
+            if FORCE {
+                let fv = if FF {
+                    [
+                        kp.force[0] + field[x][0],
+                        kp.force[1] + field[x][1],
+                        kp.force[2] + field[x][2],
+                    ]
+                } else {
+                    kp.force
+                };
+                fvr[j] = fv;
+                let mut uf = u[0] * fv[0];
+                for d in 1..L::D {
+                    uf = uf + u[d] * fv[d];
+                }
+                uf3v[j] = three * uf;
+            }
+        }
+        // Rest population: feq0 = w0 * base, src0 = -w0 * uf3.
+        {
+            let w0 = T::r(L::W[L::REST]);
+            let i0 = L::REST * q_stride + base + xb;
+            for j in 0..blen {
+                // SAFETY: caller contract (disjoint cells, in bounds).
+                let f0 = unsafe { planes.get(i0 + j) };
+                let v = if FORCE {
+                    f0 - op * (f0 - w0 * eqb[j]) + cp * (-w0 * uf3v[j])
+                } else {
+                    f0 - op * (f0 - w0 * eqb[j])
+                };
+                unsafe { planes.set(i0 + j, v) };
+            }
+        }
+        // One sweep per TRT pair; c_a is loop-invariant, so `dotc` becomes
+        // broadcast multiply-adds.
+        for &(a, b) in L::PAIRS {
+            let wa = T::r(L::W[a]);
+            let ia0 = a * q_stride + base + xb;
+            let ib0 = b * q_stride + base + xb;
+            for j in 0..blen {
+                let x = xb + j;
+                let cu = dotc::<L, T>(a, [ux[x], uy[x], uz[x]]);
+                let ep = wa * (eqb[j] + r45v[j] * cu * cu);
+                let em = wa * (r3v[j] * cu);
+                // SAFETY: caller contract.
+                let fa = unsafe { planes.get(ia0 + j) };
+                let fb = unsafe { planes.get(ib0 + j) };
+                let fp = half * (fa + fb);
+                let fm = half * (fa - fb);
+                let rp = op * (fp - ep);
+                let rm = om * (fm - em);
+                if FORCE {
+                    let cf = dotc::<L, T>(a, fvr[j]);
+                    let sp = wa * (nine * cu * cf - uf3v[j]);
+                    let sm = wa * (three * cf);
+                    unsafe {
+                        planes.set(ia0 + j, fa - rp - rm + cp * sp + cm * sm);
+                        planes.set(ib0 + j, fb - rp + rm + cp * sp - cm * sm);
+                    }
+                } else {
+                    unsafe {
+                        planes.set(ia0 + j, fa - rp - rm);
+                        planes.set(ib0 + j, fb - rp + rm);
+                    }
+                }
+            }
+        }
+        xb += blen;
     }
 }
 
@@ -332,7 +502,8 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
 /// Macroscopic moments over core cells `x0..x1` of one just-streamed row
 /// (planes at stride `q_stride`, `base` = core `x = 0`), written to the
 /// spare moment buffers at compact offset `c0`. Per-cell arithmetic
-/// replicates `kernels::moments_row` exactly.
+/// replicates `kernels::moments_row` exactly (block staging accumulates the
+/// same q-ascending sums per cell), one vectorizable sweep per direction.
 ///
 /// # Safety
 /// Caller must be the only concurrent writer of the `[c0+x0, c0+x1)` ranges
@@ -352,7 +523,41 @@ unsafe fn moments_span_fused<L: Lattice, T: Real, const FF: bool>(
     field: &[[T; 3]],
     kp: &KParams<T>,
 ) {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if use_blocked::<L>() {
+            moments_span_blocked::<L, T, FF>(
+                planes, q_stride, base, x0, x1, c0, rho2, ux2, uy2, uz2, field, kp,
+            );
+        } else {
+            moments_span_flat::<L, T, FF>(
+                planes, q_stride, base, x0, x1, c0, rho2, ux2, uy2, uz2, field, kp,
+            );
+        }
+    }
+}
+
+/// Flat per-cell form of [`moments_span_fused`] (D2Q9).
+///
+/// # Safety
+/// See [`moments_span_fused`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn moments_span_flat<L: Lattice, T: Real, const FF: bool>(
+    planes: RawSlice<T>,
+    q_stride: usize,
+    base: usize,
+    x0: usize,
+    x1: usize,
+    c0: usize,
+    rho2: RawSlice<T>,
+    ux2: RawSlice<T>,
+    uy2: RawSlice<T>,
+    uz2: RawSlice<T>,
+    field: &[[T; 3]],
+    kp: &KParams<T>,
+) {
     let half = T::r(0.5);
+    let one = T::one();
     for x in x0..x1 {
         let i = base + x;
         let mut dr = T::zero();
@@ -376,8 +581,8 @@ unsafe fn moments_span_fused<L: Lattice, T: Real, const FF: bool>(
         } else {
             kp.force
         };
-        let r = T::one() + dr;
-        let inv = T::one() / r;
+        let r = one + dr;
+        let inv = one / r;
         // SAFETY: caller contract (disjoint moment rows).
         unsafe {
             rho2.set(c0 + x, r);
@@ -387,6 +592,79 @@ unsafe fn moments_span_fused<L: Lattice, T: Real, const FF: bool>(
                 uz2.set(c0 + x, (m[2] + half * fv[2]) * inv);
             }
         }
+    }
+}
+
+/// Blocked form of [`moments_span_fused`] (D3Q19; see [`BLOCK`]).
+///
+/// # Safety
+/// See [`moments_span_fused`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn moments_span_blocked<L: Lattice, T: Real, const FF: bool>(
+    planes: RawSlice<T>,
+    q_stride: usize,
+    base: usize,
+    x0: usize,
+    x1: usize,
+    c0: usize,
+    rho2: RawSlice<T>,
+    ux2: RawSlice<T>,
+    uy2: RawSlice<T>,
+    uz2: RawSlice<T>,
+    field: &[[T; 3]],
+    kp: &KParams<T>,
+) {
+    let half = T::r(0.5);
+    let one = T::one();
+    let mut xb = x0;
+    while xb < x1 {
+        let blen = (x1 - xb).min(BLOCK);
+        let mut dr = [T::zero(); BLOCK];
+        let mut m0 = [T::zero(); BLOCK];
+        let mut m1 = [T::zero(); BLOCK];
+        let mut m2 = [T::zero(); BLOCK];
+        for q in 0..L::Q {
+            let cq = [
+                T::r(L::C[q][0] as f64),
+                T::r(L::C[q][1] as f64),
+                T::r(L::C[q][2] as f64),
+            ];
+            let iq = q * q_stride + base + xb;
+            for j in 0..blen {
+                // SAFETY: caller contract (row written by this thread only).
+                let fq = unsafe { planes.get(iq + j) };
+                dr[j] = dr[j] + fq;
+                m0[j] = m0[j] + cq[0] * fq;
+                m1[j] = m1[j] + cq[1] * fq;
+                if L::D == 3 {
+                    m2[j] = m2[j] + cq[2] * fq;
+                }
+            }
+        }
+        for j in 0..blen {
+            let x = xb + j;
+            let fv = if FF {
+                [
+                    kp.force[0] + field[x][0],
+                    kp.force[1] + field[x][1],
+                    kp.force[2] + field[x][2],
+                ]
+            } else {
+                kp.force
+            };
+            let r = one + dr[j];
+            let inv = one / r;
+            // SAFETY: caller contract (disjoint moment rows).
+            unsafe {
+                rho2.set(c0 + x, r);
+                ux2.set(c0 + x, (m0[j] + half * fv[0]) * inv);
+                uy2.set(c0 + x, (m1[j] + half * fv[1]) * inv);
+                if L::D == 3 {
+                    uz2.set(c0 + x, (m2[j] + half * fv[2]) * inv);
+                }
+            }
+        }
+        xb += blen;
     }
 }
 
