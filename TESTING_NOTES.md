@@ -834,3 +834,86 @@ The D=20 Bouzidi Cd result is outside the requested tightened target band
 5.41..5.75. Treat the current ignored test as a characterization freeze, not
 acceptance. Convergence slope D={10,20,40} and off-grid Poiseuille were not
 completed in this phase-1 pass.
+
+## Bouzidi T8 Cd-band recovery (2026-07-06 continuation)
+
+Root cause: the first Bouzidi T8 characterization used a geometry inconsistent
+with the tightened band: D=20 at grid 440x82 has H/D=4.0 and an on-node cylinder
+center (40,40). The recovered T8 geometry is H/D=4.1 with the cylinder surface
+off-lattice; in this lattice representation that is grid 440x84 with center
+(40.5,40.5). The center is 2D from the bottom half-way wall surface at y=0.5.
+
+Diagnosis matrix numbers:
+
+1. Radius/qd convention audit:
+   - D=10, grid 220x43, center (20.5,20.5), H/D=4.1, Re=20, Umean=0.05,
+     umax=0.075, nu=0.025: links=100, boundary cells=44, qd min=0.10883501,
+     qd max=0.96446609, qd mean=0.54226219, by_q=[10,10,10,10,15,15,15,15].
+   - D=20 original, grid 440x82, center (40,40), H/D=4.0, Re=20:
+     links=148, boundary cells=68, qd min=0.04564394, qd max=0.92893219,
+     qd mean=0.44265526, by_q=[14,14,14,14,23,23,23,23].
+   - D=20 half-integer only, grid 440x82, center (40.5,40.5), H/D=4.0,
+     Re=20: links=196, boundary cells=84, qd min=0.08986252,
+     qd max=0.94663201, qd mean=0.52007325,
+     by_q=[20,20,20,20,29,29,29,29].
+   - D=20 accepted geometry, grid 440x84, center (40.5,40.5), H/D=4.1,
+     Re=20: links=196, boundary cells=84, qd min=0.08986252,
+     qd max=0.94663201, qd mean=0.52007325,
+     by_q=[20,20,20,20,29,29,29,29].
+   - D=20 mixed inlet-center probe, grid 440x84, center (40.0,40.5),
+     H/D=4.1, Re=20: links=190, boundary cells=82, qd min=0.01191829,
+     qd max=0.97007166, qd mean=0.46764643,
+     by_q=[20,19,20,19,28,28,28,28].
+   - D=40, grid 880x166, center (80.5,80.5), H/D=4.1, Re=20,
+     Umean=0.05, umax=0.075, nu=0.1: links=388, boundary cells=164,
+     qd min=0.01042119, qd max=0.97118578, qd mean=0.56077426,
+     by_q=[40,40,40,40,57,57,57,57].
+   - The qd=1/2 degeneracy test remained bitwise green.
+2. Re definition:
+   - All probes use Umean=(2/3)umax=0.05 and Re=Umean*D/nu=20.
+   - D=10 nu=0.025, D=20 nu=0.05, D=40 nu=0.1.
+3. Blockage/domain:
+   - Original D20 on-node/H/D=4.0: Cd=5.83340474, Cl=0.00867670.
+   - Half-integer center only at H/D=4.0: Cd=5.76404261, Cl=-0.00000000.
+   - Strict H/D=4.1 + half-integer center: Cd=5.68907938, Cl=0.01101959.
+   - Strict H/D=4.1 + mixed center (40.0,40.5): Cd=5.70433884,
+     Cl=0.01090008.
+4. Force evaluation:
+   - Stationary cylinder, so u_w=0 and Wen's Galilean terms vanish here.
+   - Record counts by direction are symmetric for the accepted geometry and
+     `BouzidiLinks::new` deduplicates by (cell,q). Diagonal links are present
+     (D20 accepted by_q diagonals 29 each versus axial 20 each).
+   - The CPU pass remains a post-stream pass over the link list, preserving the
+     GPU-port seam from SPEC_BOUZIDI_STL.md.
+5. Convergence:
+   - Heavy ignored run:
+     `cargo test -p lbm-core --release --test validation_cylinder
+     t8_bouzidi_2d1_drag_converges_at_second_order -- --ignored --nocapture`.
+   - D=10: Cd=5.69401036, Cl=0.01188147, |Cd-5.5795|=0.11451036,
+     samples=8000.
+   - D=20: Cd=5.68907938, Cl=0.01101959, |Cd-5.5795|=0.10957938,
+     samples=10000.
+   - D=40: Cd=5.68763550, Cl=0.01095140, |Cd-5.5795|=0.10813550,
+     samples=15000.
+   - Successive-difference convergence: delta10_20=0.00493098,
+     delta20_40=0.00144388, observed order=1.7719, extrapolated
+     Cd limit=5.68703764, inside fixed band [5.41,5.75].
+   - The sequence does not converge to the literature center value 5.5795;
+     it converges inside the accepted Cd band. No tolerance or band was edited.
+
+Additional deferral closure:
+
+- Off-grid Poiseuille via explicit Bouzidi horizontal-wall link records:
+  `cargo test -p lbm-core --release --test bouzidi
+  offgrid_poiseuille_bouzidi_beats_half_way_bounce_back -- --nocapture`
+  measured Bouzidi L2rel=3.8616236862547863e-3 versus half-way
+  L2rel=6.516490066186022e-2.
+
+Acceptance/verification:
+
+- Before Cd (phase 1): D20 original Bouzidi Cd=5.83340474, Cl=0.00867670.
+- After Cd (accepted geometry): D20 Bouzidi Cd=5.68907938, Cl=0.01101959.
+- `cargo test -p lbm-core --release --test validation_cylinder
+  t8_bouzidi_2d1_d20_cylinder_steady_drag_lift_are_in_tight_band -- --ignored
+  --nocapture`: passed.
+- `cargo test --workspace --release`: passed.

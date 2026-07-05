@@ -94,6 +94,96 @@ fn assert_bitwise_same(
     }
 }
 
+fn offgrid_channel(bouzidi: bool) -> (Solver<D2Q9, f64, CpuScalar, LocalPeriodic>, f64, f64, f64) {
+    let (nx, ny) = (64, 18);
+    let nu = 0.04;
+    let force = 1.0e-6;
+    let wall_lo = 0.3;
+    let wall_hi = 16.7;
+    let mut walls = WallSpec::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    let (solid, wall_u) = build_wall_rims(2, [nx, ny, 1], &walls);
+    let mut solver = Solver::new(
+        &GlobalSpec {
+            dims: [nx, ny, 1],
+            nu,
+            periodic: [true, false, false],
+            force: [force, 0.0, 0.0],
+            collision: CollisionKind::Trt { magic: 3.0 / 16.0 },
+            ..Default::default()
+        },
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    if bouzidi {
+        let g = solver.sub(0).geom;
+        let mut records = Vec::new();
+        for x in 0..nx {
+            let bottom = g.pidx(x, 1, 0);
+            let top = g.pidx(x, ny - 2, 0);
+            for q in [4usize, 7, 8] {
+                let c = D2Q9::C[q];
+                let wall_ref = g.pidx_i(x as isize + c[0] as isize, 0, 0);
+                records.push(BouzidiLink {
+                    cell: bottom as u32,
+                    q: q as u8,
+                    qd: 1.0 - wall_lo,
+                    has_second: true,
+                    wall_ref: wall_ref as u32,
+                });
+            }
+            for q in [2usize, 5, 6] {
+                let c = D2Q9::C[q];
+                let wall_ref = g.pidx_i(x as isize + c[0] as isize, (ny - 1) as isize, 0);
+                records.push(BouzidiLink {
+                    cell: top as u32,
+                    q: q as u8,
+                    qd: wall_hi - (ny - 2) as f64,
+                    has_second: true,
+                    wall_ref: wall_ref as u32,
+                });
+            }
+        }
+        solver.fields_mut(0).bouzidi = Some(BouzidiLinks::new(records));
+    }
+    solver.init_with(|_, y, _| {
+        if y == 0 || y == ny - 1 {
+            (1.0, [0.0, 0.0, 0.0])
+        } else {
+            let yy = y as f64 - wall_lo;
+            let h = wall_hi - wall_lo;
+            (1.0, [force * yy * (h - yy) / (2.0 * nu), 0.0, 0.0])
+        }
+    });
+    (solver, wall_lo, wall_hi, force)
+}
+
+fn offgrid_poiseuille_l2rel(
+    s: &Solver<D2Q9, f64, CpuScalar, LocalPeriodic>,
+    wall_lo: f64,
+    wall_hi: f64,
+    force: f64,
+) -> f64 {
+    let h = wall_hi - wall_lo;
+    let nu = s.nu();
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for y in 1..s.dims()[1] - 1 {
+        let yy = y as f64 - wall_lo;
+        let exact = force * yy * (h - yy) / (2.0 * nu);
+        for x in 0..s.dims()[0] {
+            let du = s.u(x, y, 0)[0] - exact;
+            num += du * du;
+            den += exact * exact;
+        }
+    }
+    (num / den).sqrt()
+}
+
 #[test]
 fn qd_half_records_are_bitwise_half_way_bounce_back() {
     let mut half = build_scalar();
@@ -149,4 +239,19 @@ fn cpu_scalar_and_simd_match_with_bouzidi_circle() {
         let d = (fa[c] - fb[c]).abs();
         assert!(d <= 1e-10, "probe[{c}] delta {d:e}");
     }
+}
+
+#[test]
+fn offgrid_poiseuille_bouzidi_beats_half_way_bounce_back() {
+    let (mut half, wall_lo, wall_hi, force) = offgrid_channel(false);
+    let (mut bouzidi, _, _, _) = offgrid_channel(true);
+    half.run(12_000);
+    bouzidi.run(12_000);
+    let err_half = offgrid_poiseuille_l2rel(&half, wall_lo, wall_hi, force);
+    let err_bouzidi = offgrid_poiseuille_l2rel(&bouzidi, wall_lo, wall_hi, force);
+    println!("off-grid Poiseuille: Bouzidi L2rel={err_bouzidi:e}, half-way L2rel={err_half:e}");
+    assert!(
+        err_bouzidi < err_half * 0.6,
+        "off-grid Poiseuille Bouzidi L2rel={err_bouzidi:e}, half-way L2rel={err_half:e}"
+    );
 }
