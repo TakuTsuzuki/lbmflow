@@ -554,3 +554,17 @@ untouched T13/T14/backend_simd gates.
    crates/lbm-core/tests/ (sync-tests.sh deleted; suites are compat-native).
    A-10a/b: not applicable on main (V1 deleted; facade carries neither the
    unused_mut nor the misleading solid-rho comment).
+
+## Triage record — "flickering particles" report (2026-07-05, viewer session)
+
+Reported visual artifact in the 3D stirred-tank viewer investigated by that session:
+**NOT a solver defect, no core change**. Field evidence (60^3 subsampled export from
+the D3Q19 n=80 TRT baffled-tank run, volume-penalization impeller on
+set_body_force_field): no NaN/Inf; |u| decays smoothly from the impeller plane
+(mean 0.021 / max 0.075 at simZ~27) to a near-quiescent headspace (mean ~1e-4,
+max ~4e-3 at simZ>55); the small top-layer residual is the shaft's swirl sheath
+(penalization region runs full height) — physical. Root cause was viewer tracer
+reseeding + hard cull threshold; fixed viewer-side. Optional modeling note recorded:
+cap shaft forcing a few cells below the lid if a dead headspace is ever wanted.
+Value for MF-δ: first end-to-end field-sanity pass of the penalization-impeller
+pipeline on the new body-force API.
