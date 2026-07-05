@@ -568,6 +568,53 @@ where
         Some(out)
     }
 
+    /// Assemble a global compact vector with `ncomp` scalar components per
+    /// cell on rank 0. `local` is cell-major: `cell * ncomp + component`.
+    fn gather_compact_components(&self, local: &[T], ncomp: usize) -> Option<Vec<T>> {
+        let nc = self.subs_meta[self.rank].geom.n_core();
+        assert_eq!(
+            local.len(),
+            nc * ncomp,
+            "local block must be compact core times component count"
+        );
+        if self.rank != 0 {
+            self.comm
+                .process_at_rank(0)
+                .send_with_tag(as_bytes(local), TAG_GATHER);
+            return None;
+        }
+        let dims = self.inner.dims();
+        let mut out = vec![T::zero(); dims[0] * dims[1] * dims[2] * ncomp];
+        let mut staging: Vec<T> = Vec::new();
+        for r in 0..self.size {
+            let sub = &self.subs_meta[r];
+            let g = sub.geom;
+            let block: &[T] = if r == 0 {
+                local
+            } else {
+                staging.clear();
+                staging.resize(g.n_core() * ncomp, T::zero());
+                self.comm
+                    .process_at_rank(r as Rank)
+                    .receive_into_with_tag(as_bytes_mut(staging.as_mut_slice()), TAG_GATHER);
+                &staging
+            };
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * dims[1] + (sub.origin[1] + y)) * dims[0]
+                            + (sub.origin[0] + x);
+                        let lc = g.cidx(x, y, z);
+                        let dst = gi * ncomp;
+                        let src = lc * ncomp;
+                        out[dst..dst + ncomp].copy_from_slice(&block[src..src + ncomp]);
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
     /// Global density field on rank 0 (collective).
     pub fn gather_rho(&self) -> Option<Vec<T>> {
         self.gather_compact(&self.inner.fields(0).rho)
@@ -583,6 +630,53 @@ where
     /// Global z-velocity field on rank 0 (collective).
     pub fn gather_uz(&self) -> Option<Vec<T>> {
         self.gather_compact(&self.inner.fields(0).uz)
+    }
+
+    /// Global strain-rate tensor on rank 0 (collective).
+    ///
+    /// Components are `[S_xx, S_yy, S_zz, S_xy, S_xz, S_yz]`; solid cells are
+    /// zeros. See [`Solver::gather_strain_rate`] for the stage convention,
+    /// force correction and TRT `omega_plus` relaxation note.
+    pub fn gather_strain_rate(&self) -> Option<Vec<[T; 6]>> {
+        let full = self.inner.gather_strain_rate();
+        let sub = &self.subs_meta[self.rank];
+        let g = sub.geom;
+        let dims = self.inner.dims();
+        let mut local = vec![T::zero(); g.n_core() * 6];
+        for z in 0..g.core[2] {
+            for y in 0..g.core[1] {
+                for x in 0..g.core[0] {
+                    let gi = ((sub.origin[2] + z) * dims[1] + (sub.origin[1] + y)) * dims[0]
+                        + (sub.origin[0] + x);
+                    let dst = g.cidx(x, y, z) * 6;
+                    local[dst..dst + 6].copy_from_slice(&full[gi]);
+                }
+            }
+        }
+        self.gather_compact_components(&local, 6).map(|flat| {
+            flat.chunks_exact(6)
+                .map(|s| [s[0], s[1], s[2], s[3], s[4], s[5]])
+                .collect()
+        })
+    }
+
+    /// Global shear-rate invariant on rank 0 (collective).
+    pub fn gather_shear_rate(&self) -> Option<Vec<T>> {
+        let full = self.inner.gather_shear_rate();
+        let sub = &self.subs_meta[self.rank];
+        let g = sub.geom;
+        let dims = self.inner.dims();
+        let mut local = vec![T::zero(); g.n_core()];
+        for z in 0..g.core[2] {
+            for y in 0..g.core[1] {
+                for x in 0..g.core[0] {
+                    let gi = ((sub.origin[2] + z) * dims[1] + (sub.origin[1] + y)) * dims[0]
+                        + (sub.origin[0] + x);
+                    local[g.cidx(x, y, z)] = full[gi];
+                }
+            }
+        }
+        self.gather_compact(&local)
     }
 
     /// Global deviation-population plane `q` on rank 0 (collective) — the

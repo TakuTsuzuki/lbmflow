@@ -1023,6 +1023,113 @@ where
     pub fn gather_uz(&self) -> Vec<T> {
         self.gather(|f, c| f.uz[c])
     }
+
+    fn strain_rate_at(&self, fields: &SoaFields<T>, x: usize, y: usize, z: usize) -> [T; 6] {
+        let g = fields.geom;
+        let pi = g.pidx(x, y, z);
+        if fields.solid[pi] {
+            return [T::zero(); 6];
+        }
+        let c = g.cidx(x, y, z);
+        let r = fields.rho[c];
+        let u = [fields.ux[c], fields.uy[c], fields.uz[c]];
+        let kp = KParams::new::<L>(&self.params);
+        let feq = equilibrium::<L, T>(&kp, r, u);
+        let np = g.n_padded();
+        let mut pi_neq = [T::zero(); 6];
+        for (q, cq) in L::C.iter().enumerate().take(L::Q) {
+            let fneq = fields.f[q * np + pi] - feq[q];
+            let cx = T::r(cq[0] as f64);
+            let cy = T::r(cq[1] as f64);
+            let cz = T::r(cq[2] as f64);
+            pi_neq[0] = pi_neq[0] + cx * cx * fneq;
+            pi_neq[1] = pi_neq[1] + cy * cy * fneq;
+            pi_neq[2] = pi_neq[2] + cz * cz * fneq;
+            pi_neq[3] = pi_neq[3] + cx * cy * fneq;
+            pi_neq[4] = pi_neq[4] + cx * cz * fneq;
+            pi_neq[5] = pi_neq[5] + cy * cz * fneq;
+        }
+        let force = match fields.force_field.as_ref() {
+            Some(ff) => [
+                self.params.force[0] + ff[c][0],
+                self.params.force[1] + ff[c][1],
+                self.params.force[2] + ff[c][2],
+            ],
+            None => self.params.force,
+        };
+        let half = T::r(0.5);
+        // FR-STRESS-01 rev.4: Pi_force = -(dt/2)(uF + Fu), dt=1, so
+        // Pi_neq_corr = Pi_neq_raw - Pi_force = Pi_neq_raw + 0.5(uF + Fu).
+        pi_neq[0] = pi_neq[0] + u[0] * force[0];
+        pi_neq[1] = pi_neq[1] + u[1] * force[1];
+        pi_neq[2] = pi_neq[2] + u[2] * force[2];
+        pi_neq[3] = pi_neq[3] + half * (u[0] * force[1] + u[1] * force[0]);
+        pi_neq[4] = pi_neq[4] + half * (u[0] * force[2] + u[2] * force[0]);
+        pi_neq[5] = pi_neq[5] + half * (u[1] * force[2] + u[2] * force[1]);
+
+        let tau_eff = T::r(1.0 / self.params.omega_p);
+        let scale = -(T::one() / (T::r(2.0 * L::CS2) * r * tau_eff));
+        for v in &mut pi_neq {
+            *v = *v * scale;
+        }
+        if L::D == 2 {
+            pi_neq[2] = T::zero();
+            pi_neq[4] = T::zero();
+            pi_neq[5] = T::zero();
+        }
+        pi_neq
+    }
+
+    /// Global strain-rate tensor in compact cell order.
+    ///
+    /// Components are `[S_xx, S_yy, S_zz, S_xy, S_xz, S_yz]`. The value is
+    /// evaluated from the read-only post-streaming / pre-collision
+    /// populations currently stored in the solver, using the physical
+    /// half-force-corrected velocity for `f_eq`. Solid cells return zeros.
+    ///
+    /// For TRT, the viscous stress is carried by the even/symmetric modes;
+    /// therefore `tau_eff = 1 / omega_plus` (`StepParams::omega_p`). This is
+    /// currently the global relaxation time, structured so a future per-cell
+    /// `omega_plus` field can replace the scalar in this denominator.
+    ///
+    /// The Guo force correction follows FR-STRESS-01 rev.4 for this engine's
+    /// deviation-form `f_eq`: `Pi_force = -0.5 * (uF + Fu)`, so the corrected
+    /// non-equilibrium moment is `Pi_neq_raw + 0.5 * (uF + Fu)`.
+    pub fn gather_strain_rate(&self) -> Vec<[T; 6]> {
+        let mut out = vec![[T::zero(); 6]; self.dims[0] * self.dims[1] * self.dims[2]];
+        for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
+            let g = sub.geom;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        out[gi] = self.strain_rate_at(fields, x, y, z);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Global shear-rate invariant `gamma_dot = sqrt(2 S:S)`.
+    ///
+    /// Uses [`Solver::gather_strain_rate`]'s stage, force correction and
+    /// solid-cell convention.
+    pub fn gather_shear_rate(&self) -> Vec<T> {
+        self.gather_strain_rate()
+            .into_iter()
+            .map(|s| {
+                let ss = s[0] * s[0]
+                    + s[1] * s[1]
+                    + s[2] * s[2]
+                    + T::r(2.0) * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
+                (T::r(2.0) * ss).sqrt()
+            })
+            .collect()
+    }
+
     /// Global deviation-population plane `q` (compact layout).
     pub fn gather_f(&self, q: usize) -> Vec<T> {
         let mut out = vec![T::zero(); self.dims[0] * self.dims[1] * self.dims[2]];
