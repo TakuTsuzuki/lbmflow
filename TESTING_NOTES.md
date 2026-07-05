@@ -1,5 +1,14 @@
 # TESTING_NOTES
 
+## MPI ops bundle (2026-07-05)
+
+1. Persistent MPI exchange buffers were verified with
+   `PATH=$HOME/.local/openmpi/bin:$PATH cargo test -p lbm-core --release --features mpi dist::tests -- --nocapture`.
+   The tested steady exchange path reuses `MpiExchange`'s per-axis typed send/receive buffers, and the hot
+   population/scalar pack/unpack helpers now iterate layer indices without allocating a temporary index vector.
+   The one-rank cargo smoke completed successfully; Open MPI printed a local TCP bind warning in this sandbox,
+   but the test process exited green.
+
 テスト作者（codex）とエンジン作者（PM/Fable）の連絡帳。
 新しい不一致は末尾に追記する。処理済み項目は Disposition を残して保持。
 

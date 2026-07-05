@@ -2,10 +2,10 @@
 # T13-MPI verification driver (docs/MPI_GUIDE.md).
 #
 # Builds lbm-core with `--features mpi` and runs the distributed-vs-
-# monolithic equivalence example under mpirun -n {1, 2, 4, 8}:
-#   n = 1, 2, 4 : 2D TGV / cavity (lid over the seam) / cylinder + probe on
-#                 the seam / Shan-Chen droplet (2x2 corner at n = 4)
-#   n = 8       : 3D TGV, 2x2x2 decomposition (D3Q19)
+# monolithic equivalence example under mpirun -n {1, 2, 3, 4, 5, 6, 8}.
+# The example chooses a surface-minimising decomposition for each rank count;
+# n = 3, 5, 6 cover non-dividing dimensions. The script also runs a 2-rank
+# negative test that must reject mismatched viscosity with an explicit error.
 # Prints PASS/FAIL per case and exits non-zero on any failure.
 #
 # Requires a native (arm64 on Apple silicon) MPI. Default: the source-built
@@ -36,12 +36,25 @@ cargo build -p lbm-core --release --features mpi --example mpi_t13 || exit 1
 BIN="$ROOT/target/release/examples/mpi_t13"
 
 fail=0
-for n in 1 2 4 8; do
+for n in 1 2 3 4 5 6 8; do
     echo "== mpirun -n $n mpi_t13 =="
     if ! mpirun --oversubscribe -n "$n" "$BIN" "$@"; then
         fail=1
     fi
 done
+
+echo "== mpirun -n 2 mpi_t13 mismatch-nu (expected failure) =="
+tmp="$(mktemp)"
+if mpirun --oversubscribe -n 2 "$BIN" mismatch-nu >"$tmp" 2>&1; then
+    echo "FAIL: mismatch-nu unexpectedly succeeded" >&2
+    cat "$tmp" >&2
+    fail=1
+elif ! grep -q "MPI rank specification mismatch: nu differs across ranks" "$tmp"; then
+    echo "FAIL: mismatch-nu did not name the offending item" >&2
+    cat "$tmp" >&2
+    fail=1
+fi
+rm -f "$tmp"
 
 echo
 if [ "$fail" -eq 0 ]; then
