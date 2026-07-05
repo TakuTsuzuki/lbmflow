@@ -11,9 +11,9 @@
 //!
 //! V1 comparison: the live V1 column was retired with `crates/lbm-core`
 //! (2026-07-05). The frozen same-window measurements against the V1 fused
-//! kernel are documented in docs/PERFORMANCE.md ("V2 CpuSimd バックエンド"
+//! kernel are documented in docs/PERFORMANCE.md ("V2 CpuSimd backend"
 //! table: e.g. 2D 512²/1T f32 V1 232 vs CpuSimd 273 MLUPS, 1024²/12T f32
-//! V1 1084 vs 1183; target "V1 − 10% 以内" met on all configurations).
+//! V1 1084 vs 1183; target "within V1 − 10%" met on all configurations).
 
 use lbm_core::lattice::{D2Q9, D3Q19};
 use lbm_core::prelude::*;

@@ -93,7 +93,7 @@ pub struct WasmSim {
 
 fn build_sim(cfg_json: &str) -> Result<(Simulation<f32>, Option<ShanChen<f32>>), JsError> {
     let cfg: JsConfig = serde_json::from_str(cfg_json)
-        .map_err(|e| JsError::new(&format!("設定JSONを解釈できません: {e}")))?;
+        .map_err(|e| JsError::new(&format!("cannot parse config JSON: {e}")))?;
     let collision = match cfg.collision.as_str() {
         "bgk" => Collision::Bgk,
         _ => Collision::default(),
@@ -112,7 +112,7 @@ fn build_sim(cfg_json: &str) -> Result<(Simulation<f32>, Option<ShanChen<f32>>),
         force: cfg.force,
     }
     .build()
-    .map_err(|e| JsError::new(&format!("設定エラー: {e}")))?;
+    .map_err(|e| JsError::new(&format!("config error: {e}")))?;
     if let Some(JsInit::Droplet {
         cx,
         cy,
@@ -247,7 +247,7 @@ impl WasmSim {
             self.painted[i] = 0;
             let painted = self.painted.clone();
             let (mut sim, mp) = build_sim(&self.cfg_json)
-                .map_err(|_| JsError::new("再構築に失敗しました"))?;
+                .map_err(|_| JsError::new("rebuild failed"))?;
             let nx = sim.nx();
             sim.set_solid_region(|px, py| painted[py * nx + px] == 1);
             self.sim = Some(sim);
