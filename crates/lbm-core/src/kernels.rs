@@ -1,9 +1,15 @@
 //! Physics kernels, generic over [`Lattice`] and [`Real`].
 //!
-//! **Faithful port of V1 (`lbm-core/src/sim.rs`)**: every floating-point
-//! expression keeps V1's exact operand order and grouping, so the 2D (D2Q9)
-//! specialisation reproduces V1 trajectories bit-for-bit in `f64` (verified
-//! by the `v1_match_*` tests). Dimension loops are seeded with the first term
+//! **Faithful port of V1 (`lbm-core/src/sim.rs`, retired 2026-07-05)**:
+//! every floating-point expression keeps V1's exact operand order and
+//! grouping. At the port's departure point the 2D (D2Q9) `f64`
+//! specialisation reproduced the *pre-fusion* V1 trajectories bit-for-bit
+//! (`v1_match_*` tests; the final frozen measurements live in that test's
+//! header in branch history, deleted with V1). The live constraint today is
+//! the backend-equivalence gate `tests/backend_simd_equiv.rs` against the
+//! fused V1 `step_band` port: `f64` max |Δ| ≤ 1e-11 per cell, observed
+//! ~1.6e-14 over 50 steps (TRT-pair last-ulp reassociation only).
+//! Dimension loops are seeded with the first term
 //! (`acc = c[0]*u[0]; for d in 1.. { acc = acc + ... }`) precisely so the
 //! D = 2 case compiles to V1's `cx*vx + cy*vy` association.
 //!
@@ -686,4 +692,90 @@ pub(crate) fn convective_face<L: Lattice, T: Real>(
             f[q * np + i] = f[q * np + i] + corr * T::r(L::W[q]) / wsum;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lattice::{D2Q9, D3Q19};
+    use crate::params::{FaceBC, StepParams};
+    use crate::real::Real;
+
+    /// A-10f: `equilibrium()` and the feq computed inline by `collide_row`
+    /// must be bit-identical. Property: a state seeded exactly with
+    /// `equilibrium()`'s output is a **bit-exact fixed point** of forceless
+    /// collision — `f - ω (f − feq_inline)` returns `f` only when
+    /// `feq_inline` matches the stored `equilibrium()` values bitwise (the
+    /// pair half-sums then cancel exactly, so the relaxation terms are 0.0,
+    /// not merely small). Any drift between the two formula copies (operand
+    /// order, factored constants) breaks the equality for some sample.
+    fn collide_fixed_point_on_equilibrium<L: Lattice, T: Real>() {
+        let ncells = 64usize;
+        let params = StepParams::<T> {
+            omega_p: 1.25,
+            omega_m: 0.7,
+            force: [T::zero(); 3],
+            faces: [FaceBC::Closed; 6],
+        };
+        let kp = KParams::new::<L>(&params);
+
+        // Deterministic varied samples across the low-Mach envelope.
+        let sample = |i: usize| -> (T, [T; 3]) {
+            let h = |k: f64| ((i as f64 + 1.0) * k).sin();
+            let r = T::r(1.0 + 0.5 * h(12.9898));
+            let mut u = [T::r(0.12 * h(78.233)), T::r(0.12 * h(39.425)), T::zero()];
+            if L::D == 3 {
+                u[2] = T::r(0.12 * h(93.989));
+            }
+            (r, u)
+        };
+
+        let np = ncells; // single unpadded row: pb = 0
+        let mut f = vec![T::zero(); L::Q * np];
+        let mut rho = vec![T::zero(); ncells];
+        let mut ux = vec![T::zero(); ncells];
+        let mut uy = vec![T::zero(); ncells];
+        let mut uz = vec![T::zero(); ncells];
+        for i in 0..ncells {
+            let (r, u) = sample(i);
+            rho[i] = r;
+            ux[i] = u[0];
+            uy[i] = u[1];
+            uz[i] = u[2];
+            let feq = equilibrium::<L, T>(&kp, r, u);
+            for q in 0..L::Q {
+                f[q * np + i] = feq[q];
+            }
+        }
+        let before = f.clone();
+        let solid = vec![false; ncells];
+        let raw = RawSlice::new(&mut f);
+        // SAFETY: single-threaded, sole writer of the row.
+        unsafe {
+            collide_row::<L, T>(raw, np, 0, &rho, &ux, &uy, &uz, &solid, None, &kp);
+        }
+        for (k, (a, b)) in before.iter().zip(&f).enumerate() {
+            // Bit equality via the exact f64 promotion (exact for f32 too,
+            // and sign-of-zero preserving).
+            assert!(
+                a.as_f64().to_bits() == b.as_f64().to_bits(),
+                "equilibrium fixed point broken at slot {k} (q = {}, cell = {}): \
+                 collide's inline feq differs from equilibrium()",
+                k / np,
+                k % np
+            );
+        }
+    }
+
+    #[test]
+    fn collide_feq_matches_equilibrium_bitwise_d2q9() {
+        collide_fixed_point_on_equilibrium::<D2Q9, f64>();
+        collide_fixed_point_on_equilibrium::<D2Q9, f32>();
+    }
+
+    #[test]
+    fn collide_feq_matches_equilibrium_bitwise_d3q19() {
+        collide_fixed_point_on_equilibrium::<D3Q19, f64>();
+        collide_fixed_point_on_equilibrium::<D3Q19, f32>();
+    }
 }
