@@ -518,6 +518,20 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
 ) {
+    // This branch reconstructs exactly 5 unknowns (the D3Q19 in-face set).
+    // A lattice with a different unknown count (e.g. a future D3Q27, planned
+    // with Q_MAX = 27) would silently leave slots unreconstructed here — and
+    // `dir_index` would still resolve the 5 named directions — so guard it
+    // rather than trust the caller (A-8). `unknowns(face)` is a const-derived
+    // table, so this is effectively a compile-time expectation checked once
+    // per face.
+    assert_eq!(
+        L::unknowns(face).len(),
+        5,
+        "zou_he_face_3d hardcodes 5 unknowns; lattice {:?} face has {}",
+        std::any::type_name::<L>(),
+        L::unknowns(face).len()
+    );
     let a = face.axis();
     let (t1, t2) = face.tangents();
     let n = face.n_in();
