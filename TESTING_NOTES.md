@@ -483,3 +483,15 @@ failed. Protocol amended (runner preamble v2 on branch skills/a-pilot-eval-tasks
 fixtures inlined into the prompt, exercise declared self-contained/hypothetical,
 refusal-handling rule added. Full 96-run parity batch deferred to a dedicated
 orchestration session with the v2 preamble; smoke rerun first.
+
+## PM record — B2 approved & merged (2026-07-05 late)
+
+Five green user Skills merged (.claude/skills/lbmflow-user-{run-preset, author-scenario,
+tune-stability, run-monitor-mcp, postprocess}) + docs/skills/b2-skill-specs.md.
+PM answers to B2's open questions: (1) obstacle-composition FOLD approved, no Y1 order;
+(2) no defensive 2D-gpu warning line — the honored-or-error fix (cx-gpu-fallback-guard)
+lands first and gates the Skill's assumption; (3) unit conversion stays routing-only
+until W-UNIT (REQ §11) delivers the feasibility layer — the user-facing converter is
+spec'd together with it; (4) run-preset / run-monitor-mcp split accepted, no 6th Skill.
+Parity evaluation for user Skills follows the A-pilot protocol once that pipeline is
+validated (runner preamble v2, smoke rerun pending).
