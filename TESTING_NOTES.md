@@ -806,3 +806,21 @@ or its mechanism replaced — pinned in ARCHITECTURE_V2 §2.3) + explicit SIMD.
 Strengths confirmed for the paper: single-thread NEON wins; GPU 2D at bandwidth
 ceiling (7,073 @1024² sustained; 12,205 @512² is SLC-resident, not sustained).
 Repro: ~/projects/cfd-bench/ (sweep scripts + bw_triad).
+
+## Order C (reactor-demo session) — in flight, churn coordination (2026-07-06)
+
+Branch `demo-shear-exact` off main d66d0cb. Diffs scoped to the FieldKind provider
+regions only, to stay mergeable with the concurrent r2-units order (lbm-scenario
+validation + lbm-cli manifest surfaces):
+- lbm-scenario/src/lib.rs: `FieldKind` += ShearRate (gamma_dot=sqrt(2 S:S)),
+  DissipationRate (eps=nu*gamma_dot^2), VorticityMag, QCriterion — ADDITIVE enum
+  variants only; no change to validation, OutputSpec, or deny_unknown_fields.
+- lbm-cli/src/runner.rs: field_values / field_values3 arms + one shared
+  grad_derived() helper (single physics impl per SPEC_OBSERVER_FRAMEWORK §12-F3;
+  vorticity/Q use FD since the antisymmetric part is absent from f_neq).
+  Fields3 gains `shear` (native gather) + `nu`.
+- lbm-core/src/compat/sim.rs: + shear_rate_field() delegating to gather_shear_rate.
+- render.rs Colormap lift: pending.
+ShearRate=gamma_dot (raw gather), DissipationRate=eps (SCALEUP consumes eps for
+<eps>_vol / eta). cargo check green. If r2-units touches the FieldKind enum or the
+runner FieldKind matches, expect a trivial enum-arm merge — ping me. Merge queue: PM.

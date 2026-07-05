@@ -263,12 +263,19 @@ explicitly not a head-to-head.
 ## 8. Decisions & open items
 
 **Decided (2026-07-05)**
-- PM: hybrid (C), lead differentiation + scoped honest measured performance; paper
-  does not wait for M-E. Claim boundary = §2.
+- Owner (Taku) override → **write the paper as the ideal target state (C)**; present
+  tense across measured + committed; implementation converges to the paper; irreducible
+  gaps trued up before release; no bug/limitation disclosure in the paper (§1.3).
 - Family B case: **Schäfer-Turek cylinder Re=20, Cd** (§4.2).
+- **Benchmark environment**: none of OpenLB / Palabos / OpenFOAM is installed.
+  Toolchain present (make, clang++, g++); cmake via brew (needs PATH); arm64 MPI in
+  ~/.local (the /usr/local mpicxx is x86_64 Homebrew — the documented rsmpi trap, avoid).
+  Decision: **Family A (OpenLB + Palabos) native, first**; **OpenFOAM via Colima**
+  (lightweight arm64 Linux VM) in parallel — keeps "same machine", small overhead,
+  disclosed as containerized in Family B.
 - Delivery: **Markdown draft first** (in-repo); PDF / web formatting decided after
   content is locked.
-- Language: English. Measurement: public-grade (§5).
+- Language: English. Measurement: public-grade (§5), in PM's announced idle window.
 
 **Open**
 - Message architecture (§1) + outline (§3): user requested revisions before sign-off
