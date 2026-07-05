@@ -429,10 +429,10 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
                     .ok_or_else(|| anyhow::anyhow!("scenario がありません"))?,
             )?;
             let warnings = lbm_scenario::validate(&sc);
-            let build = lbm_scenario::build(&sc);
+            let build = lbm_scenario::build_check(&sc);
             Ok(text_result(serde_json::to_string_pretty(&json!({
                 "ok": build.is_ok(),
-                "error": build.err().map(|e| e.to_string()),
+                "error": build.err(),
                 "warnings": warnings,
             }))?))
         }

@@ -581,27 +581,56 @@ where
     }
 
     /// Prescribe a per-node inlet profile on a `Velocity` face, `values`
-    /// indexed by the global along-face coordinate.
+    /// indexed by the global along-face coordinate in canonical face order:
+    /// with tangent axes `(t1, t2) = face.tangents()`, the index is
+    /// `c2 * dims[t1] + c1` (`t1` fastest). For 2D lattices `dims[t2] == 1`,
+    /// so this degenerates to the single tangent coordinate (V1 convention).
     pub fn set_inlet_profile(&mut self, face: Face, values: &[[T; 3]]) {
         assert!(
             matches!(self.params.faces[face.index()], FaceBC::Velocity { .. }),
             "set_inlet_profile: {face:?} is not a Velocity face"
         );
-        let t = match face.axis() {
-            0 => 1,
-            _ => 0,
-        };
-        assert_eq!(L::D, 2, "3D inlet profiles land with M-C");
-        assert_eq!(values.len(), self.dims[t]);
+        let (t1, t2) = face.tangents();
+        assert_eq!(
+            values.len(),
+            self.dims[t1] * self.dims[t2],
+            "profile must cover the whole global face"
+        );
         for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
             if !sub.touches_global_face(face) {
                 fields.inlet_profiles[face.index()] = None;
                 continue;
             }
-            let lo = sub.origin[t];
-            let hi = lo + sub.geom.core[t];
-            fields.inlet_profiles[face.index()] = Some(values[lo..hi].to_vec());
+            let (o1, o2) = (sub.origin[t1], sub.origin[t2]);
+            let (e1, e2) = (sub.geom.core[t1], sub.geom.core[t2]);
+            let mut local = Vec::with_capacity(e1 * e2);
+            for c2 in 0..e2 {
+                for c1 in 0..e1 {
+                    local.push(values[(o2 + c2) * self.dims[t1] + (o1 + c1)]);
+                }
+            }
+            fields.inlet_profiles[face.index()] = Some(local);
         }
+    }
+
+    /// Closure form of [`Solver::set_inlet_profile`]: `profile(c1, c2)` is
+    /// evaluated at the global tangent coordinates of every face node
+    /// (`(t1, t2) = face.tangents()`; 2D faces always pass `c2 = 0`).
+    /// The natural way to build e.g. a rectangular-duct profile
+    /// `u(y, z) = umax f(y) g(z)` on an X face.
+    pub fn set_inlet_profile_with(
+        &mut self,
+        face: Face,
+        profile: impl Fn(usize, usize) -> [T; 3],
+    ) {
+        let (t1, t2) = face.tangents();
+        let mut values = Vec::with_capacity(self.dims[t1] * self.dims[t2]);
+        for c2 in 0..self.dims[t2] {
+            for c1 in 0..self.dims[t1] {
+                values.push(profile(c1, c2));
+            }
+        }
+        self.set_inlet_profile(face, &values);
     }
 
     // ------------------------------------------------------------------

@@ -333,11 +333,7 @@ pub(crate) enum ZhKind<T: Real> {
 fn for_face_cells(geom: &LocalGeom, face: Face, mut body: impl FnMut(usize, [usize; 3])) {
     let a = face.axis();
     let fixed = if face.is_neg() { 0 } else { geom.core[a] - 1 };
-    let (t1, t2) = match a {
-        0 => (1, 2),
-        1 => (0, 2),
-        _ => (0, 1),
-    };
+    let (t1, t2) = face.tangents();
     let mut coord = 0;
     for c2 in 0..geom.core[t2] {
         for c1 in 0..geom.core[t1] {
@@ -351,23 +347,67 @@ fn for_face_cells(geom: &LocalGeom, face: Face, mut body: impl FnMut(usize, [usi
     }
 }
 
-/// Zou–He boundary parameterised by the face normal (V1 `zou_he`).
+/// Zou–He boundary parameterised by the face normal (V1 `zou_he`,
+/// generalised to D3Q19 faces).
 ///
-/// With inward normal `n` and tangent `t = rot90(n)`, the three unknown
-/// populations after streaming are `n`, `n+t`, `n-t`:
+/// ## Derivation (both lattices, any axis-aligned face)
+///
+/// After streaming, a face cell is missing exactly the populations entering
+/// the domain, `{q : c_q·n = +1}` with `n` the inward normal (3 for D2Q9,
+/// 5 for D3Q19: `n` itself plus `n ± t` per tangent axis `t`). Split the
+/// known populations into `S0 = Σ f (c·n = 0)` and `S⁻ = Σ f (c·n = −1)`.
+/// Imposing mass `Σ f = rho` and normal momentum `Σ (c·n) f = rho u·n` and
+/// eliminating the unknown sums gives the closure (independent of `D`):
 ///
 /// ```text
-/// rho     = (S0 + 2 S-) / (1 - u.n)          (velocity BC)
-/// u.n     = 1 - (S0 + 2 S-) / rho            (pressure BC, u.t = 0)
-/// f_n     = f_-n     + (2/3) rho (u.n)
-/// f_{n±t} = f_{-n∓t} + (1/6) rho (u.n) ± [ (1/2) rho (u.t) - (1/2) T ]
+/// rho (1 - u·n) = S0 + 2 S⁻      → rho   (velocity BC)
+///                                → u·n   (pressure BC, u.t = 0)
 /// ```
 ///
-/// Deviation storage: the physical `S0 + 2 S-` equals the deviation sums
-/// plus `+1` (the per-face closure constant, tested in `lattice.rs`).
+/// Each unknown is then reconstructed as bounce-back of its opposite's
+/// non-equilibrium part (Zou & He 1997; D3Q19: Hecht & Harting 2010,
+/// J. Stat. Mech. P01018):
 ///
-/// The D3Q19 face has 5 unknowns and needs transverse-momentum corrections;
-/// it lands with M-C (T15). Until then this asserts `D == 2`.
+/// ```text
+/// f_q = f_q̄ + (feq_q - feq_q̄) + corr_q,   feq_q - feq_q̄ = 6 w_q rho (c_q·u)
+/// ```
+///
+/// Pure NEBB (`corr = 0`) already satisfies mass and normal momentum via the
+/// closure identity (`Σ_unknown 6 w_q rho c_q·u = rho u·n` exactly, by the
+/// 2nd-moment weight identities). The tangential momentum constraint per
+/// tangent axis `t`, `Σ (c·t) f = rho u_t`, fixes an antisymmetric
+/// correction `± N_t` on the diagonal pair `n ± t`. Substituting NEBB into
+/// the constraint, the known negative-diagonal terms `f_{-(n±t)}` cancel
+/// against the bounced ones and what remains is
+///
+/// ```text
+/// N_t = (1/3) rho u_t - (1/2) Q_t,   Q_t = Σ_{c·n = 0} (c·t) f
+/// ```
+///
+/// (`Q_t` is the transverse momentum carried by the face-parallel
+/// populations: in 2D the pair `±t`, in 3D `±t` and the four in-plane
+/// diagonals `±t ± s`.) The reconstruction, with `w_axis`, `w_diag` the
+/// axis/diagonal weights:
+///
+/// ```text
+/// f_n     = f_-n     + 6 w_axis rho (u·n)             (2D: 2/3, 3D: 1/3)
+/// f_{n±t} = f_{-n∓t} + 6 w_diag rho (u·n ± u_t) ± N_t (w_diag = 1/36 both)
+/// ```
+///
+/// For D2Q9 this regroups exactly into V1's form
+/// `f_{n±t} = f_{-n∓t} + (1/6) rho (u·n) ± [(1/2) rho u_t - (1/2) Q_t]`;
+/// the 2D branch below keeps V1's operand order bit-for-bit.
+///
+/// Deviation storage: the physical `S0 + 2 S⁻` equals the deviation sums
+/// plus `+1` (the per-face closure constant, tested in `lattice.rs`); the
+/// reconstruction and `Q_t` are weight-neutral (`w_q = w_q̄`, and the
+/// face-parallel weights cancel pairwise in `Q_t`), so the formulas apply
+/// to deviations unchanged.
+///
+/// Under a z-invariant field with `u_z = 0`, the D3Q19 reconstruction
+/// projects exactly onto the D2Q9 one (sum populations over `c_z`): the
+/// z-corrections vanish by z-reflection symmetry and the x/y formulas add up
+/// to V1's — the T15 degeneracy tests pin this down numerically.
 pub(crate) fn zou_he_face<L: Lattice, T: Real>(
     f: &mut [T],
     np: usize,
@@ -377,10 +417,9 @@ pub(crate) fn zou_he_face<L: Lattice, T: Real>(
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
 ) {
-    assert!(
-        L::D == 2,
-        "Zou-He closure for 3D lattices lands with M-C (T15)"
-    );
+    if L::D == 3 {
+        return zou_he_face_3d::<L, T>(f, np, geom, solid, face, kind, profile);
+    }
     let n = face.n_in();
     let (nxi, nyi) = (n[0] as i32, n[1] as i32);
     let (tx, ty) = (-nyi, nxi);
@@ -418,6 +457,104 @@ pub(crate) fn zou_he_face<L: Lattice, T: Real>(
         f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c23 * r * un;
         f[q_d1 * np + i] = f[L::OPP[q_d1] * np + i] + c16 * r * un + tcorr;
         f[q_d2 * np + i] = f[L::OPP[q_d2] * np + i] + c16 * r * un - tcorr;
+    });
+}
+
+/// D3Q19 branch of [`zou_he_face`] (see its docs for the shared derivation).
+///
+/// Unknowns for inward normal `n` and tangent axes `t1 < t2`:
+/// `n`, `n±t1`, `n±t2`. Reconstruction:
+///
+/// ```text
+/// f_n      = f_-n      + (1/3) rho (u·n)
+/// f_{n±tk} = f_{-n∓tk} + (1/6) rho (u·n ± u_tk) ± N_k
+/// N_k      = (1/3) rho u_tk - (1/2) Q_tk
+/// Q_t1     = f_{t1} - f_{-t1} + f_{t1+t2} + f_{t1-t2} - f_{-t1+t2} - f_{-t1-t2}
+/// Q_t2     = f_{t2} - f_{-t2} + f_{t1+t2} - f_{t1-t2} + f_{-t1+t2} - f_{-t1-t2}
+/// ```
+#[allow(clippy::too_many_arguments)]
+fn zou_he_face_3d<L: Lattice, T: Real>(
+    f: &mut [T],
+    np: usize,
+    geom: &LocalGeom,
+    solid: &[bool],
+    face: Face,
+    kind: &ZhKind<T>,
+    profile: Option<&[[T; 3]]>,
+) {
+    let a = face.axis();
+    let (t1, t2) = face.tangents();
+    let n = face.n_in();
+    let unit = |axis: usize, s: i8| -> [i8; 3] {
+        let mut v = [0i8; 3];
+        v[axis] = s;
+        v
+    };
+    let add = |p: [i8; 3], q: [i8; 3]| [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
+    // The 5 unknowns (c·n = +1).
+    let q_n = L::dir_index(n);
+    let q_p1 = L::dir_index(add(n, unit(t1, 1)));
+    let q_m1 = L::dir_index(add(n, unit(t1, -1)));
+    let q_p2 = L::dir_index(add(n, unit(t2, 1)));
+    let q_m2 = L::dir_index(add(n, unit(t2, -1)));
+    // The 8 non-rest face-parallel directions (c·n = 0): S0 and Q_t terms.
+    let q_t1 = L::dir_index(unit(t1, 1));
+    let q_mt1 = L::dir_index(unit(t1, -1));
+    let q_t2 = L::dir_index(unit(t2, 1));
+    let q_mt2 = L::dir_index(unit(t2, -1));
+    let q_pp = L::dir_index(add(unit(t1, 1), unit(t2, 1)));
+    let q_pm = L::dir_index(add(unit(t1, 1), unit(t2, -1)));
+    let q_mp = L::dir_index(add(unit(t1, -1), unit(t2, 1)));
+    let q_mm = L::dir_index(add(unit(t1, -1), unit(t2, -1)));
+    let (half, c13, c16, two) = (T::r(0.5), T::r(1.0 / 3.0), T::r(1.0 / 6.0), T::r(2.0));
+    // u·n_in for the single non-zero normal component (±1).
+    let nsign = T::r(n[a] as f64);
+    for_face_cells(geom, face, |coord, pos| {
+        let i = geom.pidx(pos[0], pos[1], pos[2]);
+        if solid[i] {
+            return;
+        }
+        let s0 = f[L::REST * np + i]
+            + f[q_t1 * np + i]
+            + f[q_mt1 * np + i]
+            + f[q_t2 * np + i]
+            + f[q_mt2 * np + i]
+            + f[q_pp * np + i]
+            + f[q_pm * np + i]
+            + f[q_mp * np + i]
+            + f[q_mm * np + i];
+        let sneg = f[L::OPP[q_n] * np + i]
+            + f[L::OPP[q_p1] * np + i]
+            + f[L::OPP[q_m1] * np + i]
+            + f[L::OPP[q_p2] * np + i]
+            + f[L::OPP[q_m2] * np + i];
+        let closure = s0 + two * sneg + T::one();
+        let (r, un, ut1, ut2) = match *kind {
+            ZhKind::Velocity(u) => {
+                let u = profile.map_or(u, |p| p[coord]);
+                let un = u[a] * nsign;
+                (closure / (T::one() - un), un, u[t1], u[t2])
+            }
+            ZhKind::Pressure(rho_bc) => {
+                // From the closure rho (1 - u·n) = S0 + 2 S⁻.
+                let un = T::one() - closure / rho_bc;
+                (rho_bc, un, T::zero(), T::zero())
+            }
+        };
+        // Transverse fluxes of the face-parallel populations.
+        let qt1 = f[q_t1 * np + i] - f[q_mt1 * np + i] + f[q_pp * np + i] + f[q_pm * np + i]
+            - f[q_mp * np + i]
+            - f[q_mm * np + i];
+        let qt2 = f[q_t2 * np + i] - f[q_mt2 * np + i] + f[q_pp * np + i] - f[q_pm * np + i]
+            + f[q_mp * np + i]
+            - f[q_mm * np + i];
+        let n1 = c13 * r * ut1 - half * qt1;
+        let n2 = c13 * r * ut2 - half * qt2;
+        f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c13 * r * un;
+        f[q_p1 * np + i] = f[L::OPP[q_p1] * np + i] + c16 * r * (un + ut1) + n1;
+        f[q_m1 * np + i] = f[L::OPP[q_m1] * np + i] + c16 * r * (un - ut1) - n1;
+        f[q_p2 * np + i] = f[L::OPP[q_p2] * np + i] + c16 * r * (un + ut2) + n2;
+        f[q_m2 * np + i] = f[L::OPP[q_m2] * np + i] + c16 * r * (un - ut2) - n2;
     });
 }
 

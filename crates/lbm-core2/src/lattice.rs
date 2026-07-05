@@ -70,6 +70,18 @@ impl Face {
         n
     }
 
+    /// The two tangent axes of this face, ascending (the canonical
+    /// along-face ordering used by face-cell iteration, inlet profiles and
+    /// halo layers: `t1` varies fastest).
+    #[inline]
+    pub const fn tangents(self) -> (usize, usize) {
+        match self.axis() {
+            0 => (1, 2),
+            1 => (0, 2),
+            _ => (0, 1),
+        }
+    }
+
     /// The opposing face of the same axis.
     #[inline]
     pub const fn opposite(self) -> Face {
