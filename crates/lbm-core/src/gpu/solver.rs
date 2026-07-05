@@ -329,6 +329,20 @@ impl<L: Lattice> GpuSolver<L> {
         self.sync();
         self.inner.gather_uy()
     }
+    /// Global strain-rate tensor through the CPU readback mirror.
+    ///
+    /// This is an explicit GPU-to-CPU fallback; no WGSL stress kernel is
+    /// currently provided. Components are `[S_xx, S_yy, S_zz, S_xy, S_xz,
+    /// S_yz]`, matching [`Solver::gather_strain_rate`].
+    pub fn gather_strain_rate(&mut self) -> Vec<[f32; 6]> {
+        self.sync();
+        self.inner.gather_strain_rate()
+    }
+    /// Global shear-rate invariant through the CPU readback mirror.
+    pub fn gather_shear_rate(&mut self) -> Vec<f32> {
+        self.sync();
+        self.inner.gather_shear_rate()
+    }
     /// Global deviation-population plane `q` (compact layout).
     pub fn gather_f(&mut self, q: usize) -> Vec<f32> {
         self.sync();

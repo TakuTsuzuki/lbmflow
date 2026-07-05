@@ -591,3 +591,9 @@ reseeding + hard cull threshold; fixed viewer-side. Optional modeling note recor
 cap shaft forcing a few cells below the lid if a dead headspace is ever wanted.
 Value for MF-δ: first end-to-end field-sanity pass of the penalization-impeller
 pipeline on the new body-force API.
+## W-STRESS strain-rate observable (2026-07-05, branch cx-strain-rate)
+
+- Implemented native `Solver::gather_strain_rate()` and `Solver::gather_shear_rate()` for CPU-backed D2Q9/D3Q19 solvers, plus MPI rank-0 gather wrappers and GPU CPU-readback facade wrappers.
+- Verified FR-STRESS-01 rev.4 force correction sign in the native body-force Poiseuille check: `Pi_force = -0.5 * (uF + Fu)`, so `Pi_neq_corr = Pi_neq_raw + 0.5 * (uF + Fu)` for this engine's physical velocity and deviation-form equilibrium. Measured interior `gamma_dot(y)` max absolute error: `1.528708800171974e-14`.
+- Plane Couette half-way-wall check: analytic `S_xy = 0.5 * U / H` with `U=0.1`, `H=8`; measured max absolute `S_xy` error: `1.3877787807814457e-16`. `gather_shear_rate()` matched `sqrt(2 S:S)` from the returned tensor exactly in this fixture.
+- InProcess decomposition check `[1,1,1]` vs `[2,2,1]`: `gather_strain_rate()` and `gather_shear_rate()` matched bit-for-bit after 25 forced BGK steps with a spatial body-force field.
