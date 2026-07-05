@@ -20,6 +20,7 @@
 //! equivalence test suite in `tests/` compares V2 against it field-by-field.
 
 pub mod backend;
+pub mod compat;
 pub mod fields;
 pub mod halo;
 mod kernels;

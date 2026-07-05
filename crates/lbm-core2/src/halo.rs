@@ -227,7 +227,6 @@ pub(crate) fn exchange_scalar_generic<T: Real>(subs: &[Subdomain], planes: &mut 
 mod tests {
     use super::*;
     use crate::lattice::D2Q9;
-    use crate::real::Real as _;
 
     /// Double-periodic single part: after exchange, every halo cell that
     /// streaming can read must hold the wrapped core value.
@@ -242,7 +241,7 @@ mod tests {
             for y in 0..4 {
                 for x in 0..5 {
                     fields.f[q * np + sub.geom.pidx(x, y, 0)] =
-                        f64::r((q * 100 + y * 10 + x) as f64);
+                        (q * 100 + y * 10 + x) as f64;
                 }
             }
         }
