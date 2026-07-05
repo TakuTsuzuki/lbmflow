@@ -41,7 +41,7 @@ buffer verbatim rather than any "physical `f`" form.
 | `STEP` | step counter + physical time | 16 B | run position |
 | `RNG` *(reserved, M-F)* | stochastic-collision / turbulent-inlet PRNG state | small | FR-IO-06 crash recovery of stochastic runs |
 | `PARTICLES` *(reserved, M-F)* | Lagrangian marker / particle buffers | variable | resolved-particle & IBM state |
-| `STATS` *(reserved, M-F)* | running time-average / transient-statistics accumulators | variable | observer fieldAverage windows must survive restart |
+| `STATS` *(reserved; activated by the observer framework — fieldAverage — not gated on M-F, see SPEC_OBSERVER_FRAMEWORK §5)* | running time-average / transient-statistics accumulators (`count, sum, sumsq` per observer id) | variable | observer fieldAverage windows must survive restart; blob layout defined in SPEC_OBSERVER_FRAMEWORK §5 |
 
 **Re-derived on load (NOT serialized — validated by hash):** `solid`, `wall_u`, `probe`,
 `force_field`, `inlet_profiles`, the Bouzidi record list, the material grid, `LocalGeom`, and the
