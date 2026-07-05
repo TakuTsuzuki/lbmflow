@@ -362,14 +362,14 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
     if tau < 0.55 {
         warn(
             "physics.nu",
-            format!("tau = {tau:.3} は安定限界に近い（0.55 未満）。粘性を上げるか解像度を上げてください"),
+            format!("tau = {tau:.3} is close to the stability limit (below 0.55). Increase the viscosity or the resolution"),
         );
     }
     let max_edge_speed = edge_speeds(&sc.edges).into_iter().fold(0.0, f64::max);
     if max_edge_speed > 0.15 {
         warn(
             "edges",
-            format!("流入/壁速度 {max_edge_speed:.3} は圧縮性誤差が目立つ水準（0.15 超）"),
+            format!("inlet/wall velocity {max_edge_speed:.3} is at a level where compressibility error is noticeable (above 0.15)"),
         );
     }
     if max_edge_speed > 0.0 && sc.physics.nu > 0.0 {
@@ -378,7 +378,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
             warn(
                 "physics",
                 format!(
-                    "グリッドレイノルズ数 U/ν = {grid_re:.1} > 15: 発散の恐れ（PHYSICS.md 参照）"
+                    "grid Reynolds number U/ν = {grid_re:.1} > 15: risk of divergence (see PHYSICS.md)"
                 ),
             );
         }
@@ -386,7 +386,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
     if sc.multiphase.is_some() && sc.physics.precision == Precision::F32 {
         warn(
             "physics.precision",
-            "多相流は f64 を推奨（界面の急勾配に対する余裕）".to_string(),
+            "f64 is recommended for multiphase flow (headroom for the steep interface gradient)".to_string(),
         );
     }
     if let Some(mp) = &sc.multiphase {
@@ -394,7 +394,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
             warn(
                 "multiphase.g",
                 format!(
-                    "G = {} は臨界値 -4 より弱く、相分離しません（推奨 -5.0）",
+                    "G = {} is weaker than the critical value -4 and will not phase-separate (recommended -5.0)",
                     mp.g
                 ),
             );
@@ -404,7 +404,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         if sc.multiphase.is_some() {
             warn(
                 "multiphase",
-                "3D (nz > 1) は多相流未対応です（構築時エラーになります）".to_string(),
+                "3D (nz > 1) does not support multiphase flow (will error at build time)".to_string(),
             );
         }
         if matches!(
@@ -427,7 +427,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         if sc.edges.front.is_some() || sc.edges.back.is_some() {
             warn(
                 "edges",
-                "front/back は 3D (nz > 1) 専用で、2D では無視されます".to_string(),
+                "front/back are for 3D (nz > 1) only and are ignored in 2D".to_string(),
             );
         }
     }
@@ -449,8 +449,8 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 warn(
                     name,
                     format!(
-                        "uConv = {u_conv} は (0,1] の範囲外で、構築時にエラーになります。\
-                         期待される平均流出速度（例: 流入速度と同程度の 0.05〜0.15）を指定してください"
+                        "uConv = {u_conv} is outside (0,1] and will error at build time. \
+                         Specify the expected mean outflow velocity (e.g. 0.05-0.15, comparable to the inlet velocity)"
                     ),
                 );
             }
@@ -552,7 +552,7 @@ impl std::fmt::Display for Build3Error {
             Build3Error::Core(e) => write!(f, "{e}"),
             Build3Error::Spec(e) => write!(f, "{e}"),
             Build3Error::BackendUnavailable(what) => write!(f, "{what}"),
-            Build3Error::Unsupported(what) => write!(f, "3D (nz > 1) では未対応: {what}"),
+            Build3Error::Unsupported(what) => write!(f, "unsupported in 3D (nz > 1): {what}"),
         }
     }
 }
@@ -616,10 +616,10 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
 
     assert!(sc.is_3d(), "build3d requires grid.nz > 1");
     if sc.multiphase.is_some() {
-        return Err(Build3Error::Unsupported("multiphase（多相流）"));
+        return Err(Build3Error::Unsupported("multiphase (multiphase flow)"));
     }
     if !matches!(sc.init, InitSpec::Rest) {
-        return Err(Build3Error::Unsupported("init は rest のみ"));
+        return Err(Build3Error::Unsupported("init must be rest only"));
     }
     if let Some(c) = &sc.compute {
         if c.backend == BackendSpec::Gpu {
@@ -779,7 +779,7 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
         };
         if !matches!(faces[face.index()], FaceBC::Velocity { .. }) {
             return Err(Build3Error::Unsupported(
-                "inletProfile は velocityInlet の辺にのみ指定できます",
+                "inletProfile can only be set on a velocityInlet edge",
             ));
         }
         let (t1, t2) = face.tangents();
@@ -814,7 +814,7 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     {
         if !any_obstacle {
             return Err(Build3Error::Unsupported(
-                "force プローブには obstacles が必要です",
+                "the force probe requires obstacles",
             ));
         }
         // Probe all obstacle solids (cells strictly inside the domain box,
@@ -1188,16 +1188,16 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
         ],
     };
     vec![
-        ("cavity", "リッド駆動キャビティ（定常判定つき）", cavity),
+        ("cavity", "lid-driven cavity (with steady-state detection)", cavity),
         (
             "cylinder-karman",
-            "円柱まわりのカルマン渦列 + 抗力プローブ",
+            "Kármán vortex street around a cylinder + drag probe",
             cylinder,
         ),
-        ("two-phase-droplet", "Shan-Chen 二相液滴の平衡化", droplet),
+        ("two-phase-droplet", "equilibration of a Shan-Chen two-phase droplet", droplet),
         (
             "droplet-on-wall",
-            "壁上液滴の接触角デモ（仮想壁密度 wallRho=1.0 → θ≈63°）",
+            "contact-angle demo of a droplet on a wall (virtual wall density wallRho=1.0 → θ≈63°)",
             droplet_on_wall,
         ),
     ]

@@ -1,25 +1,27 @@
-# PERFORMANCE.md — 実測性能と精度/速度トレードオフガイド
+# PERFORMANCE.md — Measured Performance and Precision/Speed Trade-off Guide
 
-測定環境: Apple Silicon 18 コア（P/E 混成）、macOS、rustc 1.93、
-`--release`（thin LTO, codegen-units=1）。測定: `examples/bench_backends.rs`
-（V1 時代の `bench_mlups.rs` は V1 と共に引退 — 当時の測定記録は本文書の
-Phase 9 節に凍結）。MLUPS = 百万格子点更新/秒。2026-07-05 時点。
+Measurement environment: Apple Silicon 18-core (P/E hybrid), macOS, rustc 1.93,
+`--release` (thin LTO, codegen-units=1). Measured with: `examples/bench_backends.rs`
+(the V1-era `bench_mlups.rs` was retired along with V1 — its measurement records
+from that time are frozen in the Phase 9 section of this document). MLUPS = million
+lattice-point updates per second. As of 2026-07-05.
 
-## V2 CpuSimd バックエンド（M-E、2026-07-05）
+## V2 CpuSimd backend (M-E, 2026-07-05)
 
-V1 融合カーネル（`step_band`）を V2 の `Backend` として移植したもの
-（`crates/lbm-core/src/backend_simd.rs`）。D2Q9 は V1 と同型の完全融合
-（collide+stream+moments 1 パス、行バンド並列、3 スラブリング）、D3Q19 も
-同構造（z 平面スラブ、ブロック化スパンカーネル）。halo 交換はフェーズ境界の
-ままなので Subdomain / InProcess / MPI とそのまま合成できる。等価性は
-`tests/backend_simd_equiv.rs`（CpuScalar と 8 シナリオ × f64/f32、場は
-実測差 ~1e-13/f64 で全ゲート緑）。
+The V1 fused kernel (`step_band`) ported into V2 as a `Backend`
+(`crates/lbm-core/src/backend_simd.rs`). D2Q9 uses the same fully-fused form as V1
+(collide+stream+moments in 1 pass, row-band parallel, 3-slab ring); D3Q19 uses the
+same structure (z-plane slabs, blocked span kernel). Halo exchange remains at the
+phase boundary, so it composes as-is with Subdomain / InProcess / MPI. Equivalence is
+verified by `tests/backend_simd_equiv.rs` (CpuScalar vs. 8 scenarios × f64/f32; fields
+show a measured difference of ~1e-13/f64, all gates green).
 
-測定: `cargo run --release -p lbm-core --example bench_backends`
-（V1 を同一バイナリから同時刻交互実行、best-of-3。共有機のためレート絶対値は
-時間帯変動あり。負荷 load≈7 の窓での実測）。
+Measurement: `cargo run --release -p lbm-core --example bench_backends`
+(runs V1 and V2 alternately from the same binary at the same time, best-of-3. Since
+this is a shared machine, absolute rates vary by time of day. Measured in a window at
+load≈7).
 
-### 2D D2Q9（512²/1024²、TGV 型周期、TRT）
+### 2D D2Q9 (512²/1024², TGV-type periodic, TRT)
 
 | grid | threads | prec | V1 fused | CpuScalar | CpuSimd | Simd/V1 | Simd/Scalar |
 |---|---|---|---|---|---|---|---|
@@ -32,14 +34,14 @@ V1 融合カーネル（`step_band`）を V2 の `Backend` として移植した
 | 1024² | 12 | f32 | 1084 | 314 | **1183** | 1.09 | 3.8 |
 | 1024² | 12 | f64 | 653 | 296 | 716 | 1.10 | 2.4 |
 
-目標「V1 比 −10% 以内」を全構成で達成。単スレッドは V1 超え
-（+17〜33%）: ensure_slab がリングへのコピーを衝突に融合し（f を読み
-リングに直接書く）、V1 の copy-then-collide より 1 パス分トラフィックが
-少ないため。12T の 512² のみ僅かに負（−3〜4%、フェーズ分割による
-バリア 1 回分 + シェル衝突）。1024²/12T/f32 の **1183 MLUPS** は
-プロジェクト CPU 新記録（V1 文書値 1124 超）。
+The target of "within −10% of V1" was achieved on all configurations. Single-thread
+exceeds V1 (+17–33%): ensure_slab fuses the copy into the ring into the collision
+(reads f, writes directly into the ring), so it has one pass less traffic than V1's
+copy-then-collide. Only the 12T/512² case is slightly negative (−3–4%, from one
+barrier's worth of phase splitting + shell collision). The **1183 MLUPS** for
+1024²/12T/f32 is a new project CPU record (exceeding the V1 documented value of 1124).
 
-### 3D D3Q19（128³ 周期、TRT）
+### 3D D3Q19 (128³ periodic, TRT)
 
 | grid | threads | prec | CpuScalar | CpuSimd | Simd/Scalar |
 |---|---|---|---|---|---|
@@ -48,45 +50,51 @@ V1 融合カーネル（`step_band`）を V2 の `Backend` として移植した
 | 128³ | 12 | f32 | 139 | 260 | 1.9 |
 | 128³ | 12 | f64 | 123 | 168 | 1.4 |
 
-目標「CpuScalar 比 2 倍以上」は 1T で達成（3.0x / 2.0x）。12T は
-f32 1.9x / f64 1.4x に留まる。原因は測定で切り分け済み: (a) バンド端
-スラブの二重衝突（12 バンドで +19% の衝突作業量）、(b) 粗粒度バンドは
-P/E 異種コアで負荷分散できない（CpuScalar は行粒度 work stealing で
-スケーリング 7.5x、融合は 5.2x）。y ストリップリング・バンド過剰分割の
-両対策は実装・実測の上で棄却（それぞれ −20%/−8%: 本機は SLC が
-平面リングを吸収するため、リング縮小の利得よりストリップの再衝突と
-プリフェッチ劣化が勝る。コード内 doc に測定値記録済み）。改善余地は
-「バンド端衝突の共有（要同期）」か「フェーズ分割へのフォールバック
-閾値」だが、絶対値でも 12T f32 260 MLUPS は CpuScalar の +87%。
+The target of "2× or more over CpuScalar" was achieved at 1T (3.0x / 2.0x). At 12T it
+falls short, at 1.9x for f32 / 1.4x for f64. The cause has been isolated through
+measurement: (a) double collision at band-edge slabs (+19% collision work with 12
+bands), (b) coarse-grained bands cannot load-balance across heterogeneous P/E cores
+(CpuScalar scales 7.5x with row-granularity work stealing, while the fused version
+reaches only 5.2x). Both counter-measures — y-strip ringing and over-splitting the
+bands — were implemented, measured, and rejected (−20%/−8% respectively: on this
+machine the SLC absorbs the plane ring, so the re-collision of strips and degraded
+prefetching outweigh the benefit of a smaller ring. Measured values are recorded in
+the in-code doc). The remaining room for improvement is either "sharing band-edge
+collisions (requires synchronization)" or "a fallback threshold to phase splitting,"
+but even in absolute terms 12T f32 260 MLUPS is +87% over CpuScalar.
 
-### カーネル形状の要点（コード内 doc に測定つきで記載）
+### Key points on kernel shape (recorded with measurements in the in-code doc)
 
-- **D2Q9 = flat form**: セル内で 4 ペアを LLVM が全展開し x ループを
-  ベクトル化（V1 `collide_span` と演算子順まで同一）。ブロック化は
-  D2Q9 では逆効果（~1.2x 損）。
-- **D3Q19 = blocked form**: 9 ペアの flat 展開は LLVM が放棄しスカラー化
-  （実測 18 vs 285 の vec/scalar 命令比）。`[T; 64]` スクラッチに共有量を
-  置き、ペア毎に単位ストライドスイープ（格子定数はループ不変
-  ブロードキャスト）で Q 非依存にベクトル化。
-- **in-place ビュー**: blocked カーネルに src/dst 別ビューを渡すと
-  エイリアス検査でベクトル化が壊れる（−30%）。blocked は単一ビュー、
-  flat のみ src=f/dst=ring のコピー融合を使う。
-- **リング永続化**: バンド毎リングを `FusedScratch` に持ち回り
-  （毎ステップの確保+ゼロ埋め 92 MB/step@f64 を排除）。
+- **D2Q9 = flat form**: within a cell, LLVM fully unrolls the 4 pairs and vectorizes
+  the x loop (matches V1's `collide_span` down to the operator ordering). Blocking is
+  counter-productive for D2Q9 (~1.2x loss).
+- **D3Q19 = blocked form**: for the flat unroll of 9 pairs, LLVM gives up and falls
+  back to scalar code (measured vec/scalar instruction ratio of 18 vs. 285). Shared
+  quantities are placed in a `[T; 64]` scratch buffer, and each pair is swept with
+  unit stride (lattice constants are loop-invariant broadcasts), making it
+  vectorizable independent of Q.
+- **In-place views**: passing separate src/dst views into the blocked kernel breaks
+  vectorization due to alias checking (−30%). The blocked kernel uses a single view;
+  only the flat kernel uses the copy-fused src=f/dst=ring form.
+- **Ring persistence**: the per-band ring is carried in a `FusedScratch`
+  (eliminating 92 MB/step@f64 of per-step allocation + zero-fill).
 
-## Phase 9 カーネル改修の結果（同時刻交互実行の相対比較）
+## Results of the Phase 9 kernel rework (relative comparison via same-time alternating runs)
 
-**歴史的記録**（V1 エンジンの改修記録。V1・`bench_mlups`・`probe_state_hash`
-は 2026-07-05 の V1 引退で削除済み — 数値と手法の記録として保存。融合カーネル
-自体は V2 `CpuSimd` に移植され、等価性ゲートは `tests/backend_simd_equiv.rs` +
-T13 が引き継いだ）。
+**Historical record** (rework record for the V1 engine. V1, `bench_mlups`, and
+`probe_state_hash` were removed with the V1 retirement on 2026-07-05 — preserved here
+as a record of the numbers and method. The fused kernel itself was ported to the V2
+`CpuSimd`, and the equivalence gate was taken over by `tests/backend_simd_equiv.rs` +
+T13).
 
-**測定注意**: この日の測定機では検証エージェント等が並行稼働しており、絶対値は
-時間帯で最大 3 倍変動した。下表は新旧バイナリを**同時刻に交互実行**（best-of-5、
-`bench_mlups <prec> <n> <threads> <steps>` の単一構成モード）した相対比較で、
-この形式なら負荷変動に対して頑健。
+**Measurement caveat**: on the measurement machine that day, verification agents etc.
+were running concurrently, and absolute values varied by up to 3× depending on time of
+day. The table below is a relative comparison from **alternating runs of the old and
+new binaries at the same time** (best-of-5, single-configuration mode of
+`bench_mlups <prec> <n> <threads> <steps>`), which is robust to load variation in this
+form.
 
-| 構成 | 旧（AoS スカラー） | 新（SoA 融合カーネル） | 倍率 |
+| Configuration | Old (AoS scalar) | New (SoA fused kernel) | Ratio |
 |---|---|---|---|
 | f32 512² 1T | 38 | 220 | 5.7x |
 | f32 512² 12T | 319 | 860 | 2.6x |
@@ -97,68 +105,82 @@ T13 が引き継いだ）。
 | f64 1024² 1T | 37 | 120 | 3.2x |
 | f64 1024² 12T | 323 | 602 | 1.8x |
 
-Phase 9 目標「f32 で 2 倍以上」を達成（2.6〜5.7 倍）。峰は f32/1024²/12T の
-**~1100 MLUPS**（旧文書の峰 381 の ~3 倍。アイドルな機体ならさらに上振れの
-見込み）。16384 セル未満の格子は従来どおり自動シリアル実行
-（`PARALLEL_MIN_CELLS`）。
+The Phase 9 target of "2× or more for f32" was achieved (2.6–5.7×). The peak is
+**~1100 MLUPS** at f32/1024²/12T (~3× the old document's peak of 381. An idle machine
+would likely push this higher still). Grids under 16384 cells continue to run serially
+automatically, as before (`PARALLEL_MIN_CELLS`).
 
-## 何をしたか（段階別の寄与）
+## What was done (contribution by stage)
 
-1. **SoA 化 + span 分解 + ペア形式カーネル**（1T で ~4x）:
-   `f[q*(nx*ny) + y*nx + x]` の plane-major 格納に変更。各行を solid-run 表で
-   「solid を含まない区間（span）」に分解し、内側ループから分岐を完全排除 →
-   NEON 自動ベクトル化が効く。衝突は TRT ペア量（ep/em）を直接計算する形に
-   強度削減（等価変形。x/y 鏡対称な式形なので厳密等変性も保持）。streaming の
-   流体 span は単なるシフト付きスライスコピー。
-2. **stream+moments 融合**（12T で +15〜30%、rayon バリア 3→2/step）。
-3. **collide+stream+moments の完全 1 パス融合**（1T +14〜21%、12T +31〜95%）:
-   `step_band()` がソース行を 3 行リング（キャッシュ常駐）にジャスト・イン・
-   タイムで衝突させ、リングから pull-stream し、moments も同パスで書く。
-   衝突後格子を DRAM に実体化しない（メモリトラフィック ~40% 減、バリア
-   1/step）。moments はダブルバッファ（rho2/ux2/uy2）で「衝突は前ステップの
-   moments を読む」規約を保存。ConvectiveOutflow の記憶項（前ステップの衝突後
-   分布）は capture_conv_stale() がビット同値に別チャネルで供給。
-4. **力項ループの const 化**（FORCE/FF フラグ）: セル毎 force_field の
-   Option 分岐が FORCE=true 系の衝突ループを完全スカラーに落としていたのを
-   修正。Poiseuille/重力/多相の衝突ループも全てベクトル化（逆アセンブリの
-   .4s/.2d 命令数で確認）。
+1. **SoA layout + span decomposition + paired-form kernel** (~4x at 1T): changed to
+   plane-major storage of `f[q*(nx*ny) + y*nx + x]`. Each row is decomposed via a
+   solid-run table into "spans containing no solid," completely eliminating branches
+   from the inner loop → enables NEON auto-vectorization. Collision is strength-
+   reduced into a form that directly computes the TRT pair quantities (ep/em) — an
+   equivalent transformation. Because the expression form is x/y mirror-symmetric,
+   strict equivariance is also preserved. The fluid span in streaming is simply a
+   shifted slice copy.
+2. **stream+moments fusion** (+15–30% at 12T, rayon barriers 3→2/step).
+3. **Full single-pass fusion of collide+stream+moments** (1T +14–21%, 12T +31–95%):
+   `step_band()` collides source rows just-in-time into a 3-row ring
+   (cache-resident), pull-streams from the ring, and also writes moments in the same
+   pass. The post-collision grid is not materialized to DRAM (memory traffic reduced
+   ~40%, 1 barrier/step). Moments use double buffering (rho2/ux2/uy2) to preserve the
+   convention that "collision reads the previous step's moments." The memory term of
+   ConvectiveOutflow (the post-collision distribution from the previous step) is
+   supplied bit-identically via a separate channel by capture_conv_stale().
+4. **const-ifying the force-term loop** (FORCE/FF flags): fixed the issue where the
+   per-cell Option branch on force_field was forcing the FORCE=true collision loop
+   into fully scalar code. The collision loops for Poiseuille/gravity/multiphase are
+   now all vectorized as well (confirmed via .4s/.2d instruction counts in the
+   disassembly).
 
-**等価性の保証**: 全段階で `cargo test --workspace --release` 全緑（57 テスト、
-`--include-ignored` の重系列も緑）に加え、`examples/probe_state_hash`
-（10 シナリオの rho/u/probed force のビット厳密ハッシュ）で**旧実装と
-ビット一致**を確認済み。1 スレッドでは probed force まで完全一致、マルチ
-スレッドでは場はビット一致・probed force のみリダクション順で最終 ulp が
-変わりうる。パス構造や格納順を変える改修はこのプローブのビット一致を通す。
+**Guarantee of equivalence**: alongside all-green `cargo test --workspace --release`
+at every stage (57 tests, the heavy `--include-ignored` series also green), a
+**bit-identical match with the old implementation** was confirmed via
+`examples/probe_state_hash` (bit-exact hash of rho/u/probed force across 10
+scenarios). With a single thread, even the probed force matches exactly; with
+multiple threads, the fields match bit-for-bit while only the probed force can shift
+in the final ulp due to reduction order. Any rework that changes the pass structure
+or storage order must pass this probe's bit-exact match.
 
-## 読み取れること（= 推奨設定）
+## Takeaways (= recommended settings)
 
-1. **TRT は BGK と同速**（ペア形式では BGK は TRT の ω+=ω− 特殊例）。精度・
-   安定性で優る TRT を常にデフォルトにしてよい。BGK は教育・比較用。
-2. **f32 は f64 の ~1.9 倍**（ベクトル幅 2 倍 + 帯域半分。旧実装で差が 5% しか
-   なかったのはスカラー演算律速だったため）。偏差格納（f − w、2026-07-05 導入）
-   により f32 の精度は検証グレード:
-   - 一様力の運動量成長誤差: 1.34e-3 → **2.8e-7**(~4800 倍改善)
-   - TGV L2 誤差 (N=64): f32 7.1e-4 vs f64 7.0e-4(実質同等)
-   → **通常の 2D シミュレーションは f32 推奨**。長時間積分・極小勾配・検証計算は f64。
-3. 単スレッドが ~35 → ~210 MLUPS になったため、**WASM GUI の解像度上限を
-   引き上げ可能**（要 wasm 実測。SIMD128 有効時に同系の伸びが期待できる。
-   `PARALLEL_MIN_CELLS` 未満の自動シリアル領域でも旧比 ~5x）。
-4. 12T f64 の伸び（1.6〜1.8x）が f32 より小さいのは帯域律速に近づいたため
-   （共有機負荷の影響もあり。アイドル時の再測定を推奨）。
+1. **TRT is the same speed as BGK** (in the paired form, BGK is the special case
+   ω+=ω− of TRT). TRT, which is superior in accuracy and stability, can always be the
+   default. BGK is for education/comparison.
+2. **f32 is ~1.9× f64** (2× vector width + half the bandwidth. The old implementation
+   showed only a 5% difference because it was scalar-compute-bound). With deviation
+   storage (f − w, introduced 2026-07-05), f32 precision is now verification-grade:
+   - Momentum growth error under uniform force: 1.34e-3 → **2.8e-7** (~4800× improvement)
+   - TGV L2 error (N=64): f32 7.1e-4 vs. f64 7.0e-4 (effectively equivalent)
+   → **f32 is recommended for typical 2D simulations.** Use f64 for long-time
+   integration, extremely small gradients, or verification computations.
+3. Since single-thread went from ~35 → ~210 MLUPS, **the WASM GUI's resolution
+   ceiling can potentially be raised** (requires actual WASM measurement; a similar
+   gain is expected with SIMD128 enabled. Even in the automatic-serial region below
+   `PARALLEL_MIN_CELLS`, still ~5x over the old version).
+4. The smaller gain for 12T f64 (1.6–1.8x) versus f32 reflects approaching
+   bandwidth-bound territory (shared-machine load may also be a factor; re-measurement
+   while idle is recommended).
 
-## 既知の最適化余地（Phase 9 続き・V2 向けメモ）
+## Known remaining optimization opportunities (Phase 9 continuation / notes for V2)
 
-- **明示 SIMD（std::simd / wide）**: 現状は自動ベクトル化任せ。理論 FLOPs では
-  f32 1T にまだ ~2x の頭があるが、取り組むなら V2 CpuSimd バックエンドで
-  （`step_band()` が移植対象の参照カーネル。ARCHITECTURE_V2.md §2.4）。
-  → **M-E で移植完了**（上記「V2 CpuSimd バックエンド」節）。2D は V1 を
-  上回り、3D も同構造で融合済み。明示 SIMD は依然未着手（自動ベクトル化
-  のみで到達）。
-- **Esoteric-pull 等の in-place ストリーミング**: ftmp を廃してメモリ半減・
-  実効帯域 ~2x の余地。V2 M-E の導入候補。
-- **バンド分割のチューニング**: バンド数 = スレッド数固定で、障害物が偏る
-  ジオメトリではバンド間不均衡が残る（バンド内は逐次なので work stealing
-  不可）。halo 行の二重衝突は ~2/バンド行数（12T/1024² で ~2%）。
-- **GPU（wgpu, Phase 9c 実測済み 2026-07-05）**: 同一物理で M5 Max
-  7,584 MLUPS（1024²）/ 6,975 MLUPS（2048²）、検証 L∞ 7e-6。
-  詳細と本採用判断は [GPU_EVALUATION.md](GPU_EVALUATION.md)。V2 の Backend trait に統合予定。
+- **Explicit SIMD (std::simd / wide)**: currently relies on auto-vectorization alone.
+  In theoretical FLOPs there is still ~2x of headroom at f32 1T, but if this is
+  pursued it should be in the V2 CpuSimd backend (`step_band()` is the reference
+  kernel targeted for porting. ARCHITECTURE_V2.md §2.4). → **Porting completed in
+  M-E** (see the "V2 CpuSimd backend" section above). 2D exceeds V1, and 3D is also
+  fused with the same structure. Explicit SIMD remains untouched (reached via
+  auto-vectorization alone).
+- **In-place streaming such as Esoteric-pull**: room to halve memory and roughly
+  double effective bandwidth by eliminating ftmp. A candidate for introduction in V2
+  M-E.
+- **Band-split tuning**: with the number of bands fixed to the number of threads,
+  imbalance between bands remains for geometries where obstacles are unevenly
+  distributed (work stealing is not possible within a band, since it is sequential).
+  Double collision at halo rows is ~2/band-row-count (~2% at 12T/1024²).
+- **GPU (wgpu, Phase 9c measured 2026-07-05)**: on the same physical machine, M5 Max
+  reaches 7,584 MLUPS (1024²) / 6,975 MLUPS (2048²), verification L∞ 7e-6. See
+  [GPU_EVALUATION.md](GPU_EVALUATION.md) for details and the adoption decision.
+  Planned for integration into V2's Backend trait.

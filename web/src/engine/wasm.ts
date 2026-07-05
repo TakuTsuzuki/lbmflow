@@ -1,12 +1,13 @@
 /**
- * Rust 製 LBM コア（lbm-core）の WASM ブリッジアダプタ。
+ * WASM bridge adapter for the Rust-based LBM core (lbm-core).
  *
- * ビルド: リポジトリルートで
+ * Build: from the repository root, run
  *   `wasm-pack build crates/lbm-wasm --target web --release --out-dir ../../web/src/engine/pkg`
- * （生成物 pkg/ はコミット済みなので通常は再ビルド不要）
+ * (the generated pkg/ is committed, so a rebuild is not normally needed)
  *
- * フィールドはゼロコピー: wasm メモリ上のビューを返す。
- * ビューは次の step()/init() まで有効（描画は毎フレーム取得し直すこと）。
+ * Fields are zero-copy: returns views over wasm memory.
+ * Views remain valid until the next step()/init() call (re-fetch every
+ * frame when rendering).
  */
 import init, { WasmSim } from "./pkg/lbm_wasm.js";
 import type { Engine, EngineConfig } from "./types.ts";

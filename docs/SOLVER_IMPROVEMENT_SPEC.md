@@ -1,594 +1,593 @@
-# ソルバー改善仕様書（全体レビュー 2026-07-05）
+# Solver Improvement Specification (Full Review 2026-07-05)
 
-> **main 取り込み注記（2026-07-05 PM）**: 本書はレビューブランチ
-> `claude/amazing-mirzakhani-4060d3`（V1 引退前のコミット 84abaa3 基準）で書かれた。
-> main は V1 引退済みのため、以下のパス読み替えで読むこと:
-> `crates/lbm-core2` → `crates/lbm-core`（改名）、旧 V1 の `crates/lbm-core/src/*` →
-> `crates/lbm-core/src/compat/*`（ファサードに集約。V1 単体は削除済み）。
-> **A-1（S0）は main では解消済み**（sync-tests.sh は perl 化ののち V1 引退で削除、
-> 複製スイートは compat 直参照の正規テストに昇格済み）。B-4 の「compat 移行」も
-> V1 引退で実施済み。実験は `scripts/spec-experiments/`（パス翻訳済み）で再実行可能 —
-> E2/E7 は改名後 main 上で仕様書の数値と一致することを確認済み。
+> **main integration note (2026-07-05 PM)**: This document was written on the review branch
+> `claude/amazing-mirzakhani-4060d3` (based on commit 84abaa3, before V1 retirement).
+> Since main has already retired V1, read it with the following path substitutions:
+> `crates/lbm-core2` → `crates/lbm-core` (renamed), old V1's `crates/lbm-core/src/*` →
+> `crates/lbm-core/src/compat/*` (consolidated into the facade; standalone V1 has been deleted).
+> **A-1 (S0) is already resolved on main** (sync-tests.sh was ported to perl and then deleted upon V1 retirement;
+> the duplicated suite has been promoted to the canonical tests that reference compat directly). B-4's "compat migration" was also
+> carried out with V1 retirement. Experiments can be re-run in `scripts/spec-experiments/` (paths already translated) —
+> E2/E7 have been confirmed to match the spec's numbers on renamed main.
 
-> **ステータス: v1（実験検証済み・実施可能版）**。v0 の全主張を §3 の実験 E1〜E10 で
-> 検証済み。**反証された項目はゼロ**、記述修正 2 件（A-3 の症状の様相、A-6 の数値）。
-> **A-1（S0）は検証と同時に本ブランチで実施済み**（sync-tests.sh の perl 化＋
-> 事後条件ガード、再生成スイート全 green 確認済み）。
-> 実験コードは `scripts/spec-experiments/`（`cargo run --release e2` 等）で再実行可能。
+> **Status: v1 (experimentally validated, actionable version)**. All v0 claims have been
+> validated in §3 by experiments E1–E10. **Zero items were refuted**; 2 descriptive corrections (the symptom character of A-3, the numbers of A-6).
+> **A-1 (S0) was carried out on this branch concurrently with validation** (perl port of sync-tests.sh plus
+> a postcondition guard; the regenerated suite was confirmed fully green).
+> Experiment code can be re-run in `scripts/spec-experiments/` (e.g. `cargo run --release e2`).
 
-- 対象コミット: 84abaa3（main 相当、ブランチ claude/amazing-mirzakhani-4060d3）
-- 対象範囲: `crates/lbm-core`（V1、凍結参照実装）、`crates/lbm-core2`（V2:
-  kernels / lattice / fields / solver / backend / halo / subdomain / dist / gpu / compat）、
-  検証・ベンチ体制（tests / VALIDATION.md / スクリプト / CI）
-- レビュー方法: 6 系統の独立レビュー（V2 物理カーネル / V2 構造 / GPU / MPI / V1 コア /
-  V&V 体制）を並列実施し、PM が S0/S1 級所見を実コードで裏取り。行番号は対象コミット時点。
-- 重大度: **S0** = 正しさの誤り（テストが偽の安心を与える等）/ **S1** = 高リスク
-  （潜在バグ・スケール障害・重要な設計欠陥）/ **S2** = 改善機会 / **S3** = 軽微。
-- 工数: S = 数時間 / M = 1 日 / L = 数日。
-
----
-
-## 0. エグゼクティブサマリ
-
-**物理カーネルの正しさに S0 はない。** D3Q19 Zou–He は Hecht & Harting (2010) との
-文献照合・手計算検証まで実施して一致。Guo forcing の TRT 分解、偏差格納の定数折込み、
-ハロー交換の十分性（unknown 集合との厳密一致）、GPU push 型融合の単一ライター保証も
-すべて確認済み。**課題は「入口・構造・運用・検証体制」に集中している**：
-
-1. **検証体制に S0 が 1 件**: sync-tests.sh の sed が BSD sed 非対応（`\b`）で無音失敗し、
-   「V2 検証スイート」57 テストが実際には V1 を再実行している（compat 層は物理検証を
-   一度も受けていない = R5 未実証）。修正は未マージの `v1-retirement` ブランチに存在。
-2. **入口ガードの欠如**: V2 ネイティブ経路（3D/MPI の本経路）に構成検証層がなく、
-   「未被覆面」「periodic×open 同軸」「ν=0」等が無症状で非物理計算になる。V1 側も
-   NaN 速度がバリデーションを素通しする（実測で確認済み）。
-3. **M-E の型レベルブロッカー**: `Solver`/`MpiSolver` の `Fields = SoaFields<T>` 束縛により
-   GPU バックエンドがオーケストレータに載らず、ステップ列が GpuSolver に二重化。
-   マルチ GPU / MPI+GPU は現構造では着手不能（構造レビューと GPU レビューが独立に同定）。
-4. **物理の三重実装**: Shan–Chen 力が V1 / compat / V2 native の 3 箇所に並走し、
-   機能マトリクスが軸ごとに非対称（接触角・二成分は 2D/CPU 専用のまま固着リスク）。
-5. **スケール障害**: MPI セットアップがグローバル配列の全ランク複製（10⁹ 格子で
-   wall_u 約 24 GB/ランク）、通信オーバーラップなし、rank-0 直列 gather のみ、
-   チェックポイントなし。加えて `MPI_THREAD_SINGLE` 宣言のまま rayon が起動し得る。
-6. **検証の穴**: CI 不在（全品質主張が手動スナップショット）、MPI 経路は cargo test で
-   0 行実行、GPU は CPU 相対等価のみ（絶対物理検証ゼロ）、f32×3D は製品経路なのに無検証。
+- Target commit: 84abaa3 (equivalent to main, branch claude/amazing-mirzakhani-4060d3)
+- Scope: `crates/lbm-core` (V1, frozen reference implementation), `crates/lbm-core2` (V2:
+  kernels / lattice / fields / solver / backend / halo / subdomain / dist / gpu / compat),
+  validation and benchmark infrastructure (tests / VALIDATION.md / scripts / CI)
+- Review method: 6 independent review streams (V2 physics kernels / V2 structure / GPU / MPI / V1 core /
+  V&V infrastructure) were conducted in parallel, and the PM backed S0/S1-class findings with real code. Line numbers are as of the target commit.
+- Severity: **S0** = correctness error (e.g. tests give false assurance) / **S1** = high risk
+  (latent bug, scaling failure, significant design defect) / **S2** = improvement opportunity / **S3** = minor.
+- Effort: S = a few hours / M = 1 day / L = several days.
 
 ---
 
-## 1. レビュー済み範囲と確認済み事項（問題なし）
+## 0. Executive Summary
 
-以下は改修不要と確認された土台。改修時の「壊してはならないもの」リストでもある。
+**There is no S0 in the correctness of the physics kernels.** D3Q19 Zou–He has been carried through
+literature cross-check and hand-calculation verification against Hecht & Harting (2010), and matches. The TRT decomposition of Guo forcing, the constant folding of deviation storage,
+the sufficiency of halo exchange (exact match with the unknown set), and the single-writer guarantee of GPU push-type fusion have all
+been confirmed. **The issues are concentrated in "entry, structure, operations, and validation infrastructure"**:
 
-- **D2Q9/D3Q19 テーブル**: C/W/OPP/TRT ペア/FACE_UNKNOWNS が全て C からの const fn 導出で
-  ドリフト構造的に不可能。0–4 次モーメント等方性 1e-15、V1 テーブルとのビットロック検査済み。
-- **D3Q19 面 Zou–He**: 閉包 ρ(1−u·n) = S0+2S⁻、NEBB 再構成、接線補正 N_k の 6 項の符号を
-  文献と照合し一致。質量・法線運動量の厳密充足を導出確認。
-- **Guo forcing**: TRT 整合の対称/反対称分解（cp=1−ω⁺/2, cm=1−ω⁻/2）、moments と
-  Reduction の F/2 補正、V1 と定義同一。
-- **偏差格納の定数折込み**: half-way BB 不変、probe の +2w 物理化、convective 質量ピン止めの
-  定数相殺、outflow の weight 中立性 — 全経路で矛盾なし。
-- **ハロー交換**: pull で halo から読まれる方向 = unknown 集合と厳密一致（全数検査テスト有）。
-  x→y→z 二相フォワードのコーナー充足、相内ハザードなし。
-- **MPI プロトコル**: 全 Irecv 先行 post → Isend → wait でデッドロックフリー、
-  ワイルドカード受信なし、タグ一意、コミュニケータ分離、POD 生バイト転送。
-  T13-MPI（2D コーナー・3D 2×2×2・ψ 交換込み）で場ビット一致の実証あり。
-- **GPU push 型融合**: 全 (q,セル) スロット単一ライター、parity 管理の全経路整合、
-  WGSL と kernels.rs の項単位一致（結合順含む）。f64 はコンパイル時拒否で silent degrade なし。
-- **V1 融合パス**: バンド境界の排他・unsafe 行アクセス契約・copy_span の周期 wrap /
-  開放端スロット温存を全 cx ケースで確認。compat 層のコピーに実質的 drift なし
-  （差分は doc/import/unused_mut のみ）。
-- **テストの決定論性**: 乱数・環境依存なし、フレーク源なし。T13 はフィールドの
-  `assert_eq!(d, 0.0)` ビット一致水準。T14 圧力 BC 緩和には 1-ulp 対照テスト付き。
+1. **1 S0 in the validation infrastructure**: sync-tests.sh's sed is not BSD-sed compatible (`\b`) and fails silently, so
+   the 57 tests of the "V2 validation suite" are actually re-running V1 (the compat layer has never received physics validation
+   = R5 not demonstrated). The fix exists on the unmerged `v1-retirement` branch.
+2. **Absence of entry guards**: The V2 native path (the main path for 3D/MPI) has no configuration-validation layer, and
+   "uncovered faces," "periodic×open coaxial," "ν=0," etc. become non-physical computations without symptoms. On the V1 side too,
+   NaN velocities pass through validation (confirmed by measurement).
+3. **M-E's type-level blocker**: Due to the `Fields = SoaFields<T>` binding of `Solver`/`MpiSolver`, the
+   GPU backend does not mount on the orchestrator, and the step sequence is duplicated in GpuSolver.
+   Multi-GPU / MPI+GPU cannot be started with the current structure (independently identified by the structure review and the GPU review).
+4. **Triple implementation of physics**: The Shan–Chen force runs in parallel in 3 places — V1 / compat / V2 native —
+   and the feature matrix is asymmetric per axis (contact angle and two-component remain 2D/CPU-only with fixation risk).
+5. **Scaling failures**: MPI setup replicates global arrays on all ranks (at 10⁹ grid,
+   wall_u ≈ 24 GB/rank), no communication overlap, only rank-0 serial gather,
+   no checkpointing. In addition, rayon may launch while `MPI_THREAD_SINGLE` is still declared.
+6. **Validation gaps**: No CI (all quality claims are manual snapshots), the MPI path executes 0 lines under cargo test,
+   GPU has only CPU-relative equivalence (zero absolute physics validation), and f32×3D is a product path yet unvalidated.
 
 ---
 
-## 2. 改善項目
+## 1. Reviewed Scope and Confirmed Items (No Problems)
 
-### WP-A: 正しさ・入口ガード（即時、全項目とも既存テスト無修正 green が前提）
+The following are foundations confirmed not to need modification. They are also the "must not break" list during modifications.
 
-#### A-1 [S0] sync-tests.sh の置換修正と再発ガード
-- 対象: `scripts/sync-tests.sh:42`、生成先 `crates/lbm-core2/tests/`（17 ファイル）
-- 現状: BSD sed で `\b` が無効 → 無置換コピー。生成 17 ファイル全てが `use lbm_core::`
-  のままで、compat 参照 0 件（PM 実測で確認）。修正コミット 622bbb2（perl 化）は
-  未マージの `v1-retirement` にのみ存在。
-- 改善: 622bbb2 相当（perl 置換）を main 系へ適用し、スクリプトに事後条件を追加
-  （生成物に `use lbm_core::` が残存 or 置換件数 0 で exit 1）。生成ヘッダ付きファイルが
-  `lbm_core2::compat` を import していることを検査する静的ガードテストを追加。
-- 受入: `grep -rl "AUTO-GENERATED" crates/lbm-core2/tests | xargs grep -L "lbm_core2::compat"`
-  が空。再生成スイートが compat 経由で全 green（→ 実験 E1 が事前検証）。
-- 工数: S ／ 実験: **E1 = 確定・実施済み**（perl 化＋事後条件ガードを適用し 16 ファイル
-  再生成 → `cargo test -p lbm-core2 --release` **全 suite green（exit 0）**。
-  接触角凍結値・RT・open BC 系を含む物理スイートが compat 経由で初めて実走・合格 =
-  **R5 の初実証**。残作業は静的ガードテストの追加のみ）
+- **D2Q9/D3Q19 tables**: C/W/OPP/TRT pairs/FACE_UNKNOWNS are all const-fn derived from C, so
+  drift is structurally impossible. 0th–4th order moment isotropy 1e-15, bit-lock inspected against the V1 tables.
+- **D3Q19 face Zou–He**: The closure ρ(1−u·n) = S0+2S⁻, NEBB reconstruction, and the signs of the 6 terms of the tangential correction N_k were
+  cross-checked with the literature and match. Exact satisfaction of mass and normal momentum was confirmed by derivation.
+- **Guo forcing**: TRT-consistent symmetric/antisymmetric decomposition (cp=1−ω⁺/2, cm=1−ω⁻/2), the F/2 correction of moments and
+  Reduction, identical in definition to V1.
+- **Constant folding of deviation storage**: half-way BB invariance, +2w physicalization of the probe, constant cancellation of convective mass pinning,
+  weight neutrality of outflow — consistent on all paths.
+- **Halo exchange**: the directions read from the halo in pull = exact match with the unknown set (has an exhaustive-inspection test).
+  Corner satisfaction of the x→y→z two-phase forward, no intra-phase hazards.
+- **MPI protocol**: All-Irecv-first-post → Isend → wait for deadlock freedom,
+  no wildcard receives, unique tags, communicator separation, POD raw-byte transfer.
+  There is field bit-match demonstration in T13-MPI (2D corner, 3D 2×2×2, including ψ exchange).
+- **GPU push-type fusion**: single writer for every (q, cell) slot, consistency of parity management on all paths,
+  term-by-term match of WGSL and kernels.rs (including combination order). f64 is rejected at compile time, so no silent degrade.
+- **V1 fusion path**: exclusivity of band boundaries, the unsafe row-access contract, periodic wrap of copy_span /
+  open-end slot preservation confirmed for all cx cases. No substantive drift in the compat layer's copy
+  (differences are only doc/import/unused_mut).
+- **Test determinism**: no randomness or environment dependence, no flake source. T13 is at the field-level
+  `assert_eq!(d, 0.0)` bit-match level. T14 pressure-BC relaxation has a 1-ulp control test.
 
-#### A-2 [S1] V1+compat の設定検証を NaN セーフ化
-- 対象: `crates/lbm-core/src/domain.rs:306-310`、`crates/lbm-core2/src/compat/domain.rs`（同一コード）
-- 現状: `if s > MAX_SPEED` は s=NaN で false（素通し）。NaN inlet は 3 ステップで場が NaN、
-  NaN MovingWall は rim 速度選択の比較失敗で**静止壁に化けて無症状**（レビューで実測）。
-  `Trt { magic }` と `force` も無検証。直下の rho 検査は `!(x > 0.0)` の NaN セーフ形式であり、
-  安全イディオム自体はコードベースに既在。
-- 改善: 速度検査を `if !(s <= MAX_SPEED)` に反転。`magic > 0`・`force`/`u` の `is_finite()` を
-  `validate()` に追加。V1 と compat に同一パッチ（テキスト同一性維持）。
-- 受入: NaN/inf の u・force・magic≤0 の `build()` が全て Err。合法設定はビット不変。
-- 工数: S ／ 実験: **E6 = 確定**（NaN inlet: build()=Ok のまま 3 步で非有限 rho 42 セル。
-  NaN MovingWall: build()=Ok、場は静止壁とビット一致 — 無音の静止壁化を厳密に実証）
+---
 
-#### A-3 [S1] Outflow/ConvectiveOutflow×固体隣接の無音質量リークを構成拒否
-- 対象: `crates/lbm-core/src/sim.rs:765-774,667-669`、`crates/lbm-wasm/src/lib.rs:240-242`
-- 現状: 開放端セルの内側隣接が固体だと BC がスキップされ（`solid[i] || solid[j]` で
-  コード確認）、未知スロットが初期値のまま永久凍結する。GUI の塗り絵（外周 1 セルのみ
-  拒否）から到達可能な本番経路。
-- 実験結果（E5/E5b で機構を実証、ただし症状の様相は形状依存で v0 の記述を修正）:
-  質量ドリフトの符号・規模は形状に依存し単独では判定指標にならない。決定的なのは
-  **静止系での定常非物理速度**: 静止した箱＋右 Outflow＋ポケット（初期 rho=2.0）で
-  2000 步後、バグ経路のエッジセルは **ux = −0.115** の巨大な定常速度を持ち続ける
-  （対照 = プラグ 1 セル内側では ux = +0.00000 で完全静止、物理どおり）。
-  全セル有限のままなので NaN 監視では捕捉不能 — v0 の主張どおり「無音」である。
-- 改善: 凍結方針に沿い最小修正 = `set_solid`（V1 `sim.rs:792` / compat / wasm）に
-  「開放端エッジセルの内側直隣への固体設置」を拒否する assert を追加。
-  BC フォールバック実装は V2 の課題（B-8 の設計ノートに記載）とする。
-- 受入: E5b 形状で panic（GUI は塗り拒否）。合法形状は probe_state_hash ビット不変。
-  E5b を回帰テスト化（拒否確認）。
-- 工数: M ／ 実験: **E5/E5b = 機構確定・記述修正済み**
+## 2. Improvement Items
 
-#### A-4 [S1] V2 ネイティブ構成検証層 `GlobalSpec::validate` の新設
-- 対象: `crates/lbm-core2/src/solver.rs:286-357`、`crates/lbm-core2/src/params.rs:24-35`、
-  利用側の重複検証 `crates/lbm-scenario/src/lib.rs:582-654`
-- 現状: `Solver::build` は次元・配列長 assert のみ。(1) **未被覆面**（periodic でも open でも
-  壁 rim でもない面）で stale 値が毎ステップ実データとして混入し無症状で非物理化
-  （`GlobalSpec::default()` のまま D3Q19 を使うだけで到達）。(2) ν=0 が
-  `omegas()` で omega_m=0 となり非物理な緩和のまま進行。(3) periodic×open 同軸の
-  二重適用。(4) MAX_SPEED / rho>0 / u_conv 範囲 / 異軸 open 面（V1 は
-  `AdjacentOpenEdges` で拒否、V2 は素通し = 3D エッジで Zou–He の前提崩壊）も未検査。
-  同等検証が compat と lbm-scenario に**二重実装**されている。
-- 改善: `GlobalSpec::validate() -> Result<(), SpecError>` を core2 に新設し
-  `Solver::build` 冒頭で強制。検査項目: ν>0 / 全非周期面の被覆（open BC または全面 solid rim）/
-  periodic×open 排他 / 異軸 open 拒否 / MAX_SPEED（NaN セーフ）/ rho_bc>0 / u_conv∈(0,1] /
-  2D で force[2]==0 / open 面軸 extent≥3。`set_inlet_profile` にも MAX_SPEED 検査。
-  scenario の手書き検査は validate 呼び出し＋エラー変換に置換。
-- 受入: 上記不正構成が全て Err になる単体テスト。既存 T13/T14/T15/v1_match 無修正 green。
-  scenario の 3D 検証テスト無修正 green で重複検査コードが消える。
-- 工数: M ／ 実験: **E2 = 確定**（D3Q19・z 面未被覆・z 一様初期条件で 100 步:
-  nonfinite=0 のまま質量ドリフト 2.7e-3、z 不変性破れ 1.9e-4、偽 uz 2.6e-3。
-  被覆対照は全指標 0.0 — 「NaN を出さず静かに非物理」を定量実証）、
-  **E3 = 確定**（`omegas(nu=0)` → TRT (ω₊,ω₋)=(2,0)・BGK (2,2)。Solver は
-  構築・10 步ともエラーなし）
+### WP-A: Correctness / Entry Guards (immediate; premise is that all items pass existing tests green without modification)
 
-#### A-5 [S1] ハロー交換スコープ誤用の構築時拒否
-- 対象: `crates/lbm-core2/src/halo.rs:47-62,246-268`、`crates/lbm-core2/src/solver.rs:262-284`
-- 現状: `Subdomain::neighbors` はグローバル part id だが `exchange_f_generic` はローカル
-  index として解決。`new_local_part` + `LocalPeriodic`/`InProcess` の誤用は doc 注意書きのみで、
-  隣接 id が 0 の場合は自己ラップとして**無音で誤った物理**になる（id≥1 なら OOB panic）。
-- 改善: `HaloExchange` に `const SCOPE: ExchangeScope { Local, Remote }` を追加し、
-  `Solver::build(only=Some(part))` で `SCOPE == Remote` を要求（不一致は構築時 panic）。
-- 受入: 誤用構成が構築時エラーになる回帰テスト。T13 / T13-MPI 無修正 green。
-- 工数: S ／ 実験: **E4 = 確定**（part=1 of [2,1,1] 周期 x + LocalPeriodic が panic せず
-  実行され、正しい 2 パート InProcess 実行と比べ所有ブロックの rho が最大 7.7e-2 乖離
-  — 無音の誤った物理を実証）
+#### A-1 [S0] Substitution fix of sync-tests.sh and recurrence guard
+- Target: `scripts/sync-tests.sh:42`, generation target `crates/lbm-core2/tests/` (17 files)
+- Current state: `\b` is invalid under BSD sed → substitution-free copy. All 17 generated files remain `use lbm_core::`,
+  0 compat references (confirmed by PM measurement). The fix commit 622bbb2 (perl port) exists only on the
+  unmerged `v1-retirement`.
+- Improvement: Apply the equivalent of 622bbb2 (perl substitution) to the main line, and add a postcondition to the script
+  (exit 1 if `use lbm_core::` remains in the output or the substitution count is 0). Add a static guard test that inspects that
+  files with the generation header import `lbm_core2::compat`.
+- Acceptance: `grep -rl "AUTO-GENERATED" crates/lbm-core2/tests | xargs grep -L "lbm_core2::compat"`
+  is empty. The regenerated suite is fully green via compat (→ experiment E1 pre-validates this).
+- Effort: S / Experiment: **E1 = confirmed, already carried out** (applied the perl port + postcondition guard, regenerated 16 files
+  → `cargo test -p lbm-core2 --release` **whole suite green (exit 0)**.
+  Physics suites including contact-angle frozen values, RT, and open-BC systems ran and passed for the first time via compat =
+  **first demonstration of R5**. Remaining work is only adding the static guard test)
 
-#### A-6 [S2] MovingWall 法線成分の拒否
-- 対象: `crates/lbm-core/src/domain.rs:284-327`、`crates/lbm-core/src/sim.rs:1421-1425`
-- 現状: half-way BB の運動量注入は接線壁速度のみ整合。法線成分は発散せず質量を
-  無音で注入/流出し続ける（符号は向きに依存）。
-- 改善: `validate()` でエッジ法線成分を持つ MovingWall を `InvalidParameter` 拒否
-  （V1+compat 同時）。doc に理由を追記。
-- 受入: 法線成分入りが Err。cavity 系既存テスト green・ビット不変。
-- 工数: S ／ 実験: **E7 = 確定**（32×32 閉箱・500 步: 接線 u=[0.05,0] は
-  ドリフト +1.1e-13（厳密保存）、法線 u=[0,−0.05] は質量 900→395.5、**−56.1%**。
-  エラーなし — 発散もしないため気づけない）
+#### A-2 [S1] Make the configuration validation of V1+compat NaN-safe
+- Target: `crates/lbm-core/src/domain.rs:306-310`, `crates/lbm-core2/src/compat/domain.rs` (same code)
+- Current state: `if s > MAX_SPEED` is false for s=NaN (passes through). A NaN inlet makes the field NaN in 3 steps;
+  a NaN MovingWall **silently degrades into a static wall** due to the comparison failure of rim-velocity selection (measured in review).
+  `Trt { magic }` and `force` are also unvalidated. The rho check directly below is the NaN-safe form `!(x > 0.0)`, so
+  the safe idiom itself already exists in the codebase.
+- Improvement: Invert the velocity check to `if !(s <= MAX_SPEED)`. Add `magic > 0` and `is_finite()` of `force`/`u` to
+  `validate()`. The same patch for V1 and compat (maintaining text identity).
+- Acceptance: `build()` with NaN/inf u, force, or magic≤0 all return Err. Legal configurations are bit-invariant.
+- Effort: S / Experiment: **E6 = confirmed** (NaN inlet: build()=Ok remains, and 42 cells have non-finite rho after 3 steps.
+  NaN MovingWall: build()=Ok, and the field bit-matches a static wall — rigorously demonstrating silent static-wall degradation)
 
-#### A-7 [S2] `init_with` の入力検証（V1+compat）
-- 対象: `crates/lbm-core/src/sim.rs:830-910`
-- 現状: rho=0 で即 NaN（0×inf）、速度の MAX_SPEED 検査なし（`set_inlet_profile` は
-  検査ありで API 内非対称）。GUI の Droplet 初期化は JSON 値を無検証で流し込む。
-- 改善: `assert!(r > 0 && r.is_finite())` + MAX_SPEED 検査（座標入りメッセージ）、
-  doc に Panics 節。compat の `init_with` には「クロージャは純粋であること
-  （近傍で最大 5 回再評価される）」を明記。
-- 受入: 不正クロージャで座標付き panic。probe_state_hash ビット不変。
-- 工数: S
+#### A-3 [S1] Reject configurations of Outflow/ConvectiveOutflow × solid adjacency's silent mass leak
+- Target: `crates/lbm-core/src/sim.rs:765-774,667-669`, `crates/lbm-wasm/src/lib.rs:240-242`
+- Current state: If the inner neighbor of an open-end cell is solid, the BC is skipped (confirmed in code by
+  `solid[i] || solid[j]`), and the unknown slot is frozen forever at its initial value. It is a production path reachable from
+  GUI painting (which rejects only the outermost 1 cell).
+- Experimental result (mechanism demonstrated by E5/E5b, but the symptom character is shape-dependent, correcting the v0 description):
+  the sign and scale of mass drift depend on shape and are not a discriminating metric on their own. The decisive one is
+  **the steady non-physical velocity in a static system**: in a stationary box + right Outflow + a pocket (initial rho=2.0),
+  after 2000 steps, the edge cell of the buggy path keeps a huge steady velocity of **ux = −0.115**
+  (control = at 1 cell inside the plug, ux = +0.00000 with complete rest, as physics dictates).
+  Since all cells remain finite, it cannot be caught by NaN monitoring — it is "silent" as v0 claimed.
+- Improvement: Following the freeze policy, the minimal fix = add to `set_solid` (V1 `sim.rs:792` / compat / wasm)
+  an assert that rejects "placing solid at the immediate inner neighbor of an open-end edge cell."
+  The BC fallback implementation is a V2 issue (recorded in B-8's design note).
+- Acceptance: panic on the E5b shape (GUI rejects the paint). Legal shapes are probe_state_hash bit-invariant.
+  Turn E5b into a regression test (confirm rejection).
+- Effort: M / Experiment: **E5/E5b = mechanism confirmed, description corrected**
 
-#### A-8 [S2] `zou_he_face_3d` の D3Q19 専用ガードと ConvectiveOutflow 契約テスト
-- 対象: `crates/lbm-core2/src/kernels.rs:494-508`（unknown 5 本ハードコード）、
-  `kernels.rs:589-594` + `fields.rs:114-118`（stale-slot 暗黙契約）
-- 現状: (1) unknown 集合を 5 本と決め打ち。D3Q27 追加時（Q_MAX=27 で計画内）に
-  コンパイル・実行とも通ったまま 4 本を放置し検出不能に誤る。(2) ConvectiveOutflow の
-  記憶項は「streaming が unknown slot を書かない」という 4 モジュール横断の暗黙契約に
-  依存（GPU は edge stash で独自再実装）。in-place streaming（M-E 候補）で確実に壊れる。
-- 改善: (1) 関数冒頭に `assert_eq!(L::unknowns(face).len(), 5)` ガード（中期は面方向テーブルの
-  const 化で `dir_index` の panic 経路ごと解消）。(2) `Backend::stream` の契約に
-  「open 面 unknown slot 不変」を明文化し、CPU/GPU 両方で pre-stream 値とのビット一致を
-  検査する契約テストを追加。
-- 受入: ガード assert のユニットテスト。契約テストが両バックエンド green。
-- 工数: S＋S
+#### A-4 [S1] Establish the V2 native configuration validation layer `GlobalSpec::validate`
+- Target: `crates/lbm-core2/src/solver.rs:286-357`, `crates/lbm-core2/src/params.rs:24-35`,
+  duplicated validation on the consumer side `crates/lbm-scenario/src/lib.rs:582-654`
+- Current state: `Solver::build` has only dimension and array-length asserts. (1) On an **uncovered face** (a face that is neither periodic, nor open,
+  nor a wall rim), stale values are mixed in as real data every step and become non-physical without symptoms
+  (reachable just by using D3Q19 with `GlobalSpec::default()`). (2) ν=0 makes omega_m=0 in
+  `omegas()` and proceeds with non-physical relaxation. (3) Double application of periodic×open coaxial.
+  (4) MAX_SPEED / rho>0 / u_conv range / cross-axis open faces (V1 rejects with
+  `AdjacentOpenEdges`, V2 passes through = the Zou–He premise breaks on 3D edges) are also unchecked.
+  Equivalent validation is **duplicately implemented** in compat and lbm-scenario.
+- Improvement: Establish `GlobalSpec::validate() -> Result<(), SpecError>` in core2 and enforce it at
+  the head of `Solver::build`. Check items: ν>0 / coverage of all non-periodic faces (open BC or all-face solid rim) /
+  periodic×open exclusivity / cross-axis open rejection / MAX_SPEED (NaN-safe) / rho_bc>0 / u_conv∈(0,1] /
+  force[2]==0 in 2D / open-face axis extent≥3. MAX_SPEED check also in `set_inlet_profile`.
+  Replace scenario's hand-written checks with a validate call + error conversion.
+- Acceptance: A unit test where all of the above invalid configurations become Err. Existing T13/T14/T15/v1_match green without modification.
+  scenario's 3D validation test green without modification, and the duplicated check code disappears.
+- Effort: M / Experiment: **E2 = confirmed** (D3Q19, z-face uncovered, z-uniform initial condition, 100 steps:
+  mass drift 2.7e-3, z-invariance breakage 1.9e-4, spurious uz 2.6e-3 while nonfinite=0.
+  The covered control is 0.0 on all metrics — quantitatively demonstrating "quietly non-physical without emitting NaN"),
+  **E3 = confirmed** (`omegas(nu=0)` → TRT (ω₊,ω₋)=(2,0), BGK (2,2). Solver has
+  no error in either construction or 10 steps)
 
-#### A-9 [S2] V2 実行時 NaN watchdog
-- 対象: `crates/lbm-core2/src/solver.rs:877-891`（`local_nonfinite_count` は手動呼び出しのみ）
-- 現状: 発散検出が CLI 2D / CLI 3D / MPI / GPU で 4 通りにばらけ、GPU 経路は手段なし。
-  カーネルは V1 等価維持のため無ガード（これは正しい）。
-- 改善: 既存の f64 集約 `local_mass_partials` の finite 検査（NaN は総和に伝播）を利用した
-  `Solver::run_guarded(steps, check_every) -> Result<(), Diverged{step}>` を標準化。
-  CLI/MPI ドライバはこれを呼ぶだけにする。GPU は同 API の readback 経路で暫定対応。
-- 受入: 1 セル NaN 注入 → N 步以内に step 番号付きで検出。オーバーヘッド <1%（512²）。
-- 工数: S〜M
+#### A-5 [S1] Build-time rejection of halo-exchange scope misuse
+- Target: `crates/lbm-core2/src/halo.rs:47-62,246-268`, `crates/lbm-core2/src/solver.rs:262-284`
+- Current state: `Subdomain::neighbors` is a global part id but `exchange_f_generic` resolves it as a local
+  index. Misuse of `new_local_part` + `LocalPeriodic`/`InProcess` is only a doc note, and
+  when the neighbor id is 0 it becomes **silently wrong physics** as a self-wrap (OOB panic if id≥1).
+- Improvement: Add `const SCOPE: ExchangeScope { Local, Remote }` to `HaloExchange`, and
+  require `SCOPE == Remote` in `Solver::build(only=Some(part))` (mismatch is a build-time panic).
+- Acceptance: A regression test where the misuse configuration becomes a build-time error. T13 / T13-MPI green without modification.
+- Effort: S / Experiment: **E4 = confirmed** (part=1 of [2,1,1] periodic x + LocalPeriodic ran without panicking,
+  and compared with the correct 2-part InProcess run, the rho of the owned block deviated by up to 7.7e-2
+  — demonstrating silently wrong physics)
 
-#### A-10 [S3] 小粒整合バンドル
-- (a) `crates/lbm-core/src/multiphase.rs:310` の unused_mut 除去（compat との diff ノイズ解消、
-  バイナリ不変）。(b) `sim.rs:801-806` の誤解を招くコメント修正（多相は固体 rho を読まない）。
-- (c) `t15_3d.rs:455-470` の ±25%/±15% 表記不整合の解消（VALIDATION.md 側の旧数値削除）。
-- (d) kernels.rs 冒頭 doc の「bit-for-bit」主張を実態（pre-fusion V1 とビット一致で出発、
-  現行は ≤1e-11 拘束・実測 ~1.6e-14/50steps）に更新。(e) MCMP `update_forces` に
-  solid/周期一致の debug_assert 追加。(f) `equilibrium()` と collide 内 feq の
-  ビット一致 property test。
-- 工数: S（一括）
+#### A-6 [S2] Reject the normal component of MovingWall
+- Target: `crates/lbm-core/src/domain.rs:284-327`, `crates/lbm-core/src/sim.rs:1421-1425`
+- Current state: The momentum injection of half-way BB is consistent only for the tangential wall velocity. The normal component does not diverge and keeps
+  silently injecting/draining mass (the sign depends on the direction).
+- Improvement: In `validate()`, reject a MovingWall with an edge normal component with `InvalidParameter`
+  (V1+compat simultaneously). Add the reason to the doc.
+- Acceptance: One with a normal component returns Err. Existing cavity-system tests green, bit-invariant.
+- Effort: S / Experiment: **E7 = confirmed** (32×32 closed box, 500 steps: tangential u=[0.05,0] is
+  drift +1.1e-13 (exact conservation), normal u=[0,−0.05] is mass 900→395.5, **−56.1%**.
+  No error — since it does not diverge either, you cannot notice)
 
-### WP-B: 構造改修（M-E 着手前に完了させる前提整備）
+#### A-7 [S2] Input validation of `init_with` (V1+compat)
+- Target: `crates/lbm-core/src/sim.rs:830-910`
+- Current state: NaN immediately at rho=0 (0×inf), no MAX_SPEED check on velocity (`set_inlet_profile` has
+  a check, so it is asymmetric within the API). The GUI's Droplet initialization pours JSON values in without validation.
+- Improvement: `assert!(r > 0 && r.is_finite())` + MAX_SPEED check (message with coordinates), a Panics section in
+  the doc. Note in compat's `init_with` that "the closure must be pure
+  (re-evaluated up to 5 times near neighbors)."
+- Acceptance: Coordinate-tagged panic on an invalid closure. probe_state_hash bit-invariant.
+- Effort: S
 
-#### B-1 [S1] Backend `Fields` 一般化と GpuSolver 統合（M-E 最重要）
-- 対象: `crates/lbm-core2/src/solver.rs:218,242-243`、`dist.rs:280-284`、
-  `gpu/solver.rs:40-50,142-169`、`gpu/backend.rs:810-814`、`halo.rs:33-40`
-- 現状: `Solver`/`MpiSolver` が `Fields = SoaFields<T>` に固定され、`WgpuBackend`
-  （`Fields = GpuFields`）が載らない。GpuSolver がステップ列を複製（既知乖離あり）。
-  GPU 側の `stream` は `CellRange::full` を assert し two_pass 分割を拒否。
-  マルチ GPU / MPI+GPU は型レベルで合成不可能。
-- 改善（段階発注）:
-  1. `Backend` に `stage_in/stage_out`（ホスト⇔デバイス転写。`WgpuBackend::upload` が既実体）
-     を正式化し、`Solver` は `SoaFields` をホストステージングとして保持、編集境界でのみ転写
-     （GpuSolver の `host_dirty`/`device_ahead` 機構の一般化）。
-  2. gather/診断を `read_moments`/`reduce` 経由に統一し、`Solver<D2Q9, f32, WgpuBackend,
-     LocalPeriodic>` を成立させ、GpuSolver の独自 step 列を削除。
-  3. fused カーネルに band ディスパッチ（uniform で y 範囲指定）を追加し
-     `stream(range)` assert を撤廃（オーバーラップと将来のマルチ GPU の前提）。
-  4. `HaloExchange` を pack/unpack バッファ境界で `Backend::Fields` ジェネリックに
-     （GPU の edge stash と dist.rs の面プロトコルが雛形）。
-- 受入: T14 が同一オーケストレータ経由で green。GpuSolver 削除。bench_gpu の MLUPS
-  退行 ≤3%（同一測定手順）。
-- 工数: L ／ 実験: **E10**（現行 submit 粒度の実測 = 改修時の性能基準線）
+#### A-8 [S2] D3Q19-only guard of `zou_he_face_3d` and ConvectiveOutflow contract test
+- Target: `crates/lbm-core2/src/kernels.rs:494-508` (unknown 5 hardcoded),
+  `kernels.rs:589-594` + `fields.rs:114-118` (stale-slot implicit contract)
+- Current state: (1) The unknown set is fixed at 5. When D3Q27 is added (Q_MAX=27, which is in plan), it passes both
+  compilation and execution while leaving 4 in place, wrongly making it undetectable. (2) ConvectiveOutflow's
+  memory term depends on the implicit contract that "streaming does not write the unknown slot," spanning 4 modules
+  (GPU re-implements it independently with an edge stash). It will surely break with in-place streaming (an M-E candidate).
+- Improvement: (1) A `assert_eq!(L::unknowns(face).len(), 5)` guard at the head of the function (in the mid-term, resolve it together with the panic path of
+  `dir_index` by const-ing the face-direction table). (2) Make it explicit in the `Backend::stream` contract that
+  "the open-face unknown slot is invariant," and add a contract test that inspects the bit match with the pre-stream value in
+  both CPU/GPU.
+- Acceptance: A unit test of the guard assert. The contract test is green on both backends.
+- Effort: S+S
 
-#### B-2 [S1] Backend 同期点契約の整理（probe / moments / end_step）
-- 対象: `crates/lbm-core2/src/backend.rs:94-110`、`gpu/backend.rs:803-831,855-868`
-- 現状: `stream` が probe 力を同期返却する契約に対し GPU はゼロを返し（Solver に載ると
-  `probed_force()` が黙って 0 を返す仕込み）、`update_moments` は submit フックに意味流用。
-- 改善: probe 力を `stream` の返り値から外し `read_probed_force`（明示 readback）に正式化。
-  `end_step` フックを trait に追加し submit を分離。`update_moments` は lazy 契約として明文化。
-  2 パス非対応は capability メソッドで表明（B-1 の 3. で解消するまでの経過措置）。
-  V2 の probed_force は band 部分和の固定順 fold にし、ラン間ビット決定化
-  （rayon reduce 非決定の解消、状態ハッシュへの編入を可能に）。
-- 受入: ゼロ返却・意味流用の残存なし。probe 付き T14 ケース追加で CPU/GPU 同一 API 一致。
-  同一スレッド数 2 ラン間で probed_force ビット一致。
-- 工数: M
+#### A-9 [S2] V2 runtime NaN watchdog
+- Target: `crates/lbm-core2/src/solver.rs:877-891` (`local_nonfinite_count` is manual-call only)
+- Current state: Divergence detection is scattered across 4 ways in CLI 2D / CLI 3D / MPI / GPU, and the GPU path has no means.
+  The kernel is unguarded to maintain V1 equivalence (this is correct).
+- Improvement: Standardize `Solver::run_guarded(steps, check_every) -> Result<(), Diverged{step}>` using the finite check of
+  the existing f64 aggregate `local_mass_partials` (NaN propagates to the total sum).
+  The CLI/MPI drivers just call this. GPU is provisionally handled via the readback path of the same API.
+- Acceptance: Injecting NaN into 1 cell → detected with a step number within N steps. Overhead <1% (512²).
+- Effort: S–M
 
-#### B-3 [S1] Shan–Chen 実装の一本化と V2 native 多相
-- 対象: `crates/lbm-core2/src/solver.rs:679-748`、`compat/multiphase.rs:134-374`、
-  V1 `multiphase.rs`（scenario が本番 import）
-- 現状: SC 力ステンシルが 3 系統 5 ループ（PM 確認: V1:195,351 / compat:196,352 /
-  solver.rs:736）。壁付着・仮想壁密度・二成分は compat/V1 形のみ（= 2D/CPU 限定）、
-  MPI/3D は neutral 単相のみ、GPU は多相なし。
-- 改善: `Solver::update_shan_chen_force` に壁項（g_wall・wall_rho、compat 版 347-365 と
-  同一累積順）を吸収 → compat `ShanChen` を薄い委譲に置換 → `MultiComponent` を
-  「2 つの Solver + exchange_scalar」として V2 native 移植。GPU 多相は M-F 検討
-  （本仕様では対象外、B-9 ノートに記録）。
-- 受入: SC ステンシルループが lbm-core2 内 1 箇所。validation_contact_angle /
-  multiphase / rt 無修正 green。MPI 経路の wall_rho 付き接触角 T13 拡張 1 本追加。
-- 工数: M〜L
+#### A-10 [S3] Small-grain consistency bundle
+- (a) Remove the unused_mut of `crates/lbm-core/src/multiphase.rs:310` (resolves diff noise with compat,
+  binary-invariant). (b) Fix the misleading comment of `sim.rs:801-806` (multiphase does not read solid rho).
+- (c) Resolve the ±25%/±15% notation inconsistency of `t15_3d.rs:455-470` (delete the old numbers on the VALIDATION.md side).
+- (d) Update the "bit-for-bit" claim in the doc at the head of kernels.rs to reality (starts bit-matching pre-fusion V1,
+  the current one is a ≤1e-11 constraint, measured ~1.6e-14/50steps).
+  (e) Add a solid/periodic-consistency debug_assert to MCMP `update_forces`. (f) A bit-match
+  property test of `equilibrium()` and feq inside collide.
+- Effort: S (bulk)
 
-#### B-4 [S2] 2D 本番経路の compat 移行と V1 の真の凍結
-- 対象: `crates/lbm-scenario/src/lib.rs:7-8`、`crates/lbm-cli/src/runner.rs:6-7`、
+### WP-B: Structural Modifications (premise preparation to be completed before starting M-E)
+
+#### B-1 [S1] Backend `Fields` generalization and GpuSolver integration (M-E most important)
+- Target: `crates/lbm-core2/src/solver.rs:218,242-243`, `dist.rs:280-284`,
+  `gpu/solver.rs:40-50,142-169`, `gpu/backend.rs:810-814`, `halo.rs:33-40`
+- Current state: `Solver`/`MpiSolver` are fixed to `Fields = SoaFields<T>`, and `WgpuBackend`
+  (`Fields = GpuFields`) does not mount. GpuSolver duplicates the step sequence (with known deviation).
+  The GPU-side `stream` asserts `CellRange::full` and rejects the two_pass split.
+  Multi-GPU / MPI+GPU cannot be composed at the type level.
+- Improvement (staged commissioning):
+  1. Formalize `stage_in/stage_out` (host⇔device transcription; `WgpuBackend::upload` is the existing substance) in
+     `Backend`, and have `Solver` hold `SoaFields` as host staging, transcribing only at edit boundaries
+     (generalization of GpuSolver's `host_dirty`/`device_ahead` mechanism).
+  2. Unify gather/diagnostics via `read_moments`/`reduce`, establish `Solver<D2Q9, f32, WgpuBackend,
+     LocalPeriodic>`, and delete GpuSolver's own step sequence.
+  3. Add band dispatch (y-range specification via uniform) to the fused kernel and withdraw the
+     `stream(range)` assert (the premise for overlap and future multi-GPU).
+  4. Make `HaloExchange` `Backend::Fields`-generic at the pack/unpack buffer boundary
+     (the GPU edge stash and dist.rs's face protocol are the templates).
+- Acceptance: T14 is green via the same orchestrator. GpuSolver deleted. The MLUPS of bench_gpu
+  regresses ≤3% (same measurement procedure).
+- Effort: L / Experiment: **E10** (measurement of the current submit granularity = the performance baseline at modification time)
+
+#### B-2 [S1] Organization of the Backend synchronization-point contract (probe / moments / end_step)
+- Target: `crates/lbm-core2/src/backend.rs:94-110`, `gpu/backend.rs:803-831,855-868`
+- Current state: Against the contract that `stream` returns the probe force synchronously, GPU returns zero (a trap where, once mounted on Solver,
+  `probed_force()` silently returns 0), and `update_moments` is meaning-repurposed as a submit hook.
+- Improvement: Remove the probe force from the return value of `stream` and formalize it as `read_probed_force` (explicit readback).
+  Add an `end_step` hook to the trait and separate submit. Make `update_moments` explicit as a lazy contract.
+  Declare two-pass non-support with a capability method (a transitional measure until it is resolved by B-1's item 3).
+  Make V2's probed_force a fixed-order fold of band partial sums, deterministic in bits across runs
+  (resolving rayon-reduce non-determinism, enabling incorporation into the state hash).
+- Acceptance: No residual zero-return or meaning-repurposing. Adding a T14 case with a probe, CPU/GPU match on the same API.
+  probed_force bit-matches across 2 runs with the same thread count.
+- Effort: M
+
+#### B-3 [S1] Unification of the Shan–Chen implementation and V2 native multiphase
+- Target: `crates/lbm-core2/src/solver.rs:679-748`, `compat/multiphase.rs:134-374`,
+  V1 `multiphase.rs` (scenario imports it in production)
+- Current state: The SC force stencil is 3 systems, 5 loops (PM confirmed: V1:195,351 / compat:196,352 /
+  solver.rs:736). Wall adhesion, virtual wall density, and two-component are compat/V1 form only (= 2D/CPU-limited),
+  MPI/3D is neutral single-phase only, GPU has no multiphase.
+- Improvement: Absorb the wall term (g_wall, wall_rho, same accumulation order as compat version 347-365) into
+  `Solver::update_shan_chen_force` → replace compat `ShanChen` with a thin delegation → port `MultiComponent`
+  to V2 native as "2 Solvers + exchange_scalar." GPU multiphase is M-F consideration
+  (out of scope in this spec, recorded in the B-9 note).
+- Acceptance: The SC stencil loop is in 1 place within lbm-core2. validation_contact_angle /
+  multiphase / rt green without modification. Add 1 T13 extension for contact angle with wall_rho on the MPI path.
+- Effort: M–L
+
+#### B-4 [S2] Compat migration of the 2D production path and true freezing of V1
+- Target: `crates/lbm-scenario/src/lib.rs:7-8`, `crates/lbm-cli/src/runner.rs:6-7`,
   `crates/lbm-wasm/Cargo.toml:12`
-- 現状: compat を import する本番コードが 0 件。2D シナリオ・CLI・wasm/GUI は V1 で動き、
-  V1 は「凍結」といいつつロードベアリング。V1 レビューで wasm の使用 API 全数が compat で
-  カバー済み・ゼロコピー `*_ptr` 互換・`default-features = false` ビルド可を確認済み。
-- 改善: scenario / CLI / wasm の `lbm_core::` を `lbm_core2::compat::` に置換。V1 は
-  dev-dependency（等価テスト専用）に降格。`v1-retirement` ブランチの完全削除
-  （33e130a）は本移行の実績を積んでから別途判断。
-- 受入: workspace 全 green、wasm-pack ビルド成功、本番 crate の `lbm_core::` 参照 0 件、
-  GUI プリセットのフィールドハッシュが V1 版と一致（wasm smoke 1 本追加 = D-11）。
-- 工数: M ／ 依存: A-1（compat スイートが本物になっていること）
+- Current state: There is 0 production code that imports compat. 2D scenario, CLI, and wasm/GUI run on V1, and
+  V1 is load-bearing while claiming to be "frozen." The V1 review confirmed that all of the APIs used by wasm are
+  covered by compat, zero-copy `*_ptr` compatibility, and buildability with `default-features = false`.
+- Improvement: Replace scenario / CLI / wasm's `lbm_core::` with `lbm_core2::compat::`. Demote V1 to a
+  dev-dependency (equivalence-test only). Judge the complete deletion of the `v1-retirement` branch
+  (33e130a) separately after this migration accumulates a track record.
+- Acceptance: The whole workspace green, wasm-pack build succeeds, 0 `lbm_core::` references in production crates,
+  the field hash of GUI presets matches the V1 version (add 1 wasm smoke = D-11).
+- Effort: M / Dependency: A-1 (the compat suite being genuine)
 
-#### B-5 [S2] リスタート/状態注入 API（スナップショット）
-- 対象: `crates/lbm-core2/src/solver.rs:948-965`（gather のみで load がない）
-- 改善: `Solver::snapshot() -> StateV1 { f[Q], solid, wall_u, force_field, time }` /
-  `restore()` を対で実装（内部でハロー充填 + update_moments）。MpiSolver は rank0 経由
-  gather/scatter で同 API（C-8 の分散チェックポイントの土台）。
-- 受入: 「N 步 → snapshot → restore → M 步」=「N+M 步連続」が f64 ビット一致。
-- 工数: M
+#### B-5 [S2] Restart/state-injection API (snapshot)
+- Target: `crates/lbm-core2/src/solver.rs:948-965` (gather only, no load)
+- Improvement: Implement `Solver::snapshot() -> StateV1 { f[Q], solid, wall_u, force_field, time }` /
+  `restore()` as a pair (internally halo fill + update_moments). MpiSolver uses the same API via rank0
+  gather/scatter (the foundation for C-8's distributed checkpoint).
+- Acceptance: "N steps → snapshot → restore → M steps" = "N+M steps continuously" is an f64 bit match.
+- Effort: M
 
-#### B-6 [S2] per-cell 緩和率の下地（LES 前提、M-F 直前の三方改修を回避）
-- 対象: `crates/lbm-core2/src/params.rs:76-105`、`kernels.rs:91-173`
-- 改善: `SoaFields` に `omega_field: Option<Vec<T>>` を追加し `collide_row` が Some 時のみ
-  per-cell omega を使う。None 経路はビット同一（probe_state_hash で担保）。GPU は
-  storage buffer 1 本のフラグ制御（GPU-8 の limit 引き上げが前提）。LES 本体は M-F。
-- 受入: None で全既存テストビット同一。一様値 = スカラー指定一致テスト。
-- 工数: M
+#### B-6 [S2] Groundwork for per-cell relaxation rate (LES premise, avoiding the three-way modification right before M-F)
+- Target: `crates/lbm-core2/src/params.rs:76-105`, `kernels.rs:91-173`
+- Improvement: Add `omega_field: Option<Vec<T>>` to `SoaFields`, and have `collide_row` use per-cell omega only when Some.
+  The None path is bit-identical (assured by probe_state_hash). GPU is flag-controlled with 1
+  storage buffer (the premise is GPU-8's limit raise). The LES body is M-F.
+- Acceptance: Bit-identical to all existing tests at None. A test where the uniform value = the scalar specification match.
+- Effort: M
 
-#### B-7 [S2] 公開裏口の封鎖と診断の f64 統一
-- (a) `fields_mut` を pub(crate) 化し、必要操作は dirty 自動管理の専用メソッドに
-  （MPI では片ランク編集ミスが無症状ハングになる最悪故障モードの元）。
-- (b) facade に `total_mass_f64()` を追加（f32 での診断量子化 ~0.06/10⁶ セルの解消）。
-- (c) MpiSolver::step 冒頭に debug 時のみの dirty フラグ一致 Allreduce（1 byte）で
-  fail-fast（リリースはゼロコスト）。
-- 受入: マスク編集経路の dirty 自動化、片ランク編集 debug テストがハングでなく assert 失敗。
-- 工数: S〜M
+#### B-7 [S2] Sealing of the public backdoor and f64 unification of diagnostics
+- (a) Make `fields_mut` pub(crate), and route necessary operations to dedicated methods with automatic dirty management
+  (the source of the worst failure mode where a single-rank edit mistake becomes a silent hang under MPI).
+- (b) Add `total_mass_f64()` to the facade (resolving diagnostic quantization ~0.06/10⁶ cells at f32).
+- (c) A dirty-flag consistency Allreduce (1 byte) only in debug at the head of MpiSolver::step for
+  fail-fast (zero cost in release).
+- Acceptance: Automation of dirty on the mask-edit path, the single-rank-edit debug test fails an assert rather than hanging.
+- Effort: S–M
 
-#### B-8 [S2] カーネル拡張点設計ノート（実装なし、docs 1 枚）
-- per-cell omega 受け渡し規約（B-6）、MRT/cumulant カーネルの置き場（CollisionKind 分岐と
-  変換行列の所在）、曲面境界（Bouzidi）の per-link 壁距離 sparse 構造、in-place streaming 時の
-  ConvectiveOutflow 代替（GPU edge-stash 方式の一般化）、Outflow×固体隣接の
-  BC フォールバック（A-3 の恒久解）。各拡張の DoD に「既存構成ビット不変」を固定。
-- 工数: M（レビュー承認まで）
+#### B-8 [S2] Kernel extension-point design note (no implementation, 1 docs sheet)
+- Per-cell omega passing convention (B-6), placement of MRT/cumulant kernels (the CollisionKind branch and
+  the location of transformation matrices), the per-link wall-distance sparse structure of curved boundaries (Bouzidi), the
+  ConvectiveOutflow alternative at in-place streaming (generalization of the GPU edge-stash scheme), the
+  BC fallback of Outflow × solid adjacency (the permanent solution of A-3). Fix "existing-configuration bit invariance" in each extension's DoD.
+- Effort: M (until review approval)
 
-### WP-C: スケール・運用（MPI / GPU）
+### WP-C: Scale / Operations (MPI / GPU)
 
-#### C-1 [S1] MPI セットアップのローカル化（グローバル配列複製の解消）
-- 対象: `crates/lbm-core2/src/dist.rs:305-312`、`solver.rs:298-333,76-125,628-654`
-- 現状: `MpiSolver::new` がグローバル compact 配列（solid/wall_u）を全ランクで要求、
-  `build_wall_rims` も全域生成、`set_solid` はグローバル全セル×全ランク呼び出し。
-  10⁹ 格子で wall_u ≈24 GB/ランク → 弱スケーリング構成で確実に OOM。
-  **ランク数でなく格子サイズで顕在化する構造的ブロッカー**（現行テストは n≤8・小格子
-  ゆえ未検出）。
-- 改善: クロージャ受け `MpiSolver::new_with(solid: impl Fn(x,y,z)->bool, …)`（init_with と
-  同型のローカル評価）+ `build_wall_rims` のローカル版 + バッチ `set_solids_where(pred)`。
-  既存 API は小規模用に残置。
-- 受入: ランクあたりピーク RSS が O(N/P)+定数（実測）。T13-MPI 新 API 経由で場ビット一致。
-- 工数: M
+#### C-1 [S1] Localization of MPI setup (resolution of global-array replication)
+- Target: `crates/lbm-core2/src/dist.rs:305-312`, `solver.rs:298-333,76-125,628-654`
+- Current state: `MpiSolver::new` requires global compact arrays (solid/wall_u) on all ranks,
+  `build_wall_rims` also generates the whole domain, and `set_solid` is a global all-cells×all-ranks call.
+  At 10⁹ grid, wall_u ≈ 24 GB/rank → guaranteed OOM in the weak-scaling configuration.
+  **A structural blocker that manifests with grid size, not rank count** (the current test is undetected because n≤8, small grid).
+- Improvement: A closure-taking `MpiSolver::new_with(solid: impl Fn(x,y,z)->bool, …)` (local evaluation of the same
+  form as init_with) + a local version of `build_wall_rims` + batch `set_solids_where(pred)`.
+  The existing API is left in place for small scale.
+- Acceptance: Peak RSS per rank is O(N/P)+constant (measured). Field bit match via the T13-MPI new API.
+- Effort: M
 
-#### C-2 [S2] 交換オーバーラップ（post/finish 分割と two_pass 接続）
-- 対象: `dist.rs:171-189`、`solver.rs:372-429`
-- 改善: `HaloExchange` に `post_f()/finish_f()` を追加（InProcess は即時完了）。
-  step を collide → post → interior stream（既存 two_pass の interior 範囲）→ finish →
-  boundary shell に再配線。第一段は x 位相のみオーバーラップで可。
-  **前提修正**: two_pass の boundary_shells は幅 1 軸でシェルが重複し probe が二重計上される
-  （`solver.rs:972-1007`、場は冪等で無害・T13 では不可視）。シェルを互いに素に修正して
-  から接続する。
-- 受入: 幅 1 軸で two_pass on/off の probed_force 一致（→ 実験 E8 が現状の二重計上を実証）。
-  T13-MPI 全 PASS 維持。exchange 待ち占有率の計測可能な減少。
-- 工数: L ／ 実験: **E8 = 確定**（[64,1,1]・障害物 1 セル・probe・20 步:
-  on/off の probed_force 比 = **2.000**（厳密二重計上）、total_mass は両者一致
-  — 場は無傷で probe だけ壊れる = T13 の場比較では検出不能、の主張どおり）
+#### C-2 [S2] Exchange overlap (post/finish split and two_pass connection)
+- Target: `dist.rs:171-189`, `solver.rs:372-429`
+- Improvement: Add `post_f()/finish_f()` to `HaloExchange` (InProcess completes immediately).
+  Rewire the step to collide → post → interior stream (the interior range of the existing two_pass) → finish →
+  boundary shell. The first stage can overlap the x phase only.
+  **Premise fix**: two_pass's boundary_shells overlap at 1-width axes and the probe is double-counted
+  (`solver.rs:972-1007`; the field is idempotent and harmless, invisible in T13). Fix the shells to be mutually disjoint
+  before connecting.
+- Acceptance: probed_force match of two_pass on/off at a 1-width axis (→ experiment E8 demonstrates the current double-count).
+  T13-MPI all PASS maintained. Measurable reduction of exchange-wait occupancy.
+- Effort: L / Experiment: **E8 = confirmed** ([64,1,1], obstacle 1 cell, probe, 20 steps:
+  the on/off probed_force ratio = **2.000** (exact double-count), total_mass matches for both
+  — the field is intact and only the probe breaks = undetectable in T13's field comparison, as claimed)
 
-#### C-3 [S2] 並列 I/O（per-rank raw + manifest、rank0 全域バッファ排除）
-- 対象: `dist.rs:504-574`
-- 改善: 短期 = 各ランクが自ブロックを個別ファイル書き、rank0 は manifest のみ。
-  中期 = MPI-IO subarray（rsmpi の File サポート要確認）。gather_* は検証用と明記して残す。
-- 受入: 出力時に rank0 ピーク RSS が O(N/P)。出力時間がランク数に対し非増加。
-- 工数: M〜L
+#### C-3 [S2] Parallel I/O (per-rank raw + manifest, eliminating the rank0 whole-domain buffer)
+- Target: `dist.rs:504-574`
+- Improvement: Short-term = each rank writes its own block to an individual file, rank0 writes only the manifest.
+  Mid-term = MPI-IO subarray (rsmpi's File support needs confirmation). gather_* is left, marked as validation-use.
+- Acceptance: At output, rank0 peak RSS is O(N/P). Output time is non-increasing with rank count.
+- Effort: M–L
 
-#### C-4 [S2] probe Allreduce の遅延化
-- 対象: `dist.rs:369-379`（probe 有効時に毎ステップ 3-double Allreduce）
-- 改善: `probed_force()` を collective 化し `time` キーでキャッシュ（照会時のみ縮約）。
-- 受入: probe 付きベンチで per-step collective が profile から消える。mpi_t13 PASS 維持。
-- 工数: S
+#### C-4 [S2] Deferral of probe Allreduce
+- Target: `dist.rs:369-379` (a 3-double Allreduce every step when probe is enabled)
+- Improvement: Make `probed_force()` collective and cache it with the `time` key (reduce only when queried).
+- Acceptance: In a probe-enabled benchmark, the per-step collective disappears from the profile. mpi_t13 PASS maintained.
+- Effort: S
 
-#### C-5 [S2] 交換バッファの永続化（GPU-aware MPI への布石）
-- 対象: `dist.rs:125-126,175-181,199-229`、`solver.rs:691-711`（ψ plane 毎ステップ確保）
-- 改善: `MpiExchange` に面×種別の送受バッファを保持し再利用。ψ plane / staging も
-  フィールド化。バッファ所有を MpiExchange に寄せる（GPUDirect への差し替え点を一箇所に）。
-- 受入: 定常ステップ中のヒープ確保ゼロ（計測）。bench_mpi 非退行。T13-MPI ビット一致維持。
-- 工数: S〜M
+#### C-5 [S2] Persistence of exchange buffers (a stepping stone to GPU-aware MPI)
+- Target: `dist.rs:125-126,175-181,199-229`, `solver.rs:691-711` (ψ plane allocated every step)
+- Improvement: Have `MpiExchange` hold send/receive buffers per face×kind and reuse them. Make ψ plane / staging
+  fields too. Concentrate buffer ownership in MpiExchange (make the swap point to GPUDirect a single place).
+- Acceptance: Zero heap allocation during steady steps (measured). bench_mpi non-regressing. T13-MPI bit match maintained.
+- Effort: S–M
 
-#### C-6 [S2] ランク間 spec 整合検査
-- 対象: `dist.rs:305-333`
-- 現状: nu・faces・マスク内容の不一致は**メッセージ長が一致するため検出されず**、
-  縫い目で不連続な「もっともらしい」場を出す（ジョブスクリプト事故クラス）。
-- 改善: 構築時に spec 正規化バイト列 + マスク FNV ハッシュの Allreduce(min/max) 比較で
-  不一致を項目名付き abort。
-- 受入: nu だけ変えた 2 ランク注入テストが即座に明示エラー。正常系コスト測定不能。
-- 工数: S
+#### C-6 [S2] Inter-rank spec consistency check
+- Target: `dist.rs:305-333`
+- Current state: A mismatch in nu, faces, or mask content is **not detected because the message length matches**, and
+  emits a "plausible" field discontinuous at seams (a job-script-accident class).
+- Improvement: At build time, compare the spec-normalized byte sequence + mask FNV hash by Allreduce(min/max) and
+  abort with the item name on mismatch.
+- Acceptance: A 2-rank injection test with only nu changed immediately gives an explicit error. Normal-case cost immeasurable.
+- Effort: S
 
-#### C-7 [S2] MPI スレッドレベルの Funneled 化
-- 対象: `examples/mpi_t13.rs:391`、`examples/bench_mpi.rs:27`、`backend.rs:36,133-147`
-- 現状: rsmpi 0.8.1 の `initialize()` = `Threading::Single`（PM がレジストリソースで確認）。
-  一方 default feature `parallel` は 16,384 セル以上で rayon 起動 → 実サイズで
-  MPI_THREAD_SINGLE 宣言下のマルチスレッド実行（MPI 規格違反。UCX/OFI 系で破損・
-  ハングし得る。現テストは ≤6,144 セル/rank でたまたま直列）。
-- 改善: `dist::init_mpi() -> Universe`（Funneled 要求、provided 不足＋parallel 有効なら
-  明示エラー）を追加し、examples/ガイドを移行。
-- 受入: 2 ランク × rayon 強制（parallel_min_cells 引き下げ）で T13-MPI 相当 PASS、
-  provided ≥ Funneled をログ確認。
-- 工数: S ／ 実験: **E9 = 確定（ソースレベル、§3 参照）**
+#### C-7 [S2] Funneled-ization of the MPI thread level
+- Target: `examples/mpi_t13.rs:391`, `examples/bench_mpi.rs:27`, `backend.rs:36,133-147`
+- Current state: rsmpi 0.8.1's `initialize()` = `Threading::Single` (confirmed by PM from a registry source).
+  On the other hand, the default feature `parallel` launches rayon above 16,384 cells → at real sizes,
+  multithreaded execution under an MPI_THREAD_SINGLE declaration (an MPI-spec violation. Can corrupt/hang on UCX/OFI systems.
+  The current test is coincidentally serial at ≤6,144 cells/rank).
+- Improvement: Add `dist::init_mpi() -> Universe` (requests Funneled, explicit error if provided is insufficient AND parallel is enabled)
+  and migrate the examples/guide.
+- Acceptance: With 2 ranks × forced rayon (parallel_min_cells lowered), the T13-MPI equivalent PASSes,
+  and provided ≥ Funneled is confirmed in the log.
+- Effort: S / Experiment: **E9 = confirmed (source level, see §3)**
 
-#### C-8 [S2] 分散チェックポイント/リスタート
-- B-5 の上に、collective な `MpiSolver::save(dir)/load(world, dir, backend)`（per-rank raw +
-  rank0 manifest、spec ハッシュ・decomp 一致検証）。偏差格納 f の raw 保存で再開ビット一致。
-- 受入: 「50 步 → save → load → 50 步」=「100 步連続」が場ビット一致。manifest 不一致は明示エラー。
-- 工数: M ／ 依存: B-5, C-6
+#### C-8 [S2] Distributed checkpoint/restart
+- On top of B-5, a collective `MpiSolver::save(dir)/load(world, dir, backend)` (per-rank raw +
+  rank0 manifest, spec-hash and decomp consistency validation). Bit-match on resume via raw storage of the deviation-storage f.
+- Acceptance: "50 steps → save → load → 50 steps" = "100 steps continuously" is a field bit match. A manifest mismatch is an explicit error.
+- Effort: M / Dependency: B-5, C-6
 
-#### C-9 [S1] GPU submit チャンクの時間校正と device-lost の Result 化
-- 対象: `gpu/backend.rs:187-188,226`（`submit_chunk: 200` 固定）、`:94-98,301-314`（expect panic）
-- 現状: 200 步分（最大 ~1000 dispatch）を単一 submit。機構上は時間無制限 →
-  低速 GPU では Windows TDR（既定 2 s）超過で device removed → **プロセス panic**。
-  復旧経路なし。
-- 改善: 初回チャンク実測から 1 submit ≈ 100–250 ms 目標に自動校正（上限 200 維持）。
-  `wait_idle`/`map_staging` を `Result<_, GpuError>` 化し device lost を伝播。
-  `set_device_lost_callback` で理由捕捉。
-- 受入: bench_gpu の MLUPS 退行 ≤3%。校正ロジック単体テスト。poll 失敗で Err が返るテスト。
-- 工数: M ／ 実験: **E10 = 確定**（本機 M5 Max/Metal 実測: 2048² TGV 5,719 MLUPS →
-  200 步チャンク = **147 ms/submit**。最速級の consumer GPU でこの値なので、
-  ~15 倍遅い GPU（数百 MLUPS 級 iGPU）で同格子が TDR 2 s を超える外挿が成立。
-  参考: 512²=11,509 / 1024²=6,607 MLUPS、proto 比 −5.3〜−18.0%（±20% 受入線内））
+#### C-9 [S1] Time calibration of the GPU submit chunk and Result-ification of device-lost
+- Target: `gpu/backend.rs:187-188,226` (`submit_chunk: 200` fixed), `:94-98,301-314` (expect panic)
+- Current state: 200 steps (up to ~1000 dispatch) in a single submit. Mechanically time-unbounded →
+  on a slow GPU, exceeding Windows TDR (default 2 s) → device removed → **process panic**.
+  No recovery path.
+- Improvement: Auto-calibrate to a target of 1 submit ≈ 100–250 ms from the first-chunk measurement (keeping the upper limit 200).
+  Result-ify `wait_idle`/`map_staging` to `Result<_, GpuError>` and propagate device lost.
+  Capture the reason with `set_device_lost_callback`.
+- Acceptance: The MLUPS of bench_gpu regresses ≤3%. A unit test of the calibration logic. A test where a poll failure returns Err.
+- Effort: M / Experiment: **E10 = confirmed** (measured on this machine M5 Max/Metal: 2048² TGV 5,719 MLUPS →
+  200-step chunk = **147 ms/submit**. Since this value is on a top-class consumer GPU,
+  the extrapolation holds that on a ~15× slower GPU (a several-hundred-MLUPS-class iGPU) the same grid exceeds TDR 2 s.
+  For reference: 512²=11,509 / 1024²=6,607 MLUPS, −5.3 to −18.0% vs proto (within the ±20% acceptance line))
 
-#### C-10 [S2] GPU リソース上限の事前検証
-- 対象: `gpu/backend.rs:650-692,66-91,236-241`
-- 改善: `alloc` 冒頭で必要バイト数 vs `device.limits()`、`Q*n ≤ u32::MAX`（D3Q19 は
-  2.26 億セルで溢れる）、dispatch 数 ≤65,535 を検査し、日本語の理由付き Err。
-- 受入: 上限超過格子で `GpuSolver::new` が明示エラー。T14 無変更 green。
-- 工数: S
+#### C-10 [S2] Pre-validation of GPU resource limits
+- Target: `gpu/backend.rs:650-692,66-91,236-241`
+- Improvement: At the head of `alloc`, check required bytes vs `device.limits()`, `Q*n ≤ u32::MAX` (D3Q19 overflows at
+  226 million cells), and dispatch count ≤65,535, and Err with a reason.
+- Acceptance: `GpuSolver::new` gives an explicit error on an over-limit grid. T14 unchanged green.
+- Effort: S
 
-#### C-11 [S2] GPU 診断経路の効率化
-- 対象: `gpu/backend.rs:318-343,870-911`、`gpu/solver.rs:184-207`
-- 改善: `f_cache` の Arc 化（クローン排除）、FluidCells の readback 不要化（host_solid で
-  完結）、sync の 3 readback を 1 エンコーダ/1 wait に統合。GPU 側 2 段 reduction は
-  M-E の高速モードとして追加（ホスト f64 経路は T14 用に維持）。
-- 受入: 2048² で sync+診断 3 連が ≥3 倍高速。T14 診断値ビット同一。
-- 工数: S（＋M）
+#### C-11 [S2] Efficiency improvement of the GPU diagnostic path
+- Target: `gpu/backend.rs:318-343,870-911`, `gpu/solver.rs:184-207`
+- Improvement: Arc-ify `f_cache` (eliminate cloning), make FluidCells readback unnecessary (complete with host_solid),
+  consolidate the 3 readbacks of sync into 1 encoder/1 wait. Add the GPU-side 2-stage reduction as a fast mode of
+  M-E (keep the host f64 path for T14).
+- Acceptance: The sync+diagnostics triple is ≥3× faster at 2048². T14 diagnostic values bit-identical.
+- Effort: S (+M)
 
-#### C-12 [S2] FP16 配管（M-E 本体の前提）
-- 対象: `gpu/backend.rs:80`（Features::empty 固定）、`gpu/wgsl.rs:216`、要素サイズ `*4` 散在
-- 改善: `SHADER_F16` の条件要求、`generate::<L>(cfg: KernelCfg { storage: F32|F16 })` 化
-  （変更点を「バッファ宣言 + load/store ラッパ」2 箇所に封じ込め、演算は f32 維持）、
-  `GpuFields` に要素サイズ保持。非対応アダプタは明示エラー（silent fallback しない）。
-- 受入: T16 新設（f16 格納の劣化を凍結帯で定量）。2048² TGV で f32 版比 MLUPS ≥1.5 倍。
-- 工数: M ／ 依存: B-1（オーケストレータ統合後が手戻り最小）
+#### C-12 [S2] FP16 plumbing (a premise of the M-E body)
+- Target: `gpu/backend.rs:80` (Features::empty fixed), `gpu/wgsl.rs:216`, element size `*4` scattered
+- Improvement: Conditional request of `SHADER_F16`, `generate::<L>(cfg: KernelCfg { storage: F32|F16 })`-ization
+  (confine the change points to the 2 places "buffer declaration + load/store wrapper," keeping the arithmetic f32),
+  hold element size in `GpuFields`. Non-supporting adapters give an explicit error (do not silent-fallback).
+- Acceptance: Establish T16 (quantify the degradation of f16 storage in a frozen band). MLUPS ≥1.5× vs the f32 version at 2048² TGV.
+- Effort: M / Dependency: B-1 (least rework after orchestrator integration)
 
-#### C-13 [S2] GPU の契約層接続（scenario `backend: "gpu" | "auto"`）
-- 対象: `crates/lbm-scenario/src/lib.rs:575-577`、`crates/lbm-cli/src/main.rs:190`
-- 改善: feature gpu ビルドで解禁、能力チェック（f64/3D/未対応 BC は理由付き reject）を
-  validate に実装、`auto` は実測閾値（例 n≥256²）で選択し結果をログ明示。
-- 受入: cavity/cylinder プリセットが `backend:"gpu"` で完走し CPU との場の差が T14 許容内。
-  `f64`+`gpu` が日本語理由付き拒否。
-- 工数: M ／ 依存: B-1
-- 公開ベンチ（M-E）は再現手順の公開が本体 — この項がその前提。
+#### C-13 [S2] Contract-layer connection of GPU (scenario `backend: "gpu" | "auto"`)
+- Target: `crates/lbm-scenario/src/lib.rs:575-577`, `crates/lbm-cli/src/main.rs:190`
+- Improvement: Unlock in the feature-gpu build, implement a capability check (reject f64/3D/unsupported BC with a reason) in
+  validate, and `auto` selects by a measured threshold (e.g. n≥256²) and logs the result explicitly.
+- Acceptance: The cavity/cylinder presets complete with `backend:"gpu"` and the field difference from CPU is within T14 tolerance.
+  `f64`+`gpu` is rejected with a reason.
+- Effort: M / Dependency: B-1
+- The public benchmark (M-E) has publishing of the reproduction procedure as its main body — this item is the premise.
 
-#### C-14 [S2] GPU メモリフットプリント削減
-- 対象: `gpu/backend.rs:677-678,691,133`
-- 改善: force_field/wall_u 不在時のダミーバッファ化、staging の遅延確保・right-sizing。
-  現状は 2048² TGV で +284 MB（約 1.9 倍）— 3D 化で 8–16 GB 級 GPU の最大格子を直撃。
-- 受入: 力場・固体なしで確保量 ≤ 2×f + moments + mask + O(perimeter)。T14 green。
-- 工数: S
+#### C-14 [S2] Reduction of the GPU memory footprint
+- Target: `gpu/backend.rs:677-678,691,133`
+- Improvement: Dummy-buffer-ize force_field/wall_u when absent, lazy-allocate and right-size staging.
+  The current state is +284 MB (about 1.9×) at 2048² TGV — 3D-ization directly hits the maximum grid of an 8–16 GB-class GPU.
+- Acceptance: Without a force field or solid, the allocation is ≤ 2×f + moments + mask + O(perimeter). T14 green.
+- Effort: S
 
-#### C-15 [S3] GPU 小粒バンドル
-- (a) `max_storage_buffers_per_shader_stage` 等の limit 引き上げ（現状 step カーネルが
-  既定上限 8 本ちょうど — 1 本追加で実行時 panic する地雷）。(b) naga による生成 WGSL の
-  parse+validate 単体テスト（GPU 不要、golden file 付き）。(c) BcParams の Rust index ⇔
-  WGSL フィールドの単一テーブル生成 or 照合テスト。(d) `GpuContext::new` の
-  `Result<_, GpuInitError>` 化（adapter_info 付き。auto フォールバックの診断可能化）。
-  (e) probe 力 f32 CAS 加算の非決定性を GPU_EVALUATION.md に 1 行明記。
-- 工数: S×5
+#### C-15 [S3] GPU small-grain bundle
+- (a) Raise limits such as `max_storage_buffers_per_shader_stage` (currently the step kernel is
+  exactly at the default upper limit of 8 — a landmine that panics at runtime with 1 added). (b) A parse+validate unit test of the generated WGSL by naga
+  (no GPU required, with a golden file). (c) Single-table generation or a collation test of the Rust index ⇔
+  WGSL field of BcParams. (d) Result-ify `GpuContext::new` to
+  `Result<_, GpuInitError>` (with adapter_info; makes the auto fallback diagnosable).
+  (e) Note in one line in GPU_EVALUATION.md the non-determinism of the probe-force f32 CAS addition.
+- Effort: S×5
 
-#### C-16 [S3] MPI 小粒バンドル
-- (a) `choose_decomp`（表面積最小の自動分割）+ mpi_t13 の任意 n 対応（n=3,5,6・
-  割り切れない dims をケース追加）。(b) bench_mpi の 3D/D3Q19・strong/weak モード化
-  （現状 2D strip 固定では R3 本測定に使えない）。(c) 決定論的総和 `total_mass_deterministic()`
-  （グローバル行単位部分和の固定順合成）のオプション追加。
-- 工数: S＋S＋M
+#### C-16 [S3] MPI small-grain bundle
+- (a) `choose_decomp` (auto split with minimum surface area) + arbitrary-n support of mpi_t13 (add cases for n=3,5,6 and
+  non-divisible dims). (b) 3D/D3Q19 and strong/weak-mode-ization of bench_mpi
+  (the current 2D-strip-fixed cannot be used for R3 main measurement). (c) A deterministic total sum `total_mass_deterministic()`
+  (fixed-order composition of global row-wise partial sums), added as an option.
+- Effort: S+S+M
 
-### WP-D: 検証・プロセス
+### WP-D: Validation / Process
 
-#### D-1 [S1] CI の 3 段整備
-- 現状 `.github/` 不在（PM 確認）。全品質主張が手動スナップショット。
-- 改善: (1) push/PR で `cargo test --workspace --release`、(2) 夜間 `--include-ignored`、
-  (3) GPU/MPI はセルフホストランナー（本機 M5 Max + ~/.local の Open MPI）でタグ実行。
-  リモート未定の間は pre-merge ローカルフック + 実行ログの `docs/CI_LOG.md` 追記で開始。
-- 受入: マージに default スイート green が機械的に強制される。週次 full+gpu+mpi 記録。
-- 工数: M
+#### D-1 [S1] Three-stage setup of CI
+- Currently `.github/` is absent (PM confirmed). All quality claims are manual snapshots.
+- Improvement: (1) `cargo test --workspace --release` on push/PR, (2) nightly `--include-ignored`,
+  (3) GPU/MPI on a self-hosted runner (this machine M5 Max + Open MPI in ~/.local) with tagged execution.
+  While remote is undecided, start with a pre-merge local hook + appending execution logs to `docs/CI_LOG.md`.
+- Acceptance: A default suite green is mechanically enforced for merge. Weekly full+gpu+mpi record.
+- Effort: M
 
-#### D-2 [S1] MPI ロジックの cargo テスト化
-- 対象: `dist.rs`（`#[test]` 0 件 — PM 確認）
-- 改善: pack/unpack・phase plan を純関数として単体テスト（InProcess と同一バッファ内容、
-  許容 ==0.0）。`test_mpi.sh` を夜間ジョブ化。1 ランク self-exchange smoke を cargo 圏内に。
-- 受入: mpirun なしで dist.rs 主要ロジックがテストされる。T13-MPI 週次 PASS ログ。
-- 工数: M
+#### D-2 [S1] Cargo-testing of MPI logic
+- Target: `dist.rs` (0 `#[test]` — PM confirmed)
+- Improvement: Unit-test pack/unpack and phase plan as pure functions (same buffer content as InProcess,
+  tolerance ==0.0). Turn `test_mpi.sh` into a nightly job. Bring the 1-rank self-exchange smoke into the cargo sphere.
+- Acceptance: The main logic of dist.rs is tested without mpirun. T13-MPI weekly PASS log.
+- Effort: M
 
-#### D-3 [S1] GPU の絶対物理検証と skip 機構
-- 対象: `tests/t14_backend_equiv.rs`（CPU 相対等価 8 本のみ、adapter 無しで expect panic）
-- 現状: CPU と GPU が**同じ向きに壊れる**バグ（スペック解釈共有ミス）は相対等価で検出不能。
-- 改善: GPU 直の絶対テスト 2 本（TGV 収束次数 ≥1.7、キャビティ Ghia RMS ≤0.02U — f32 実測で
-  校正して凍結）。adapter 不在は skip（`LBM_REQUIRE_GPU=1` で fail 昇格）。
-  3D GPU・GPU 多相の非対応は VALIDATION.md の既知の制限節に明文化。
-- 受入: `--features gpu` で絶対 2 本 green。GPU 無しホストで skip 終了。
-- 工数: M
+#### D-3 [S1] Absolute physics validation of GPU and skip mechanism
+- Target: `tests/t14_backend_equiv.rs` (CPU-relative equivalence, only 8, expect panic without an adapter)
+- Current state: A bug where CPU and GPU **break in the same direction** (a shared spec-interpretation mistake) is undetectable by relative equivalence.
+- Improvement: 2 GPU-direct absolute tests (TGV convergence order ≥1.7, cavity Ghia RMS ≤0.02U — calibrated and frozen with
+  f32 measurement). Adapter absence is skip (`LBM_REQUIRE_GPU=1` promotes to fail).
+  Make non-support of 3D GPU / GPU multiphase explicit in VALIDATION.md's known-limitations section.
+- Acceptance: The 2 absolute tests are green with `--features gpu`. Skip exit on a GPU-less host.
+- Effort: M
 
-#### D-4 [S1] f32×3D の検証追加
-- 対象: `crates/lbm-scenario/src/lib.rs:490-492`（`Sim3Handle::F32` = 製品経路）、
-  `tests/t15_3d.rs`（f32 出現 0 — PM 確認）
-- 改善: t15-1（z 不変 2D 退化、f32 相対 ≤1e-5）と t15-4（TGV3D 減衰率 ±2%）の f32 版 +
-  質量ドリフト ≤1e-5/10³step。実測値を VALIDATION.md T15 に f32 行として凍結。
-- 工数: S
+#### D-4 [S1] Addition of f32×3D validation
+- Target: `crates/lbm-scenario/src/lib.rs:490-492` (`Sim3Handle::F32` = product path),
+  `tests/t15_3d.rs` (0 f32 occurrences — PM confirmed)
+- Improvement: f32 versions of t15-1 (z-invariant 2D degeneration, f32 relative ≤1e-5) and t15-4 (TGV3D decay rate ±2%) +
+  mass drift ≤1e-5/10³step. Freeze the measured values as an f32 row in VALIDATION.md T15.
+- Effort: S
 
-#### D-5 [S1] 等価検証の地平延長と native 絶対検証
-- 現状: V2 の絶対物理検証は「V1 と 500 步 ≤1e-11 → V1 は検証済み」の推移律のみ
-  （Ghia 定常は ~99k 步で地平の 200 倍）。V2 native API（3D/scenario 経路）は連鎖の外。
-- 改善: A-1 完了後、(1) 長時間等価 1 本（キャビティ Re=100 を 20k 步、≤1e-9、#[ignore] 可）、
-  (2) native `Solver` 直の TGV 収束次数テスト 1 本（facade とコアのズレも検出可能に）。
-- 工数: S ／ 依存: A-1
+#### D-5 [S1] Horizon extension of equivalence validation and native absolute validation
+- Current state: V2's absolute physics validation is only the transitivity of "≤1e-11 with V1 at 500 steps → V1 is validated"
+  (Ghia steady state is ~99k steps, 200× the horizon). The V2 native API (3D/scenario path) is outside the chain.
+- Improvement: After A-1 completes, (1) 1 long-time equivalence (cavity Re=100 for 20k steps, ≤1e-9, may be #[ignore]),
+  (2) 1 TGV-convergence-order test of the native `Solver` directly (also makes the deviation between facade and core detectable).
+- Effort: S / Dependency: A-1
 
-#### D-6 [S2] 受入基準原典の整合回復
-- 対象: `docs/COMPETITIVE_SPEC.md:57-59`（R1: 球 ±5% 等 / R3: 弱スケ ≥85%）vs 実装
-  （球 ±10%・D_h 正規化 / R3 は n=8 で 73.2% → コミットで「n≤4 局所」に縮小）
-- 改善: R1/R3 を改定履歴付きで更新（±10% と D_h 定義の根拠リンク、n≤4 局所線と
-  クラスタ条件未達の明記）。PLAN の「R1 達成」表記を「（3D キャビティ除く・±10% 改定版）」に
-  訂正。T15.5（3D キャビティ Ghia 表）にバックログ位置を付与。
-- 受入: 全「達成」宣言が原典現行版と 1:1 対応。
-- 工数: S
+#### D-6 [S2] Consistency recovery of the acceptance-criteria source
+- Target: `docs/COMPETITIVE_SPEC.md:57-59` (R1: sphere ±5% etc. / R3: weak scaling ≥85%) vs the implementation
+  (sphere ±10%, D_h normalization / R3 is 73.2% at n=8 → shrunk to "n≤4 local" in a commit)
+- Improvement: Update R1/R3 with revision history (a link to the basis of ±10% and the D_h definition, and an explicit note of the
+  n≤4 local line and the cluster-condition non-attainment). Correct PLAN's "R1 achieved" notation to "(excluding 3D cavity, ±10% revised version)."
+  Give T15.5 (3D cavity Ghia table) a backlog position.
+- Acceptance: Every "achieved" declaration corresponds 1:1 to the current version of the source.
+- Effort: S
 
-#### D-7 [S2] VALIDATION.md への T13/T14 節追加
-- T14 の「6 構成 1e-5 / 圧力 1e-4 + 1-ulp 対照」、T13 の「場 ==0.0 / 診断 1e-12」を
-  仕様書へ一元化（codex 発注可能な形に）。テストヘッダは仕様参照に薄くする。
-- 工数: S
+#### D-7 [S2] Addition of T13/T14 sections to VALIDATION.md
+- Centralize T14's "6 configurations 1e-5 / pressure 1e-4 + 1-ulp control" and T13's "field ==0.0 / diagnostics 1e-12" into
+  the spec (in a form that can be commissioned to codex). Make the test headers thin, referencing the spec.
+- Effort: S
 
-#### D-8 [S2] codex 敵対テスト order #7（T14/T15 への追随）
-- 現状: 敵対発注は T13（order #6）まで。GPU 等価・3D 物理は実装側自作のみ。
-- 改善: D-7 の仕様改定から発注: T14 攻撃（境界面直上の初期不連続、probe が面に接する、
-  u→MAX_SPEED 近傍）、T15 攻撃（z 退化を壊す摂動、極端アスペクト比、球オフセンター）。
-- 受入: 1 巡 + triage 記録が TESTING_NOTES に残る。
-- 工数: M（発注・triage 込み）
+#### D-8 [S2] codex adversarial-test order #7 (following up on T14/T15)
+- Current state: Adversarial commissioning goes up to T13 (order #6). GPU equivalence and 3D physics are implementation-side self-made only.
+- Improvement: Commission from D-7's spec revision: T14 attacks (initial discontinuity right above a boundary face, a probe touching a face,
+  u→near MAX_SPEED), T15 attacks (a perturbation that breaks z degeneration, an extreme aspect ratio, an off-center sphere).
+- Acceptance: 1 round + a triage record remains in TESTING_NOTES.
+- Effort: M (including commissioning and triage)
 
-#### D-9 [S2] 性能回帰検出
-- 改善: core2 版 bench_mlups（V2 CPU の性能主張が V1 Phase 9 数値の引用のままの解消）+
-  `--check` モード（凍結値 ±25% 逸脱 fail）+ 夜間実行で JSON 履歴を `docs/bench_history/` に
-  追記。probe_state_hash も夜間で強制。
-- 受入: 25% 退行が 24h 以内に fail 顕在化。
-- 工数: M ／ 実験: **E10** が GPU 側の基準値を提供
+#### D-9 [S2] Performance regression detection
+- Improvement: A core2 version of bench_mlups (resolving that V2 CPU's performance claim is still a citation of V1 Phase 9 numbers) +
+  a `--check` mode (fail on deviation ±25% from the frozen value) + nightly execution appending a JSON history to `docs/bench_history/`.
+  probe_state_hash is also enforced nightly.
+- Acceptance: A 25% regression manifests as a fail within 24h.
+- Effort: M / Experiment: **E10** provides the GPU-side baseline value
 
-#### D-10 [S2] `lbm verify` と LIMITATIONS.md
-- 改善: 検証サブセット（数分級）を実行し受入帯との比較表を出力する `lbm verify`。
-  既知の制限（GPU=2D/f32、CP/リスタートなし、長時間検証上限、τ→0.5 ガイドライン等）を
-  `docs/LIMITATIONS.md` に一元化しリリースと対で出す。
-- 工数: L（verify）+ S（LIMITATIONS）
+#### D-10 [S2] `lbm verify` and LIMITATIONS.md
+- Improvement: A `lbm verify` that runs a validation subset (a-few-minutes class) and outputs a comparison table against the acceptance bands.
+  Centralize known limitations (GPU=2D/f32, no CP/restart, long-time validation limit, τ→0.5 guideline, etc.) into
+  `docs/LIMITATIONS.md` and ship it paired with releases.
+- Effort: L (verify) + S (LIMITATIONS)
 
-#### D-11 [S2] wasm smoke テスト
-- `wasm-pack test --node` で TGV 100 步の質量保存 + native f64 一致 ≤1e-12。
-  web 側は書き出し JSON のスキーマ round-trip のみ最小限。
-- 工数: M ／ 依存: B-4 と同時実施が効率的
+#### D-11 [S2] wasm smoke test
+- TGV 100-step mass conservation + native f64 match ≤1e-12 with `wasm-pack test --node`.
+  The web side is minimal, only a schema round-trip of the written-out JSON.
+- Effort: M / Dependency: efficient to carry out simultaneously with B-4
 
-#### D-12 [S2] CpuScalar 性能ギャップの明示（M-E への引き継ぎ）
-- 現状: V2 CPU はフェーズ分離 3 パス + per-cell 分岐で、V1 融合カーネル比の単核ギャップが
-  未計測（弱スケーリング 97-99% の分母が甘い可能性）。
-- 改善: M-E の CpuSimd（計画済み）で V1 step_band の q-major 移植。それまで公開ベンチには
-  V1 単核比を併記。受入: CpuSimd が CpuScalar とビット一致かつ単核 ≥ V1 の 0.9x。
-- 工数: L（M-E 本体）
+#### D-12 [S2] Explicitation of the CpuScalar performance gap (handover to M-E)
+- Current state: V2 CPU is phase-separated 3-pass + per-cell branching, and the single-core gap vs the V1 fused kernel is
+  unmeasured (the denominator of the 97-99% weak scaling may be lax).
+- Improvement: A q-major port of V1 step_band in M-E's CpuSimd (planned). Until then, in the public benchmark
+  co-note the V1 single-core ratio. Acceptance: CpuSimd bit-matches CpuScalar and single-core ≥ 0.9x of V1.
+- Effort: L (the M-E body)
 
 ---
 
-## 3. 検証実験の結果（2026-07-05 実施、本機 M5 Max。再実行: `scripts/spec-experiments/`）
+## 3. Results of Validation Experiments (carried out 2026-07-05, this machine M5 Max. Re-run: `scripts/spec-experiments/`)
 
-**10 実験すべて実施済み。反証ゼロ、記述修正 2 件**（E5→A-3 の症状の様相、
-E7→A-6 の数値と符号）。実験ログの生出力は各実験の RESULT 行として下表に転記。
+**All 10 experiments carried out. Zero refutations, 2 descriptive corrections** (E5→the symptom character of A-3,
+E7→the numbers and sign of A-6). The raw output of the experiment logs is transcribed into the table below as each experiment's RESULT line.
 
-| ID | 検証対象 | 実測結果 | 判定 |
+| ID | Validation target | Measured result | Judgment |
 |---|---|---|---|
-| E1 | A-1/B-4/D-5 | perl 化＋ガード適用→16 ファイル再生成→`cargo test -p lbm-core2 --release` **全 green（exit 0）** | **確定・実施済み**。R5 初実証。B-4 のブロッカー解消 |
-| E2 | A-4 | 未被覆 z 面: nonfinite=0 のまま質量ドリフト 2.7e-3、z 不変性破れ 1.9e-4、偽 uz 2.6e-3（被覆対照は全指標 0.0） | **確定**（無音の非物理を定量実証） |
-| E3 | A-4 | `omegas(0)` = TRT (2, 0)・BGK (2, 2)。Solver 構築・10 步エラーなし | **確定** |
-| E4 | A-5 | part=1+[2,1,1]+LocalPeriodic: panic なし、正解比 rho 最大乖離 **7.7e-2** | **確定**（無音の誤物理） |
-| E5/E5b | A-3 | 質量ドリフトは形状依存で判定不適（v0 記述を修正）。決定打: 静止箱でポケットのエッジセルが 2000 步後も **ux=−0.115** の定常速度を保持（対照は +0.00000） | **機構確定・記述修正** |
-| E6 | A-2 | NaN inlet: build()=Ok→3 步で非有限 42 セル。NaN MovingWall: build()=Ok→静止壁と**ビット一致** | **確定** |
-| E7 | A-6 | 接線: ドリフト +1.1e-13（厳密保存）。法線 u=[0,−0.05]: 質量 900→395.5（**−56.1%**、エラーなし）。v0 の「+115%」は向き依存の符号違いと判明 | **確定・数値修正** |
-| E8 | C-2 | [64,1,1] 幅 1 軸: two_pass on/off の probed_force 比 = **2.000**、total_mass は一致（場は無傷） | **確定** |
-| E9 | C-7 | rsmpi 0.8.1 `environment.rs:268-270` で `initialize()` = `initialize_with_threading(Threading::Single)` を直接確認。PARALLEL_MIN_CELLS=16,384 に対し実運用格子（512²/rank=262,144 セル）で rayon 起動は算術的に確定。実行時デモは省略（共有メモリ BTL では症状が出にくく、判定に不要） | **確定（ソースレベル）** |
-| E10 | C-9/B-1/D-9 | 2048² TGV **5,719 MLUPS** → 200 步チャンク = **147 ms/submit**（512²=11,509 / 1024²=6,607。proto 比 −5.3〜−18.0%、±20% 線内） | **確定**（TDR 外挿成立、校正初期値の根拠） |
+| E1 | A-1/B-4/D-5 | perl port + guard applied → 16 files regenerated → `cargo test -p lbm-core2 --release` **whole green (exit 0)** | **confirmed, carried out**. First demonstration of R5. Resolves B-4's blocker |
+| E2 | A-4 | Uncovered z-face: mass drift 2.7e-3, z-invariance breakage 1.9e-4, spurious uz 2.6e-3 while nonfinite=0 (the covered control is 0.0 on all metrics) | **confirmed** (quantitatively demonstrates silent non-physics) |
+| E3 | A-4 | `omegas(0)` = TRT (2, 0), BGK (2, 2). No error in Solver construction or 10 steps | **confirmed** |
+| E4 | A-5 | part=1+[2,1,1]+LocalPeriodic: no panic, rho max deviation vs the correct answer **7.7e-2** | **confirmed** (silent wrong physics) |
+| E5/E5b | A-3 | Mass drift is shape-dependent and unfit for judgment (corrected the v0 description). Decisive: the edge cell of a pocket in a static box retains a steady velocity of **ux=−0.115** even after 2000 steps (the control is +0.00000) | **mechanism confirmed, description corrected** |
+| E6 | A-2 | NaN inlet: build()=Ok→42 non-finite cells in 3 steps. NaN MovingWall: build()=Ok→**bit-matches** a static wall | **confirmed** |
+| E7 | A-6 | Tangential: drift +1.1e-13 (exact conservation). Normal u=[0,−0.05]: mass 900→395.5 (**−56.1%**, no error). v0's "+115%" turned out to be a sign difference dependent on direction | **confirmed, numbers corrected** |
+| E8 | C-2 | [64,1,1] 1-width axis: the two_pass on/off probed_force ratio = **2.000**, total_mass matches (the field is intact) | **confirmed** |
+| E9 | C-7 | Directly confirmed in rsmpi 0.8.1 `environment.rs:268-270` that `initialize()` = `initialize_with_threading(Threading::Single)`. Against PARALLEL_MIN_CELLS=16,384, rayon launch at a real-operation grid (512²/rank=262,144 cells) is arithmetically certain. Runtime demo omitted (symptoms are hard to reproduce on the shared-memory BTL and are unnecessary for the judgment) | **confirmed (source level)** |
+| E10 | C-9/B-1/D-9 | 2048² TGV **5,719 MLUPS** → 200-step chunk = **147 ms/submit** (512²=11,509 / 1024²=6,607. −5.3 to −18.0% vs proto, within the ±20% line) | **confirmed** (TDR extrapolation holds, the basis of the calibration initial value) |
 
-補助（コード検査で確定済み・実験不要）: `Fields=SoaFields` 束縛（B-1）、GPU probe ゼロ返却
-（B-2）、SC 5 ループ（B-3）、`MpiSolver::new` のグローバル配列シグネチャと 24 GB/ランク算術
-（C-1）、`submit_chunk: 200`（C-9）、dist.rs `#[test]` 0 件（D-2）、`.github` 不在（D-1）、
-t15 の f32 出現 0（D-4）、rsmpi `initialize()`→`Threading::Single`（C-7、レジストリソース確認）。
+Auxiliary (already confirmed by code inspection, no experiment needed): the `Fields=SoaFields` binding (B-1), GPU probe zero return
+(B-2), SC 5 loops (B-3), `MpiSolver::new`'s global-array signature and the 24 GB/rank arithmetic
+(C-1), `submit_chunk: 200` (C-9), 0 `#[test]` in dist.rs (D-2), absence of `.github` (D-1),
+0 f32 occurrences in t15 (D-4), rsmpi `initialize()`→`Threading::Single` (C-7, confirmed from a registry source).
 
 ---
 
-## 4. 実施順序（確定）
+## 4. Order of Execution (confirmed)
 
-実験依存はすべて解消済み。各項目は独立に発注可能な粒度で記述してある。
+All experiment dependencies are resolved. Each item is described at a granularity that can be commissioned independently.
 
-- **実施済み（本ブランチ）**: A-1 の本体（スクリプト修正＋ガード＋再生成＋全 green 確認）。
-  残: 静的ガードテスト 1 本（R-Phase 1 に含める）。
-- **R-Phase 1（即時・~2 日）**: A-2〜A-10 + A-1 残作業 + D-6/D-7（文書整合）。
-  すべて S〜M。既存テスト無修正 green・合法設定ビット不変が共通 DoD。
-- **R-Phase 2（M-E 前提整備・~1.5 週）**: B-1 → B-2 →（並行）B-3, B-5〜B-8 /
-  C-9〜C-11 / D-1〜D-5。B-4（compat 移行）は E1 で実証済みのためいつでも着手可
-  （D-11 の wasm smoke と同時実施を推奨）。
-- **R-Phase 3（スケール・M-E と並走可）**: C-1, C-4〜C-7, C-16 →（C-2, C-3, C-8）/
-  C-12〜C-15 は B-1 後 / D-8〜D-10。
-- M-E 本体（FP16 実装・マルチ GPU・公開ベンチ・CpuSimd = D-12）は本仕様の
-  B-1/B-2/C-9/C-12/C-13/D-9 を前提とする。
+- **Carried out (this branch)**: The body of A-1 (script fix + guard + regeneration + all-green confirmation).
+  Remaining: 1 static guard test (include in R-Phase 1).
+- **R-Phase 1 (immediate, ~2 days)**: A-2–A-10 + A-1 remaining work + D-6/D-7 (document consistency).
+  All S–M. Passing existing tests green without modification and legal-configuration bit invariance are the common DoD.
+- **R-Phase 2 (M-E premise preparation, ~1.5 weeks)**: B-1 → B-2 → (in parallel) B-3, B-5–B-8 /
+  C-9–C-11 / D-1–D-5. B-4 (compat migration) can be started anytime since it is demonstrated by E1
+  (recommended to carry out simultaneously with D-11's wasm smoke).
+- **R-Phase 3 (scale, can run in parallel with M-E)**: C-1, C-4–C-7, C-16 → (C-2, C-3, C-8) /
+  C-12–C-15 after B-1 / D-8–D-10.
+- The M-E body (FP16 implementation, multi-GPU, public benchmark, CpuSimd = D-12) takes this spec's
+  B-1/B-2/C-9/C-12/C-13/D-9 as premises.
 
-体制: 実装は Opus/Sonnet サブエージェント / codex へ WP 単位で発注。検証テスト
-（D-3/D-4/D-8 と各受入テスト）は codex が VALIDATION.md 改定版（D-7）から敵対的に作成し、
-実装と分離する（従来プロトコル維持）。
+Organization: Implementation is commissioned to Opus/Sonnet subagents / codex per WP. Validation tests
+(D-3/D-4/D-8 and each acceptance test) are created adversarially by codex from the VALIDATION.md revised version (D-7) and
+separated from the implementation (maintaining the conventional protocol).

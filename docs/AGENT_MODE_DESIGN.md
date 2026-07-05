@@ -1,49 +1,49 @@
-# Agent モード設計（Phase 6）
+# Agent Mode Design (Phase 6)
 
-エージェント（Claude/Codex 等）と CLI ユーザーが同じ入口でシミュレーションを
-実行できるようにする。**シナリオ JSON が唯一の実行契約**であり、GUI のプリセットも
-内部的に同じスキーマを生成する（3 モード統一）。
+Enable agents (Claude/Codex, etc.) and CLI users to run simulations through the
+same entry point. **The scenario JSON is the single execution contract**, and the
+GUI presets also internally generate the same schema (unifying the 3 modes).
 
-## クレート構成
+## Crate structure
 
-- `crates/lbm-cli` → バイナリ名 `lbm`
-  - `lbm run <scenario.json> [--out DIR]` : 実行し、成果物 + manifest.json を出力
-  - `lbm validate <scenario.json>` : スキーマ・物理妥当性チェックのみ（実行しない）
-  - `lbm presets [list|show NAME|run NAME]` : 組み込みプリセット
-  - `lbm schema` : シナリオ JSON Schema を stdout に出力（エージェントの自己発見用）
-  - `lbm mcp` : stdio で MCP サーバーを起動
-- 依存: serde/serde_json, clap, png（可視化出力）, （MCP は rmcp か手書き JSON-RPC）
+- `crates/lbm-cli` → binary name `lbm`
+  - `lbm run <scenario.json> [--out DIR]`: executes and outputs artifacts + manifest.json
+  - `lbm validate <scenario.json>`: schema/physics validity check only (does not execute)
+  - `lbm presets [list|show NAME|run NAME]`: built-in presets
+  - `lbm schema`: outputs the scenario JSON Schema to stdout (for agent self-discovery)
+  - `lbm mcp`: starts an MCP server over stdio
+- Dependencies: serde/serde_json, clap, png (visualization output), (MCP is either rmcp or hand-written JSON-RPC)
 
-## シナリオ JSON スキーマ（v0）
+## Scenario JSON schema (v0)
 
 ```jsonc
 {
   "version": 0,
-  "name": "cylinder-re100",                 // 出力ディレクトリ名にも使用
+  "name": "cylinder-re100",                 // also used as the output directory name
   "grid": { "nx": 440, "ny": 160 },
   "physics": {
-    "nu": 0.01,                              // 格子単位
-    "collision": { "type": "trt", "magic": 0.1875 },   // {"type":"bgk"} も可
+    "nu": 0.01,                              // lattice units
+    "collision": { "type": "trt", "magic": 0.1875 },   // {"type":"bgk"} also allowed
     "force": [0.0, 0.0],
-    "precision": "f64"                       // "f32" | "f64"（精度/速度トレードオフ）
+    "precision": "f64"                       // "f32" | "f64" (precision/speed trade-off)
   },
-  "edges": {                                 // lbm-core の EdgeBC と 1:1
+  "edges": {                                 // 1:1 with lbm-core's EdgeBC
     "left":   { "type": "velocityInlet", "u": [0.05, 0.0] },
     "right":  { "type": "outflow" },
     "bottom": { "type": "bounceBack" },
     "top":    { "type": "bounceBack" }
   },
-  "inletProfile": { "edge": "left", "kind": "parabolic", "umax": 0.05 },  // 省略可
-  "obstacles": [                             // set_solid_region に展開
+  "inletProfile": { "edge": "left", "kind": "parabolic", "umax": 0.05 },  // optional
+  "obstacles": [                             // expanded via set_solid_region
     { "shape": "circle", "cx": 110, "cy": 80, "r": 12 },
     { "shape": "rect", "x0": 0, "y0": 0, "x1": 10, "y1": 5 }
   ],
-  "init": { "kind": "rest" },                // rest | taylorGreen | custom(将来)
+  "init": { "kind": "rest" },                // rest | taylorGreen | custom (future)
   "run": {
     "steps": 100000,
-    "stopWhenSteady": { "epsilon": 1e-11, "checkEvery": 500 }   // 省略可
+    "stopWhenSteady": { "epsilon": 1e-11, "checkEvery": 500 }   // optional
   },
-  "probes": [                                // 時系列の記録
+  "probes": [                                // time-series recording
     { "type": "force", "target": "obstacles", "every": 10 },
     { "type": "point", "x": 220, "y": 80, "fields": ["ux","uy","rho"], "every": 100 }
   ],
@@ -55,9 +55,9 @@
 }
 ```
 
-### 実行結果（out ディレクトリ）
+### Execution results (out directory)
 
-- `manifest.json`: 機械可読サマリ
+- `manifest.json`: machine-readable summary
   ```jsonc
   {
     "scenario": "cylinder-re100",
@@ -68,29 +68,29 @@
     "files": [ {"path": "speed_100000.png", "kind": "field", ...} ]
   }
   ```
-- probes は CSV（`force.csv`: step,fx,fy）
-- 途中で NaN 検出 → status="diverged" + 直前の診断を残して即終了（エージェントが
-  パラメータを直して再試行できるよう、原因ヒント文字列を含める）
+- probes are CSV (`force.csv`: step,fx,fy)
+- If NaN is detected mid-run → status="diverged" and it terminates immediately, retaining
+  the last diagnostics (includes a cause-hint string so the agent can fix parameters and retry)
 
-### 設計原則（エージェント UX）
+### Design principles (agent UX)
 
-1. **自己記述**: `lbm schema` と `lbm presets list` だけで使い方を発見できる
-2. **失敗が構造化**: バリデーションエラーは JSON で「どのフィールドが・なぜ・
-   どう直すか」を返す（例: "nu must be > 0; tau = 3*nu + 0.5 must exceed 0.5"）
-3. **数値の安全柵**: validate 段階で安定性ヒューリスティック（|u|>0.15 警告、
-   グリッドレイノルズ数 U/ν > 15 警告など）を warnings に出す
-4. **決定論**: 同じシナリオ → 同じ結果（シード不要の設計を維持）
+1. **Self-describing**: usage can be discovered with just `lbm schema` and `lbm presets list`
+2. **Structured failures**: validation errors return JSON stating "which field, why,
+   and how to fix it" (e.g. "nu must be > 0; tau = 3*nu + 0.5 must exceed 0.5")
+3. **Numerical guardrails**: at the validate stage, stability heuristics (|u|>0.15 warning,
+   grid Reynolds number U/ν > 15 warning, etc.) are emitted into warnings
+4. **Determinism**: same scenario → same result (maintains the seed-free design)
 
-## MCP サーバー（`lbm mcp`）
+## MCP server (`lbm mcp`)
 
-ツール:
-- `run_scenario(scenario: object, outDir?: string) -> manifest`（進捗 notification 対応）
+Tools:
+- `run_scenario(scenario: object, outDir?: string) -> manifest` (supports progress notifications)
 - `validate_scenario(scenario: object) -> {ok, errors[], warnings[]}`
 - `list_presets() -> [{name, description, scenario}]`
 - `get_schema() -> JSON Schema`
-- `read_field(runDir, field, format="csv") -> data`（実行済み結果の取得）
+- `read_field(runDir, field, format="csv") -> data` (retrieval of completed run results)
 
-## GUI との関係
+## Relationship with the GUI
 
-- GUI のプリセット = シナリオ JSON（web/src/presets.ts から生成 or 共有 JSON）
-- 将来: GUI に「シナリオを書き出す」ボタン → Agent モードで再現可能
+- GUI presets = scenario JSON (generated from web/src/presets.ts or shared JSON)
+- Future: an "export scenario" button in the GUI → reproducible in Agent Mode

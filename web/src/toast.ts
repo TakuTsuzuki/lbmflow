@@ -1,6 +1,6 @@
 /**
- * 画面下部に出す最小トースト通知。
- * 同一メッセージの多重表示は抑止し、アクションボタン 1 個まで対応する。
+ * Minimal toast notification shown at the bottom of the screen.
+ * Suppresses duplicate display of the same message and supports up to one action button.
  */
 
 export type ToastKind = "info" | "success" | "danger";
@@ -48,7 +48,7 @@ export function showToast(
     activeMessages.delete(message);
     el.classList.add("toast-out");
     el.addEventListener("transitionend", () => el.remove(), { once: true });
-    // transition が発火しない環境（reduced-motion 等）向けの保険
+    // Fallback for environments where the transition never fires (e.g. reduced-motion)
     window.setTimeout(() => el.remove(), 400);
   };
 
@@ -70,7 +70,7 @@ export function showToast(
   const closeBtn = document.createElement("button");
   closeBtn.className = "toast-close";
   closeBtn.type = "button";
-  closeBtn.setAttribute("aria-label", "通知を閉じる");
+  closeBtn.setAttribute("aria-label", "Dismiss notification");
   closeBtn.textContent = "✕";
   closeBtn.addEventListener("click", close);
   el.appendChild(closeBtn);

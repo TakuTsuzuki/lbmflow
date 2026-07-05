@@ -1,5 +1,5 @@
 //! `lbm gallery` — run every built-in preset and emit a self-contained HTML
-//! gallery (`index.html`, PNGs inlined as data URIs, Japanese captions).
+//! gallery (`index.html`, PNGs inlined as data URIs, English captions).
 
 use crate::runner;
 use anyhow::{Context, Result};
@@ -10,13 +10,13 @@ use std::path::Path;
 /// Run all presets into `out_root/<preset>/` and write `out_root/index.html`.
 pub fn run(out_root: &Path) -> Result<()> {
     fs::create_dir_all(out_root)
-        .with_context(|| format!("出力ディレクトリを作成できません: {}", out_root.display()))?;
+        .with_context(|| format!("cannot create output directory: {}", out_root.display()))?;
     let mut sections = String::new();
     for (name, desc, sc) in lbm_scenario::presets() {
-        eprintln!("[gallery] {name}: 実行中…");
+        eprintln!("[gallery] {name}: running…");
         let dir = out_root.join(name);
         let manifest =
-            runner::run(&sc, &dir).with_context(|| format!("プリセット '{name}' の実行に失敗"))?;
+            runner::run(&sc, &dir).with_context(|| format!("failed to run preset '{name}'"))?;
         eprintln!(
             "[gallery] {name}: status={} steps={} wall={:.1}s",
             manifest.status, manifest.steps_run, manifest.wall_seconds
@@ -24,7 +24,7 @@ pub fn run(out_root: &Path) -> Result<()> {
         let mut figures = String::new();
         for f in manifest.files.iter().filter(|f| f.ends_with(".png")) {
             let bytes = fs::read(dir.join(f))
-                .with_context(|| format!("PNG を読めません: {}", dir.join(f).display()))?;
+                .with_context(|| format!("cannot read PNG: {}", dir.join(f).display()))?;
             write!(
                 figures,
                 "<figure><img src=\"data:image/png;base64,{}\" alt=\"{}\">\
@@ -50,13 +50,13 @@ pub fn run(out_root: &Path) -> Result<()> {
     }
     let html = format!(
         r#"<!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LBMFlow プリセットギャラリー</title>
+<title>LBMFlow preset gallery</title>
 <style>
-  body {{ font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 2rem auto;
+  body {{ font-family: system-ui, sans-serif; margin: 2rem auto;
          max-width: 72rem; padding: 0 1rem; background: #16181d; color: #e8e8e8; }}
   h1 {{ font-size: 1.5rem; border-bottom: 2px solid #4a90d9; padding-bottom: .5rem; }}
   h2 {{ font-size: 1.15rem; color: #7cb8f2; margin-bottom: .2rem; }}
@@ -74,17 +74,17 @@ pub fn run(out_root: &Path) -> Result<()> {
 </style>
 </head>
 <body>
-<h1>LBMFlow プリセットギャラリー</h1>
-<p>組み込みプリセットを <code>lbm gallery</code> で順に実行した結果のスナップショットです。
-各画像は Base64 で埋め込み済み（このファイル単体で閲覧できます）。</p>
-{sections}<footer>LBMFlow — 格子ボルツマン法流体シミュレータ</footer>
+<h1>LBMFlow preset gallery</h1>
+<p>Snapshots of the built-in presets run in sequence via <code>lbm gallery</code>.
+Each image is embedded as Base64 (this file can be viewed on its own).</p>
+{sections}<footer>LBMFlow — lattice Boltzmann method fluid simulator</footer>
 </body>
 </html>
 "#
     );
     let index = out_root.join("index.html");
     fs::write(&index, html)?;
-    println!("ギャラリー生成完了: {}", index.display());
+    println!("gallery generated: {}", index.display());
     Ok(())
 }
 

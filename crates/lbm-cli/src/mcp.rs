@@ -169,7 +169,7 @@ impl RunRegistry {
                 "runId": run_id,
                 "state": "running",
                 "elapsedNote": format!(
-                    "開始から {:.1} 秒経過。完了までしばらく待って run_status を再ポーリングしてください。",
+                    "{:.1} s since start. Wait a while and poll run_status again until completion.",
                     e.started.elapsed().as_secs_f64()
                 ),
             }),
@@ -251,7 +251,7 @@ pub fn serve() -> Result<()> {
             "tools/call" => match tools_call(&params, &registry) {
                 Ok(v) => v,
                 Err(e) => json!({
-                    "content": [{ "type": "text", "text": format!("エラー: {e}") }],
+                    "content": [{ "type": "text", "text": format!("error: {e}") }],
                     "isError": true
                 }),
             },
@@ -282,7 +282,7 @@ fn write_msg(out: &mut impl Write, v: &Value) -> Result<()> {
 fn scenario_schema() -> Value {
     json!({
         "type": "object",
-        "description": "LBMFlow シナリオ (v0)。詳細な書式は get_schema ツールで取得。",
+        "description": "LBMFlow scenario (v0). Use the get_schema tool for the full format reference.",
         "required": ["name", "grid", "physics", "edges", "run"]
     })
 }
@@ -291,47 +291,47 @@ fn tools_list() -> Value {
     json!({ "tools": [
         {
             "name": "run_scenario",
-            "description": "LBM 流体シミュレーションのシナリオを同期実行し、manifest（診断・出力ファイル一覧）を返す。出力は outDir（既定 out/<name>）に PNG/CSV で書き出される。まず validate_scenario か get_schema で書式を確認するとよい。完了までブロックするため、長いラン（数万 step・大グリッド）や並列スイープには start_run を使うこと。",
+            "description": "Run an LBM fluid-simulation scenario synchronously and return the manifest (diagnostics, output file list). Outputs are written as PNG/CSV to outDir (default out/<name>). Consider checking the format first with validate_scenario or get_schema. Blocks until completion, so for long runs (tens of thousands of steps, large grids) or parallel sweeps use start_run instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "scenario": scenario_schema(),
-                    "outDir": { "type": "string", "description": "出力ディレクトリ（省略時 out/<name>）" }
+                    "outDir": { "type": "string", "description": "output directory (default out/<name>)" }
                 },
                 "required": ["scenario"]
             }
         },
         {
             "name": "start_run",
-            "description": "シナリオをバックグラウンドで非同期実行し、runId を即座に返す（ブロックしない）。長いランやパラメータスイープ・最適化ループはこれを使い、run_status { runId } をポーリングして完了を待つ。同時実行は最大 4 ラン（超過分は 'failed: too many concurrent runs' で即座に拒否）。ランはこのサーバープロセス内で動くため、完了確認まで MCP 接続を維持すること。",
+            "description": "Run a scenario asynchronously in the background and return a runId immediately (non-blocking). Use this for long runs, parameter sweeps, and optimization loops, then poll run_status { runId } until completion. At most 4 concurrent runs (excess requests are rejected immediately with 'failed: too many concurrent runs'). Runs live inside this server process, so keep the MCP connection open until completion is confirmed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "scenario": scenario_schema(),
-                    "outDir": { "type": "string", "description": "出力ディレクトリ（省略時 out/<name>）" }
+                    "outDir": { "type": "string", "description": "output directory (default out/<name>)" }
                 },
                 "required": ["scenario"]
             }
         },
         {
             "name": "run_status",
-            "description": "start_run で開始したランの状態を返す。state は running / completed / failed。completed なら manifest（診断・出力ファイル一覧）を含む。failed なら error に原因。running の間は数秒おきに再ポーリングする。",
+            "description": "Return the state of a run started with start_run. state is running / completed / failed. If completed, includes the manifest (diagnostics, output file list). If failed, error carries the cause. While running, re-poll every few seconds.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "runId": { "type": "string", "description": "start_run が返した runId（run-<連番>-<シナリオ名>）" }
+                    "runId": { "type": "string", "description": "runId returned by start_run (run-<seq>-<scenario name>)" }
                 },
                 "required": ["runId"]
             }
         },
         {
             "name": "list_runs",
-            "description": "このサーバーで start_run したランの一覧（runId・state・シナリオ名・出力先）を開始順で返す。スイープの進捗確認に使う。",
+            "description": "List all runs started via start_run on this server (runId, state, scenario name, output dir) in start order. Useful for tracking sweep progress.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "validate_scenario",
-            "description": "シナリオを実行せずに検証し、構成エラーと安定性警告（tau・マッハ数・グリッドレイノルズ数）を返す。",
+            "description": "Validate a scenario without running it; returns configuration errors and stability warnings (tau, Mach number, grid Reynolds number).",
             "inputSchema": {
                 "type": "object",
                 "properties": { "scenario": scenario_schema() },
@@ -340,12 +340,12 @@ fn tools_list() -> Value {
         },
         {
             "name": "list_presets",
-            "description": "組み込みプリセット（キャビティ流れ・カルマン渦列・二相液滴・壁上液滴）の名前と完全なシナリオ JSON を返す。シナリオ作成の実例として使える。",
+            "description": "Return the names and full scenario JSON of the built-in presets (lid-driven cavity, Kármán vortex street, two-phase droplet, droplet on wall). Useful as working examples for writing scenarios.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "get_schema",
-            "description": "シナリオ JSON (v0) の完全な書式リファレンスを返す。",
+            "description": "Return the complete format reference for scenario JSON (v0).",
             "inputSchema": { "type": "object", "properties": {} }
         }
     ]})
@@ -360,7 +360,7 @@ fn scenario_args(args: &Value) -> Result<(Scenario, PathBuf)> {
     let sc: Scenario = serde_json::from_value(
         args.get("scenario")
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("scenario がありません"))?,
+            .ok_or_else(|| anyhow::anyhow!("missing scenario"))?,
     )?;
     let out_dir = args
         .get("outDir")
@@ -397,11 +397,11 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
                 Ok(run_id) => Ok(text_result(serde_json::to_string_pretty(&json!({
                     "runId": run_id,
                     "outDir": out_dir_str,
-                    "note": "バックグラウンドで実行中。run_status { runId } をポーリングして完了（completed/failed）を確認してください。",
+                    "note": "Running in the background. Poll run_status { runId } until it reports completed/failed.",
                 }))?)),
                 Err(TooManyRuns { running, max }) => Ok(json!({
                     "content": [{ "type": "text", "text": format!(
-                        "failed: too many concurrent runs（実行中 {running} 件 / 上限 {max} 件）。run_status で既存ランの完了を待つか、list_runs で状況を確認してから再試行してください。"
+                        "failed: too many concurrent runs ({running} running / limit {max}). Wait for existing runs to finish via run_status, or check list_runs, then retry."
                     ) }],
                     "isError": true
                 })),
@@ -411,10 +411,10 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
             let run_id = args
                 .get("runId")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("runId がありません"))?;
+                .ok_or_else(|| anyhow::anyhow!("missing runId"))?;
             let status = registry.status_json(run_id).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "runId '{run_id}' は見つかりません。list_runs で一覧を確認してください"
+                    "runId '{run_id}' not found. Check list_runs for the run list"
                 )
             })?;
             Ok(text_result(serde_json::to_string_pretty(&status)?))
@@ -426,7 +426,7 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
             let sc: Scenario = serde_json::from_value(
                 args.get("scenario")
                     .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("scenario がありません"))?,
+                    .ok_or_else(|| anyhow::anyhow!("missing scenario"))?,
             )?;
             let warnings = lbm_scenario::validate(&sc);
             let build = lbm_scenario::build_check(&sc);

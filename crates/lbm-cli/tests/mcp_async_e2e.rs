@@ -1,9 +1,9 @@
-//! E2E: `lbm mcp` の非同期ジョブ API を実プロセス相手に検証する。
+//! E2E: validate the async job API of `lbm mcp` against a real process.
 //!
-//! 実際の JSON-RPC 列（initialize → start_run → run_status ポーリング →
-//! completed 確認 → list_runs）を stdio 越しに流し、同期ツールの互換も
-//! 確認する。サーバーがハングした場合に備えて watchdog が子プロセスを
-//! 強制終了する。
+//! Drives an actual JSON-RPC sequence (initialize → start_run → run_status polling →
+//! completed confirmation → list_runs) over stdio, and also confirms compatibility
+//! of the synchronous tools. In case the server hangs, a watchdog forcibly
+//! kills the child process.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};

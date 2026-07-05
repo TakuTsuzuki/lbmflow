@@ -1,8 +1,9 @@
 /**
- * LBMFlow エンジン抽象。
+ * LBMFlow engine abstraction.
  *
- * 将来 Rust 製 WASM エンジン（wasm-bindgen）をこの interface に適合させて
- * 差し替える。UI 側はこのファイルの型のみに依存すること。
+ * The Rust-based WASM engine (wasm-bindgen) will eventually conform to this
+ * interface and be swapped in. The UI side should depend only on the types
+ * in this file.
  */
 
 export type EdgeBC =
@@ -16,13 +17,13 @@ export type EdgeBC =
 export interface EngineConfig {
   nx: number;
   ny: number;
-  nu: number; // 動粘性係数（格子単位）
+  nu: number; // kinematic viscosity (lattice units)
   collision: "bgk" | "trt";
   edges: { left: EdgeBC; right: EdgeBC; bottom: EdgeBC; top: EdgeBC };
   force: [number, number];
-  /** Shan-Chen 単成分多相（省略可）。g は負で凝集（推奨 -5.0） */
+  /** Shan-Chen single-component multiphase (optional). Negative g causes cohesion (recommended -5.0) */
   multiphase?: { g: number; gWall?: number };
-  /** 初期密度場（省略時は静止一様）。多相とセットで使う */
+  /** Initial density field (uniform at rest if omitted). Used together with multiphase */
   init?: {
     kind: "droplet";
     cx: number;
@@ -35,13 +36,13 @@ export interface EngineConfig {
 
 export interface Engine {
   init(cfg: EngineConfig): void;
-  step(n: number): void; // nステップ進める
+  step(n: number): void; // advance by n steps
   readonly nx: number;
   readonly ny: number;
-  readonly time: number; // 経過ステップ数
-  rho(): Float32Array; // 長さ nx*ny、index = y*nx+x（y=0が下端。描画時は上下反転に注意）
+  readonly time: number; // elapsed step count
+  rho(): Float32Array; // length nx*ny, index = y*nx+x (y=0 is the bottom edge; watch for vertical flip when rendering)
   ux(): Float32Array;
   uy(): Float32Array;
-  solidMask(): Uint8Array; // 1 = 障害物
-  setSolid(x: number, y: number, solid: boolean): void; // 障害物ペイント
+  solidMask(): Uint8Array; // 1 = obstacle
+  setSolid(x: number, y: number, solid: boolean): void; // paint obstacles
 }

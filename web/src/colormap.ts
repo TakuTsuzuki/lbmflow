@@ -1,11 +1,11 @@
 /**
- * カラーマップ LUT（256 段 × RGB）。
- * アンカー色を線形補間して起動時に一度だけ生成する。外部依存なし。
+ * Colormap LUT (256 steps x RGB).
+ * Linearly interpolates anchor colors, generated once at startup. No external dependencies.
  */
 
-export type Lut = Uint8ClampedArray; // 長さ 256 * 3
+export type Lut = Uint8ClampedArray; // length 256 * 3
 
-/** アンカー色列から 256 段の LUT を作る */
+/** Build a 256-step LUT from a sequence of anchor colors */
 function buildLut(stops: ReadonlyArray<readonly [number, number, number]>): Lut {
   const lut = new Uint8ClampedArray(256 * 3);
   const nSeg = stops.length - 1;
@@ -22,7 +22,7 @@ function buildLut(stops: ReadonlyArray<readonly [number, number, number]>): Lut 
   return lut;
 }
 
-/** viridis（matplotlib 由来のアンカー 9 点） */
+/** viridis (9 anchor points from matplotlib) */
 export const VIRIDIS: Lut = buildLut([
   [68, 1, 84],
   [72, 40, 120],
@@ -36,7 +36,7 @@ export const VIRIDIS: Lut = buildLut([
   [253, 231, 37],
 ]);
 
-/** RdBu（ColorBrewer 11 クラス、発散型。負=青 / 0=白 / 正=赤 になるよう反転済み） */
+/** RdBu (ColorBrewer 11-class, diverging. Reversed so negative=blue / 0=white / positive=red) */
 export const RDBU: Lut = buildLut([
   [5, 48, 97],
   [33, 102, 172],

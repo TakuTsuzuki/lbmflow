@@ -37,7 +37,7 @@ pub struct Diagnostics {
 
 pub fn run(sc: &Scenario, out_dir: &Path) -> Result<Manifest> {
     fs::create_dir_all(out_dir)
-        .with_context(|| format!("出力ディレクトリを作成できません: {}", out_dir.display()))?;
+        .with_context(|| format!("cannot create output directory: {}", out_dir.display()))?;
     if sc.is_3d() {
         return match lbm_scenario::build3d(sc)? {
             Sim3Handle::F64(s) => run3d_t(sc, s, out_dir),
