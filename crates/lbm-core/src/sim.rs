@@ -339,7 +339,52 @@ impl<T: Real> Simulation<T> {
                 EdgeBC::VelocityInlet { u } => self.zou_he(edge, ZouHe::Velocity(u)),
                 EdgeBC::PressureOutlet { rho } => self.zou_he(edge, ZouHe::Pressure(rho)),
                 EdgeBC::Outflow => self.outflow(edge),
+                EdgeBC::ConvectiveOutflow { u_conv } => self.convective_outflow(edge, u_conv),
                 _ => {}
+            }
+        }
+    }
+
+    /// Convective outflow. In the pull scheme the unknown slots at the edge
+    /// still hold the *previous step's* populations after streaming, so
+    /// `f(edge,t+1) = (f(edge,t) + Uc f(interior,t+1)) / (1 + Uc)` needs no
+    /// extra storage.
+    fn convective_outflow(&mut self, edge: Edge, u_conv: T) {
+        let (nxi, nyi) = edge.n_in();
+        let (tx, ty) = (-nyi, nxi);
+        let unknowns = [
+            dir_index(nxi, nyi),
+            dir_index(nxi + tx, nyi + ty),
+            dir_index(nxi - tx, nyi - ty),
+        ];
+        let lam = u_conv;
+        let inv = T::one() / (T::one() + lam);
+        let nx = self.nx;
+        // weight share for the mass correction over the 3 unknown links
+        let wsum = T::r(W[unknowns[0]] + W[unknowns[1]] + W[unknowns[2]]);
+        for (x, y) in self.side_cells(edge) {
+            let i = y * nx + x;
+            let j = ((y as i32 + nyi) as usize) * nx + (x as i32 + nxi) as usize;
+            if self.solid[i] || self.solid[j] {
+                continue;
+            }
+            for q in unknowns {
+                let prev = self.f[i * Q + q];
+                self.f[i * Q + q] = (prev + lam * self.f[j * Q + q]) * inv;
+            }
+            // Mass-consistency correction: without it the independent
+            // population relaxation lets the edge density drift away and the
+            // run eventually diverges. Pin rho(edge) to rho(neighbour) by
+            // distributing the deficit over the unknowns by weight.
+            let mut di = T::zero();
+            let mut dj = T::zero();
+            for q in 0..Q {
+                di = di + self.f[i * Q + q];
+                dj = dj + self.f[j * Q + q];
+            }
+            let corr = dj - di;
+            for q in unknowns {
+                self.f[i * Q + q] = self.f[i * Q + q] + corr * T::r(W[q]) / wsum;
             }
         }
     }

@@ -64,6 +64,160 @@ impl Psi {
     }
 }
 
+/// Two-component (immiscible) Shan–Chen driver.
+///
+/// Components A and B are two [`Simulation`]s sharing the same grid and
+/// solid geometry. A cross-repulsion force `F_A(x) = -G_ab rho_A(x)
+/// Σ_q w_q rho_B(x+c_q) c_q` (and symmetrically for B) separates the fluids;
+/// the force pairs are equal-and-opposite per link, so total momentum is
+/// conserved. Optional per-component gravity `F = rho_sigma(x) * g_sigma`
+/// enables buoyancy-driven flows (Rayleigh–Taylor).
+///
+/// Usage (both sims must be stepped together):
+/// ```ignore
+/// let mc = MultiComponent::new(1.2).with_gravity([0.0, -5e-5], [0.0, 0.0]);
+/// loop {
+///     mc.update_forces(&mut a, &mut b);
+///     a.step();
+///     b.step();
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct MultiComponent<T: Real> {
+    /// Cross-component repulsion strength (positive separates the fluids;
+    /// ~1.0–2.0 with psi = rho and background densities O(1)).
+    pub g_ab: T,
+    /// Gravity applied to component A as `rho_A(x) * g_a` per cell.
+    pub g_a: [T; 2],
+    /// Gravity applied to component B as `rho_B(x) * g_b` per cell.
+    pub g_b: [T; 2],
+    /// Wall affinity for A (negative attracts A to walls).
+    pub g_wall_a: T,
+    /// Wall affinity for B.
+    pub g_wall_b: T,
+}
+
+impl<T: Real> MultiComponent<T> {
+    /// New driver with the given cross-repulsion, no gravity, neutral walls.
+    pub fn new(g_ab: f64) -> Self {
+        Self {
+            g_ab: T::r(g_ab),
+            g_a: [T::zero(); 2],
+            g_b: [T::zero(); 2],
+            g_wall_a: T::zero(),
+            g_wall_b: T::zero(),
+        }
+    }
+
+    /// Set per-component gravity vectors.
+    pub fn with_gravity(mut self, g_a: [f64; 2], g_b: [f64; 2]) -> Self {
+        self.g_a = [T::r(g_a[0]), T::r(g_a[1])];
+        self.g_b = [T::r(g_b[0]), T::r(g_b[1])];
+        self
+    }
+
+    /// Set wall affinities (negative = wetting for that component).
+    pub fn with_walls(mut self, g_wall_a: f64, g_wall_b: f64) -> Self {
+        self.g_wall_a = T::r(g_wall_a);
+        self.g_wall_b = T::r(g_wall_b);
+        self
+    }
+
+    /// Compute cross-interaction + gravity forces into both simulations'
+    /// force fields. Panics if the two grids differ.
+    pub fn update_forces(&self, a: &mut Simulation<T>, b: &mut Simulation<T>) {
+        assert_eq!(
+            (a.nx(), a.ny()),
+            (b.nx(), b.ny()),
+            "components must share the grid"
+        );
+        let (nx, ny) = (a.nx(), a.ny());
+        let per_x = a.is_periodic_x();
+        let per_y = a.is_periodic_y();
+        let n = nx * ny;
+
+        let wrap = |x: isize, y: isize| -> Option<usize> {
+            let mut x = x;
+            let mut y = y;
+            if x < 0 || x >= nx as isize {
+                if per_x {
+                    x = (x + nx as isize) % nx as isize;
+                } else {
+                    return None;
+                }
+            }
+            if y < 0 || y >= ny as isize {
+                if per_y {
+                    y = (y + ny as isize) % ny as isize;
+                } else {
+                    return None;
+                }
+            }
+            Some(y as usize * nx + x as usize)
+        };
+
+        // psi = rho (0 on solids), captured before mutating force fields
+        let solid: Vec<bool> = a.solid_field().to_vec();
+        let psi_a: Vec<T> = a
+            .rho_field()
+            .iter()
+            .zip(&solid)
+            .map(|(&r, &s)| if s { T::zero() } else { r })
+            .collect();
+        let psi_b: Vec<T> = b
+            .rho_field()
+            .iter()
+            .zip(&solid)
+            .map(|(&r, &s)| if s { T::zero() } else { r })
+            .collect();
+
+        let mut fa = vec![[T::zero(); 2]; n];
+        let mut fb = vec![[T::zero(); 2]; n];
+        for y in 0..ny {
+            for x in 0..nx {
+                let i = y * nx + x;
+                if solid[i] {
+                    continue;
+                }
+                let mut sum_b = [T::zero(); 2];
+                let mut sum_a = [T::zero(); 2];
+                let mut adh = [T::zero(); 2];
+                for q in 1..Q {
+                    let Some(j) = wrap(x as isize + CX[q] as isize, y as isize + CY[q] as isize)
+                    else {
+                        continue;
+                    };
+                    let w = T::r(W[q]);
+                    let (cxq, cyq) = (T::r(CX[q] as f64), T::r(CY[q] as f64));
+                    if solid[j] {
+                        adh[0] = adh[0] + w * cxq;
+                        adh[1] = adh[1] + w * cyq;
+                    } else {
+                        sum_b[0] = sum_b[0] + w * psi_b[j] * cxq;
+                        sum_b[1] = sum_b[1] + w * psi_b[j] * cyq;
+                        sum_a[0] = sum_a[0] + w * psi_a[j] * cxq;
+                        sum_a[1] = sum_a[1] + w * psi_a[j] * cyq;
+                    }
+                }
+                fa[i] = [
+                    -psi_a[i] * (self.g_ab * sum_b[0] + self.g_wall_a * adh[0])
+                        + psi_a[i] * self.g_a[0],
+                    -psi_a[i] * (self.g_ab * sum_b[1] + self.g_wall_a * adh[1])
+                        + psi_a[i] * self.g_a[1],
+                ];
+                fb[i] = [
+                    -psi_b[i] * (self.g_ab * sum_a[0] + self.g_wall_b * adh[0])
+                        + psi_b[i] * self.g_b[0],
+                    -psi_b[i] * (self.g_ab * sum_a[1] + self.g_wall_b * adh[1])
+                        + psi_b[i] * self.g_b[1],
+                ];
+            }
+        }
+        a.force_field_mut().copy_from_slice(&fa);
+        b.force_field_mut().copy_from_slice(&fb);
+    }
+}
+
 /// Single-component Shan–Chen model driver.
 ///
 /// Owns no simulation state; call [`ShanChen::update_force`] before every
@@ -75,6 +229,12 @@ pub struct ShanChen<T: Real> {
     /// Wall adhesion strength: negative values wet the wall (small contact
     /// angle), positive values de-wet it. Zero = neutral (~90°).
     pub g_wall: T,
+    /// Virtual wall density: when set, solid neighbours contribute
+    /// `psi(wall_rho)` to the *cohesion* sum (instead of 0). This gives full
+    /// contact-angle control: `wall_rho` near the liquid density wets the
+    /// wall (θ → 0°), near the vapour density de-wets it (θ → 180°),
+    /// intermediate values interpolate through 90°. Preferred over `g_wall`.
+    pub wall_rho: Option<f64>,
     /// Pseudopotential form.
     pub psi: Psi,
     /// Scratch buffer for ψ(ρ), reused between calls.
@@ -87,6 +247,7 @@ impl<T: Real> ShanChen<T> {
         Self {
             g: T::r(g),
             g_wall: T::zero(),
+            wall_rho: None,
             psi: Psi::Classic,
             psi_buf: std::cell::RefCell::new(Vec::new()),
         }
@@ -95,6 +256,12 @@ impl<T: Real> ShanChen<T> {
     /// Set the wall adhesion strength (contact-angle control).
     pub fn with_wall(mut self, g_wall: f64) -> Self {
         self.g_wall = T::r(g_wall);
+        self
+    }
+
+    /// Set the virtual wall density (full-range contact-angle control).
+    pub fn with_wall_rho(mut self, wall_rho: f64) -> Self {
+        self.wall_rho = Some(wall_rho);
         self
     }
 
@@ -166,6 +333,7 @@ impl<T: Real> ShanChen<T> {
                 if psi_i == T::zero() {
                     continue;
                 }
+                let psi_wall = T::r(self.wall_rho.map_or(0.0, |r| self.psi.eval(r)));
                 let mut sx = T::zero();
                 let mut sy = T::zero();
                 let mut ax = T::zero();
@@ -178,6 +346,10 @@ impl<T: Real> ShanChen<T> {
                     let w = T::r(W[q]);
                     let (cx, cy) = (T::r(CX[q] as f64), T::r(CY[q] as f64));
                     if sim.solid_field()[j] {
+                        // virtual wall density feeds the cohesion sum;
+                        // g_wall adds the legacy adhesion term on top
+                        sx = sx + w * psi_wall * cx;
+                        sy = sy + w * psi_wall * cy;
                         ax = ax + w * cx;
                         ay = ay + w * cy;
                     } else {

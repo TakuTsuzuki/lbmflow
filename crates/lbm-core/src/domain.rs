@@ -33,6 +33,14 @@ pub enum EdgeBC<T: Real> {
     },
     /// Zero-gradient outflow (copies unknown populations from the interior).
     Outflow,
+    /// Convective (radiation) outflow: `df/dt + Uc df/dn = 0`, discretised as
+    /// `f(edge) = (f_prev(edge) + Uc f(interior)) / (1 + Uc)`. Far less
+    /// pressure-reflective than `Outflow`; set `u_conv` to the expected mean
+    /// outflow speed (lattice units).
+    ConvectiveOutflow {
+        /// Advection speed of the outgoing characteristics.
+        u_conv: T,
+    },
 }
 
 impl<T: Real> EdgeBC<T> {
@@ -45,7 +53,10 @@ impl<T: Real> EdgeBC<T> {
     pub(crate) fn is_open(&self) -> bool {
         matches!(
             self,
-            EdgeBC::VelocityInlet { .. } | EdgeBC::PressureOutlet { .. } | EdgeBC::Outflow
+            EdgeBC::VelocityInlet { .. }
+                | EdgeBC::PressureOutlet { .. }
+                | EdgeBC::Outflow
+                | EdgeBC::ConvectiveOutflow { .. }
         )
     }
     fn max_speed(&self) -> f64 {
@@ -184,6 +195,13 @@ pub enum ConfigError {
         /// Offending value.
         rho: f64,
     },
+    /// A model parameter is outside its valid range.
+    InvalidParameter {
+        /// Parameter name.
+        what: &'static str,
+        /// Offending value.
+        value: f64,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -215,6 +233,9 @@ impl std::fmt::Display for ConfigError {
             ),
             ConfigError::NonPositiveDensity { rho } => {
                 write!(f, "prescribed density must be > 0 (got {rho})")
+            }
+            ConfigError::InvalidParameter { what, value } => {
+                write!(f, "parameter {what} = {value} is outside its valid range")
             }
         }
     }
@@ -290,6 +311,15 @@ impl<T: Real> SimConfig<T> {
             if let EdgeBC::PressureOutlet { rho } = bc {
                 if !(rho.as_f64() > 0.0) {
                     return Err(ConfigError::NonPositiveDensity { rho: rho.as_f64() });
+                }
+            }
+            if let EdgeBC::ConvectiveOutflow { u_conv } = bc {
+                let v = u_conv.as_f64();
+                if !(v > 0.0 && v <= 1.0) {
+                    return Err(ConfigError::InvalidParameter {
+                        what: "u_conv",
+                        value: v,
+                    });
                 }
             }
         }

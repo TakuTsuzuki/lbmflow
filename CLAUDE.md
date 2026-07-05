@@ -19,8 +19,8 @@ cd web && npm run build                   # GUI（tsc strict + vite）
 
 ## 体制・規約
 
-- Fable が PM。実装は Claude サブエージェント / codex に委任。
-  **検証テストは codex が仕様（VALIDATION.md）から敵対的に作成**し、実装と分離する。
+- Fable が PM。実装は Opus/Sonnet サブエージェント / codex に委任。
+  **検証テストは codex or Opus/Sonnet が仕様（VALIDATION.md）から敵対的に作成**し、実装と分離する。
 - codex 実行例: `codex exec --sandbox workspace-write --skip-git-repo-check "<task>" < /dev/null`
   （モデル gpt-5.5。**`< /dev/null` 必須** — stdin が pipe だと EOF 待ちで永久にスタックする。
   進捗は `~/.codex/sessions/<date>/rollout-*.jsonl` の更新で確認できる）
