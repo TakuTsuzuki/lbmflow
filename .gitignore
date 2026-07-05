@@ -10,3 +10,6 @@ dist/
 *.vtk
 *.png.tmp
 .claude/
+# but do track committed Skills (Track A: Skills for Developer)
+!.claude/skills/
+!.claude/skills/**
