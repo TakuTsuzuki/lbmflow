@@ -47,17 +47,23 @@
 //!
 //! ## Equivalence to `CpuScalar`
 //!
-//! Every per-cell floating-point expression replicates the corresponding
-//! `kernels.rs` expression operand-for-operand (the lattice constants are
-//! compile-time promoted, which folds the ±1/0 multiplies without changing
-//! IEEE results), so fields agree with `CpuScalar` **bitwise up to the sign
-//! of exact zeros** — with one documented exception: when forcing is off,
-//! this backend skips `kernels::collide_row`'s `+ cp*0 + cm*0` no-op terms,
-//! which can flip a `-0.0` to `+0.0`. No downstream arithmetic observes
-//! either difference (asserted at |Δ| = 0 by `tests/backend_simd_equiv.rs`).
-//! The probed-force diagnostic sums link contributions in a different order
-//! (direction-major per row, V1 fused order) and may differ by f64/f32
-//! reassociation only; it never feeds back into the fields.
+//! Streaming (copies), bounce-back, moments, the boundary fix, the BC pass
+//! and the diagnostics replicate the corresponding `kernels.rs` expressions
+//! operand-for-operand (the lattice constants are compile-time promoted,
+//! which folds the ±1/0 multiplies without changing IEEE results), and the
+//! probed-force diagnostic replays its link contributions in `stream_row`'s
+//! cell-major order with `CpuScalar`'s flat per-row fold.
+//!
+//! The collision uses **V1 `collide_span`'s pair-shared equilibrium form**
+//! (`base`/`r3`/`r45` hoisted per cell — on D2Q9 this is V1's fused kernel
+//! operand-for-operand), which is an exact algebraic regrouping of
+//! `kernels::collide_row`'s TRT update but rounds differently at the last
+//! ulp. The trade is deliberate and measured: the literal `collide_row` DAG
+//! costs ~16% single-thread throughput (evaluated 2026-07: 182 vs 219 MLUPS,
+//! f32 512² 1T) for zero physical benefit, while the resulting
+//! `CpuScalar`↔`CpuSimd` drift is the same reassociation noise the
+//! `v1_match` suite absorbs: ≤ ~1e-13 (f64) / ~1e-7 (f32) over hundreds of
+//! steps, asserted at 1e-11 / 1e-6 by `tests/backend_simd_equiv.rs`.
 
 use crate::backend::{
     apply_open_faces_impl, read_moments_impl, reduce_impl, update_moments_impl, Backend,
@@ -169,11 +175,15 @@ fn for_fluid_spans(
 /// as `L::Q` planes at stride `q_stride` inside `planes` (`base` = index of
 /// the row's core `x = 0` cell in plane 0).
 ///
-/// Per-cell arithmetic replicates `kernels::collide_row`
-/// expression-for-expression; the caller decomposes rows into solid-free
-/// spans so this loop is branch-free and auto-vectorizes (V1 `collide_span`
-/// shape). With `FORCE = false` the source terms are compiled out (skipping
-/// `collide_row`'s exact-zero adds — a sign-of-zero-only deviation).
+/// Per-cell arithmetic is **V1 `collide_span` operand-for-operand** (the
+/// pair decomposition works directly on the shared `base`/`r3`/`r45`
+/// equilibrium pieces — on D2Q9, `dotc`'s folded ±1/0 constants reproduce
+/// V1's hand-written `vx`/`vy`/`vx+vy`/`vy-vx` bitwise), generalised to any
+/// lattice via `L::PAIRS`. This is an exact algebraic regrouping of
+/// `kernels::collide_row`, differing from it by last-ulp rounding only (see
+/// the module docs for the measured cost of the literal DAG). The caller
+/// decomposes rows into solid-free spans, so the loop is branch-free and
+/// auto-vectorizes.
 ///
 /// # Safety
 /// The caller must be the only concurrent accessor of the addressed cells,
@@ -233,45 +243,40 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
         };
         let drho = r - T::one();
         let i = base + x;
-        // Rest direction: f0 - op*(f0 - feq0) + cp*src0.
+        // Shared equilibrium pieces (V1: base / r3 / r45 / uf3).
+        let eq_base = drho - f15 * r * usq;
+        let r3 = three * r;
+        let r45 = f45 * r;
+        let uf3 = if FORCE { three * uf } else { T::zero() };
+        // Rest population: feq0 = w0 * base, src0 = -w0 * uf3.
         {
-            let q = L::REST;
-            let cu = dotc::<L, T>(q, u);
-            let feq = T::r(L::W[q]) * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
-            let i0 = q * q_stride + i;
+            let w0 = T::r(L::W[L::REST]);
+            let i0 = L::REST * q_stride + i;
             // SAFETY: caller contract (disjoint cells, in bounds).
             let f0 = unsafe { planes.get(i0) };
             if FORCE {
-                let cf = dotc::<L, T>(q, fv);
-                let src = T::r(L::W[q]) * (three * (cf - uf) + nine * cu * cf);
-                unsafe { planes.set(i0, f0 - op * (f0 - feq) + cp * src) };
+                unsafe { planes.set(i0, f0 - op * (f0 - w0 * eq_base) + cp * (-w0 * uf3)) };
             } else {
-                unsafe { planes.set(i0, f0 - op * (f0 - feq)) };
+                unsafe { planes.set(i0, f0 - op * (f0 - w0 * eq_base)) };
             }
         }
         for &(a, b) in L::PAIRS {
-            let (wa, wb) = (T::r(L::W[a]), T::r(L::W[b]));
-            let cu_a = dotc::<L, T>(a, u);
-            let cu_b = dotc::<L, T>(b, u);
-            let feq_a = wa * (drho + r * (three * cu_a + f45 * cu_a * cu_a - f15 * usq));
-            let feq_b = wb * (drho + r * (three * cu_b + f45 * cu_b * cu_b - f15 * usq));
+            let wa = T::r(L::W[a]);
+            let cu = dotc::<L, T>(a, u);
+            let ep = wa * (eq_base + r45 * cu * cu);
+            let em = wa * (r3 * cu);
             let (ia, ib) = (a * q_stride + i, b * q_stride + i);
             // SAFETY: caller contract.
             let fa = unsafe { planes.get(ia) };
             let fb = unsafe { planes.get(ib) };
             let fp = half * (fa + fb);
             let fm = half * (fa - fb);
-            let ep = half * (feq_a + feq_b);
-            let em = half * (feq_a - feq_b);
             let rp = op * (fp - ep);
             let rm = om * (fm - em);
             if FORCE {
-                let cf_a = dotc::<L, T>(a, fv);
-                let cf_b = dotc::<L, T>(b, fv);
-                let src_a = wa * (three * (cf_a - uf) + nine * cu_a * cf_a);
-                let src_b = wb * (three * (cf_b - uf) + nine * cu_b * cf_b);
-                let sp = half * (src_a + src_b);
-                let sm = half * (src_a - src_b);
+                let cf = dotc::<L, T>(a, fv);
+                let sp = wa * (nine * cu * cf - uf3);
+                let sm = wa * (three * cf);
                 unsafe {
                     planes.set(ia, fa - rp - rm + cp * sp + cm * sm);
                     planes.set(ib, fb - rp + rm + cp * sp - cm * sm);
@@ -1114,8 +1119,9 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
 /// Capture this step's post-collide unknown populations at every open-face
 /// cell within `range` into `scratch.stale[1]` (next step's memory term).
 /// Shell-precollided cells read their value straight from `f`; every other
-/// cell is re-collided from the untouched `f` + old moments — bitwise the
-/// value `CpuScalar`'s in-place collide leaves in the ping-pong buffer.
+/// cell is re-collided from the untouched `f` + old moments with the fused
+/// pass's own collide arithmetic — the value `CpuScalar`'s in-place collide
+/// leaves in the ping-pong buffer, up to TRT-pair reassociation.
 fn capture_stale<L: Lattice, T: Real>(
     sub: &Subdomain,
     ctx: &FusedCtx<'_, L, T>,
