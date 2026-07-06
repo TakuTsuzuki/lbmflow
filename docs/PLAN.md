@@ -24,20 +24,23 @@ the engine side is fixed until it passes them all (separating test authors from 
 LBMFlow/
 ├── Cargo.toml              # workspace
 ├── crates/
-│   ├── lbm-core/           # core engine (pure Rust library, no I/O)
+│   ├── lbm-core/           # V2 core engine (pure Rust library, no I/O)
 │   │   ├── src/
-│   │   │   ├── lattice.rs      # D2Q9 constants (velocities, weights, opposite directions)
+│   │   │   ├── lattice.rs      # D2Q9 / D3Q19 / D3Q27 velocity sets and derived tables
 │   │   │   ├── real.rs         # f32/f64 generic (Real trait)
-│   │   │   ├── domain.rs       # domain, edge boundary conditions, obstacle mask
-│   │   │   ├── collision.rs    # BGK / TRT (/ future MRT, cumulant)
-│   │   │   ├── sim.rs          # Simulation: one step of collide→stream→BC
-│   │   │   ├── multiphase.rs   # Shan-Chen (Phase 4)
-│   │   │   └── analysis.rs     # error norms, conserved quantities, force-measurement helpers
+│   │   │   ├── fields.rs       # q-major SoA deviation storage with halo padding
+│   │   │   ├── params.rs       # BGK / TRT / cumulant collision and BC parameters
+│   │   │   ├── backend.rs      # backend trait + CPU scalar reference backend
+│   │   │   ├── backend_simd.rs # fused CPU SIMD/band-parallel backend
+│   │   │   ├── gpu/            # wgpu backend (feature "gpu")
+│   │   │   ├── halo.rs         # local/in-process halo exchange
+│   │   │   ├── dist.rs         # MPI exchange/solver (feature "mpi")
+│   │   │   ├── solver.rs       # V2 solver orchestrator
+│   │   │   └── compat/         # supported legacy 2D facade over V2
 │   │   └── tests/          # validation tests (including the codex-authored adversarial suite)
-│   ├── lbm-cli/            # JSON scenario execution CLI (foundation of Agent mode)
+│   ├── lbm-cli/            # JSON scenario execution CLI + MCP stdio server
 │   └── lbm-wasm/           # wasm-bindgen bindings
 ├── web/                    # TypeScript GUI (Vite)
-├── mcp/                    # MCP server (Agent mode)
 └── docs/
     ├── PLAN.md             # this file
     ├── VALIDATION.md       # validation-test specification matrix (commissioning spec for codex)
@@ -46,30 +49,37 @@ LBMFlow/
 
 ### Core design highlights
 
-- **Lattice**: start from D2Q9 (2D). Data layout is cell-major AoS `f[cell*9 + q]`
-  (safely compatible with rayon row-parallelism, identical code on WASM too).
-- **Streaming**: pull scheme (gather). collide (in-place) → stream (f→f_tmp) → swap.
-- **Collision operator**: BGK (fast/low stability) and TRT (with magic Λ=3/16, wall position is exact, recommended default).
-  Accuracy-vs-speed tradeoff axis (1). Add MRT / cumulant in the future.
-- **Precision**: switch f32/f64 via `Simulation<T: Real>` (tradeoff axis (2)).
-- **Parallelism**: rayon (feature "parallel", off on WASM). Tradeoff axis (3) (thread count).
+- **Lattice**: V2 is generic over the `Lattice` trait with D2Q9, D3Q19, and D3Q27 implementations.
+  Population storage is q-major SoA deviation form over halo-padded local boxes:
+  `f[q * n_padded + cell]`, with `cell = z * (pnx * pny) + y * pnx + x`.
+- **Streaming / step order**: the common solver orchestrates
+  `collide` → halo exchange → `stream` → `swap` → open-boundary BCs → moments update.
+  `CpuSimd` fuses collide/stream internally while preserving the backend contract.
+- **Collision operator**: BGK, TRT (with magic Λ=3/16, wall position is exact, recommended default),
+  and the landed central-moment/cumulant branch (`CollisionKind::Cumulant`).
+- **Precision**: f32/f64 are selected via `Real`; GPU execution is f32-only today.
+- **Backends / distribution**: CPU scalar and fused CPU SIMD backends are available in the core;
+  the wgpu backend is behind feature `gpu`, and MPI halo exchange / distributed runs are behind feature `mpi`.
 - **Body force**: Guo forcing (2nd-order accurate, u includes F/2 correction). Used in Shan-Chen too.
 - **Walls**: half-way bounce-back (stationary walls, moving walls). Edge-specified walls are realized as a 1-cell solid
   rim → the corner special-casing with Zou-He becomes unnecessary.
-- **Open boundaries**: a single implementation of Zou-He (velocity inflow, pressure outflow) parameterized by face normal handles all 4 edges.
-  Outflow (zero-gradient copy) is also provided.
+- **Open boundaries**: Zou-He velocity/pressure, zero-gradient outflow, and convective outflow are face-normal
+  parameterized. Open-face kernels currently support D2Q9 and D3Q19; D3Q27 open-face support remains explicit follow-on work.
 - **Force measurement**: momentum-exchange method (required for the cylinder Cd/St benchmark).
 
 ### Boundary-condition combination rules (specification)
 
-- Periodic requires a pair on opposing edges.
-- The edges orthogonal to a Zou-He / Outflow edge must be Wall (rim) or Periodic
-  (corners where edges meet bare are unsupported, error at construction time).
-- τ ≤ 0.5 is a construction-time error. |u| > 0.3 (lattice units) is a warning.
+- Periodic is selected per axis and cannot be combined with an open BC on that axis.
+- Open faces may lie on at most one axis. Perpendicular non-periodic faces must be fully covered by a wall rim,
+  or covered by validated face patches.
+- Non-positive viscosity (`tau = 3*nu + 0.5 <= 0.5`) is a construction-time error.
+  Prescribed speed above 0.3 lattice units is a construction-time error.
 
 ---
 
 ## Phase plan
+
+(2026-07-07 historical record — describes the state at the original phase milestones; see ARCHITECTURE_V2.md for the current design.)
 
 | Phase | Content | Completion criteria |
 |---|---|---|
@@ -225,6 +235,8 @@ two consumers). Validation (W-VAL) stays codex-adversarial and implementation-se
 translated by a dedicated spawned session; this file will be fully translated there.
 
 ## Progress notes
+
+(2026-07-07 historical record — dated notes preserve what was true or planned at each milestone; see ARCHITECTURE_V2.md for the current design.)
 
 - 2026-07-05 late night: **Integrated the results of the concurrent review session into main**. Improvement spec v1 +
   experiment crate merged (E2/E7 reproduce numerically matching values on main after renaming). 4 PM decisions confirmed:
