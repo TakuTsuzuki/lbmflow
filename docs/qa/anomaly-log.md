@@ -194,3 +194,22 @@ solutions with tangential outlet velocity (first pass measured the
 resulting O(1)-fraction elliptic contamination). S2 characterization;
 core FYI: 2nd-order open BC (NEBB / non-equilibrium extrapolation) is the
 improvement candidate.
+
+### ANOM-P4-014 VERDICT: TEST-SIDE (reference-datum error, found by the
+mandatory visual review). The PGM dumps show healthy connected columns and
+menisci at all gaps; but the domain's OUTSIDE channels are themselves
+finite-width wetting slots, so the "flat reservoir level" datum is
+capillary-elevated by 2σcosθ/(Δρ g w_out). Differential prediction
+h_meas = (2σcosθ/Δρg)(1/w_slot − 1/w_out) reconciles the pattern
+(gap32: w_out ≈ w_slot ⇒ h_meas → 0, measured 8.8; gap16: w_out ≫ w_slot
+⇒ near-ideal, measured +3%). Rev 4: widen the true reservoir (or assert
+the differential formula). COROLLARY for ANOM-P4-019: gap-16 liquid ROSE
+~55 cells to equilibrium — SC contact lines DO move in a 16-slot; the
+"immobility" hypothesis needs re-examination against H4's specific setup
+(20-slit + side reservoir) before any model-limit claim.
+
+### ANOM-P4-016 ESCALATED: with the T12-IDENTICAL protocol, the STABLE
+orientation (heavy below) diverges by step 400 (max|u| = 4e3,
+rho_min = −6.0) while T12's unstable orientation passes CI. Engine-finding
+candidate: MCMP + per-component gravity, stable stratification divergence.
+Routing package = the rev-3 test + printed trajectory (cx/mp-hard).
