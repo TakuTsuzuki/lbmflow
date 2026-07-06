@@ -23,6 +23,7 @@ pub struct Manifest {
     pub wall_seconds: f64,
     pub mlups: f64,
     pub diagnostics: Diagnostics,
+    pub provenance: Provenance,
     pub warnings: Vec<lbm_scenario::Warning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub units: Option<lbm_scenario::UnitReport>,
@@ -31,10 +32,62 @@ pub struct Manifest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Provenance {
+    pub backend: lbm_scenario::BackendChoice,
+    pub lattice: String,
+    pub collision: CollisionProvenance,
+    pub precision: lbm_scenario::Precision,
+    pub storage: lbm_scenario::StorageSpec,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollisionProvenance {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub magic: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omega_shear: Option<f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
     pub total_mass: f64,
     pub max_speed: f64,
     pub tau: f64,
+}
+
+fn provenance(
+    sc: &Scenario,
+    backend: lbm_scenario::BackendChoice,
+    lattice: &str,
+    storage: lbm_scenario::StorageSpec,
+) -> Provenance {
+    let collision = match sc.physics.collision {
+        lbm_scenario::CollisionSpec::Bgk => CollisionProvenance {
+            kind: "bgk".to_string(),
+            magic: None,
+            omega_shear: None,
+        },
+        lbm_scenario::CollisionSpec::Trt => CollisionProvenance {
+            kind: "trt".to_string(),
+            magic: Some(lbm_core::params::CollisionKind::MAGIC_STD),
+            omega_shear: None,
+        },
+        lbm_scenario::CollisionSpec::Cumulant => CollisionProvenance {
+            kind: "cumulant".to_string(),
+            magic: None,
+            omega_shear: Some(lbm_scenario::cumulant_omega_shear(sc.physics.nu)),
+        },
+    };
+    Provenance {
+        backend,
+        lattice: lattice.to_string(),
+        collision,
+        precision: sc.physics.precision,
+        storage,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -68,16 +121,16 @@ pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> 
             sc.grid.nx * sc.grid.ny * sc.grid.nz
         );
         if sc.is_3d() {
-            anyhow::bail!("{}", lbm_scenario::gpu_capability_error(sc).unwrap_or(
-                "requested backend \"gpu\" is not wired to the 3D CLI runner yet"
-            ));
+            anyhow::bail!(
+                "{}",
+                lbm_scenario::gpu_capability_error(sc)
+                    .unwrap_or("requested backend \"gpu\" is not wired to the 3D CLI runner yet")
+            );
         }
         return run_gpu2d(sc, lbm_scenario::build_gpu2d(sc)?, out_dir, units);
     }
     #[cfg(not(feature = "gpu"))]
-    if lbm_scenario::selected_backend(sc) == lbm_scenario::BackendChoice::Gpu
-        && lbm_scenario::requested_backend(sc) == lbm_scenario::BackendSpec::Gpu
-    {
+    if lbm_scenario::selected_backend(sc) == lbm_scenario::BackendChoice::Gpu {
         anyhow::bail!("{}", lbm_scenario::build_check(sc).unwrap_err());
     }
     if sc.is_3d() {
@@ -115,7 +168,7 @@ fn run_gpu2d(
     let mut files = Vec::new();
     let total = sc.run.steps;
     sim.run(total);
-    sim.sync();
+    sim.sync_host();
     for (i, o) in sc.outputs.iter().enumerate() {
         if o.every == 0 {
             files.push(write_output_gpu2d(&mut sim, o, i, total, out_dir)?);
@@ -141,6 +194,12 @@ fn run_gpu2d(
             max_speed,
             tau: 3.0 * sc.physics.nu + 0.5,
         },
+        provenance: provenance(
+            sc,
+            lbm_scenario::BackendChoice::Gpu,
+            "D2Q9",
+            lbm_scenario::requested_storage(sc),
+        ),
         warnings: lbm_scenario::validate(sc),
         units,
         files,
@@ -481,6 +540,12 @@ fn run_t<T: Real>(
             max_speed,
             tau: sim.tau(),
         },
+        provenance: provenance(
+            sc,
+            lbm_scenario::BackendChoice::Cpu,
+            "D2Q9",
+            lbm_scenario::StorageSpec::F32,
+        ),
         warnings: lbm_scenario::validate(sc),
         units,
         files,
@@ -983,6 +1048,12 @@ fn run3d_t<T: lbm_core::real::Real>(
             max_speed,
             tau: s.tau(),
         },
+        provenance: provenance(
+            sc,
+            lbm_scenario::BackendChoice::Cpu,
+            "D3Q19",
+            lbm_scenario::StorageSpec::F32,
+        ),
         warnings: lbm_scenario::validate(sc),
         units,
         files,
@@ -1113,6 +1184,52 @@ mod tests {
         let last = point.lines().last().unwrap();
         let ux: f64 = last.split(',').nth(1).unwrap().parse().unwrap();
         assert!(ux.is_finite());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manifest_records_actual_provenance() {
+        let sc: Scenario = serde_json::from_str(
+            r#"{
+                "name": "manifest-provenance",
+                "grid": { "nx": 10, "ny": 8, "nz": 6 },
+                "physics": {
+                    "nu": 0.02,
+                    "collision": { "type": "cumulant" },
+                    "precision": "f64"
+                },
+                "compute": { "backend": "cpu" },
+                "edges": {
+                    "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                    "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                    "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+                },
+                "run": { "steps": 2 }
+            }"#,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "lbm_manifest_provenance_test_{}",
+            std::process::id()
+        ));
+        let manifest = run(&sc, &dir).unwrap();
+        assert_eq!(
+            manifest.provenance.backend,
+            lbm_scenario::BackendChoice::Cpu
+        );
+        assert_eq!(manifest.provenance.lattice, "D3Q19");
+        assert_eq!(manifest.provenance.collision.kind, "cumulant");
+        assert_eq!(
+            manifest.provenance.collision.omega_shear,
+            Some(lbm_scenario::cumulant_omega_shear(sc.physics.nu))
+        );
+        assert_eq!(manifest.provenance.precision, lbm_scenario::Precision::F64);
+        assert_eq!(manifest.provenance.storage, lbm_scenario::StorageSpec::F32);
+
+        let text = fs::read_to_string(dir.join("manifest.json")).unwrap();
+        assert!(text.contains("\"provenance\""), "{text}");
+        assert!(text.contains("\"lattice\": \"D3Q19\""), "{text}");
+        assert!(text.contains("\"kind\": \"cumulant\""), "{text}");
         fs::remove_dir_all(&dir).ok();
     }
 }

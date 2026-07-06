@@ -330,7 +330,8 @@ fn mcp_async_job_lifecycle() {
     let error = report["error"].as_str().unwrap();
     #[cfg(not(feature = "gpu"))]
     assert!(
-        error.contains("requested backend \"gpu\" is unavailable") && error.contains("--features gpu"),
+        error.contains("requested backend \"gpu\" is unavailable")
+            && error.contains("--features gpu"),
         "{error}"
     );
     #[cfg(feature = "gpu")]

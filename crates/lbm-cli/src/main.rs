@@ -232,7 +232,8 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
                                            //   (omitted or 1 = 2D; 3D restrictions at the end)
   "physics": {
     "nu": 0.02,                            // kinematic viscosity (lattice units); tau = 3*nu + 0.5
-    "collision": { "type": "trt" },        // "trt" (recommended) | "bgk"
+    "collision": { "type": "trt" },        // "trt" (recommended) | "bgk" | "cumulant"
+                                           //   cumulant is currently exposed only on 3D D3Q19 CPU
     "force": [0.0, 0.0],                   // uniform body force (e.g. gravity; z component 0 in 3D)
     "precision": "f64"                     // "f32" | "f64"
   },
@@ -245,7 +246,10 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
     "resolution": 200,                     // N
     "latticeVelocity": 0.1                 // or use relaxationTime; third constructor derives N
   },
-  "compute": { "backend": "auto" },        // optional: "auto" | "cpu" | "gpu" (gpu not available yet)
+  "compute": {                             // optional
+    "backend": "auto",                     // "auto" | "cpu" | "gpu"
+    "storage": "f32"                       // "f32" | "f16"; f16 requires 2D GPU + SHADER_F16
+  },
   "edges": {                               // boundary conditions on the 4 edges
     "left":   { "type": "velocityInlet", "u": [0.1, 0.0] },
     "right":  { "type": "pressureOutlet", "rho": 1.0 },
@@ -293,10 +297,12 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
   ]
 }
 
-3D (nz > 1) restrictions: single-phase only (no multiphase), init must be rest,
-compute.backend must be cpu/auto (gpu not available yet). Engine is the V2 core (D3Q19).
+3D (nz > 1) restrictions: single-phase only (no multiphase), init must be rest.
+compute.backend must be cpu/auto in the current CLI runner. Engine is the V2 core (D3Q19).
+Cumulant collision is exposed on this 3D D3Q19 CPU path.
+compute.storage f16 is GPU-storage-only and is rejected for CPU, 3D, and no-gpu-feature builds.
 
-Results: <out>/manifest.json (status/steps/mlups/diagnostics/warnings/units/file list)
+Results: <out>/manifest.json (status/steps/mlups/diagnostics/provenance/warnings/units/file list)
 status: completed | steady (early stop on steady-state detection) | diverged (NaN detected)
 Units constructors:
 - FromResolutionAndRelaxationTime: resolution + relaxationTime; derives latticeVelocity.
