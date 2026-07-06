@@ -42,7 +42,7 @@ promises.
 | Area | Current limitation | Evidence |
 |---|---|---|
 | WALE scope | WALE is landed as a solver-level eddy-viscosity driver. It computes `nu_t`, converts it directly to an `omega_plus` field, and installs that field for the next collision, giving a one-step lag. | `crates/lbm-core/src/les.rs:1-7`, `crates/lbm-core/src/les.rs:49-57`, `crates/lbm-core/src/les.rs:104-113`, `crates/lbm-core/src/solver.rs:2483-2518` |
-| Remaining LES product treatment | The M-F requirements still call for y+ wall-function or wall-fitted handling and tau_eff upper clipping plus diagnostics. Those controls are not present in the current `WaleLes` driver, which exposes only `nu_t()` and omega-field update/clear. | `docs/REQ_STIRRED_REACTOR.md:202-210`, `crates/lbm-core/src/les.rs:44-47`, `crates/lbm-core/src/les.rs:57-124` |
+| Remaining LES product treatment | tau_eff upper clipping with mandatory diagnostics landed 2026-07-07 (explicit config, default off — see PHYSICS.md entry). Still missing: y+ wall-function or wall-fitted near-wall handling (design spec in docs/proposals/LES_WALL_TREATMENT_SPEC.md) and turbulence-predictive acceptance beyond the channel Re_tau=180 characterization. | `docs/REQ_STIRRED_REACTOR.md:202-210`, `crates/lbm-core/src/les.rs` (`WaleLes` clipping + diagnostics) |
 
 ## 6. Multiphase
 

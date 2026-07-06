@@ -143,7 +143,7 @@ particles.rs silent Re>800 clamp → explicit validity-domain error (`cx/re-clam
 | REV-1 | Scenario schema exposure: `collision: cumulant`, `storage: f16`, `backend: auto\|cpu\|gpu`, lattice selection; unsupported-combination errors; manifest records actual backend/lattice/collision/storage | new (agent-native product path) |
 | REV-2 | `lbm verify --tier quick/full/gpu/mpi` + `lbm capabilities` (machine-readable capability/limitation output) | SOLVER_IMPROVEMENT_SPEC open item |
 | REV-3 | Gravity force composition device-side (kill per-step host staging in `run()`; prerequisite for GPU VOF/buoyancy performance claims) | B-2 sync-point contract territory |
-| REV-4 | LES tau_eff upper clipping + diagnostics, y+ output, wall treatment | MF-β scope (REQ W-LES already requires it) |
+| REV-4 | **Clipping+diagnostics DONE 2026-07-07** (explicit config, default off, PHYSICS.md entry). y+ diagnostics + wall treatment remain MF-β scope — design spec landed at docs/proposals/LES_WALL_TREATMENT_SPEC.md (4-order plan, builds on cx/chan180). |
 | REV-5 | D3Q27 open-face kernels + dedicated gates (Zou-He moment exactness, duct in/out, CPU/GPU equivalence, MPI seam) | MF-α follow-on |
 | REV-6 | **DONE 2026-07-07 with FINDING**: holdout suite landed (`cumulant_holdout.rs`); off-Re and D3Q19-vs-D3Q27 pass, but advected TGV3D FAILS Galilean invariance (frame spread 4.2e-3 vs derived band 1.16e-3, error grows systematically with u_frame). Correction reclassified as empirical calibration valid for non-advected decay only (PHYSICS.md). Follow-up routed to core-engine: derive a frame-consistent correction or narrow the product claim. |
 | REV-7 | Distributed checkpoint/restart (per-rank, RNG/particle/statistics state, restart match test) | R-Phase 3 / C-track |
