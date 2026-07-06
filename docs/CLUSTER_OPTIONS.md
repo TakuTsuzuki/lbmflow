@@ -339,6 +339,15 @@ price and availability were not surveyed this time (to be investigated; worth ke
 6. **Fugaku porting checklist**: aarch64 build (done: already routine on M5 Max), Fujitsu MPI's mpicc wrapper
    compatibility, a pjsub job template.
 
+### ME-3 preparation update (2026-07-07)
+
+`docs/CLUSTER_RUNBOOK.md` now provides the no-spend handoff runbook for the
+recommended hpc7g x8 campaign: exact `bench_mpi` commands for all 8 MPI_GUIDE
+measurements, local preflight, aggregation, and reproducibility manifest. The
+spend math was rechecked against the same hpc7g.16xlarge us-east-1 price
+($1.6832/h): `8 nodes * 6 h * $1.6832/h * 160 JPY/USD = 12,927 JPY`. This is
+consistent with the original ~13,000 JPY estimate, so no correction is needed.
+
 ---
 
 ## 8. Source List (all retrieved 2026-07-05)

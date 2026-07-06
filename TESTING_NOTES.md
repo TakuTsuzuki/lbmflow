@@ -1400,3 +1400,13 @@ f32 absolutes are load-suppressed):
 PM-side fixes on top of codex commits (892efdd scaffolding + 1019cea WGSL
 conversions): try_read_sync decoded the f readback as raw f32 regardless of
 storage (index OOB under f16; backend.rs now routes through decode_storage).
+
+## ME-3 cluster campaign prep (2026-07-07)
+
+Added dormant `bench_mpi` modes for the 8-item MPI_GUIDE cluster campaign:
+`weak2d`, `weak3d`, `strong3d`, `diagnostics`, `placement`, and `correctness`.
+The default positional invocation remains the existing 2D weak-scaling path.
+
+Verification in this session:
+- `PATH=$HOME/.local/openmpi/bin:$PATH cargo build -p lbm-core --release --features mpi --example bench_mpi`: passed.
+- `./scripts/qa/mpi_local_preflight.sh`: build passed, but `mpirun` could not launch in this sandbox. Open MPI 5.0.9 failed before rank startup with `bind() failed for port 0: Operation not permitted` and `No sockets were able to be opened on the available protocols`. This is a sandbox socket restriction, not a benchmark failure. The script remains the intended local preflight for an unsandboxed M5 Max shell.
