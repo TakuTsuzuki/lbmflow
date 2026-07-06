@@ -1,0 +1,282 @@
+[
+  {
+    "id": "poiseuille-trt-h32",
+    "track": "channel-analytic",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.001279, totalMass=512",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.001279",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "Poiseuille exactness",
+        "ok": true,
+        "expected": "LInf_rel <= 1e-10 vs u(y)=g/(2nu) y_w(H-y_w)",
+        "observed": "LInf_rel = 1.35e-11",
+        "detail": "u_max sim=0.00127875 ref=0.00127875",
+        "source": "VALIDATION T2 (TRT Lambda=3/16 exact, LInf_rel <= 1e-10)"
+      },
+      {
+        "check": "top/bottom symmetry",
+        "ok": true,
+        "expected": "|ux(j) - ux(H+1-j)| <= 1e-13 (T2 absolute)",
+        "observed": "max asym = 1.41e-18 (umax=0.00128)",
+        "detail": "",
+        "source": "VALIDATION T2 (top/bottom symmetry <= 1e-13)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 2.1e-11 over 21000 steps (1e-11/1e4 steps, region=interior)",
+        "observed": "rel drift = 0",
+        "detail": "mass[first]=448, mass[last]=448",
+        "source": "VALIDATION T6"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 26000,
+      "wallSeconds": 0.532413209,
+      "mlups": 26.565832253797446,
+      "diagnostics": {
+        "totalMass": 512.0,
+        "maxSpeed": 0.0012787499999827373,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "channel-zouhe-t4",
+    "track": "open-boundary",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.05219, totalMass=3075.46",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.05219",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "T4 bulk flow-rate constancy",
+        "ok": true,
+        "expected": "max|Q-Qbar|/Qbar <= 1e-04 (bulk x in [1,71]; measured 2.4e-5 in spec)",
+        "observed": "max dev = 6.41e-07",
+        "detail": "Qbar = 1.06959",
+        "source": "VALIDATION T4 (bulk mass-flux constancy <= 1e-4; measured 2.4e-5)"
+      },
+      {
+        "check": "T4 central profile",
+        "ok": true,
+        "expected": "L2rel <= 2e-03 vs parabola",
+        "observed": "L2rel = 0.00108",
+        "detail": "",
+        "source": "VALIDATION T4 (central profile L2rel <= 2e-3 vs parabola)"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 67000,
+      "wallSeconds": 6.940097542,
+      "mlups": 31.510796307479332,
+      "diagnostics": {
+        "totalMass": 3075.4613277790727,
+        "maxSpeed": 0.05218796337576871,
+        "tau": 0.56
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "duct3d-t15",
+    "track": "3d",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=steady, maxSpeed=0.000753, totalMass=12288",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.000753",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "duct series exactness",
+        "ok": true,
+        "expected": "LInf_rel <= 1e-03 vs Fourier series (n<=99)",
+        "observed": "LInf_rel = 0.0002306",
+        "detail": "",
+        "source": "VALIDATION T15.2 (TRT LInf_rel <= 1e-3; measured 2.3e-4 at 32^2)"
+      },
+      {
+        "check": "duct flow rate",
+        "ok": true,
+        "expected": "|Q-Q_ref|/Q_ref <= 0.5% (measured 0.094%)",
+        "observed": "dev = 0.094%",
+        "detail": "Q=0.36886 Q_ref=0.368514",
+        "source": "VALIDATION T15.2 (Q within +-0.5%; measured 0.094%)"
+      },
+      {
+        "check": "duct y<->z symmetry",
+        "ok": true,
+        "expected": "|u(y,z)-u(z,y)| <= 1e-11 * umax",
+        "observed": "max asym = 3.25e-19 (umax=0.000753)",
+        "detail": "",
+        "source": "square-duct y<->z exchange symmetry (discrete-exact)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 1e-11 over 9500 steps (1e-11/1e4 steps, region=interior3d)",
+        "observed": "rel drift = 6.75e-15",
+        "detail": "mass[first]=10240, mass[last]=10240",
+        "source": "VALIDATION T6"
+      }
+    ],
+    "manifest": {
+      "status": "steady",
+      "stepsRun": 13500,
+      "wallSeconds": 14.593869334,
+      "mlups": 12.83223768241531,
+      "diagnostics": {
+        "totalMass": 12287.999999999898,
+        "maxSpeed": 0.0007529995790225973,
+        "tau": 0.8
+      },
+      "warnings": []
+    }
+  },
+  {
+    "id": "droplet-t11",
+    "track": "multiphase",
+    "validate": {
+      "error": null,
+      "ok": true,
+      "warnings": []
+    },
+    "findings": [
+      {
+        "check": "finite/status",
+        "ok": true,
+        "expected": "status in {completed, steady}, finite diagnostics",
+        "observed": "status=completed, maxSpeed=0.00433, totalMass=4783.05",
+        "detail": ""
+      },
+      {
+        "check": "|u| hard ceiling",
+        "ok": true,
+        "expected": "max|u| <= 0.3 (MAX_SPEED, low-Mach hard limit)",
+        "observed": "max|u| = 0.00433",
+        "detail": ""
+      },
+      {
+        "check": "warnings audit",
+        "ok": true,
+        "expected": "validator advisories on none",
+        "observed": "got none",
+        "detail": ""
+      },
+      {
+        "check": "spurious currents",
+        "ok": true,
+        "expected": "max|u| <= 5e-03 at equilibrium (T11; flat-interface measured 1.26e-3)",
+        "observed": "max|u| = 0.00433",
+        "detail": "",
+        "source": "VALIDATION T11 (max|u| <= 5e-3; measured 1.26e-3 flat)"
+      },
+      {
+        "check": "Laplace sigma",
+        "ok": true,
+        "expected": "sigma = 0.0332 +- 15% (T11 slope band)",
+        "observed": "sigma = 0.03488 (dev 5.1%)",
+        "detail": "R_fit = 22.26, dp = 0.001567",
+        "source": "VALIDATION T11 Laplace (sigma = 3.32e-2 +-10% slope, +-5% per droplet; +-15% single-droplet combined)"
+      },
+      {
+        "check": "mass drift",
+        "ok": true,
+        "expected": "rel drift <= 2.5e-10 over 25000 steps (1e-10/1e4 steps, region=all)",
+        "observed": "rel drift = 3.9e-12",
+        "detail": "mass[first]=4783.05, mass[last]=4783.05000002",
+        "source": "VALIDATION T11 (total-mass drift <= 1e-10 rel)"
+      },
+      {
+        "check": "droplet x/y mirror symmetry",
+        "ok": true,
+        "expected": "max mirror asym <= 1e-09 (observation band)",
+        "observed": "max asym = 7.06e-12",
+        "detail": "",
+        "source": "symmetric IC + symmetric stencil (observation band)"
+      }
+    ],
+    "manifest": {
+      "status": "completed",
+      "stepsRun": 30000,
+      "wallSeconds": 70.7745085,
+      "mlups": 6.944873379092417,
+      "diagnostics": {
+        "totalMass": 4783.050000022653,
+        "maxSpeed": 0.004330486534457929,
+        "tau": 1.0
+      },
+      "warnings": []
+    }
+  }
+]
