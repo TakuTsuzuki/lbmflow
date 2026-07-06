@@ -1,3 +1,5 @@
+> **STATUS: spec absorbed into VALIDATION.md T18.3**
+
 # SPEC_NOTES_T18_3
 
 ## Ambiguities and traps

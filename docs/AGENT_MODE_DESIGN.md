@@ -83,12 +83,19 @@ GUI presets also internally generate the same schema (unifying the 3 modes).
 
 ## MCP server (`lbm mcp`)
 
-Tools:
-- `run_scenario(scenario: object, outDir?: string) -> manifest` (supports progress notifications)
-- `validate_scenario(scenario: object) -> {ok, errors[], warnings[]}`
-- `list_presets() -> [{name, description, scenario}]`
-- `get_schema() -> JSON Schema`
-- `read_field(runDir, field, format="csv") -> data` (retrieval of completed run results)
+The stdio MCP server exposes 7 tools. The synchronous `run_scenario` blocks the
+client; the async trio (`start_run` / `run_status` / `list_runs`) is the way to
+launch long or multiple simulations without blocking (4-concurrent cap).
+
+| Tool | Purpose |
+|---|---|
+| `run_scenario(scenario, outDir?)` | Blocking run; returns manifest on completion. |
+| `start_run(scenario, outDir?) -> runId` | Non-blocking; returns a run handle. |
+| `run_status(runId) -> {state, progress, manifest?}` | Poll a running/finished run. |
+| `list_runs() -> [{runId, state, ...}]` | Enumerate active + recent runs. |
+| `validate_scenario(scenario) -> {ok, errors[], warnings[]}` | Schema + stability heuristics only. |
+| `list_presets() -> [{name, description, scenario}]` | Built-in preset catalog. |
+| `get_schema() -> JSON Schema` | Self-discovery of the scenario schema. |
 
 ## Relationship with the GUI
 

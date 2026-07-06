@@ -1,3 +1,5 @@
+> **STATUS: spec absorbed into VALIDATION.md T18.1**
+
 # SPEC_NOTES_T18_1
 
 Adversarial findings while authoring T18.1 from `docs/VALIDATION.md` and

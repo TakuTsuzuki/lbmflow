@@ -1,10 +1,10 @@
 # LBMFlow Implementation Plan
 
-> **2026-07-05 revision**: per user directive, 3D, supercomputer-scale, and GPU are promoted to mandatory requirements.
-> Subsequent plans follow [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md) (4 pillars of the winning edge + R1-R5) and
-> [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) (orthogonal design of dimension × lattice × precision × backend × partitioning).
-> Milestones are M-A (CPU SIMD/wgpu evaluation, in progress) → M-B (core V2) →
-> M-C (3D) → M-D (MPI distributed) → M-E (FP16/multi-GPU/public benchmarks) → M-F (vertical features).
+> **2026-07-05 revision**: per user directive, 3D, supercomputer-scale, and GPU are mandatory.
+> Requirements framework: [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md) (R1–R5 + T13–T16 equivalence framework);
+> strategic positioning: [paper/LBMFlow-whitepaper.md](paper/LBMFlow-whitepaper.md).
+> Architecture: [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) (dimension × lattice × precision × backend × partitioning).
+> Milestones M-A–M-D landed; M-E mostly GREEN (ME-3 cluster + ME-4 stirred RED); M-F in flight.
 
 **Goal**: A commercial-grade lattice Boltzmann method (LBM) fluid simulator.
 It can explicitly control the accuracy-vs-speed tradeoff, supports multiphase flow, and provides both a

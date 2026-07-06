@@ -1,11 +1,13 @@
-# Benchmark Results — public-grade measurement window #1 (2026-07-05 23:11–23:35 JST)
+# Benchmark Results — raw data
 
-Machine: Apple M5 Max, 18 cores, 128 GB, macOS. LBMFlow @ `feat/body-force-field-api`
-HEAD `b262447` (CpuSimd fused backend; GPU = `lbm-gpu-proto`, Metal/wgpu).
-Idle window (user stopped non-LBM jobs; load1≈3.4). Warmup excluded via best-of-N.
-All numbers are **measured Tier-1** (claims-ledger GREEN). Raw CSVs + scripts under
-`~/projects/cfd-bench/` (outside repo): `run_lbmflow_cpu_sweep.sh`,
-`run_openlb_sweep.sh`, `bw_triad.c`.
+Machine: Apple M5 Max, 18 cores, 128 GB, macOS. Idle window; warm-up excluded
+via best-of-N. Raw CSVs + scripts under `~/projects/cfd-bench/` (outside repo):
+`run_lbmflow_cpu_sweep.sh`, `run_openlb_sweep.sh`, `bw_triad.c`.
+
+**2D CPU/GPU baseline** (2026-07-05 window, LBMFlow HEAD `b262447`).
+**3D GPU + FP16** (post-ME-1/ME-2 landings 2026-07-06, quiet-window A/B/A):
+D3Q19 GPU 192³ 2,791–2,813 MLUPS, 128³ 2,778–2,880 MLUPS; FP16 ~2× MLUPS
+@2048², D3Q19 f16 >5 GLUPS.
 
 ## 0. Roofline — memory bandwidth (native arm64 triad, 18 threads)
 | metric | GB/s |
@@ -58,18 +60,10 @@ LBMFlow = CpuSimd (NEON autovectorized). Best-of runs.
 | 128³, 1 thread / 1 rank | **52.0** | 44.6 | LBMFlow **+17%** |
 | 128³, 18 thread / 18 rank | 266.6 | **298.8** | OpenLB **+12%** |
 
-Reading (honest): LBMFlow's NEON kernels win single-thread; OpenLB's MPI domain
-decomposition scales better to all 18 cores (LBMFlow's rayon 3D scaling is a known
-limit — band-edge double-collision + P/E heterogeneous cores, PERFORMANCE.md).
-**Same order of magnitude = competitive on CPU 3D**, with LBMFlow additionally
-offering the GPU path OpenLB lacks here.
-
 OpenLB per-config best (MLUPS): 64³ 1r 43.4 / 18r 208.7 · 100³ 1r 43.9 / 18r 224.3 ·
 128³ 1r 44.6 / 18r 298.8.
 
-## 4. Not yet measured (follow-up window)
-- OpenLB **2D** (cavity2d) for the D2Q9 head-to-head vs LBMFlow 1,480 MLUPS.
-- OpenLB **CPU_SIMD** attempt on ARM (if supported) — for a SIMD-vs-SIMD line.
-- **Palabos** (Family A #2) — needs cmake install then build.
-- **OpenFOAM via Colima** (Family B) — cylinder Re=20 Cd time-to-solution.
-- LBMFlow **scalar** baseline rows (sweep-script bug produced 0; re-run cleanly).
+## 4. Follow-up measurement queue
+- OpenLB 2D (cavity2d) — D2Q9 head-to-head vs LBMFlow 1,480 MLUPS.
+- Palabos, OpenFOAM (Colima) — cross-code comparison.
+- Multi-node weak scaling ≥64 ranks (ME-3, blocked on cluster access).

@@ -3,8 +3,7 @@
 **Session B2, LBMFlow Skills Initiative.** Turns the B1 capability map's GREEN
 items into user-facing Skill specs + scaffolds, writes implementation orders for
 the one YELLOW item, and spec-only notes for RED items. Single source of
-capability truth = `docs/skills/b1-capability-map.md`. Authoring standard =
-`docs/skills/a-pilot-report.md` §3 (Sonnet-parity) + §1 (inventory table).
+capability truth = `docs/skills/b1-capability-map.md`.
 All artifacts English. Branch `skills/b2`.
 
 Base grounding for accepted options (verified against source, not memory):

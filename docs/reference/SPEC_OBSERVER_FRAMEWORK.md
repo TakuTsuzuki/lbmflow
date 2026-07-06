@@ -231,30 +231,12 @@ consumes that layout); no contradiction — postprocess is a read-only consumer 
 
 ---
 
-## 12. Cross-reference findings (four dispatched specs checked against each other)
+## 12. Cross-spec bindings
 
-Per your request, I audited units-echo-back vs observer-SI, checkpoint-STATS vs fieldAverage,
-Bouzidi-records vs collision-pass-structure. **No hard contradictions**; three cross-cutting
-requirements/corrections filed so the four specs compose cleanly:
-
-- **§12-F1 (correction to SPEC_CHECKPOINT_RESTART §2/§3):** the `STATS` section was labelled
-  "reserved (M-F)". `fieldAverage` may ship before M-F, so STATS must activate with the **first
-  statistics observer**, not gate on M-F. Its concrete blob layout is defined here (§5). *Action:*
-  reword the checkpoint spec's STATS row from "reserved (M-F)" to "reserved; activated by the
-  observer framework (fieldAverage), see SPEC_OBSERVER_FRAMEWORK §5."
-- **§12-F2 (binding requirement across SPEC_UNIT_CONVERTER + SPEC_BOUZIDI_STL):** SI-emitting
-  observers (`forceCoeffs`) (a) must live in the runner/scenario layer using the resolved
-  UnitConverter — core stays lattice-only (units §6); and (b) must read the **active wall model's**
-  force — the Bouzidi-consistent MEM when `wall: bouzidi` is set (Bouzidi §6), else the staircase
-  MEM. A `forceCoeffs` reading a stale/wrong force would silently report a staircase-biased Cd on a
-  Bouzidi run. *Action:* the observer order must depend on the force-pass output tag, not call
-  `probed_force` blindly.
-- **§12-F3 (binding requirement across the ε-channel order + this spec):** exactly one
-  `field_value(FieldKind, …)` provider; observers consume it. The ε-channel's Q/λ2/vorticity is that
-  site. Two implementations = a defect. *Action:* the observer order depends on (does not duplicate)
-  the ε-channel FieldKind provider.
-
-No contradiction found between Bouzidi records and the collision-composition boundary: they occupy
-different phases (collision is inside collide; Bouzidi is a post-stream pass), the pass order
-`collide → halo → stream → Bouzidi → open-BC → moments` is consistent with both specs, and the only
-shared surface (the force) is covered by §12-F2.
+- **STATS section** (SPEC_CHECKPOINT_RESTART reserved slot): activated by the
+  first statistics observer (`fieldAverage`); blob layout in §5. Not gated on M-F.
+- **SI-emitting observers** (`forceCoeffs`): live in runner/scenario layer using the
+  UnitConverter (core stays lattice-only); must read the active wall model's
+  force output (Bouzidi-consistent MEM when `wall: bouzidi`).
+- **Single `field_value(FieldKind, …)` provider** — the ε-channel Q/λ2/vorticity
+  site is that provider; observers consume, never re-derive.
