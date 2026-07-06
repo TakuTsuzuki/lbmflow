@@ -226,3 +226,13 @@ viscosities ⇒ (B), else (C) candidate. Core also CONFIRMED the P4-001/010
 family diagnosis (per-cell gain fix delays 120→1450 steps but a collective
 mode remains; ANOM-P2-001 is the deeper defect) — R2-C re-dispatch in
 flight on the core side; our gates hold.
+
+### ANOM-P4-008 FULLY CLOSED — the −0.16|u|² term verdict: (B)
+Ablation A/B (cx/e1-ablation, docs/qa/e1-ablation-report.md + PNG): ON−OFF
+slope difference matches the derived footprint δc = 0.16·(1/4)·2/(2−ω)
+within 26.5% (ν=0.02) and 24.9% (ν=0.10); the τ-fingerprint RATIO across
+the two viscosities is 3.42 vs 3.50 predicted — the term is a real
+Galilean-class correction, retained with measured provenance (inventory
+3.1: offset was (C), removed; u²-term is (B), validated). The audit file's
+E1 SPEC-GAP stays as documentation (the toggle is a compile-time const, so
+the A/B cannot live in one test binary); the report is its evidence.
