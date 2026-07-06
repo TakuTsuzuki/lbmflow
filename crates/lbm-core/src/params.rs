@@ -20,6 +20,22 @@ pub enum CollisionKind {
         /// Magic parameter Λ = (1/ω+ − 1/2)(1/ω− − 1/2).
         magic: f64,
     },
+    /// Cascaded central-moment collision. This is the stage-2 CPU reference
+    /// operator for the cumulant track: the shear-rate field controls the
+    /// second-order deviatoric central moments, the second-order trace and
+    /// all higher-order central moments relax to equilibrium at rate 1.0.
+    Cumulant {
+        /// Relaxation rate for second-order shear central moments.
+        omega_shear: f64,
+    },
+}
+
+impl Default for CollisionKind {
+    fn default() -> Self {
+        CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        }
+    }
 }
 
 impl CollisionKind {
@@ -36,8 +52,17 @@ impl CollisionKind {
                 let lam_p = tau - 0.5;
                 1.0 / (magic / lam_p + 0.5)
             }
+            CollisionKind::Cumulant { .. } => omega_p,
         };
         (omega_p, omega_m)
+    }
+
+    /// Uniform shear relaxation rate used by the central-moment branch.
+    pub fn omega_shear(self, nu: f64) -> f64 {
+        match self {
+            CollisionKind::Cumulant { omega_shear } => omega_shear,
+            CollisionKind::Bgk | CollisionKind::Trt { .. } => self.omegas(nu).0,
+        }
     }
 }
 
@@ -75,11 +100,49 @@ impl<T: Real> FaceBC<T> {
     }
 }
 
+/// Inclusive global-cell box for a localized volume source/sink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceRegion {
+    pub lo: [usize; 3],
+    pub hi: [usize; 3],
+}
+
+/// Per-step mass source over a [`SourceRegion`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SourceKind<T: Real> {
+    /// Total mass per lattice step, distributed uniformly over the region.
+    /// Negative values are sinks.
+    MassFlow { q_lu: T },
+    /// Total mass per lattice step carrying prescribed velocity `u`.
+    Jet { q_lu: T, u: [T; 3] },
+}
+
+/// Localized interior volume source/sink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VolumeSource<T: Real> {
+    pub region: SourceRegion,
+    pub kind: SourceKind<T>,
+}
+
+/// Rectangular boundary-condition override on one global face.
+///
+/// `lo`/`hi` are inclusive in-face coordinates on the two remaining axes in
+/// ascending axis order, matching [`crate::lattice::Face::tangents`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacePatch<T: Real> {
+    pub face: usize,
+    pub lo: [usize; 2],
+    pub hi: [usize; 2],
+    pub bc: FaceBC<T>,
+}
+
 /// Per-step scalar parameters (uniform over the grid). Relaxation rates are
 /// kept in `f64` and converted to `T` when kernel constants are built, so a
 /// step sees exactly the values V1 computes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct StepParams<T: Real> {
+    /// Collision operator selected by the validated global spec.
+    pub collision: CollisionKind,
     /// Symmetric relaxation rate `1/tau`.
     pub omega_p: f64,
     /// Antisymmetric relaxation rate (TRT); equals `omega_p` for BGK.
@@ -88,16 +151,24 @@ pub struct StepParams<T: Real> {
     pub force: [T; 3],
     /// Open BC per global face, `Face::index()` order.
     pub faces: [FaceBC<T>; 6],
+    /// Localized interior volume sources/sinks.
+    pub sources: Vec<VolumeSource<T>>,
+    /// Per-cell open-BC patches on global faces.
+    pub face_patches: Vec<FacePatch<T>>,
 }
 
 /// Kernel constants in working precision, rebuilt from [`StepParams`] each
 /// step exactly like V1 `Simulation::params()`.
 #[derive(Clone, Copy)]
 pub struct KParams<T: Real> {
+    /// Whether this step uses the stage-2 central-moment cumulant branch.
+    pub cumulant: bool,
     /// `T::r(omega_p)`.
     pub omega_p: T,
     /// `T::r(omega_m)`.
     pub omega_m: T,
+    /// Cumulant/central-moment shear relaxation rate.
+    pub omega_shear: T,
     /// Guo prefactor `1 - omega_p/2` (computed in f64, then converted).
     pub cp: T,
     /// Guo prefactor `1 - omega_m/2`.
@@ -122,8 +193,13 @@ impl<T: Real> KParams<T> {
             wr[q] = T::r(L::W[q]);
         }
         Self {
+            cumulant: matches!(p.collision, CollisionKind::Cumulant { .. }),
             omega_p: T::r(p.omega_p),
             omega_m: T::r(p.omega_m),
+            omega_shear: T::r(match p.collision {
+                CollisionKind::Cumulant { omega_shear } => omega_shear,
+                CollisionKind::Bgk | CollisionKind::Trt { .. } => p.omega_p,
+            }),
             cp: T::r(1.0 - p.omega_p / 2.0),
             cm: T::r(1.0 - p.omega_m / 2.0),
             force: p.force,

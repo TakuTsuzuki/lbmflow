@@ -34,6 +34,13 @@ pub struct Particle {
     pub exposure: f64,
 }
 
+/// Record emitted when a particle crosses a deposition floor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepositEvent {
+    pub pos: [f64; 3],
+    pub particle: Particle,
+}
+
 /// Fluid sample at a particle position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
@@ -108,6 +115,62 @@ impl ParticleSet {
                 p.vel = v_new;
             }
         }
+    }
+
+    /// Advances all particles by one lattice time step and records floor hits.
+    ///
+    /// Particles whose proposed step segment crosses `floor_z` are removed from
+    /// the suspended set and appended to `deposits` in deterministic particle
+    /// index order. The deposit position is the linear interpolation point on
+    /// the segment. Drag, exposure accumulation, and solid handling for
+    /// non-deposited particles match [`Self::step`].
+    pub fn step_depositing<F, E>(
+        &mut self,
+        sample: F,
+        exposure_rate: Option<E>,
+        floor_z: f64,
+        deposits: &mut Vec<DepositEvent>,
+    ) where
+        F: Fn([f64; 3]) -> Sample,
+        E: Fn([f64; 3]) -> f64,
+    {
+        assert!(self.rho_f > 0.0, "fluid density must be positive");
+        assert!(self.nu > 0.0, "kinematic viscosity must be positive");
+        assert!(
+            (0.0..=1.0).contains(&self.restitution),
+            "restitution must be in [0, 1]"
+        );
+
+        let mut suspended = Vec::with_capacity(self.particles.len());
+        for mut p in self.particles.drain(..) {
+            assert!(p.d > 0.0, "particle diameter must be positive");
+            assert!(p.rho_p > 0.0, "particle density must be positive");
+
+            let s = sample(p.pos);
+            if let Some(rate) = &exposure_rate {
+                p.exposure += rate(p.pos);
+            }
+
+            let v_new = particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g);
+            let pos_new = add(p.pos, v_new);
+
+            if let Some(pos) = floor_crossing(p.pos, pos_new, floor_z) {
+                p.pos = pos;
+                p.vel = v_new;
+                deposits.push(DepositEvent { pos, particle: p });
+            } else if sample(pos_new).solid {
+                let (pos, vel) =
+                    resolve_solid_contact(p.pos, pos_new, v_new, self.restitution, &sample);
+                p.pos = pos;
+                p.vel = vel;
+                suspended.push(p);
+            } else {
+                p.pos = pos_new;
+                p.vel = v_new;
+                suspended.push(p);
+            }
+        }
+        self.particles = suspended;
     }
 }
 
@@ -296,6 +359,18 @@ fn largest_abs_axis(a: [f64; 3]) -> usize {
     } else {
         0
     }
+}
+
+fn floor_crossing(start: [f64; 3], end: [f64; 3], floor_z: f64) -> Option<[f64; 3]> {
+    if !(start[2] > floor_z && end[2] <= floor_z) {
+        return None;
+    }
+    let dz = end[2] - start[2];
+    if dz == 0.0 {
+        return None;
+    }
+    let t = (floor_z - start[2]) / dz;
+    Some(add(start, scale(sub(end, start), t)))
 }
 
 #[cfg(test)]

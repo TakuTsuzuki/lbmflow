@@ -148,7 +148,7 @@ fn offgrid_channel(bouzidi: bool) -> (Solver<D2Q9, f64, CpuScalar, LocalPeriodic
                 });
             }
         }
-        solver.fields_mut(0).bouzidi = Some(BouzidiLinks::new(records));
+        solver.set_bouzidi_links(0, Some(BouzidiLinks::new(records)));
     }
     solver.init_with(|_, y, _| {
         if y == 0 || y == ny - 1 {

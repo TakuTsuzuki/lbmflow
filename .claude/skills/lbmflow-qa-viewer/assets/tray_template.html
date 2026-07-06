@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LBMFlow — Dispersed Deposition Demo</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0e1116; color:#d8dee9; font:13px/1.45 -apple-system,'Segoe UI',sans-serif; }
+  #hdr { padding:10px 16px 6px; display:flex; flex-wrap:wrap; align-items:baseline; gap:14px; }
+  #hdr h1 { font-size:16px; font-weight:600; color:#eceff4; }
+  #hdr .sub { color:#7b8494; font-size:12px; }
+  .tabs { display:flex; gap:6px; margin-left:auto; }
+  .tab { padding:4px 14px; border:1px solid #2b3240; border-radius:6px; cursor:pointer; color:#9aa4b2; }
+  .tab.on { background:#1f2937; color:#fff; border-color:#4c9aff; }
+  #regime { padding:0 16px 8px; font:11px/1.5 ui-monospace,monospace; color:#8fa1b3; }
+  #main { display:grid; grid-template-columns: 1fr 380px; gap:10px; padding:0 12px 12px; height:calc(100vh - 84px); min-height:560px; }
+  @media (max-width: 900px) {
+    #main { grid-template-columns: 1fr; height:auto; }
+    #v3d { height: 62vw; min-height:340px; }
+  }
+  #v3d { position:relative; border:1px solid #232a36; border-radius:8px; overflow:hidden; background:#0a0d12; }
+  #v3d canvas { display:block; }
+  #v3d .cap { position:absolute; left:10px; top:8px; font-size:11px; color:#7b8494; pointer-events:none; }
+  #v3d .legend { position:absolute; right:10px; bottom:10px; width:130px; font-size:10px; color:#9aa4b2; }
+  #v3d .legend .bar { height:8px; border-radius:3px; margin-bottom:2px;
+    background:linear-gradient(90deg,#30123b,#3e9bfe,#46f884,#e1dd37,#f05b12,#7a0403); }
+  #side { display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
+  .panel { border:1px solid #232a36; border-radius:8px; padding:10px; background:#11151c; }
+  .panel h2 { font-size:12px; font-weight:600; color:#aeb9c8; margin-bottom:6px; }
+  .panel canvas { width:100%; image-rendering:pixelated; border-radius:4px; display:block; }
+  .row { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:11px; color:#9aa4b2; }
+  .row input[type=range] { flex:1; }
+  .row select { background:#1f2937; color:#d8dee9; border:1px solid #2b3240; border-radius:4px; padding:2px 6px; }
+  #metrics table { width:100%; border-collapse:collapse; font-size:11.5px; }
+  #metrics td { padding:2px 4px; border-bottom:1px solid #1c2230; }
+  #metrics td:last-child { text-align:right; font-family:ui-monospace,monospace; color:#e5e9f0; }
+  .readout { font:10.5px ui-monospace,monospace; color:#7b8494; margin-top:4px; min-height:14px; }
+</style>
+</head>
+<body>
+<div id="hdr">
+  <h1>LBMFlow — Dispersed-Phase Deposition Demo</h1>
+  <span class="sub">target tray 48&times;48&times;12 mm &middot; D3Q19 &middot; one-way Lagrangian</span>
+  <div class="tabs" id="tabs"></div>
+</div>
+<div id="regime"></div>
+<div id="main">
+  <div id="v3d">
+    <div class="cap">drag = orbit &middot; wheel = zoom &middot; points = cells with |u| &ge; threshold &middot; floor = deposited density</div>
+    <div class="legend"><div class="bar"></div><div id="lgtxt">0 &mdash; max mm/s</div></div>
+  </div>
+  <div id="side">
+    <div class="panel" id="metrics"><h2>Deposition metrics</h2><table></table></div>
+    <div class="panel">
+      <h2>Deposited number density n(x,y) &mdash; 12&times;12 partition</h2>
+      <canvas id="dens" width="240" height="240"></canvas>
+      <div class="readout" id="densro">hover for bin values</div>
+    </div>
+    <div class="panel">
+      <h2>Controls</h2>
+      <div class="row"><span>field</span>
+        <select id="field">
+          <option value="speed">speed |u|</option>
+          <option value="uz">axial u_z</option>
+          <option value="uxy">in-plane |u_xy|</option>
+        </select>
+        <span>threshold</span><input type="range" id="thr" min="2" max="60" value="8"><span id="thrv"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Horizontal slice (XY) &mdash; <span id="zlab"></span></h2>
+      <canvas id="sxy" width="256" height="256"></canvas>
+      <div class="row"><span>z</span><input type="range" id="zsl" min="0" max="31" value="2"></div>
+      <div class="readout" id="sxyro"></div>
+    </div>
+    <div class="panel">
+      <h2>Vertical slice (XZ) &mdash; <span id="ylab"></span></h2>
+      <canvas id="sxz" width="256" height="64"></canvas>
+      <div class="row"><span>y</span><input type="range" id="ysl" min="0" max="127" value="64"></div>
+      <div class="readout" id="sxzro"></div>
+    </div>
+  </div>
+</div>
+<script>/*__THREE__*/</script>
+<script>/*__ORBIT__*/</script>
+<script>
+const BUNDLE = /*__BUNDLE__*/;
+
+// ---------- data ----------
+function decode(b64){
+  const s = atob(b64); const u = new Uint8Array(s.length);
+  for (let i=0;i<s.length;i++) u[i]=s.charCodeAt(i);
+  return new Float32Array(u.buffer);
+}
+BUNDLE.datasets.forEach(d => { d.vel = decode(d.vol); d.vol = null; });
+
+// turbo-ish colormap
+const STOPS = [[0.19,0.07,0.23],[0.24,0.61,1.0],[0.27,0.97,0.52],[0.88,0.87,0.22],[0.94,0.36,0.07],[0.48,0.02,0.01]];
+function cmap(t){
+  t = Math.max(0, Math.min(1, t)) * (STOPS.length-1);
+  const i = Math.min(STOPS.length-2, Math.floor(t)), f = t - i;
+  const a = STOPS[i], b = STOPS[i+1];
+  return [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+}
+function divmap(t){ // blue-white-red for u_z
+  t = Math.max(-1, Math.min(1, t));
+  return t < 0 ? [1+t, 1+t*0.45, 1] : [1, 1-t*0.45, 1-t];
+}
+
+let cur = 0;
+const $ = id => document.getElementById(id);
+const FIELDS = {
+  speed: (v,i) => Math.hypot(v[3*i],v[3*i+1],v[3*i+2]),
+  uz:    (v,i) => v[3*i+2],
+  uxy:   (v,i) => Math.hypot(v[3*i],v[3*i+1]),
+};
+
+// ---------- three.js scene ----------
+const wrap = $('v3d');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+wrap.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0d12);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 2000);
+camera.position.set(64, 46, 84);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(24, 6, 24);
+controls.enableDamping = true;
+
+let cloud = null, floorMesh = null;
+function mm(m){ return m * 1000; }
+
+function buildStatic(meta){
+  const W = mm(meta.nx*meta.spacing), D = mm(meta.ny*meta.spacing), H = mm(meta.nz*meta.spacing);
+  const box = new THREE.Box3(new THREE.Vector3(0,0,0), new THREE.Vector3(W,H,D));
+  const helper = new THREE.Box3Helper(box, 0x39445a);
+  scene.add(helper);
+  const grid = new THREE.GridHelper(W, 12, 0x232a36, 0x1a212c);
+  grid.position.set(W/2, 0.02, D/2);
+  scene.add(grid);
+  controls.target.set(W/2, H/2, D/2);
+}
+
+function buildFloor(meta){
+  if (floorMesh) { scene.remove(floorMesh); floorMesh.material.map.dispose(); floorMesh.material.dispose(); floorMesh.geometry.dispose(); }
+  const c = document.createElement('canvas'); c.width = meta.pi; c.height = meta.pj;
+  const ctx = c.getContext('2d'); const img = ctx.createImageData(meta.pi, meta.pj);
+  let dmax = 0; meta.density.forEach(r => r.forEach(v => dmax = Math.max(dmax, v)));
+  for (let j=0;j<meta.pj;j++) for (let i=0;i<meta.pi;i++){
+    const [r,g,b] = cmap(meta.density[j][i] / (dmax||1));
+    const p = 4*(j*meta.pi+i);
+    img.data[p]=r*255; img.data[p+1]=g*255; img.data[p+2]=b*255; img.data[p+3]=235;
+  }
+  ctx.putImageData(img,0,0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  const W = mm(meta.nx*meta.spacing), D = mm(meta.ny*meta.spacing);
+  const geo = new THREE.PlaneGeometry(W, D);
+  const mat = new THREE.MeshBasicMaterial({map:tex, transparent:true, depthWrite:false});
+  floorMesh = new THREE.Mesh(geo, mat);
+  floorMesh.rotation.x = -Math.PI/2;
+  floorMesh.position.set(W/2, 0.05, D/2);
+  scene.add(floorMesh);
+}
+
+function buildCloud(){
+  const meta = BUNDLE.datasets[cur].meta, vel = BUNDLE.datasets[cur].vel;
+  if (cloud) { scene.remove(cloud); cloud.geometry.dispose(); cloud.material.dispose(); }
+  const thr = (+$('thr').value/100) * meta.speed_max;
+  const sp = mm(meta.spacing);
+  const pos = [], col = [];
+  const {nx, ny, nz} = meta;
+  for (let k=0;k<nz;k++) for (let j=0;j<ny;j++) for (let i=0;i<nx;i++){
+    const idx = (k*ny+j)*nx+i;
+    const s = Math.hypot(vel[3*idx], vel[3*idx+1], vel[3*idx+2]);
+    if (s < thr) continue;
+    pos.push((i+0.5)*sp, (k+0.5)*sp, (j+0.5)*sp);
+    const [r,g,b] = cmap(s/meta.speed_max);
+    col.push(r,g,b);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col,3));
+  const mat = new THREE.PointsMaterial({size:0.45, vertexColors:true, transparent:true, opacity:0.85, depthWrite:false});
+  cloud = new THREE.Points(geo, mat);
+  scene.add(cloud);
+  $('thrv').textContent = (thr*1000).toFixed(1)+' mm/s ('+(pos.length/3|0)+' pts)';
+}
+
+function resize(){
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+new ResizeObserver(resize).observe(wrap);
+(function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+
+// ---------- 2D panels ----------
+function drawDensity(){
+  const meta = BUNDLE.datasets[cur].meta;
+  const cv = $('dens'), ctx = cv.getContext('2d');
+  const cell = cv.width / meta.pi;
+  let dmax = 0; meta.density.forEach(r => r.forEach(v => dmax = Math.max(dmax, v)));
+  for (let j=0;j<meta.pj;j++) for (let i=0;i<meta.pi;i++){
+    const [r,g,b] = cmap(meta.density[j][i]/(dmax||1));
+    ctx.fillStyle = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
+    ctx.fillRect(i*cell, (meta.pj-1-j)*cell, cell-1, cell-1);
+  }
+  cv.onmousemove = e => {
+    const r = cv.getBoundingClientRect();
+    const i = Math.floor((e.clientX-r.left)/r.width*meta.pi);
+    const j = meta.pj-1-Math.floor((e.clientY-r.top)/r.height*meta.pj);
+    if (i<0||j<0||i>=meta.pi||j>=meta.pj) return;
+    $('densro').textContent = `bin(${i},${j})  count=${meta.counts[j][i]}  n/mean=${meta.density[j][i].toFixed(3)}`;
+  };
+}
+
+function drawSlice(canvasId, roId, axis){
+  const meta = BUNDLE.datasets[cur].meta, vel = BUNDLE.datasets[cur].vel;
+  const f = FIELDS[$('field').value];
+  const cv = $(canvasId), ctx = cv.getContext('2d');
+  const {nx, ny, nz} = meta;
+  const w = nx, h = (axis==='z') ? ny : nz;
+  cv.width = w; cv.height = h;
+  const img = ctx.createImageData(w, h);
+  const isUz = $('field').value === 'uz';
+  const smax = meta.speed_max;
+  const kfix = +$('zsl').value, jfix = +$('ysl').value;
+  for (let b=0;b<h;b++) for (let a=0;a<w;a++){
+    const idx = (axis==='z') ? ((kfix*ny + b)*nx + a) : ((b*ny + jfix)*nx + a);
+    const val = f(vel, idx);
+    const [r,g,bl] = isUz ? divmap(val/(smax*0.6)) : cmap(Math.abs(val)/smax);
+    const p = 4*((h-1-b)*w + a);
+    img.data[p]=r*255; img.data[p+1]=g*255; img.data[p+2]=bl*255; img.data[p+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  const sp = meta.spacing*1000;
+  if (axis==='z'){ $('zlab').textContent = 'z = '+(kfix+0.5).toFixed(1)+' cells = '+((kfix+0.5)*sp).toFixed(2)+' mm'; }
+  else { $('ylab').textContent = 'y = '+((jfix+0.5)*sp).toFixed(2)+' mm'; }
+  cv.onmousemove = e => {
+    const r = cv.getBoundingClientRect();
+    const a = Math.floor((e.clientX-r.left)/r.width*w);
+    const b = h-1-Math.floor((e.clientY-r.top)/r.height*h);
+    if (a<0||b<0||a>=w||b>=h) return;
+    const idx = (axis==='z') ? ((kfix*ny + b)*nx + a) : ((b*ny + jfix)*nx + a);
+    const v3 = [vel[3*idx]*1000, vel[3*idx+1]*1000, vel[3*idx+2]*1000];
+    $(roId).textContent = `u = (${v3[0].toFixed(2)}, ${v3[1].toFixed(2)}, ${v3[2].toFixed(2)}) mm/s  |u| = ${Math.hypot(...v3).toFixed(2)} mm/s`;
+  };
+}
+
+function drawMetrics(){
+  const m = BUNDLE.datasets[cur].meta.metrics;
+  const fmt = (v,d) => (+v).toFixed(d);
+  const rows = [
+    ['CV (uniformity)', fmt(m.CV,4)], ['Max / Mean', fmt(m.max_over_mean,3)],
+    ['empty bin fraction', fmt(m.empty_bin_fraction,4)],
+    ['n deposited', m.n_deposited], ['n suspended', m.n_suspended], ['n extracted', m.n_extracted],
+    ['Re_jet', fmt(m.Re_jet,2)], ['St', (+m.St).toExponential(2)], ['Fr', fmt(m.Fr,3)],
+    ['Ma', fmt(m.Ma,4)], ['&tau;', fmt(m.tau,3)],
+  ];
+  $('metrics').querySelector('table').innerHTML =
+    rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+  const meta = BUNDLE.datasets[cur].meta;
+  $('regime').innerHTML = `REGIME &middot; dx=${(meta.spacing/meta.ds*1e6).toFixed(1)} &micro;m (shown ${(meta.spacing*1e6).toFixed(1)} &micro;m after ${meta.ds}&times; downsample) &middot; grid ${meta.nx*meta.ds}&sup3;-class &rarr; ${meta.nx}&times;${meta.ny}&times;${meta.nz} &middot; Ma=${fmt(m.Ma,3)} &middot; &tau;=${fmt(m.tau,3)} &middot; low-Mach band OK (Ma&le;0.3, &tau;&ge;0.51)`;
+  $('lgtxt').textContent = '0 - '+(meta.speed_max*1000).toFixed(1)+' mm/s';
+}
+
+function refresh2D(){ drawDensity(); drawSlice('sxy','sxyro','z'); drawSlice('sxz','sxzro','y'); drawMetrics(); }
+function selectDataset(i){
+  cur = i;
+  document.querySelectorAll('.tab').forEach((t,k)=>t.classList.toggle('on', k===i));
+  buildFloor(BUNDLE.datasets[cur].meta);
+  buildCloud(); refresh2D();
+}
+
+// ---------- init ----------
+BUNDLE.datasets.forEach((d,i)=>{
+  const t = document.createElement('div'); t.className='tab'; t.textContent=d.label;
+  t.onclick = ()=>selectDataset(i); $('tabs').appendChild(t);
+});
+$('zsl').max = BUNDLE.datasets[0].meta.nz-1;
+$('ysl').max = BUNDLE.datasets[0].meta.ny-1;
+$('thr').oninput = buildCloud;
+$('field').onchange = refresh2D;
+$('zsl').oninput = ()=>drawSlice('sxy','sxyro','z');
+$('ysl').oninput = ()=>drawSlice('sxz','sxzro','y');
+buildStatic(BUNDLE.datasets[0].meta);
+resize();
+selectDataset(0);
+</script>
+</body>
+</html>

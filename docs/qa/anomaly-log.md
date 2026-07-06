@@ -1,203 +1,126 @@
 # Physics Anomaly Sweep — log
 
-Append-only. Filed by the QA/viewer session (autonomous pass; `send_message` to
-PM is pending the auto-approve hook, so S0/S1 are recorded here for PM pickup
-instead of messaged). Sink + taxonomy per the agreed protocol
-(S0 silently-wrong physics / S1 divergence-leak in a supported config /
-S2 below-expected-accuracy / S3 minor). Anomaly references are ONLY the
-documented `lbmflow-user-tune-stability` thresholds and analytic constraints —
-no invented thresholds (band governance).
+Living register of physics anomalies. Rows drop when superseded by a landed
+fix + regression pin (or refuted). Test-cited stubs stay: they document
+current-wrong-value pins that must flip in the same commit as the fix.
+
+Taxonomy: **S0** silently-wrong · **S1** divergence-leak · **S2**
+below-expected accuracy · **S3** minor. Historical triage narrative is in
+git history (2e121c8 band-vacuity scan, 714da6a cold-review triage, pass 1–4
+context in commits 82946d3 / cd3999f / 20d0e10).
 
 ---
 
-## Pass 1 — 2026-07-05 — stability-envelope sweep (3D stirred-tank example)
+## OPEN — core-engine fix pending
 
-**Config**: `crates/lbm-cli/examples/stirred_tank_3d.rs`, D3Q19 TRT, n=64, 2000
-steps, penalized Rushton impeller. Sweep of (tip speed `u_tip`, viscosity `nu`)
-to probe the documented stability envelope. Detector: draft
-`sim-anomaly-scan` (universal checks + the tune-stability thresholds
-tau≥0.55, |u|≤0.15 Ma / hard 0.3, grid-Re U/ν≤15).
+### ANOM-P2-001 — uniform-force vs per-cell force-field transient impulse mismatch
+- Severity: **S2** (steady-state invisible; transients wrong).
+- Cited in: `crates/lbm-core/tests/mf_interim.rs:265`,
+  `crates/lbm-core/tests/accuracy_audit.rs:471` (`#[ignore]` current-wrong-value
+  pin — flips at R2-C fix).
+- Measured (32×24, tau=1, TRT Λ=3/16, F=3e-7): uniform u(1)=1.5F (exact Guo);
+  force-field u(1)=0.9286F — 1/(2 tau_minus)·F = 4/7 F impulse deficit.
+- Disposition: fold into R2-C mechanical TRT port (order text in
+  `scratchpad/order-r2c.txt`).
 
-**Raw sweep** (example built-in verdict `||` scanner verdict):
+### ANOM-P4-001 — time-stepped direct-forcing IBM diverges in default config
+- Severity: **S1**.
+- Gate: `cx/audit-ibm` B1–B8 (currently RED / NaN).
+- Config: 80×80 periodic D2Q9 TRT Λ=3/16 nu=1/6, IBM circle r_i=10 Ω=1.5e-4
+  (Re_r=0.09), relaxation=1.0 (module DEFAULT). NaN at n_markers∈{63,160}.
+- Root cause (derived): marker force targets the Guo half-force velocity
+  (Σ W·F/(2ρ) = slip), but the full step realizes F/ρ — 2× overshoot per apply;
+  overlapping kernels (ds<h) amplify collectively. Same family as P4-010.
+- Positive control: at stable point (relax=0.25, n=160) T ratio 1.075 —
+  spatial discretization is right; the coupling loop is broken.
+- Disposition: core-engine routing.
 
-| case    | u_tip | nu     | tau   | Ma_tip | grid-Re U/ν | example | scanner |
-|---------|-------|--------|-------|--------|-------------|---------|---------|
-| ctrl    | 0.08  | 0.02   | 0.560 | 0.14   | ~4          | STABLE  | CLEAN |
-| ma_hi   | 0.20  | 0.02   | 0.560 | 0.35   | ~10         | STABLE  | CRITICAL (mach) |
-| ma_xhi  | 0.30  | 0.02   | 0.560 | 0.52   | ~15         | STABLE  | CRITICAL (mach) |
-| tau_lo  | 0.08  | 0.004  | 0.512 | 0.14   | ~22         | STABLE  | FLAGGED (tau, grid-Re) |
-| tau_xlo | 0.08  | 0.0015 | 0.504 | 0.14   | ~65         | STABLE  | CRITICAL (tau, grid-Re) |
-| gridre  | 0.12  | 0.002  | 0.506 | 0.21   | ~1160→NaN   | DIVERGED| CRITICAL (mach, tau, grid-Re) |
+### ANOM-P4-008 — cumulant D3Q19 "+0.0025 viscosity offset" is a resolution-point calibration (verdict C)
+- Severity: **S2** leaning S0 (silent tau-dependent bias at every N except
+  calibration point).
+- Gate: `cx/audit-cumulant` e2 canary (|a| ≤ 2e-3 after removal).
+- Measured (N ∈ {24,32,48}, diffusive u0): D3Q19 defects fit
+  d = a + b/N² exactly with a = −2.3275e-2, b = +23.22. The intercept matches
+  the offset's own nu-space footprint −0.0025·2/(2−ω) at ω=1.7857 to 99.8%.
+  D3Q27 control (offset=0): a27 ≈ 0. Confirms the uncorrected cumulant has
+  ~zero resolution-independent bias — the offset cancels ordinary O(h²) at
+  one resolution only.
+- Recommended: remove offset; re-freeze TGV3D acceptance with h²-intercept
+  criterion; ablate the −0.16·u² term separately.
 
-### A1 [S0] — out-of-envelope runs stay bounded and report STABLE with no runtime signal
-`ma_hi` (Ma_tip 0.35) and `ma_xhi` (Ma 0.52) exceed the low-Mach limit
-(|u|≤0.15 Ma, hard 0.3) yet stay bounded (the penalization cap holds |u|<0.3)
-and the run reports **STABLE**. Above Ma 0.3 the method no longer approximates
-the incompressible NSE — the field is silently compressible/wrong. Same class:
-`tau_xlo` (tau 0.504 at the ν→0 floor, grid-Re 65) runs bounded for 2000 steps
-and passes naive finiteness/divergence, but is grossly under-resolved →
-physically meaningless.
-**Not** an "expected-limitation": the limits ARE documented, but the run path
-gives **no runtime signal** — no max-Ma / grid-Re echo, no warn — so a user who
-skips pre-run `lbm validate` gets bounded, plausible-looking, wrong output.
-**Ask (core)**: echo `max_Ma` and `grid_Re` into the run manifest and emit a
-runtime warn (or opt-in abort) when they cross the documented thresholds, so the
-silently-wrong regime is not silent. Ref: tune-stability |u|≤0.15 Ma, U/ν≤15,
-tau≥0.55.
-
-### A2 [tooling, mine] — example STABLE/DIVERGED gate too permissive → FIXED
-The gate was `final_max|u| < 0.5` (caught only full divergence, missed A1). Now a
-three-state verdict: `DIVERGED` (non-finite or |u|≥0.5) / `OUT-OF-ENVELOPE`
-(bounded but Ma_field>0.3 or grid-Re U/ν>15) / `STABLE`; the SUMMARY line also
-prints `Ma_field` and `grid_Re`. Verified: ma_hi and tau_xlo now report
-OUT-OF-ENVELOPE (were STABLE). Commit-side change in the example.
-
-### B [tooling fix, mine] — draft anomaly-scan missed the under-resolved case → FIXED
-First run returned CLEAN for `tau_xlo` (no tau/grid-Re check). Added the
-documented-threshold checks (tau≥0.55, U/ν≤15); it now flags `tau_xlo` CRITICAL.
-Also added `nu` to the example's `volume.json` so the scan auto-applies them with
-no `--nu` flag. Verified. **Hand-off to the core-owned `sim-anomaly-scan`**: adopt
-the tau-floor + grid-Re checks from the frozen thresholds; draft script at
-`scratchpad/draft_anomaly_scan_for_worker.py`.
-
-### Divergence boundary observed
-Stable at (0.08, 0.02); the first hard NaN divergence in this sweep is
-(0.12, 0.002) — tau 0.506 with grid-Re ~1160. Consistent with the documented
-envelope (tau near the floor AND grid-Re ≫ 15).
-
-### Coverage NOT run this pass (deferred to the worker + CLI collection surface)
-Single-phase 2D analytic cases (Poiseuille/Couette profile L2, Ghia cavity
-centrelines), cylinder T8, 2D Shan-Chen spurious-current vs T11 bands. These
-need the CLI preset/scenario + VTK/manifest surface the PM described; the worker
-owns `sim-run`/`sim-anomaly-scan`/`sim-qa-report`. This pass used the
-self-contained 3D example to calibrate the detector against the documented
-stability thresholds.
-
-**Pass 1 verdict**: detector calibrated and catching S0 correctly. Open for PM:
-**A1 (S0)** — add a runtime Ma / grid-Re guard so out-of-envelope runs are not
-silent (core). Closed by me: A2 (example 3-state gate) + B (scanner tau/grid-Re
-+ nu-in-export), both verified. STOP for PM go per protocol (no unattended loop).
-
-Next pass (needs the CLI collection surface + worker): 2D analytic cases
-(Poiseuille/Couette L2, Ghia cavity centrelines), cylinder T8, 2D Shan-Chen
-spurious-current vs T11 — the worker owns run/scan/report; it should request the
-`lbmflow-qa-viewer` skill for any spatially-flagged case rather than rebuild.
+### ANOM-P4-010 — compat volume penalization diverges for solid disc at Re 0.09
+- Severity: **S1**. Same family as P4-001 (target-the-half-force sizing).
+- Gate: `cx/audit-rotor` F1/F2/F3 (F4 cross-path after both fixes).
+- Config: 80×80 periodic compat, TRT Λ=3/16, nu=1/6, solid disc
+  n_blades=2/r_hub=0/thickness=2R, chi=1, Ω=1.5e-4.
+- Observed: step-1 torque correct; then sign-flipping growth
+  (u* → 2u_t − u* per step); density catastrophe by step ~120, e131 by
+  step 400. Thin blades are marginally damped by streaming exchange with
+  neighbors — the old stirred example's f_cap clamp was load-bearing here.
+- Disposition: one core fix should cover both family members
+  (full-step-consistent force sizing).
 
 ---
 
-## Pass 2 — 2026-07-06, MF-interim Wave 1 (gravity / rotor / particles) + resuspension observation
+## OPEN — audit-side revision
 
-Context: user directive to take over the stirred-tank resuspension capability.
-Wave-1 codex orders landed per-mass gravity (`cx/mf-grav`), rotor volume
-penalization (`cx/mf-rotor`), one-way Lagrangian particles (`cx/mf-particles`)
-and an adversarial suite (`cx/mf-tests`); integrated + scenario/runner wiring
-on `qa/mf-integration`. Adversarial suite: **16 pass / 0 fail / 4 SPEC-GAP**
-(`cargo test -p lbm-core --release --features mf-interim --test mf_interim`).
-
-### Anomalies
-
-**ANOM-P2-001 — uniform-force vs per-cell force-field transient impulse
-mismatch** — S2 (correctness of transients; steady-state invisible),
-disposition-proposal: collision-kernel owners (B-1/R2-C in flight) unify the
-source-term weighting.
-- Scenario+config: any TRT run driving the same F through `SimConfig::force`
-  vs the per-cell force field (gravity / Shan-Chen / rotor path).
-- Expected: identical dynamics (Guo forcing, single definition — REQ rev.4
-  "forcing second-moment single-definition" is the same family of issue).
-- Observed (probe, 32x24 periodic + obstacle, tau=1, TRT Lambda=3/16,
-  F=3e-7): uniform path u(1) = 1.5 F (exact Guo); force-field path
-  u(1) = 0.9286 F — a one-time impulse deficit of 1/(2 tau_minus) * F = 4/7 F.
-  Growth is F/step on both paths afterwards, so T2/T6/T11 steady gates cannot
-  see it; the offset then seeds slowly diverging trajectories near obstacles
-  (measured 2.1e-7 growth divergence over 50 steps).
-- Impact: any transient force-driven measurement (SC droplet oscillation
-  phase, rotor spin-up torque transient, gravity startup).
-- Workaround in tests: same-path twins only (see mf_interim.rs).
-
-**ANOM-P2-002 — rotor blade indicator produced mirror arms for odd blade
-counts** — S2 (wrong geometry, silently plausible fields), **fixed** in
-`qa/mf-integration` (along-blade sign check; 3 blades were 6 half-thickness
-arms). Found by cross-reading the adversarial suite's independent geometry
-against the implementation. The frozen stability envelope used 4 blades
-(even) and is unaffected.
-
-### SPEC-GAPs raised by the adversarial suite (S3, to pin in the contracts)
-
-1. Native `Solver::set_gravity` composition with `set_body_force_field`
-   rewrites across subdomains. 2. Particle starting inside solid: project /
-   reflect / reject. 3. Rotor `chi = 0`: rejected vs no-op. 4. Particle
-   overlap: no collision model (document one-way explicitly at the scenario
-   surface).
-
-### Behavior observation — stirred-tank flake resuspension (the target case)
-
-2D reduction of the user case (128^2 closed tank, per-mass gravity
-2e-4, 300 one-way flakes, 4-blade penalized rotor; configs in
-`scripts/qa/resuspension/`, stats via `scripts/qa/observe_resuspension.py`):
-
-- **High-clearance impeller (C/T = 0.5), tip 0.10**: flakes settle to the
-  floor and are NEVER resuspended (laminar near-floor vertical velocity
-  1.9e-3 total speed at row 1, mostly horizontal, vs settling velocity
-  1.8e-3). Permanent deposition — consistent with mixing practice (high
-  clearance is bad for solids suspension).
-- **Low-clearance impeller (C/T = 0.25, the textbook solids-suspension
-  geometry), d=6, rho_p=1.03**:
-  - tip 0.01: 100% settled at 100k steps (one transient single-particle
-    pickup to y=60 that re-settled — threshold intermittency).
-  - tip 0.10: **sustained partial suspension — 34% of flakes above y=16,
-    excursions to y=117/128, 66% remaining as a bed** (the classic below-N_js
-    bed + cloud equilibrium). Flow field: `out/.../speed_100000.png`.
-- Verdict: settling, threshold behavior and rotation-driven resuspension all
-  emerge from the implemented force balance (no stochastic kicks). Honest
-  limits: laminar only — realistic resuspension at industrial Re needs W-LES
-  (MF-beta, this session's next order) + lift forces (FR-PART roadmap); free
-  surface (half-filled vessel) still rigid-lid until MF-gamma.
-
-### Process errata (pass 2)
-
-- Stale-binary trap: `cargo test -p lbm-core` does not rebuild lbm-cli; the
-  first observation ran a pre-rotor binary (maxSpeed 0.0000 exposed it
-  immediately — the observation gate works).
-- codex sandbox cannot commit in shared-.git worktrees (`index.lock` EPERM):
-  2 of 4 orders needed PM-side commits. Fold into the dispatch Skill notes.
+### ANOM-P4-007 — cumulant viscosity-offset audit design confounded
+- Severity: audit design.
+- Standing: orientation consistency PASSED (spread 2.2e-10); calibration
+  residual −5.9e-4. E1 u0-sweep at fixed N conflates O(Ma²) with cubic
+  defect; E2 N=24 band ignored O(h²) spatial-error floor.
+- Revised probes queued: tau-sweep, N-sweep at fixed Ma for D3Q27,
+  spatial-error-modeled bands. Superseded in verdict by ANOM-P4-008 (offset
+  is a calibration hack); this row stays until the revised audit lands.
 
 ---
 
-## Pass 3 — 2026-07-06, W-LES heavy characterization freeze
+## Test-cited stubs (must flip in the fix commit)
 
-Ran on `origin/main` 99bb32a (post B-1 + cx/acc + cx/wles + W-GRAV + W-ROT
-landings). No new anomalies; two frozen turbulence-tractability data points.
+- **ANOM-P4-004** — `accuracy_audit_particles.rs:14`. Test-side v0=1e-10
+  fix (Stokes limit). No engine work.
+- **ANOM-P4-005** — `accuracy_audit_sources.rs:239`. Semantics pin: q_lu is
+  REGION TOTAL (not per-cell). Doc gap queued in DISPERSED_DEPOSITION.md §5.
+- **ANOM-P4-006** — `accuracy_audit_sources.rs:431`. Patch BC nodes = face
+  layer (exact); adjacent interior carries developed flow.
+- **ANOM-P4-009** — `crates/lbm-core/src/compat/rotor.rs:163,208`. Two
+  contracts: hub region r<r_hub is a HOLE (not solid); `update_force` ADDS
+  into the field — caller must `clear_force_field()`.
 
-### Frozen values (both #[ignore], measured on this pass)
+---
 
-- **TGV64 nu_eff shift under WALE** (T15.4 setup, N=64, nu=0.02, u0=1.28e-4/N,
-  tstar=832 steps, ~35 s wall):
-  - nu_eff_off = 1.9977e-2, nu_eff_on = 1.9977e-2 → **dnu_rel = 6.60e-8**
-  - max nu_t (on) = 1.39e-8 (essentially null under diffusive scaling — the
-    intended WALE behavior for a small-strain resolved flow)
-  - Band frozen at 1e-6 (~15x headroom over measured value); the original
-    order allowed 1% which is far too loose for what WALE actually did here.
-- **Multimode stabilization existence proof** (deterministic 3-mode init,
-  N=48, nu=0.003, u0=0.10, U/nu=33, 20k steps, ~7 min wall total):
-  - LES-OFF diverged at step 200 (max|u| > 0.3 or non-finite)
-  - LES-ON completed 20000 steps: max|u| = 5.15e-4, max nu_t = 5.08e-6
-    (~0.17% of nu_0 — a real, non-trivial modeling contribution)
-  - Horizon extension: **100x** (200 → 20000 steps).
+## Runtime/tooling proposals (open, non-core-engine)
 
-### Honest scoping (what these do NOT prove)
+- **ANOM-P1-001** — S2 tooling: mass/momentum drift is not first-class in
+  the manifest. Proposal: periodic diagnostics series
+  (step, totalMass, totalMomentum[, maxSpeed]) at `checkEvery`.
+- **ANOM-P1-003** — S3 monitoring: runtime `maxSpeed` can exceed the
+  compressibility advisory (0.15 / 0.3) with no signal. Proposal: promote
+  validate thresholds to run-end runtime check on `maxSpeed`.
+- **A1 (pass 1)** — S0 monitoring: out-of-envelope stirred runs (Ma>0.3 or
+  grid-Re≫15) stay bounded and report STABLE with no runtime signal.
+  Proposal: echo `max_Ma` and `grid_Re` into the manifest + runtime warn.
 
-- **Turbulence ACCURACY is still open** — the Re_tau=180 channel vs DNS test
-  (T17/VR-STR-03) remains a skeleton. The paper's turbulence-accuracy claim
-  stays red on the claims ledger until that lands.
-- The multimode case proves *stabilization exists*, not that the stabilized
-  solution is quantitatively correct at that Re — it is a tractability seed,
-  not a validation.
+---
 
-### Physics-honesty check on the WALE choice (bent-physics avoidance)
+## Dropped (resolved / superseded / refuted / test-side landed)
 
-The steady-Couette/Poiseuille null gate (measured max nu_t <= 1e-12) already
-proved WALE cannot leak into resolved pure-shear physics. TGV64 (small S^d
-regime, dnu_rel = 6.6e-8) confirms it does not touch the diffusive-limit
-scaling either. Multimode (large S^d) shows it activates as expected. Three
-regimes, three consistent behaviors — the WALE-over-Smagorinsky ruling holds
-by measurement, not just by cited theory.
+Retained pointers only; details in git history:
+
+- **ANOM-P2-002** rotor blade mirror-arms (odd blade counts) — FIXED
+  in `qa/mf-integration` (along-blade sign check).
+- **ANOM-P4-002 / P4-003** — test-side, fixed in-worktree (probe A2 sign,
+  A1/A5 band floors). Commit 2024a52.
+- **ANOM-P4-011** — cold-review F19/F20 (Bouzidi probe-force sign) REFUTED
+  by derivation (two modules use opposite q conventions consistently).
+  Residues: doc comment on convention; W2 Bouzidi mixed-qd kill-case queued.
+- **ANOM-DRY-001** — S3 test-side (Bouzidi audit dry run): convergence-fit
+  x-axis reversal (`width` vs `1/width`). Fixed in-file with inline note.
+- **ANOM-P1-002** — S3 spec: T4 profile band 2e-3 is calibrated to the
+  frozen ν=0.02; doc footnote proposal only. Pin ν=0.02 in matrix.py in the
+  meantime.
+- Cold-review S3 doc routing: `CollisionKind::Cumulant` implements a
+  central-moment operator + velocity-dependent relaxation, not full Geier
+  cumulant; rename or implement true cumulants (D-track owns the routing).
+- Particle SN validity clamp at Re_p=800 is silent; add
+  debug_assert→warn/documented saturation at API surface.

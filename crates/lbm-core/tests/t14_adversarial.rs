@@ -401,7 +401,7 @@ fn t14_mixed_force_field_moving_wall_and_open_faces() {
             ]
         })
         .collect();
-    pair.cpu.fields_mut(0).force_field = Some(field.clone());
+    pair.cpu.set_body_force_field_values(&field);
     pair.gpu.set_force_field(field);
     for _ in 0..4 {
         pair.run_and_check(75, "mixed force/moving/open", FIELD_TOL);

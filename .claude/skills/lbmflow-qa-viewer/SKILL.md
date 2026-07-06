@@ -51,6 +51,19 @@ Assets live in `assets/` next to this file:
   inlines Three.js/OrbitControls/data into a full local HTML.
 - `inline_single.py` — the simpler single-volume inliner (tokens
   `/*__THREE__*/ /*__ORBIT__*/ /*__META__*/ /*__DATA__*/`).
+- `tray_template.html` / `convert_tray.py` / `build_tray_viewer.py` — the
+  dispersed-deposition (D-track) variant: rectangular tray instead of tank
+  geometry. **D-track visualization is 2D-FIRST (user directive 2026-07-06):
+  the information lives in the n(x,y) density map, the XY/XZ slices, and
+  time series — deliver those; the orbiting 3D scene adds nothing for a
+  thin-tray deposition problem and is omitted unless specifically asked.** Converter streams the example's ASCII STRUCTURED_POINTS
+  `tray_velocity.vtk` + `density.csv` + `metrics.json` into `vel.bin`/`meta.json`
+  (block-average downsample, ×2 local / ×4 Artifact); template shows the 3D
+  point cloud over a deposition-heatmap floor, XY/XZ slices, 12×12 density
+  panel, and the metrics/REGIME strip, with a multi-dataset tab switch.
+  Usage: `convert_tray.py <run_dir> <out_dir> <ds>` then
+  `build_tray_viewer.py tray_template.html three.min.js OrbitControls.js
+  out.html Label:dir [Label:dir ...]`.
 
 Local (full-res), one or more datasets — label:dir pairs:
 

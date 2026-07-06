@@ -31,12 +31,12 @@
 //!   4. 2D cylinder + momentum-exchange probe (probe force every step)
 //!   5. 2D per-cell + uniform Guo force, BGK
 //!   6. 2D channel → ConvectiveOutflow    (stale-slot capture path)
-//!   7. 3D TGV (D3Q19, fully periodic)
+//!   7. 3D TGV (D3Q19 and D3Q27, fully periodic)
 //!   8. 3D duct: inlet profile → Outflow, four wall faces
 //! plus the decomposition integration tests: InProcess 2×2 (and 3D 2×2×1)
 //! over `CpuSimd` against the monolithic `CpuScalar` reference.
 
-use lbm_core::lattice::{D2Q9, D3Q19};
+use lbm_core::lattice::{D2Q9, D3Q19, D3Q27};
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
 
@@ -411,21 +411,14 @@ fn cell_force_2d<T: Real>() {
     let lim = tol::<T>();
     let mut worst = 0.0f64;
     for s in 0..250usize {
-        for solver_idx in 0..2 {
-            let fields = if solver_idx == 0 {
-                pair.a.fields_mut(0)
-            } else {
-                pair.b.fields_mut(0)
-            };
-            let ff = fields
-                .force_field
-                .get_or_insert_with(|| vec![[T::zero(); 3]; nx * ny]);
-            for y in 0..ny {
-                for x in 0..nx {
-                    ff[y * nx + x] = pat(x, y, s);
-                }
+        let mut ff = vec![[T::zero(); 3]; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                ff[y * nx + x] = pat(x, y, s);
             }
         }
+        pair.a.set_body_force_field_values(&ff);
+        pair.b.set_body_force_field_values(&ff);
         pair.a.step();
         pair.b.step();
         if s % 25 == 0 || s == 249 {
@@ -485,10 +478,10 @@ fn convective_outflow_2d_f32() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. 3D TGV (D3Q19, fully periodic, TRT).
+// 7. 3D TGV (D3Q19/D3Q27, fully periodic, TRT).
 // ---------------------------------------------------------------------------
 
-fn tgv_3d<T: Real>() {
+fn tgv_3d<L: Lattice, T: Real>(what: &str) {
     let n = 32usize;
     let spec = GlobalSpec::<T> {
         dims: [n, n, n],
@@ -496,7 +489,7 @@ fn tgv_3d<T: Real>() {
         periodic: [true, true, true],
         ..Default::default()
     };
-    let mut pair = Pair::<D3Q19, T>::new(&spec, &WallSpec::default());
+    let mut pair = Pair::<L, T>::new(&spec, &WallSpec::default());
     let k = 2.0 * PI / n as f64;
     pair.init(move |x, y, z| {
         let (xf, yf, zf) = (k * x as f64, k * y as f64, k * z as f64);
@@ -514,17 +507,22 @@ fn tgv_3d<T: Real>() {
             ],
         )
     });
-    pair.run_compare(150, "tgv-3d");
+    pair.run_compare(150, what);
 }
 
 #[test]
 fn tgv_3d_f64() {
-    tgv_3d::<f64>();
+    tgv_3d::<D3Q19, f64>("tgv-3d");
 }
 
 #[test]
 fn tgv_3d_f32() {
-    tgv_3d::<f32>();
+    tgv_3d::<D3Q19, f32>("tgv-3d");
+}
+
+#[test]
+fn tgv_3d_d3q27_f64() {
+    tgv_3d::<D3Q27, f64>("tgv-3d-d3q27");
 }
 
 // ---------------------------------------------------------------------------

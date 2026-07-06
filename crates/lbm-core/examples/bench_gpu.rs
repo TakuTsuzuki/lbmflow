@@ -3,7 +3,8 @@
 //! check; docs/GPU_EVALUATION.md §1).
 //!
 //! Run: `cargo run -p lbm-core --release --features gpu --example bench_gpu`
-//! (`--gpu-only` skips the CPU baselines.)
+//! (`--gpu-only` skips the CPU baselines; `--f16` uses f16 distribution
+//! storage with f32 compute.)
 //!
 //! Timing convention matches the proto: wall time of encode + submit +
 //! wait-until-idle after a warmup, so nothing hides in queue latency.
@@ -25,6 +26,7 @@
 //! mask loads changes nothing — cache-served) and the workgroup shape
 //! (256×1 beat 128×1 / 64×2 / 32×4 for the push kernel).
 
+use lbm_core::gpu::{GpuStorage, KernelCfg};
 use lbm_core::lattice::{D2Q9, D3Q19};
 use lbm_core::prelude::*;
 use std::time::Instant;
@@ -35,6 +37,9 @@ const U0: f64 = 0.05;
 /// lbm-gpu-proto reference MLUPS on this machine (GPU_EVALUATION.md §1,
 /// M5 Max / Metal, wgpu 26, TRT f32, submit→wait inclusive).
 const PROTO_REF: [(usize, f64); 3] = [(512, 12_152.0), (1024, 7_584.0), (2048, 6_975.0)];
+
+type Gpu2 = Solver<D2Q9, f32, WgpuBackend<D2Q9>, LocalPeriodic>;
+type Gpu3 = Solver<D3Q19, f32, WgpuBackend<D3Q19>, LocalPeriodic>;
 
 fn tgv_ic(x: usize, y: usize, n: usize) -> (f32, [f32; 3]) {
     let k = 2.0 * std::f64::consts::PI / n as f64;
@@ -68,8 +73,9 @@ fn spec3(n: usize) -> GlobalSpec<f32> {
     }
 }
 
-fn gpu_solver(ctx: &std::sync::Arc<GpuContext>, n: usize) -> GpuSolver<D2Q9> {
-    let mut s = GpuSolver::<D2Q9>::new(&spec(n), &[], &[], ctx.clone());
+fn gpu_solver(ctx: &std::sync::Arc<GpuContext>, n: usize, storage: GpuStorage) -> Gpu2 {
+    let backend = WgpuBackend::<D2Q9>::with_config(ctx.clone(), KernelCfg { storage });
+    let mut s = Gpu2::new(&spec(n), &[], &[], [1, 1, 1], backend, LocalPeriodic);
     s.init_with(|x, y, _| tgv_ic(x, y, n));
     s
 }
@@ -87,26 +93,32 @@ fn tgv3_ic(x: usize, y: usize, z: usize, n: usize) -> (f32, [f32; 3]) {
     )
 }
 
-fn gpu_solver3(ctx: &std::sync::Arc<GpuContext>, n: usize) -> GpuSolver<D3Q19> {
-    let mut s = GpuSolver::<D3Q19>::new(&spec3(n), &[], &[], ctx.clone());
+fn gpu_solver3(ctx: &std::sync::Arc<GpuContext>, n: usize, storage: GpuStorage) -> Gpu3 {
+    let backend = WgpuBackend::<D3Q19>::with_config(ctx.clone(), KernelCfg { storage });
+    let mut s = Gpu3::new(&spec3(n), &[], &[], [1, 1, 1], backend, LocalPeriodic);
     s.init_with(|x, y, z| tgv3_ic(x, y, z, n));
     s
 }
 
 /// Warm up, calibrate the step count to ~`target_s` seconds, measure.
-fn bench_gpu(ctx: &std::sync::Arc<GpuContext>, n: usize, target_s: f64) -> f64 {
-    let mut s = gpu_solver(ctx, n);
+fn bench_gpu(
+    ctx: &std::sync::Arc<GpuContext>,
+    n: usize,
+    target_s: f64,
+    storage: GpuStorage,
+) -> f64 {
+    let mut s = gpu_solver(ctx, n, storage);
     s.run(50);
-    s.wait_idle(); // absorb pipeline compile + first touch
+    s.backend().context().wait_idle(); // absorb pipeline compile + first touch
     let cells = (n * n) as f64;
     let t = Instant::now();
     s.run(100);
-    s.wait_idle();
+    s.backend().context().wait_idle();
     let rate = 100.0 * cells / t.elapsed().as_secs_f64().max(1e-9);
     let steps = ((target_s * rate / cells) as usize).clamp(100, 60_000);
     let t = Instant::now();
     s.run(steps);
-    s.wait_idle();
+    s.backend().context().wait_idle();
     let mlups = cells * steps as f64 / t.elapsed().as_secs_f64() / 1e6;
     // Sanity: the field must still be finite (catches a silently broken
     // kernel masquerading as a fast one).
@@ -115,19 +127,24 @@ fn bench_gpu(ctx: &std::sync::Arc<GpuContext>, n: usize, target_s: f64) -> f64 {
     mlups
 }
 
-fn bench_gpu3(ctx: &std::sync::Arc<GpuContext>, n: usize, target_s: f64) -> f64 {
-    let mut s = gpu_solver3(ctx, n);
+fn bench_gpu3(
+    ctx: &std::sync::Arc<GpuContext>,
+    n: usize,
+    target_s: f64,
+    storage: GpuStorage,
+) -> f64 {
+    let mut s = gpu_solver3(ctx, n, storage);
     s.run(20);
-    s.wait_idle();
+    s.backend().context().wait_idle();
     let cells = (n * n * n) as f64;
     let t = Instant::now();
     s.run(40);
-    s.wait_idle();
+    s.backend().context().wait_idle();
     let rate = 40.0 * cells / t.elapsed().as_secs_f64().max(1e-9);
     let steps = ((target_s * rate / cells) as usize).clamp(40, 20_000);
     let t = Instant::now();
     s.run(steps);
-    s.wait_idle();
+    s.backend().context().wait_idle();
     let mlups = cells * steps as f64 / t.elapsed().as_secs_f64() / 1e6;
     let m = s.total_mass();
     assert!(m.is_finite(), "diverged during D3Q19 benchmark");
@@ -162,7 +179,18 @@ fn bench_cpu(n: usize, target_s: f64) -> f64 {
 
 fn main() {
     let gpu_only = std::env::args().any(|a| a == "--gpu-only");
-    let ctx = match GpuContext::new() {
+    let f16 = std::env::args().any(|a| a == "--f16");
+    let storage = if f16 {
+        GpuStorage::F16
+    } else {
+        GpuStorage::F32
+    };
+    let ctx_result = if f16 {
+        GpuContext::new_with_shader_f16(true)
+    } else {
+        GpuContext::new()
+    };
+    let ctx = match ctx_result {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("bench_gpu requires a usable GPU adapter: {e}");
@@ -175,8 +203,8 @@ fn main() {
         ctx.adapter_info.name, ctx.adapter_info.backend
     );
     println!(
-        "- physics: D2Q9 TRT (magic 3/16), f32 deviation storage, periodic TGV \
-         (nu={NU}, u0={U0}); timing = encode+submit+wait after warmup"
+        "- physics: D2Q9 TRT (magic 3/16), {storage:?} distribution storage, \
+         f32 compute, periodic TGV (nu={NU}, u0={U0}); timing = encode+submit+wait after warmup"
     );
     println!(
         "- proto reference: crates/lbm-gpu-proto on the same machine \
@@ -190,7 +218,7 @@ fn main() {
         println!("|---|---|---|---|---|---|");
     }
     for (n, proto) in PROTO_REF {
-        let g = bench_gpu(&ctx, n, 1.2);
+        let g = bench_gpu(&ctx, n, 1.2, storage);
         let vs = 100.0 * (g / proto - 1.0);
         if gpu_only {
             println!("| {n}x{n} | {g:.0} | {proto:.0} | {vs:+.1}% |");
@@ -206,7 +234,7 @@ fn main() {
     println!("| grid | GPU MLUPS |");
     println!("|---|---|");
     for n in [128usize, 192usize] {
-        let g = bench_gpu3(&ctx, n, 1.2);
+        let g = bench_gpu3(&ctx, n, 1.2, storage);
         println!("| {n}^3 | {g:.0} |");
     }
 }

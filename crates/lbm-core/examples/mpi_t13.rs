@@ -405,6 +405,31 @@ fn main() {
         unreachable!("mismatched rank specs must be rejected");
     }
 
+    if only.as_deref() == Some("dirty-mismatch") {
+        assert_eq!(size, 2, "dirty-mismatch test requires exactly 2 ranks");
+        let spec = GlobalSpec::<f64> {
+            dims: [16, 12, 1],
+            nu: 0.02,
+            periodic: [true, true, false],
+            ..Default::default()
+        };
+        let mut solver: MpiSolver<D2Q9, f64, CpuScalar> =
+            MpiSolver::new(&world, &spec, &[], &[], [2, 1, 1], CpuScalar::default());
+        if rank == 0 {
+            solver
+                .local_mut()
+                .set_body_force_field(|_, _, _| [1.0e-6, 0.0, 0.0]);
+        }
+        solver.step();
+        if rank == 0 {
+            println!("dirty-mismatch completed without a debug assertion");
+        }
+        drop(solver);
+        drop(world);
+        drop(universe);
+        return;
+    }
+
     let mut all_pass = true;
     let mut ran = 0usize;
     if size >= 1 {

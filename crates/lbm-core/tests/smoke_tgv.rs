@@ -81,20 +81,14 @@ fn tgv_effective_viscosity() {
         let (xf, yf) = (k * x as f64, k * y as f64);
         (1.0, -u0 * xf.cos() * yf.sin(), u0 * xf.sin() * yf.cos())
     });
-    let energy = |s: &Simulation<f64>| -> f64 {
-        s.ux_field()
-            .iter()
-            .zip(s.uy_field())
-            .map(|(ux, uy)| ux * ux + uy * uy)
-            .sum()
-    };
     let warmup = 200; // let the feq-only init settle
     let dt = 1000;
     sim.run(warmup);
-    let e1 = energy(&sim);
+    let e1 = common::tgv_analysis::ke2d(sim.ux_field(), sim.uy_field());
     sim.run(dt);
-    let e2 = energy(&sim);
-    let nu_eff = (e1 / e2).ln() / (4.0 * k * k * dt as f64);
+    let e2 = common::tgv_analysis::ke2d(sim.ux_field(), sim.uy_field());
+    // 2D TGV single mode: |K|² = 2 k².
+    let nu_eff = common::tgv_analysis::tgv_nu_eff(e1, e2, 2.0 * k * k, dt as f64);
     let rel = (nu_eff / nu - 1.0).abs();
     assert!(rel < 0.02, "nu_eff = {nu_eff}, nominal = {nu}, rel = {rel}");
 }

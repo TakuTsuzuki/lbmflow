@@ -1,10 +1,10 @@
 # LBMFlow Implementation Plan
 
-> **2026-07-05 revision**: per user directive, 3D, supercomputer-scale, and GPU are promoted to mandatory requirements.
-> Subsequent plans follow [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md) (4 pillars of the winning edge + R1-R5) and
-> [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) (orthogonal design of dimension × lattice × precision × backend × partitioning).
-> Milestones are M-A (CPU SIMD/wgpu evaluation, in progress) → M-B (core V2) →
-> M-C (3D) → M-D (MPI distributed) → M-E (FP16/multi-GPU/public benchmarks) → M-F (vertical features).
+> **2026-07-05 revision**: per user directive, 3D, supercomputer-scale, and GPU are mandatory.
+> Requirements framework: [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md) (R1–R5 + T13–T16 equivalence framework);
+> strategic positioning: [paper/LBMFlow-whitepaper.md](paper/LBMFlow-whitepaper.md).
+> Architecture: [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) (dimension × lattice × precision × backend × partitioning).
+> Milestones M-A–M-D landed; M-E mostly GREEN (ME-3 cluster + ME-4 stirred RED); M-F in flight.
 
 **Goal**: A commercial-grade lattice Boltzmann method (LBM) fluid simulator.
 It can explicitly control the accuracy-vs-speed tradeoff, supports multiphase flow, and provides both a
@@ -124,10 +124,11 @@ M-Star) are hereby **committed**, in this order:
 | ME-3 | **Multi-node / cluster measurement** (R3) | 64-rank weak scaling **≥80%** on a real cluster; the 8-item measurement list in MPI_GUIDE §cluster | C-1 (MPI setup localization) + cluster access — **AWS hpc7g×8 (~¥13k, CLUSTER_OPTIONS.md recommended) or Fugaku trial**; committed on the roadmap, instance spend gets a one-line user confirm at execution | R-Phase 3 window |
 | ME-4 | **Full-physics benchmark** (stirred-tank workload: two-phase + particles + scalar + LES) | performance-degradation ratio vs single-phase measured and published (the M-Star-comparable number); runs as part of MF-ζ acceptance | M-F tracks | MF-ζ |
 
-Sales/technical-paper policy (PM decision, same date): hybrid — scoped honest claims
-now (2D GPU GLUPS, single-node CPU, n≤4 weak scaling, verification-as-product,
-agent-native), roadmap items labeled as roadmap with the acceptance lines above as
-public commitments; a follow-up "performance title" edition after ME-1/ME-2 land.
+The paper (docs/paper/LBMFlow-whitepaper.md) describes what is measured today;
+edit the paper as the implementation lands, not the other way around. The
+acceptance lines above are the technical targets the roadmap converges on —
+they are not paper claims to true up at release. See docs/paper/claims-ledger.md
+for the current measurement-status snapshot.
 
 ### M-F: rotating boundary, high-density-ratio two-phase, LES-coupled 3D (REQ-M-F-STR rev.1b)
 
@@ -161,6 +162,23 @@ Findings original: docs/proposals/req-round2-findings.md).
 Effort sense (assuming parallel agents): R-2 ~1.5 weeks → MF-α–ε parallel ~1-2 weeks → MF-ζ integration ~1 week.
 The 1e9-lattice class is **cluster-only** per the memory budget table (REQ §7) (the single-machine development line is ≤256³) —
 measurements are consolidated into the cluster plan (CLUSTER_OPTIONS.md, awaiting user decision).
+
+### D-track: dispersed-phase deposition-design tool (established 2026-07-06)
+
+AI-agent-native forward/inverse design of deposited number-density fields
+n(x,y) from a withdraw/eject/agitate/settle protocol. Spec + phasing (P0–P4)
+frozen in [DISPERSED_DEPOSITION.md](DISPERSED_DEPOSITION.md); acceptance =
+VALIDATION.md **T18**. Status: **P0–P2 done** (2026-07-06). P2 landed CR-1
+interior volume source/sink, CR-2 per-cell masked face patches (incl. the
+frozen zero-velocity-lid semantics and global-coords seam handling), and CR-3
+deposition-aware particles (`step_depositing`), each gated by a
+codex-adversarial T18 suite (T18.1/.2/.3 green; 2 impl bugs caught and fixed
+at first measurement — see PHYSICS.md "T18 first-measurement
+reconciliation"); the example now runs on the real core capabilities and
+reproduces the P1.1 bands (gentle CV=1.138 ∈ [1.05, 1.30], deposition parity
+0.4%). Next: P3 (VOF-on-LBM free surface) is evidence-gated, not speculative;
+P4 = inverse solver (discrete-recipe comparison first, then CMA-ES/BO +
+surrogate) — T18.4 trend anchors and T18.5 recovery are the gates.
 
 **Fine-grained scheduling (rev.3)**: the authoritative dependency DAG is
 **REQ_STIRRED_REACTOR.md §11** (W-items; MF-α〜ζ above are the delegation bundles,

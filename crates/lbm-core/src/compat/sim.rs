@@ -109,6 +109,8 @@ impl<T: Real> Simulation<T> {
             periodic,
             faces,
             force: [cfg.force[0], cfg.force[1], T::zero()],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
         };
         let (solid, wall_u) = build_wall_rims(2, spec.dims, &walls);
         let solver = Solver::new(
@@ -138,15 +140,13 @@ impl<T: Real> Simulation<T> {
     fn sync_force_field(&mut self) {
         match &self.force2 {
             Some(f2) => {
-                let core = self.solver.fields_mut(0);
-                let ff = core
-                    .force_field
-                    .get_or_insert_with(|| vec![[T::zero(); 3]; f2.len()]);
-                for (dst, src) in ff.iter_mut().zip(f2.iter()) {
-                    *dst = [src[0], src[1], T::zero()];
-                }
+                let nx = self.nx();
+                self.solver.set_body_force_field(|x, y, _| {
+                    let src = f2[y * nx + x];
+                    [src[0], src[1], T::zero()]
+                });
             }
-            None => self.solver.fields_mut(0).force_field = None,
+            None => self.solver.clear_body_force_field(),
         }
     }
 
@@ -374,7 +374,7 @@ impl<T: Real> Simulation<T> {
     /// Remove the per-cell force field (reverts to the uniform force only).
     pub fn clear_force_field(&mut self) {
         self.force2 = None;
-        self.solver.fields_mut(0).force_field = None;
+        self.solver.clear_body_force_field();
     }
 
     /// Set per-mass gravity `g`; each step adds `rho(x) * g` on fluid cells
@@ -489,6 +489,15 @@ impl<T: Real> Simulation<T> {
     /// not drown in summation round-off on `f32` grids.
     pub fn total_mass(&self) -> T {
         self.solver.total_mass()
+    }
+
+    /// Total mass over fluid cells as an `f64` diagnostic.
+    ///
+    /// This preserves the f64 accumulator precision even when the simulation
+    /// scalar type is `f32`; [`Simulation::total_mass`] remains for source
+    /// compatibility and casts this value back to `T`.
+    pub fn total_mass_f64(&self) -> f64 {
+        self.solver.total_mass_f64()
     }
 
     /// Total momentum `[sum rho ux, sum rho uy]` over fluid cells (physical,

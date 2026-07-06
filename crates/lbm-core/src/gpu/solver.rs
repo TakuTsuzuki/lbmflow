@@ -42,7 +42,8 @@ impl<L: Lattice> GpuSolver<L> {
         ctx: Arc<GpuContext>,
     ) -> Result<Self, GpuError> {
         let backend = WgpuBackend::<L>::new(ctx);
-        let inner = Solver::new(spec, solid, wall_u, [1, 1, 1], backend, LocalPeriodic);
+        let inner = Solver::try_new(spec, solid, wall_u, [1, 1, 1], backend, LocalPeriodic)
+            .map_err(|e| GpuError::Spec(e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -54,6 +55,20 @@ impl<L: Lattice> GpuSolver<L> {
     /// Number of queue submissions issued by the underlying backend.
     pub fn submissions(&self) -> u64 {
         self.inner.backend().submissions()
+    }
+
+    /// Enable or disable on-device WALE LES omega generation.
+    ///
+    /// Default is disabled. When enabled, each GPU step refreshes the
+    /// pre-collision moments, computes a per-cell `omega_plus` field on the
+    /// device, then collides with that field.
+    pub fn set_wale(&mut self, enabled: bool) {
+        let base_omega = (1.0 / self.inner.tau()) as f32;
+        let backend = self.inner.backend() as *const WgpuBackend<L>;
+        let fields = self.inner.backend_fields_mut(0);
+        // SAFETY: `backend` and `fields` are disjoint fields inside `Solver`.
+        // The backend method flushes queued work before replacing WALE buffers.
+        unsafe { (&*backend).set_wale_enabled(fields, enabled, base_omega) };
     }
 
     /// Second-order consistent initialisation.
@@ -81,7 +96,7 @@ impl<L: Lattice> GpuSolver<L> {
     pub fn set_force_field(&mut self, field: Vec<[f32; 3]>) {
         let n = self.inner.dims().iter().product::<usize>();
         assert_eq!(field.len(), n, "force field must cover the whole grid");
-        self.inner.fields_mut(0).force_field = Some(field);
+        self.inner.set_body_force_field_values(&field);
         self.inner.backend().cache_next_upload_moments_once();
     }
 
@@ -196,6 +211,15 @@ impl<L: Lattice> GpuSolver<L> {
     pub fn gather_shear_rate(&mut self) -> Vec<f32> {
         self.sync();
         self.inner.gather_shear_rate()
+    }
+
+    /// Current on-device WALE `omega_plus` field in compact global order.
+    pub fn gather_wale_omega(&mut self) -> Vec<f32> {
+        let base_omega = (1.0 / self.inner.tau()) as f32;
+        self.inner
+            .backend()
+            .try_read_wale_omega(self.inner.backend_fields(0), base_omega)
+            .expect("GPU WALE omega readback failed")
     }
 
     /// Global deviation-population plane `q`.

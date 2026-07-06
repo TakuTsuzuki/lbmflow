@@ -6,15 +6,12 @@
 use lbm_core::lattice::D3Q19;
 use lbm_core::prelude::*;
 
+mod common;
+
 type Solver3<T> = Solver<D3Q19, T, CpuScalar, LocalPeriodic>;
 
 fn kinetic_energy(s: &Solver3<f64>) -> f64 {
-    let (ux, uy, uz) = (s.gather_ux(), s.gather_uy(), s.gather_uz());
-    ux.iter()
-        .zip(&uy)
-        .zip(&uz)
-        .map(|((a, b), c)| a * a + b * b + c * c)
-        .sum()
+    common::tgv_analysis::ke3d(&s.gather_ux(), &s.gather_uy(), &s.gather_uz())
 }
 
 fn tgv3d(n: usize, nu: f64) -> Solver3<f64> {

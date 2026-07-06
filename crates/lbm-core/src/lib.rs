@@ -8,7 +8,7 @@
 //!
 //! Layer map (docs/ARCHITECTURE_V2.md §1):
 //!
-//! - [`lattice`] — compile-time velocity sets (D2Q9, D3Q19) with derived
+//! - [`lattice`] — compile-time velocity sets (D2Q9, D3Q19, D3Q27) with derived
 //!   tables (TRT pairs, per-face unknown sets).
 //! - [`fields`] — q-major SoA deviation storage over halo-padded local boxes.
 //! - `kernels` (private) — the physics (collide/stream/moments/BCs), written
@@ -47,9 +47,12 @@ pub mod prelude {
     pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
     pub use crate::fields::{LocalGeom, SoaFields};
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
-    pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};
+    pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WALE_CW};
-    pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
+    pub use crate::params::{
+        CollisionKind, FaceBC, FacePatch, Reduction, SourceKind, SourceRegion, StepParams,
+        VolumeSource,
+    };
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{

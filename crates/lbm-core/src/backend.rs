@@ -22,11 +22,11 @@ use crate::fields::LocalGeom;
 use crate::fields::SoaFields;
 use crate::halo::HaloExchange;
 use crate::kernels::{
-    collide_row, convective_face, moments_row, outflow_face, stream_row, zou_he_face, RawSlice,
-    ZhKind,
+    collide_row, collide_row_central_moment, convective_face_selected, moments_row,
+    outflow_face_selected, stream_row, zou_he_face_selected, FaceCellSelection, RawSlice, ZhKind,
 };
 use crate::lattice::{Face, Lattice};
-use crate::params::{FaceBC, KParams, Reduction, StepParams};
+use crate::params::{FaceBC, KParams, Reduction, SourceKind, StepParams};
 use crate::real::Real;
 use crate::subdomain::Subdomain;
 
@@ -162,6 +162,13 @@ pub trait Backend<L: Lattice, T: Real> {
         false
     }
 
+    /// Whether this backend implements localized volume sources and masked
+    /// face patches. CPU backends share the reference implementation; GPU
+    /// rejects these features until device kernels are added.
+    fn supports_localized_features(&self) -> bool {
+        true
+    }
+
     /// Exchange post-collision population halos for backend-owned fields.
     ///
     /// CPU backends delegate to the current `HaloExchange<SoaFields>`
@@ -270,9 +277,22 @@ pub trait Backend<L: Lattice, T: Real> {
                 self.apply_open_faces(&subs[i], &mut fields[i], p);
             }
             for i in 0..fields.len() {
+                self.apply_volume_sources(&subs[i], &mut fields[i], p);
+            }
+            for i in 0..fields.len() {
                 self.update_moments(&subs[i], &mut fields[i], p);
             }
         }
+    }
+
+    /// Apply localized interior sources after boundary conditions and before
+    /// moment recomputation.
+    fn apply_volume_sources(
+        &mut self,
+        _sub: &Subdomain,
+        _fields: &mut Self::Fields,
+        _p: &StepParams<T>,
+    ) {
     }
 
     /// Maximum number of steps the orchestrator should record before calling
@@ -367,19 +387,35 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
             // SAFETY: each row index r is processed exactly once, and
             // collide_row writes only its own row's cells.
             unsafe {
-                collide_row::<L, T>(
-                    f,
-                    np,
-                    pb,
-                    &rho[c0..c0 + nx],
-                    &ux[c0..c0 + nx],
-                    &uy[c0..c0 + nx],
-                    &uz[c0..c0 + nx],
-                    &solid[pb..pb + nx],
-                    ff.map(|v| &v[c0..c0 + nx]),
-                    omega.map(|v| &v[c0..c0 + nx]),
-                    &kp,
-                )
+                if kp.cumulant {
+                    collide_row_central_moment::<L, T>(
+                        f,
+                        np,
+                        pb,
+                        &rho[c0..c0 + nx],
+                        &ux[c0..c0 + nx],
+                        &uy[c0..c0 + nx],
+                        &uz[c0..c0 + nx],
+                        &solid[pb..pb + nx],
+                        ff.map(|v| &v[c0..c0 + nx]),
+                        omega.map(|v| &v[c0..c0 + nx]),
+                        &kp,
+                    )
+                } else {
+                    collide_row::<L, T>(
+                        f,
+                        np,
+                        pb,
+                        &rho[c0..c0 + nx],
+                        &ux[c0..c0 + nx],
+                        &uy[c0..c0 + nx],
+                        &uz[c0..c0 + nx],
+                        &solid[pb..pb + nx],
+                        ff.map(|v| &v[c0..c0 + nx]),
+                        omega.map(|v| &v[c0..c0 + nx]),
+                        &kp,
+                    )
+                }
             }
         };
         #[cfg(feature = "parallel")]
@@ -466,6 +502,15 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
         apply_open_faces_impl::<L, T>(sub, fields, p);
     }
 
+    fn apply_volume_sources(
+        &mut self,
+        sub: &Subdomain,
+        fields: &mut SoaFields<T>,
+        p: &StepParams<T>,
+    ) {
+        apply_volume_sources_impl::<L, T>(sub, fields, p);
+    }
+
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
         update_moments_impl::<L, T>(fields, p, self.use_parallel(sub));
     }
@@ -504,33 +549,231 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
             continue;
         }
         let bc = &p.faces[face.index()];
-        if !bc.is_open() {
+        // Patch presence is a GLOBAL property of the face: a subdomain whose
+        // local window contains no patch rect still owes the non-patch cells
+        // their base treatment.
+        let face_has_patches = p
+            .face_patches
+            .iter()
+            .any(|patch| patch.face == face.index());
+        if !bc.is_open() && !face_has_patches {
             continue;
         }
+        // Patch rects are specified in GLOBAL in-face coordinates; the face
+        // kernels iterate this subdomain's LOCAL core cells, so translate and
+        // clip every rect by the subdomain origin (a patch straddling a seam
+        // must land on the same global cells in every decomposition — T18.2).
+        let patches: Vec<_> = p
+            .face_patches
+            .iter()
+            .filter(|patch| patch.face == face.index())
+            .filter_map(|patch| {
+                patch_rect_local(sub, face, patch.lo, patch.hi)
+                    .map(|(lo, hi)| (patch.bc, lo, hi))
+            })
+            .collect();
         let profiles = &fields.inlet_profiles;
-        match bc {
-            FaceBC::Closed => {}
-            FaceBC::Velocity { u } => zou_he_face::<L, T>(
+        let excluded: Vec<_> = patches.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
+        if !bc.is_open() && face_has_patches {
+            // A Closed base face carrying patches is an impermeable lid on the
+            // non-patch cells: prescribe u = 0 there (zero-velocity Zou-He).
+            // Rim-covered cells are solid and skipped by the kernel, so faces
+            // closed by a wall rim are unaffected; this arm exists for the
+            // bare Closed-plus-patches face (the CR-2 motivating case). The
+            // untreated alternative leaves those cells with no BC at all and
+            // slowly diverges (T18.2 impinging jet, NaN at ~1.7k steps).
+            zou_he_face_selected::<L, T>(
                 &mut fields.f,
                 np,
                 &g,
                 &fields.solid,
                 face,
-                &ZhKind::Velocity(*u),
-                profiles[face.index()].as_deref(),
-            ),
-            FaceBC::Pressure { rho } => zou_he_face::<L, T>(
-                &mut fields.f,
-                np,
-                &g,
-                &fields.solid,
-                face,
-                &ZhKind::Pressure(*rho),
+                &ZhKind::Velocity([T::zero(); 3]),
                 None,
-            ),
-            FaceBC::Outflow => outflow_face::<L, T>(&mut fields.f, np, &g, &fields.solid, face),
-            FaceBC::Convective { u_conv } => {
-                convective_face::<L, T>(&mut fields.f, np, &g, &fields.solid, face, *u_conv)
+                FaceCellSelection::Excluding { rects: &excluded },
+            );
+        }
+        if bc.is_open() {
+            match bc {
+                FaceBC::Closed => {}
+                FaceBC::Velocity { u } => zou_he_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    &ZhKind::Velocity(*u),
+                    profiles[face.index()].as_deref(),
+                    FaceCellSelection::Excluding { rects: &excluded },
+                ),
+                FaceBC::Pressure { rho } => zou_he_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    &ZhKind::Pressure(*rho),
+                    None,
+                    FaceCellSelection::Excluding { rects: &excluded },
+                ),
+                FaceBC::Outflow => outflow_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    FaceCellSelection::Excluding { rects: &excluded },
+                ),
+                FaceBC::Convective { u_conv } => convective_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    *u_conv,
+                    FaceCellSelection::Excluding { rects: &excluded },
+                ),
+            }
+        }
+        for (bc, lo, hi) in patches {
+            match bc {
+                // A Closed patch is an impermeable lid on its rect (same
+                // reasoning as the Closed-base-with-patches arm above).
+                FaceBC::Closed => zou_he_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    &ZhKind::Velocity([T::zero(); 3]),
+                    None,
+                    FaceCellSelection::Rect { lo, hi },
+                ),
+                FaceBC::Velocity { u } => zou_he_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    &ZhKind::Velocity(u),
+                    None,
+                    FaceCellSelection::Rect { lo, hi },
+                ),
+                FaceBC::Pressure { rho } => zou_he_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    &ZhKind::Pressure(rho),
+                    None,
+                    FaceCellSelection::Rect { lo, hi },
+                ),
+                FaceBC::Outflow => outflow_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    FaceCellSelection::Rect { lo, hi },
+                ),
+                FaceBC::Convective { u_conv } => convective_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    u_conv,
+                    FaceCellSelection::Rect { lo, hi },
+                ),
+            }
+        }
+    }
+}
+
+/// Translate a patch rect from global in-face coordinates to this subdomain's
+/// local core coordinates, clipping to the owned tangent range. Returns `None`
+/// when the rect does not intersect this subdomain's part of the face.
+fn patch_rect_local(
+    sub: &Subdomain,
+    face: Face,
+    lo: [usize; 2],
+    hi: [usize; 2],
+) -> Option<([usize; 2], [usize; 2])> {
+    let (t1, t2) = face.tangents();
+    let mut out_lo = [0usize; 2];
+    let mut out_hi = [0usize; 2];
+    for (i, t) in [t1, t2].into_iter().enumerate() {
+        let o = sub.origin[t];
+        let n = sub.geom.core[t];
+        if hi[i] < o || lo[i] >= o + n {
+            return None;
+        }
+        out_lo[i] = lo[i].saturating_sub(o);
+        out_hi[i] = (hi[i] - o).min(n - 1);
+    }
+    Some((out_lo, out_hi))
+}
+
+/// Apply volume sources on owner core cells only. The source pass runs after
+/// open-boundary BCs and before moment recomputation. Each source's `q_lu` is
+/// divided uniformly over its inclusive region; the per-cell mass increment is
+/// added as an equilibrium-shaped population delta, so `sum_q delta_f = q_cell`
+/// exactly up to floating-point summation and Jet sources also carry first
+/// moment `q_cell * u`.
+pub(crate) fn apply_volume_sources_impl<L: Lattice, T: Real>(
+    sub: &Subdomain,
+    fields: &mut SoaFields<T>,
+    p: &StepParams<T>,
+) {
+    if p.sources.is_empty() {
+        return;
+    }
+    let g = fields.geom;
+    let np = g.n_padded();
+    for source in &p.sources {
+        let lo = source.region.lo;
+        let hi = source.region.hi;
+        let count = (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1);
+        let (q_lu, u) = match source.kind {
+            SourceKind::MassFlow { q_lu } => (q_lu, [T::zero(); 3]),
+            SourceKind::Jet { q_lu, u } => (q_lu, u),
+        };
+        let q_cell = q_lu / T::r(count as f64);
+        let mut usq = u[0] * u[0];
+        for a in 1..L::D {
+            usq = usq + u[a] * u[a];
+        }
+        for gz in lo[2]..=hi[2] {
+            if gz < sub.origin[2] || gz >= sub.origin[2] + g.core[2] {
+                continue;
+            }
+            let z = gz - sub.origin[2];
+            for gy in lo[1]..=hi[1] {
+                if gy < sub.origin[1] || gy >= sub.origin[1] + g.core[1] {
+                    continue;
+                }
+                let y = gy - sub.origin[1];
+                for gx in lo[0]..=hi[0] {
+                    if gx < sub.origin[0] || gx >= sub.origin[0] + g.core[0] {
+                        continue;
+                    }
+                    let x = gx - sub.origin[0];
+                    let i = g.pidx(x, y, z);
+                    if fields.solid[i] {
+                        continue;
+                    }
+                    for q in 0..L::Q {
+                        let mut cu = T::r(L::C[q][0] as f64) * u[0];
+                        for a in 1..L::D {
+                            cu = cu + T::r(L::C[q][a] as f64) * u[a];
+                        }
+                        let delta = T::r(L::W[q])
+                            * q_cell
+                            * (T::one() + T::r(3.0) * cu + T::r(4.5) * cu * cu - T::r(1.5) * usq);
+                        fields.f[q * np + i] = fields.f[q * np + i] + delta;
+                    }
+                }
             }
         }
     }

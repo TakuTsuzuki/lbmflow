@@ -42,14 +42,14 @@ cd web && npm run build                   # GUI (tsc strict + vite)
   (update whenever you change physics)
 - [ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md) — dimension × lattice ×
   precision × backend × partition design
-- [SOLVER_IMPROVEMENT_SPEC.md](docs/SOLVER_IMPROVEMENT_SPEC.md) — R-Phase spec ·
-  [REVIEW_2026-07-05.md](docs/REVIEW_2026-07-05.md) (+ `_2`) — solver review findings
+- [SOLVER_IMPROVEMENT_SPEC.md](docs/SOLVER_IMPROVEMENT_SPEC.md) — R-Phase spec
 - [REQ_STIRRED_REACTOR.md](docs/REQ_STIRRED_REACTOR.md) — M-F requirements ·
   [T15_5_CAVITY3D_REFERENCE.md](docs/T15_5_CAVITY3D_REFERENCE.md) — 3D cavity reference data
+- [DISPERSED_DEPOSITION.md](docs/DISPERSED_DEPOSITION.md) — D-track dispersed-phase
+  deposition tool (frozen spec, P0–P4, CR-1/2/3, acceptance = T18)
 - [PERFORMANCE.md](docs/PERFORMANCE.md) / [GPU_EVALUATION.md](docs/GPU_EVALUATION.md) /
   [BENCH_COMPARISON_DRAFT.md](docs/BENCH_COMPARISON_DRAFT.md) — perf measurements
-- [MPI_GUIDE.md](docs/MPI_GUIDE.md) / [HPC_SCALING.md](docs/HPC_SCALING.md) /
-  [CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md) — distributed runs
+- [MPI_GUIDE.md](docs/MPI_GUIDE.md) / [CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md) — distributed runs
 - [MULTIPHASE_DESIGN.md](docs/MULTIPHASE_DESIGN.md) /
   [WASM_BRIDGE_DESIGN.md](docs/WASM_BRIDGE_DESIGN.md) /
   [AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md) /
@@ -86,12 +86,46 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 
 ## Working discipline (applies to every agent on this repo)
 
+- **Physical rigor is the prime directive; ad-hoc physics is BANNED (user
+  directive 2026-07-06).** Every physical behavior anywhere in the stack —
+  core, scenario, CLI, examples, demos, GUI — must be either resolved from
+  the governing equations or a literature-backed closure with a recorded
+  derivation, validity domain, and its own validation test (PHYSICS.md entry
+  mandatory). Prohibited outright: constants calibrated to pass an acceptance
+  band; branches keyed to sample/case identity (e.g. "harshness" switches);
+  position clamps or caps that silently absorb transport; decorative physics
+  terms. If a gate cannot be met without such a hack, STOP and report — the
+  spec gets revised, not the physics faked. Existing violations are being
+  inventoried and risk-hedged with minimal effort (V&V sweep commissioned
+  2026-07-06), not grandfathered. **The executable procedure (provenance
+  decision table, ban-list greps, two-layer gates, stop-rule template,
+  behavior-review record) is `.claude/skills/lbmflow-physics-discipline` —
+  every developer agent follows it mechanically; every physics-affecting
+  codex order embeds its clauses (see lbmflow-codex-dispatch Step 1.5).**
+- **V&V loop and finding routing.** V&V continuously runs experiment
+  matrices, visualizes the results (qa-viewer), and behavior-reviews them;
+  every anomaly becomes a finding. Routing: core-engine defect → send the
+  phenomenon report + data package (scenario JSON, exported fields, metrics,
+  repro command) to the core-engine session and request the fix;
+  demo/example defect → the PM dispatches a codex order; spec defect → spec
+  revision with the rationale recorded in PHYSICS.md.
 - **Evidence-based progress.** Before reporting anything as done, match each
   claim against a tool result from THIS session (test output, file diff, run
   log). Report unverified work as unverified; report skipped steps as skipped;
   report failing tests with their output. "Done" means the relevant gate in
   Build & test actually passed here — a codex order finishing is not evidence
   its branch is green. Fabricated progress is the worst possible failure.
+- **Behavior-validity review (user directive 2026-07-06).** After every
+  experiment/demo run, before reporting results: review whether the OBSERVED
+  behavior — spatial patterns, trends, signs, not just the gated metrics — is
+  physically plausible. Identify the dominant mechanism, separate resolved
+  physics from model closures / boundary artifacts (clamps, ad-hoc branches,
+  calibrated constants), and record the review in PHYSICS.md or the track's
+  findings file. A metric passing its band does NOT validate a pattern no
+  band covers. (Origin: the dispersed-deposition gentle case deposited in an
+  edge ring despite center dispensing — mechanism plausible, but the
+  magnitude was set by an uncalibrated closure branch + a side-wall position
+  clamp, and no gate looked at the spatial pattern.)
 - **Minimal scope.** Implement exactly what the order/task asks: no drive-by
   refactors, no helpers for one-off operations, no abstractions for
   hypothetical future requirements, no defensive code for impossible states

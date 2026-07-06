@@ -66,10 +66,13 @@ fn assert_stream_preserves_open_face_unknowns<L: Lattice>(dims: [usize; 3], open
     }
 
     let params = StepParams::<f64> {
+        collision: CollisionKind::Bgk,
         omega_p: 1.0,
         omega_m: 1.0,
         force: [0.0; 3],
         faces: [FaceBC::Outflow; 6],
+        sources: Vec::new(),
+        face_patches: Vec::new(),
     };
     let mut backend = CpuScalar::default();
     let _ = <CpuScalar as Backend<L, f64>>::stream(

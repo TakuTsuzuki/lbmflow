@@ -9,6 +9,10 @@ description = "LBMFlow scenario runner CLI (agent mode)"
 name = "lbm"
 path = "src/main.rs"
 
+[[example]]
+name = "dispersed_seeding"
+path = "examples/dispersed_seeding/main.rs"
+
 [dependencies]
 lbm-core = { path = "../lbm-core" }
 lbm-scenario = { path = "../lbm-scenario" }

@@ -23,3 +23,7 @@ export async function createEngine(): Promise<Engine> {
     return new MockEngine();
   }
 }
+
+export function isMockEngine(engine: Engine): boolean {
+  return engine instanceof MockEngine;
+}
