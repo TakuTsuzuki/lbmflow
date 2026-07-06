@@ -270,6 +270,71 @@ fn t15_1c_zou_he_3d_enforces_prescribed_moments() {
     );
 }
 
+/// Pressure-Zou-He faces must produce the normal velocity sign implied by
+/// rho(1 - u.n) = S0 + 2S-. Starting from rest, a higher density on XNeg and
+/// a lower density on XPos makes both boundary-face physical ux components
+/// point from left to right. This is the mutation sentinel for FA-MUT-001:
+/// flipping the pressure normal closure sign preserves rho but reverses this
+/// normal velocity.
+#[test]
+fn t15_1d_zou_he_pressure_faces_drive_from_high_density_to_low_density() {
+    let (nx, ny, nz) = (10, 6, 4);
+    let rho_hi = 1.01;
+    let rho_lo = 0.99;
+    let mut faces = [FaceBC::Closed; 6];
+    faces[Face::XNeg.index()] = FaceBC::Pressure { rho: rho_hi };
+    faces[Face::XPos.index()] = FaceBC::Pressure { rho: rho_lo };
+    let spec = GlobalSpec::<f64> {
+        dims: [nx, ny, nz],
+        nu: 0.05,
+        periodic: [false, true, true],
+        faces,
+        ..Default::default()
+    };
+    let mut s: S3 = Solver::new(
+        &spec,
+        &[],
+        &[],
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    s.run(4);
+
+    let mut left_min_ux = f64::INFINITY;
+    let mut right_min_ux = f64::INFINITY;
+    let mut center_sum_ux = 0.0;
+    let mut center_count = 0usize;
+    for z in 0..nz {
+        for y in 0..ny {
+            left_min_ux = left_min_ux.min(s.u(0, y, z)[0]);
+            right_min_ux = right_min_ux.min(s.u(nx - 1, y, z)[0]);
+            for x in 1..nx - 1 {
+                center_sum_ux += s.u(x, y, z)[0];
+                center_count += 1;
+            }
+        }
+    }
+    let center_mean_ux = center_sum_ux / center_count as f64;
+    println!(
+        "Zou-He pressure normal sign: rho_hi={rho_hi:.3}, rho_lo={rho_lo:.3}, \
+         left_min_ux={left_min_ux:.6e}, right_min_ux={right_min_ux:.6e}, \
+         center_mean_ux={center_mean_ux:.6e}"
+    );
+    assert!(
+        left_min_ux > 0.0,
+        "FA-MUT-001 sentinel: high-density XNeg pressure face did not drive +ux, left_min_ux={left_min_ux:e}"
+    );
+    assert!(
+        right_min_ux > 0.0,
+        "FA-MUT-001 sentinel: low-density XPos pressure face did not accept +ux outflow, right_min_ux={right_min_ux:e}"
+    );
+    assert!(
+        center_mean_ux > 0.0,
+        "FA-MUT-001 sentinel behavior anchor: interior mean ux should point high-to-low, center_mean_ux={center_mean_ux:e}"
+    );
+}
+
 // ===========================================================================
 // 2. Rectangular duct Poiseuille vs exact series (T15.2)
 // ===========================================================================

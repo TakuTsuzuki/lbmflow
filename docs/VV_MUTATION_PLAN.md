@@ -29,7 +29,7 @@ This keeps the committed branch limited to the mutation plan, runner, and findin
 | `d3q27-face-unknown-broken` | Break a D3Q27 face-unknown set | `lattice.rs` | `lattice::tests::d3q27_invariants` |
 | `halfway-wall-shifted` | Read the reflected population from the solid cell, effectively shifting the half-way wall treatment | `kernels.rs` | `validation_channel::t2_trt_magic_poiseuille_is_exact_and_symmetric` |
 | `moving-wall-sign-flipped` | Flip moving-wall momentum injection | `kernels.rs` | `validation_channel::t3_top_wall_couette_exact_for_bgk_and_trt_all_taus` |
-| `zou-he-pressure-normal-sign-flipped` | Flip pressure-Zou-He normal velocity closure | `kernels.rs` | `t15_3d::t15_1c_zou_he_3d_enforces_prescribed_moments` |
+| `zou-he-pressure-normal-sign-flipped` | Flip pressure-Zou-He normal velocity closure | `kernels.rs` | `t15_3d::t15_1d_zou_he_pressure_faces_drive_from_high_density_to_low_density` |
 | `pressure-outlet-correction-removed` | Remove tangential correction from Zou-He reconstruction | `kernels.rs` | `validation_open_bc::t4_velocity_inlet_pressure_outlet_channel_all_four_orientations` |
 | `outflow-stale-slot-broken` | Let streaming overwrite open-face unknown slots instead of preserving stale slots | `kernels.rs` | `stream_contract::cpu_stream_preserves_open_face_unknowns_d2q9` |
 | `mpi-halo-x-direction-swapped` | Perturb MPI halo message tagging in the x-exchange family | `dist.rs` | MPI feature unit sentinel if MPI is available |
@@ -42,7 +42,7 @@ This keeps the committed branch limited to the mutation plan, runner, and findin
 
 Executed lightweight probes for this suborder:
 - `moving-wall-sign-flipped`: killed by `validation_channel::t3_top_wall_couette_exact_for_bgk_and_trt_all_taus`.
-- `zou-he-pressure-normal-sign-flipped`: survived `t15_3d::t15_1c_zou_he_3d_enforces_prescribed_moments`.
+- `zou-he-pressure-normal-sign-flipped`: initially survived `t15_3d::t15_1c_zou_he_3d_enforces_prescribed_moments`; after adding `t15_1d_zou_he_pressure_faces_drive_from_high_density_to_low_density`, the same mutation is killed.
 - `outflow-stale-slot-broken`: killed by `stream_contract::cpu_stream_preserves_open_face_unknowns_d2q9`.
 
 The run set intentionally covers wall physics, open-boundary pressure closure, and open-face streaming memory. Longer multiphase, contact-angle, and MPI probes remain listed but were not executed in this lightweight pass.

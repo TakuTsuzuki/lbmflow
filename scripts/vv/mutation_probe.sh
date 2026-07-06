@@ -164,7 +164,7 @@ set_mutation() {
     zou-he-pressure-normal-sign-flipped)
       DESC="Flip the pressure-Zou-He normal velocity closure sign."
       TARGETS=(crates/lbm-core/src/kernels.rs)
-      CMD=(cargo test --release -p lbm-core --test t15_3d t15_1c_zou_he_3d_enforces_prescribed_moments -- --exact)
+      CMD=(cargo test --release -p lbm-core --test t15_3d t15_1d_zou_he_pressure_faces_drive_from_high_density_to_low_density -- --exact)
       ;;
     pressure-outlet-correction-removed)
       DESC="Remove the tangential correction in Zou-He reconstruction."
