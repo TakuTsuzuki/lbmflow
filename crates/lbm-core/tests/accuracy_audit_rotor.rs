@@ -54,10 +54,19 @@ fn periodic_tank(center: [f64; 2]) -> Simulation<f64> {
     sim
 }
 
+// Triage 2026-07-06 (ANOM-P4-009): the rotor indicator EXCLUDES r < r_hub
+// (the hub is a hole, not solid) and each blade band is additionally
+// restricted to the half-plane along its +arm direction. The first-pass
+// construction (n_blades=1, r_hub = r_blade = R) therefore produced an
+// EMPTY indicator: zero rotor cells, zero force, and the steady detector's
+// 0/0 became the observed NaN torque means. A full solid disc of radius R
+// is expressed as: r_hub = 0 (no hole), r_blade = R, blade_thickness = 2R
+// (half-width R covers every perpendicular offset), n_blades = 2 (the two
+// opposite half-planes union to the full disc).
 fn disc_rotor(center: [f64; 2], omega: f64, ramp_steps: u64) -> Rotor<f64> {
     Rotor::new(center[0], center[1])
-        .n_blades(1)
-        .r_hub(R_DISC)
+        .n_blades(2)
+        .r_hub(0.0)
         .r_blade(R_DISC)
         .blade_thickness(2.0 * R_DISC)
         .omega(omega)
@@ -90,6 +99,14 @@ fn run_disc_to_steady(center: [f64; 2], omega: f64) -> (Simulation<f64>, Rotor<f
     let mut samples = Vec::with_capacity(MAX_STEPS);
 
     for step in 1..=MAX_STEPS {
+        // Contract (triage 2026-07-06, ANOM-P4-009): Rotor::update_force ADDS
+        // into the per-cell force field so it can compose with gravity /
+        // Shan-Chen; the CALLER must rebuild the field each step (see
+        // mf_interim.rs and the scenario runner, which both call
+        // clear_force_field first). Omitting the clear accumulates the
+        // penalization force unboundedly (first pass measured torque_integral
+        // ~ -7e168 after 400 steps).
+        sim.clear_force_field();
         rotor.update_force(&mut sim);
         samples.push(rotor.torque());
         sim.step();
@@ -427,6 +444,7 @@ fn f5_ramp_torque_integral_matches_discrete_per_step_sum() {
         .theta0(0.0);
     let mut sum = 0.0;
     for _ in 0..400 {
+        sim.clear_force_field(); // caller-owned rebuild; see ANOM-P4-009 note
         rotor.update_force(&mut sim);
         sum += rotor.torque();
         sim.step();
