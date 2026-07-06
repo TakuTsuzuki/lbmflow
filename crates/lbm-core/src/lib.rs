@@ -54,6 +54,7 @@ pub mod prelude {
     pub use crate::subdomain::Subdomain;
 
     #[cfg(feature = "gpu")]
+    #[allow(deprecated)]
     pub use crate::gpu::{GpuContext, GpuSolver, WgpuBackend};
 
     #[cfg(feature = "mpi")]

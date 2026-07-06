@@ -6,7 +6,7 @@
 //! compat facade is a thin wrapper over this type with a monolithic (1×1×1)
 //! decomposition.
 
-use crate::backend::{Backend, CellRange};
+use crate::backend::{Backend, HostMoments};
 use crate::fields::SoaFields;
 use crate::halo::{ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
@@ -513,7 +513,7 @@ pub struct Solver<L, T, B, H>
 where
     L: Lattice,
     T: Real,
-    B: Backend<L, T, Fields = SoaFields<T>>,
+    B: Backend<L, T>,
     H: HaloExchange<T>,
 {
     params: StepParams<T>,
@@ -521,12 +521,17 @@ where
     dims: [usize; 3],
     periodic: [bool; 3],
     subs: Vec<Subdomain>,
-    parts: Vec<SoaFields<T>>,
+    /// Host staging fields used for setup edits and population readback.
+    host_parts: Vec<SoaFields<T>>,
+    /// Backend-owned compute fields.
+    parts: Vec<B::Fields>,
     backend: B,
     exchange: H,
     time: u64,
     probed_force: [T; 3],
     masks_dirty: bool,
+    host_dirty: bool,
+    device_ahead: bool,
     psi_planes: Vec<Vec<T>>,
     gravity: Option<[T; 3]>,
     /// Split streaming into interior + boundary-shell passes (the overlap
@@ -540,7 +545,7 @@ impl<L, T, B, H> Solver<L, T, B, H>
 where
     L: Lattice,
     T: Real,
-    B: Backend<L, T, Fields = SoaFields<T>>,
+    B: Backend<L, T>,
     H: HaloExchange<T>,
 {
     /// Build a solver over `decomp` subdomains. `solid` / `wall_u` are
@@ -629,9 +634,10 @@ where
             );
             subs = vec![subs[part].clone()];
         }
-        let mut parts: Vec<SoaFields<T>> = subs.iter().map(|s| backend.alloc(s)).collect();
+        let mut host_parts: Vec<SoaFields<T>> =
+            subs.iter().map(|s| SoaFields::new(L::Q, s.geom)).collect();
         // Distribute the global masks into the parts' padded cores.
-        for (sub, fields) in subs.iter().zip(parts.iter_mut()) {
+        for (sub, fields) in subs.iter().zip(host_parts.iter_mut()) {
             let g = sub.geom;
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
@@ -650,18 +656,22 @@ where
                 }
             }
         }
+        let parts = subs.iter().map(|s| backend.alloc(s)).collect();
         let mut solver = Self {
             params,
             nu: spec.nu,
             dims: spec.dims,
             periodic: spec.periodic,
             subs,
+            host_parts,
             parts,
             backend,
             exchange,
             time: 0,
             probed_force: [T::zero(); 3],
             masks_dirty: true,
+            host_dirty: true,
+            device_ahead: false,
             psi_planes: Vec::new(),
             gravity: None,
             two_pass: false,
@@ -673,17 +683,21 @@ where
             .map(|sub| vec![T::zero(); sub.geom.n_padded()])
             .collect();
         solver.sync_masks();
+        solver.stage_in_if_dirty();
         // V1 from_config ends with update_moments (u(t=0) = force/2 on fluid).
         for i in 0..solver.parts.len() {
             solver
                 .backend
                 .update_moments(&solver.subs[i], &mut solver.parts[i], &solver.params);
         }
+        solver.device_ahead = true;
         solver
     }
 
     fn sync_masks(&mut self) {
-        self.exchange.exchange_masks(&self.subs, &mut self.parts);
+        self.exchange
+            .exchange_masks(&self.subs, &mut self.host_parts);
+        self.host_dirty = true;
         self.masks_dirty = false;
     }
 
@@ -693,47 +707,36 @@ where
         }
     }
 
-    /// Advance one time step (V1 order plus optional Bouzidi correction:
-    /// collide → stream → Bouzidi → swap → open faces → moments).
-    pub fn step(&mut self) {
-        self.sync_masks_if_dirty();
-        let gravity_stage = self.stage_gravity();
-        for i in 0..self.parts.len() {
-            self.backend
-                .collide(&self.subs[i], &mut self.parts[i], &self.params);
-        }
-        self.exchange.exchange_f::<L>(&self.subs, &mut self.parts);
-        let mut pf = [T::zero(); 3];
-        for i in 0..self.parts.len() {
-            let part_pf = self.stream_part(i);
-            pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
-        }
-        for i in 0..self.parts.len() {
-            let part_pf =
-                self.backend
-                    .apply_bouzidi(&self.subs[i], &mut self.parts[i], &self.params);
-            pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
-        }
-        for i in 0..self.parts.len() {
-            self.backend.swap(&mut self.parts[i]);
-        }
-        self.probed_force = pf;
-        for i in 0..self.parts.len() {
-            self.backend
-                .apply_open_faces(&self.subs[i], &mut self.parts[i], &self.params);
+    fn stage_in_if_dirty(&mut self) {
+        if !self.host_dirty {
+            return;
         }
         for i in 0..self.parts.len() {
             self.backend
-                .update_moments(&self.subs[i], &mut self.parts[i], &self.params);
+                .stage_in(&self.subs[i], &mut self.parts[i], &self.host_parts[i]);
         }
-        self.unstage_gravity(gravity_stage);
-        self.time += 1;
+        self.host_dirty = false;
+        self.device_ahead = false;
+    }
+
+    fn stage_out_all(&mut self) {
+        if !self.device_ahead {
+            return;
+        }
+        for i in 0..self.parts.len() {
+            self.backend
+                .stage_out(&self.subs[i], &self.parts[i], &mut self.host_parts[i]);
+        }
+        self.device_ahead = false;
     }
 
     fn stage_gravity(&mut self) -> Option<Vec<(bool, Vec<[T; 3]>)>> {
         let gvec = self.gravity?;
-        let mut staged = Vec::with_capacity(self.parts.len());
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        let mut staged = Vec::with_capacity(self.host_parts.len());
+        // Gravity is a transient host-staged overlay: stage_out_all() first
+        // makes rho current, stage_in_if_dirty() uploads rho*g for the
+        // backend step, and unstage_gravity() removes it from host storage.
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let geo = sub.geom;
             let n_core = geo.n_core();
             let was_none = fields.force_field.is_none();
@@ -763,6 +766,7 @@ where
             }
             staged.push((was_none, added));
         }
+        self.host_dirty = true;
         Some(staged)
     }
 
@@ -770,7 +774,7 @@ where
         let Some(staged) = staged else {
             return;
         };
-        for ((was_none, added), fields) in staged.into_iter().zip(self.parts.iter_mut()) {
+        for ((was_none, added), fields) in staged.into_iter().zip(self.host_parts.iter_mut()) {
             let Some(ff) = fields.force_field.as_mut() else {
                 continue;
             };
@@ -783,51 +787,89 @@ where
                 fields.force_field = None;
             }
         }
+        self.host_dirty = true;
     }
 
-    fn stream_part(&mut self, i: usize) -> [T; 3] {
-        let sub = &self.subs[i];
-        if !self.two_pass {
-            return self.backend.stream(
-                sub,
-                &mut self.parts[i],
-                &self.params,
-                CellRange::full(sub),
-            );
+    fn run_staged_step(&mut self) {
+        self.stage_out_all();
+        let gravity_stage = self.stage_gravity();
+        self.stage_in_if_dirty();
+        self.backend.run_span(
+            &self.exchange,
+            &self.subs,
+            &mut self.parts,
+            &self.params,
+            self.two_pass,
+            &mut self.probed_force,
+            1,
+        );
+        self.time += 1;
+        self.device_ahead = true;
+        self.backend.finish_run_chunk(&self.parts, 1);
+        self.stage_out_all();
+        self.unstage_gravity(gravity_stage);
+        self.stage_in_if_dirty();
+    }
+
+    /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
+    /// open faces → moments).
+    pub fn step(&mut self) {
+        self.sync_masks_if_dirty();
+        if self.gravity.is_some() {
+            self.run_staged_step();
+            return;
         }
-        // Interior pass first (would overlap an async exchange), then the
-        // one-cell boundary shell. Field results are identical to the full
-        // pass; only the probe partials' summation order differs.
-        let c = sub.geom.core;
-        let interior = CellRange {
-            lo: [1, 1, if sub.geom.d == 3 { 1 } else { 0 }],
-            hi: [
-                c[0].saturating_sub(1),
-                c[1].saturating_sub(1),
-                if sub.geom.d == 3 {
-                    c[2].saturating_sub(1)
-                } else {
-                    c[2]
-                },
-            ],
-        };
-        let sub = sub.clone();
-        let mut pf = self
-            .backend
-            .stream(&sub, &mut self.parts[i], &self.params, interior);
-        for shell in boundary_shells(&sub, interior) {
-            let p2 = self
-                .backend
-                .stream(&sub, &mut self.parts[i], &self.params, shell);
-            pf = [pf[0] + p2[0], pf[1] + p2[1], pf[2] + p2[2]];
+        self.stage_in_if_dirty();
+        self.backend.run_span(
+            &self.exchange,
+            &self.subs,
+            &mut self.parts,
+            &self.params,
+            self.two_pass,
+            &mut self.probed_force,
+            1,
+        );
+        self.time += 1;
+        self.device_ahead = true;
+        self.backend.finish_run_chunk(&self.parts, 1);
+        if !self.backend.handles_single_part_periodic_halo() {
+            self.stage_out_all();
         }
-        pf
     }
 
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
-        for _ in 0..steps {
-            self.step();
+        if self.gravity.is_some() {
+            for _ in 0..steps {
+                self.step();
+            }
+            return;
+        }
+        self.sync_masks_if_dirty();
+        self.stage_in_if_dirty();
+        let mut remaining = steps;
+        while remaining > 0 {
+            let chunk = self
+                .backend
+                .run_chunk_size(&self.parts)
+                .max(1)
+                .min(remaining);
+            self.backend.run_span(
+                &self.exchange,
+                &self.subs,
+                &mut self.parts,
+                &self.params,
+                self.two_pass,
+                &mut self.probed_force,
+                chunk,
+            );
+            self.time += chunk as u64;
+            self.device_ahead = true;
+            self.backend.finish_run_chunk(&self.parts, chunk);
+            if !self.backend.handles_single_part_periodic_halo() {
+                self.stage_out_all();
+            }
+            remaining -= chunk;
         }
     }
 
@@ -848,16 +890,11 @@ where
     /// occurred at most `check_every` steps earlier.
     pub fn run_guarded(&mut self, steps: usize, check_every: usize) -> Result<(), Diverged> {
         let check_every = check_every.max(1);
-        let mut since_check = 0usize;
-        for _ in 0..steps {
-            self.step();
-            since_check += 1;
-            if since_check == check_every {
-                since_check = 0;
-                self.check_mass_finite()?;
-            }
-        }
-        if since_check > 0 {
+        let mut remaining = steps;
+        while remaining > 0 {
+            let chunk = remaining.min(check_every);
+            self.run(chunk);
+            remaining -= chunk;
             self.check_mass_finite()?;
         }
         Ok(())
@@ -893,6 +930,7 @@ where
     /// halo. Solid neighbours (looked up in the exchanged halo masks) fall
     /// back one-sided exactly like V1.
     pub fn init_with(&mut self, init: impl Fn(usize, usize, usize) -> (T, [T; 3])) {
+        self.stage_out_all();
         self.sync_masks_if_dirty();
         let kp = KParams::new::<L>(&self.params);
         let tau = T::r(3.0 * self.nu + 0.5);
@@ -900,7 +938,7 @@ where
         let half = T::r(0.5);
         let dims = self.dims;
         let periodic = self.periodic;
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let g = sub.geom;
             let np = g.n_padded();
             // Pass 1: store the macroscopic fields (all core cells).
@@ -1009,10 +1047,13 @@ where
                 }
             }
         }
+        self.host_dirty = true;
+        self.stage_in_if_dirty();
         for i in 0..self.parts.len() {
             self.backend
                 .update_moments(&self.subs[i], &mut self.parts[i], &self.params);
         }
+        self.device_ahead = true;
     }
 
     /// Mark a global cell solid (half-way bounce-back obstacle). Open-face
@@ -1020,26 +1061,32 @@ where
     pub fn set_solid(&mut self, x: usize, y: usize, z: usize) {
         let (i, lx, ly, lz) = self.locate(x, y, z);
         let pi = self.subs[i].geom.pidx(lx, ly, lz);
-        self.parts[i].solid[pi] = true;
+        self.stage_out_all();
+        self.host_parts[i].solid[pi] = true;
         self.masks_dirty = true;
+        self.host_dirty = true;
+        self.stage_in_if_dirty();
     }
 
     /// Build analytic Bouzidi records for a circle. Solid cells must already
     /// be marked with the same geometry.
     pub fn set_bouzidi_circle(&mut self, cx: f64, cy: f64, r: f64) {
+        self.stage_out_all();
         self.sync_masks_if_dirty();
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let links =
                 crate::bouzidi::circle_links(&fields.geom, sub.origin, &fields.solid, cx, cy, r);
             fields.bouzidi = (!links.is_empty()).then_some(links);
         }
+        self.host_dirty = true;
     }
 
     /// Build analytic Bouzidi records for a sphere. Solid cells must already
     /// be marked with the same geometry.
     pub fn set_bouzidi_sphere(&mut self, cx: f64, cy: f64, cz: f64, r: f64) {
+        self.stage_out_all();
         self.sync_masks_if_dirty();
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let links = crate::bouzidi::sphere_links::<T, L>(
                 &fields.geom,
                 sub.origin,
@@ -1051,29 +1098,35 @@ where
             );
             fields.bouzidi = (!links.is_empty()).then_some(links);
         }
+        self.host_dirty = true;
     }
 
     /// Install qd=1/2 records for every fluid-solid link. This is intended as
     /// a degeneracy regression for bitwise equivalence to half-way BB.
     pub fn set_bouzidi_half_way_links(&mut self) {
+        self.stage_out_all();
         self.sync_masks_if_dirty();
-        for fields in self.parts.iter_mut() {
+        for fields in self.host_parts.iter_mut() {
             let links = crate::bouzidi::half_way_links::<T, L>(&fields.geom, &fields.solid);
             fields.bouzidi = (!links.is_empty()).then_some(links);
         }
+        self.host_dirty = true;
     }
 
     /// Remove all Bouzidi records; subsequent steps use pure half-way BB.
     pub fn clear_bouzidi(&mut self) {
-        for fields in self.parts.iter_mut() {
+        self.stage_out_all();
+        for fields in self.host_parts.iter_mut() {
             fields.bouzidi = None;
         }
+        self.host_dirty = true;
     }
 
     /// Select the solid cells whose momentum-exchange force is accumulated
     /// each step (V1 `set_force_probe`).
     pub fn set_force_probe(&mut self, pred: impl Fn(usize, usize, usize) -> bool) {
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let g = sub.geom;
             let mut mask = vec![false; g.n_padded()];
             for z in 0..g.core[2] {
@@ -1087,6 +1140,7 @@ where
             fields.probe = Some(mask);
         }
         self.masks_dirty = true;
+        self.host_dirty = true;
     }
 
     /// Prescribe the per-cell body force (Guo forcing) from a closure over
@@ -1104,7 +1158,8 @@ where
     /// sponge/absorbing layers, and volume-penalization (Brinkman) regions
     /// that relax the local velocity toward a prescribed target.
     pub fn set_body_force_field(&mut self, f: impl Fn(usize, usize, usize) -> [T; 3]) {
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let g = sub.geom;
             let n_core = g.n_core();
             let buf = fields
@@ -1123,19 +1178,23 @@ where
                 }
             }
         }
+        self.host_dirty = true;
     }
 
     /// Drop the per-cell body force field on every owned part (subsequent
     /// steps run force-free unless [`GlobalSpec::force`] is nonzero).
     pub fn clear_body_force_field(&mut self) {
-        for fields in self.parts.iter_mut() {
+        self.stage_out_all();
+        for fields in self.host_parts.iter_mut() {
             fields.force_field = None;
         }
+        self.host_dirty = true;
     }
 
     /// Set per-mass gravity `g`; at the start of each step, `rho(x) * g` is
     /// added to the per-cell force on fluid cells only.
     pub fn set_gravity(&mut self, g: [T; 3]) {
+        self.stage_out_all();
         self.gravity = Some(g);
     }
 
@@ -1155,7 +1214,8 @@ where
             self.dims[t1] * self.dims[t2],
             "profile must cover the whole global face"
         );
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             if !sub.touches_global_face(face) {
                 fields.inlet_profiles[face.index()] = None;
                 continue;
@@ -1170,6 +1230,7 @@ where
             }
             fields.inlet_profiles[face.index()] = Some(local);
         }
+        self.host_dirty = true;
     }
 
     /// Closure form of [`Solver::set_inlet_profile`]: `profile(c1, c2)` is
@@ -1230,7 +1291,7 @@ where
         for ((sub, fields), plane) in self
             .subs
             .iter()
-            .zip(self.parts.iter())
+            .zip(self.host_parts.iter())
             .zip(self.psi_planes.iter_mut())
         {
             let geo = sub.geom;
@@ -1258,10 +1319,11 @@ where
                 .collect();
             self.exchange.exchange_scalar(&self.subs, &mut refs);
         }
+        self.stage_out_all();
         // Neutral walls keep the exact historical expression (no adhesion
         // term appended), so pre-walls callers stay bit-identical.
         let wet = g_wall != T::zero() || psi_wall != T::zero();
-        for (i, (sub, fields)) in self.subs.iter().zip(self.parts.iter_mut()).enumerate() {
+        for (i, (sub, fields)) in self.subs.iter().zip(self.host_parts.iter_mut()).enumerate() {
             let geo = sub.geom;
             let plane = &self.psi_planes[i];
             let ff = fields
@@ -1314,6 +1376,7 @@ where
                 }
             }
         }
+        self.host_dirty = true;
     }
 
     // ------------------------------------------------------------------
@@ -1359,6 +1422,18 @@ where
     pub fn part_count(&self) -> usize {
         self.parts.len()
     }
+    /// Backend reference (used by backend-specific compatibility shims).
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+    /// Mutable backend reference (used by backend-specific compatibility shims).
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+    /// Backend-owned fields of part `i`.
+    pub fn backend_fields(&self, i: usize) -> &B::Fields {
+        &self.parts[i]
+    }
     /// Subdomain descriptor `i`.
     pub fn sub(&self, i: usize) -> &Subdomain {
         &self.subs[i]
@@ -1366,11 +1441,19 @@ where
     /// Fields of part `i` (host staging; padded mask edits must go through
     /// `set_solid` / `set_force_probe` so halos stay in sync).
     pub fn fields(&self, i: usize) -> &SoaFields<T> {
-        &self.parts[i]
+        &self.host_parts[i]
     }
     /// Mutable fields of part `i` (see [`Solver::fields`] caveat).
     pub fn fields_mut(&mut self, i: usize) -> &mut SoaFields<T> {
-        &mut self.parts[i]
+        self.stage_out_all();
+        self.host_dirty = true;
+        &mut self.host_parts[i]
+    }
+
+    /// Synchronize backend-owned populations and moments into host staging.
+    /// Device backends use this only at explicit read/edit boundaries.
+    pub fn sync_host(&mut self) {
+        self.stage_out_all();
     }
 
     /// Momentum-exchange force on the probed solids during the most recent
@@ -1383,23 +1466,23 @@ where
     pub fn rho(&self, x: usize, y: usize, z: usize) -> T {
         let (i, lx, ly, lz) = self.locate(x, y, z);
         let g = self.subs[i].geom;
-        self.parts[i].rho[g.cidx(lx, ly, lz)]
+        let mut hm = HostMoments::default();
+        self.backend.read_moments(&self.parts[i], &mut hm);
+        hm.rho[g.cidx(lx, ly, lz)]
     }
     /// Velocity at a global cell (physical, half-force corrected).
     pub fn u(&self, x: usize, y: usize, z: usize) -> [T; 3] {
         let (i, lx, ly, lz) = self.locate(x, y, z);
         let g = self.subs[i].geom;
         let c = g.cidx(lx, ly, lz);
-        [
-            self.parts[i].ux[c],
-            self.parts[i].uy[c],
-            self.parts[i].uz[c],
-        ]
+        let mut hm = HostMoments::default();
+        self.backend.read_moments(&self.parts[i], &mut hm);
+        [hm.ux[c], hm.uy[c], hm.uz[c]]
     }
     /// Whether a global cell is solid.
     pub fn is_solid(&self, x: usize, y: usize, z: usize) -> bool {
         let (i, lx, ly, lz) = self.locate(x, y, z);
-        self.parts[i].solid[self.subs[i].geom.pidx(lx, ly, lz)]
+        self.host_parts[i].solid[self.subs[i].geom.pidx(lx, ly, lz)]
     }
 
     /// Total mass over fluid cells (V1 `total_mass`: physical mass =
@@ -1445,10 +1528,22 @@ where
             }
         }
         if let Some(g) = self.gravity {
-            let mass = self.local_mass_partials();
-            let total_mass = mass.0 + mass.1;
-            for a in 0..3 {
-                p[a] += 0.5 * total_mass * g[a].as_f64();
+            for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+                let geo = sub.geom;
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let pi = geo.pidx(x, y, z);
+                            if fields.solid[pi] {
+                                continue;
+                            }
+                            let rho = fields.rho[geo.cidx(x, y, z)].as_f64();
+                            for a in 0..3 {
+                                p[a] += 0.5 * rho * g[a].as_f64();
+                            }
+                        }
+                    }
+                }
             }
         }
         p
@@ -1459,7 +1554,7 @@ where
     /// a distributed owner sums the counts across ranks.
     pub fn local_nonfinite_count(&self) -> u64 {
         let mut n = 0u64;
-        for fields in &self.parts {
+        for fields in &self.host_parts {
             let finite = |v: &[T]| v.iter().filter(|x| !x.is_finite()).count() as u64;
             n += finite(&fields.f);
             n += finite(&fields.rho);
@@ -1488,19 +1583,20 @@ where
         n as usize
     }
 
-    /// Assemble a global compact array from a per-part compact getter
-    /// (test/diagnostic helper).
-    fn gather(&self, get: impl Fn(&SoaFields<T>, usize) -> T) -> Vec<T> {
+    /// Assemble a global compact array from backend-read moment planes.
+    fn gather_moment(&self, get: impl Fn(&HostMoments<T>, usize) -> T) -> Vec<T> {
         let mut out = vec![T::zero(); self.dims[0] * self.dims[1] * self.dims[2]];
         for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
             let g = sub.geom;
+            let mut hm = HostMoments::default();
+            self.backend.read_moments(fields, &mut hm);
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
                         let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
                             * self.dims[0]
                             + (sub.origin[0] + x);
-                        out[gi] = get(fields, g.cidx(x, y, z));
+                        out[gi] = get(&hm, g.cidx(x, y, z));
                     }
                 }
             }
@@ -1510,19 +1606,19 @@ where
 
     /// Global density field (compact layout).
     pub fn gather_rho(&self) -> Vec<T> {
-        self.gather(|f, c| f.rho[c])
+        self.gather_moment(|m, c| m.rho[c])
     }
     /// Global x-velocity field.
     pub fn gather_ux(&self) -> Vec<T> {
-        self.gather(|f, c| f.ux[c])
+        self.gather_moment(|m, c| m.ux[c])
     }
     /// Global y-velocity field.
     pub fn gather_uy(&self) -> Vec<T> {
-        self.gather(|f, c| f.uy[c])
+        self.gather_moment(|m, c| m.uy[c])
     }
     /// Global z-velocity field.
     pub fn gather_uz(&self) -> Vec<T> {
-        self.gather(|f, c| f.uz[c])
+        self.gather_moment(|m, c| m.uz[c])
     }
 
     fn strain_rate_at(&self, fields: &SoaFields<T>, x: usize, y: usize, z: usize) -> [T; 6] {
@@ -1598,7 +1694,7 @@ where
     /// non-equilibrium moment is `Pi_neq_raw + 0.5 * (uF + Fu)`.
     pub fn gather_strain_rate(&self) -> Vec<[T; 6]> {
         let mut out = vec![[T::zero(); 6]; self.dims[0] * self.dims[1] * self.dims[2]];
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
             let g = sub.geom;
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
@@ -1634,7 +1730,7 @@ where
     /// Global deviation-population plane `q` (compact layout).
     pub fn gather_f(&self, q: usize) -> Vec<T> {
         let mut out = vec![T::zero(); self.dims[0] * self.dims[1] * self.dims[2]];
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
             let g = sub.geom;
             let np = g.n_padded();
             for z in 0..g.core[2] {
@@ -1650,47 +1746,6 @@ where
         }
         out
     }
-}
-
-/// Boundary shells complementing the interior box: fixed order YNeg row,
-/// YPos row, XNeg column, XPos column (minus corners already covered), then
-/// Z planes for 3D. Only the probe partials' summation order depends on
-/// this; field results do not.
-fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellRange> {
-    let c = sub.geom.core;
-    let mut shells = Vec::new();
-    let z_full = (0, c[2]);
-    // y = 0 and y = ny-1 full-width rows.
-    shells.push(CellRange {
-        lo: [0, 0, z_full.0],
-        hi: [c[0], interior.lo[1], z_full.1],
-    });
-    shells.push(CellRange {
-        lo: [0, interior.hi[1], z_full.0],
-        hi: [c[0], c[1], z_full.1],
-    });
-    // x columns between the y rows.
-    shells.push(CellRange {
-        lo: [0, interior.lo[1], z_full.0],
-        hi: [interior.lo[0], interior.hi[1], z_full.1],
-    });
-    shells.push(CellRange {
-        lo: [interior.hi[0], interior.lo[1], z_full.0],
-        hi: [c[0], interior.hi[1], z_full.1],
-    });
-    if sub.geom.d == 3 {
-        // z planes of the remaining interior-xy box.
-        shells.push(CellRange {
-            lo: [interior.lo[0], interior.lo[1], 0],
-            hi: [interior.hi[0], interior.hi[1], interior.lo[2]],
-        });
-        shells.push(CellRange {
-            lo: [interior.lo[0], interior.lo[1], interior.hi[2]],
-            hi: [interior.hi[0], interior.hi[1], c[2]],
-        });
-    }
-    shells.retain(|s| !s.is_empty());
-    shells
 }
 
 #[cfg(test)]

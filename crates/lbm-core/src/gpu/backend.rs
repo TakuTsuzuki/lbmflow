@@ -35,13 +35,14 @@
 //! Multi-part GPU decompositions (device-side halo exchange) are out of
 //! scope here (M-D).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::backend::{Backend, CellRange, HostMoments};
+use crate::backend::{write_host_moments, Backend, CellRange, HostMoments};
 use crate::fields::SoaFields;
+use crate::halo::HaloExchange;
 use crate::lattice::{Face, Lattice};
 use crate::params::{FaceBC, Reduction, StepParams};
 use crate::subdomain::Subdomain;
@@ -248,11 +249,23 @@ impl GpuContext {
     /// Create a context on the highest-performance adapter.
     pub fn new() -> Result<Arc<Self>, GpuInitError> {
         let instance = wgpu::Instance::default();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        }))
-        .map_err(|_| GpuInitError::NoAdapter)?;
+        let mut adapter = None;
+        for power_preference in [
+            wgpu::PowerPreference::HighPerformance,
+            wgpu::PowerPreference::LowPower,
+            wgpu::PowerPreference::None,
+        ] {
+            if let Ok(found) =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference,
+                    ..Default::default()
+                }))
+            {
+                adapter = Some(found);
+                break;
+            }
+        }
+        let adapter = adapter.ok_or(GpuInitError::NoAdapter)?;
         let adapter_info = adapter.get_info();
         let al = adapter.limits();
         let mut limits = wgpu::Limits::default();
@@ -317,6 +330,7 @@ impl GpuContext {
 
 struct Pipelines {
     step: wgpu::ComputePipeline,
+    step_cached: wgpu::ComputePipeline,
     moments: wgpu::ComputePipeline,
     bc: wgpu::ComputePipeline,
     clear_probe: wgpu::ComputePipeline,
@@ -329,6 +343,7 @@ enum Op {
     /// Fused collide+stream, reading buffer parity `bg`.
     Fused {
         bg: usize,
+        cached: bool,
     },
     /// Open-face BC on `face`, operating on buffer parity `bg`.
     Bc {
@@ -347,6 +362,7 @@ struct RecState {
     ops: Vec<Op>,
     steps_recorded: usize,
     pending_collide: bool,
+    use_cached_moments_once: bool,
     /// Written Params uniform (asserts step-parameter stability per run).
     params_words: Option<[u32; 12]>,
     /// Written per-face BC uniforms.
@@ -383,6 +399,7 @@ pub struct GpuFields {
     profiles: [wgpu::Buffer; 6],
     staging: RefCell<Option<StagingBuffer>>,
     fused_bg: [wgpu::BindGroup; 2],
+    fused_cached_bg: [wgpu::BindGroup; 2],
     moments_bg: [wgpu::BindGroup; 2],
     bc_bg: [[wgpu::BindGroup; 2]; 6],
     clear_bg: wgpu::BindGroup,
@@ -405,12 +422,20 @@ impl GpuFields {
     }
 }
 
+fn has_open_faces<L: Lattice>(sub: &Subdomain, p: &StepParams<f32>) -> bool {
+    Face::ALL.iter().any(|&face| {
+        face.axis() < L::D && sub.touches_global_face(face) && p.faces[face.index()].is_open()
+    })
+}
+
 /// The wgpu implementation of [`Backend`] for a 2D lattice, `T = f32`
 /// (WGSL has no f64; f32 deviation storage is the validated GPU grade —
 /// GPU_EVALUATION.md §2).
 pub struct WgpuBackend<L: Lattice> {
     ctx: Arc<GpuContext>,
     pipelines: Arc<Pipelines>,
+    submissions: Cell<u64>,
+    cache_next_upload_moments_once: Cell<bool>,
     /// Steps per queue submit during batched runs (no waits in between).
     /// The proto measured 7.3–7.4 GLUPS for 10–100 dispatches/submit vs
     /// 0.8 GLUPS with a wait per step; anything ≥ ~10 is on the plateau.
@@ -447,6 +472,7 @@ impl<L: Lattice> WgpuBackend<L> {
         };
         let pipelines = Arc::new(Pipelines {
             step: mk("step"),
+            step_cached: mk("step_cached"),
             moments: mk("moments"),
             bc: mk("bc"),
             clear_probe: mk("clear_probe"),
@@ -454,6 +480,8 @@ impl<L: Lattice> WgpuBackend<L> {
         Self {
             ctx,
             pipelines,
+            submissions: Cell::new(0),
+            cache_next_upload_moments_once: Cell::new(false),
             submit_chunk: 200,
             submit_chunk_calibrated: false,
             _l: PhantomData,
@@ -463,6 +491,28 @@ impl<L: Lattice> WgpuBackend<L> {
     /// The shared device context.
     pub fn context(&self) -> &Arc<GpuContext> {
         &self.ctx
+    }
+
+    /// Number of queue submissions issued by this backend instance.
+    pub fn submissions(&self) -> u64 {
+        self.submissions.get()
+    }
+
+    fn submit(&self, command_buffer: wgpu::CommandBuffer) {
+        self.ctx.queue.submit(Some(command_buffer));
+        self.submissions.set(self.submissions.get() + 1);
+    }
+
+    /// Make the next uploaded state use its host-staged moments for one
+    /// collision. This is needed when a force field is edited after the last
+    /// moment refresh: CPU collision consumes the already-staged moments once.
+    pub fn cache_next_upload_moments_once(&self) {
+        self.cache_next_upload_moments_once.set(true);
+    }
+
+    /// Cancel a pending one-shot cached-moment upload marker.
+    pub fn clear_cached_moment_upload_marker(&self) {
+        self.cache_next_upload_moments_once.set(false);
     }
 
     fn workgroups(&self, fields: &GpuFields) -> (u32, u32) {
@@ -512,9 +562,18 @@ impl<L: Lattice> WgpuBackend<L> {
                         pass.set_bind_group(0, &fields.clear_bg, &[]);
                         pass.dispatch_workgroups(1, 1, 1);
                     }
-                    Op::Fused { bg } => {
-                        pass.set_pipeline(&self.pipelines.step);
-                        pass.set_bind_group(0, &fields.fused_bg[bg], &[]);
+                    Op::Fused { bg, cached } => {
+                        pass.set_pipeline(if cached {
+                            &self.pipelines.step_cached
+                        } else {
+                            &self.pipelines.step
+                        });
+                        let bind_group = if cached {
+                            &fields.fused_cached_bg[bg]
+                        } else {
+                            &fields.fused_bg[bg]
+                        };
+                        pass.set_bind_group(0, bind_group, &[]);
                         pass.dispatch_workgroups(gx, gy, 1);
                     }
                     Op::Bc { face, bg } => {
@@ -531,7 +590,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 }
             }
         }
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         st.ops.clear();
         st.steps_recorded = 0;
         Ok(())
@@ -598,7 +657,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 label: Some("read-f"),
             });
         enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, staging, 0, bytes);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
         let data = Arc::new(bytemuck::cast_slice(&raw).to_vec());
         let mut st = fields.state.borrow_mut();
@@ -627,7 +686,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 label: Some("read-probe"),
             });
         enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, 0, 12);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, 12)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
         Ok([v[0], v[1], v[2]])
@@ -661,6 +720,7 @@ impl<L: Lattice> WgpuBackend<L> {
     fn ensure_params(&self, sub: &Subdomain, fields: &GpuFields, p: &StepParams<f32>) {
         // Relaxation constants exactly as KParams::new builds them: f64
         // parameters converted to f32 once.
+        let use_cached_moments = fields.state.borrow().use_cached_moments_once;
         let words: [u32; 12] = [
             fields.nx,
             fields.ny,
@@ -683,6 +743,14 @@ impl<L: Lattice> WgpuBackend<L> {
                 }
                 if fields.has_probe {
                     flags |= wgsl::FLAG_PROBE;
+                }
+                if use_cached_moments {
+                    flags |= wgsl::FLAG_CACHED_MOMENTS;
+                }
+                for face in &Face::ALL[..4] {
+                    if p.faces[face.index()].is_open() {
+                        flags |= wgsl::FLAG_OPEN_FACE[face.index()];
+                    }
                 }
                 flags
             },
@@ -827,6 +895,7 @@ impl<L: Lattice> WgpuBackend<L> {
         }
         let device = &self.ctx.device;
         let step_layout = self.pipelines.step.get_bind_group_layout(0);
+        let step_cached_layout = self.pipelines.step_cached.get_bind_group_layout(0);
         fields.fused_bg = [0usize, 1].map(|p| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fused"),
@@ -841,6 +910,29 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(6, &fields.stash[p]),
                     e(7, &fields.stash[1 - p]),
                     e(8, &fields.probe_acc),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
+                ],
+            })
+        });
+        fields.fused_cached_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fused_cached"),
+                layout: &step_cached_layout,
+                entries: &[
+                    e(0, &fields.params_ub),
+                    e(1, &fields.f[p]),
+                    e(2, &fields.f[1 - p]),
+                    e(3, &fields.mask),
+                    e(4, &fields.wall_u),
+                    e(5, &fields.force_field),
+                    e(6, &fields.stash[p]),
+                    e(7, &fields.stash[1 - p]),
+                    e(8, &fields.probe_acc),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
                 ],
             })
         });
@@ -858,6 +950,26 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(10, &fields.ux),
                     e(11, &fields.uy),
                 ],
+            })
+        });
+        let bc_layout = self.pipelines.bc.get_bind_group_layout(0);
+        fields.bc_bg = std::array::from_fn(|face| {
+            [0usize, 1].map(|p| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bc"),
+                    layout: &bc_layout,
+                    entries: &[
+                        e(0, &fields.params_ub),
+                        e(2, &fields.f[p]),
+                        e(3, &fields.mask),
+                        e(5, &fields.force_field),
+                        e(9, &fields.rho),
+                        e(10, &fields.ux),
+                        e(11, &fields.uy),
+                        e(12, &fields.bc_ub[face]),
+                        e(13, &fields.profiles[face]),
+                    ],
+                })
             })
         });
     }
@@ -883,6 +995,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 "upload with recorded but unsubmitted steps"
             );
         }
+        let use_cached_moments_once = self.cache_next_upload_moments_once.replace(false);
         // Populations: current -> f[cur], ping-pong partner -> f[1-cur].
         let cur = fields.cur();
         let mut buf = vec![0f32; L::Q * n];
@@ -1008,6 +1121,7 @@ impl<L: Lattice> WgpuBackend<L> {
         // presence may have changed the flags).
         q.write_buffer(&fields.probe_acc, 0, &[0u8; 12]);
         let mut st = fields.state.borrow_mut();
+        st.use_cached_moments_once = use_cached_moments_once;
         st.params_words = None;
         st.bc_words = None;
         st.f_cache = None;
@@ -1085,6 +1199,7 @@ impl<L: Lattice> WgpuBackend<L> {
             }
         }
         let step_layout = self.pipelines.step.get_bind_group_layout(0);
+        let step_cached_layout = self.pipelines.step_cached.get_bind_group_layout(0);
         let fused_bg = [0usize, 1].map(|p| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fused"),
@@ -1099,6 +1214,29 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(6, &stash[p]),
                     e(7, &stash[1 - p]),
                     e(8, &probe_acc),
+                    e(9, &rho),
+                    e(10, &ux),
+                    e(11, &uy),
+                ],
+            })
+        });
+        let fused_cached_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fused_cached"),
+                layout: &step_cached_layout,
+                entries: &[
+                    e(0, &params_ub),
+                    e(1, &f[p]),
+                    e(2, &f[1 - p]),
+                    e(3, &mask),
+                    e(4, &wall_u),
+                    e(5, &force_field),
+                    e(6, &stash[p]),
+                    e(7, &stash[1 - p]),
+                    e(8, &probe_acc),
+                    e(9, &rho),
+                    e(10, &ux),
+                    e(11, &uy),
                 ],
             })
         });
@@ -1128,6 +1266,10 @@ impl<L: Lattice> WgpuBackend<L> {
                         e(0, &params_ub),
                         e(2, &f[p]),
                         e(3, &mask),
+                        e(5, &force_field),
+                        e(9, &rho),
+                        e(10, &ux),
+                        e(11, &uy),
                         e(12, &bc_ub[face]),
                         e(13, &profiles[face]),
                     ],
@@ -1161,6 +1303,7 @@ impl<L: Lattice> WgpuBackend<L> {
             profiles,
             staging: RefCell::new(None),
             fused_bg,
+            fused_cached_bg,
             moments_bg,
             bc_bg,
             clear_bg,
@@ -1169,6 +1312,7 @@ impl<L: Lattice> WgpuBackend<L> {
                 ops: Vec::new(),
                 steps_recorded: 0,
                 pending_collide: false,
+                use_cached_moments_once: false,
                 params_words: None,
                 bc_words: None,
                 generation: 0,
@@ -1187,6 +1331,51 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
 
     fn alloc(&self, sub: &Subdomain) -> GpuFields {
         self.try_alloc(sub).expect("GPU field allocation failed")
+    }
+
+    fn stage_in(&self, sub: &Subdomain, fields: &mut GpuFields, host: &SoaFields<f32>) {
+        self.upload(sub, fields, host);
+    }
+
+    fn stage_out(&self, sub: &Subdomain, fields: &GpuFields, host: &mut SoaFields<f32>) {
+        let mut hm = HostMoments::default();
+        let (f, _) = self
+            .try_read_sync(fields, &mut hm)
+            .expect("GPU stage-out readback failed");
+        let g = host.geom;
+        debug_assert_eq!(sub.geom, g);
+        let (nx, ny, np) = (g.core[0], g.core[1], g.n_padded());
+        let n = nx * ny;
+        for q in 0..L::Q {
+            for y in 0..ny {
+                for x in 0..nx {
+                    host.f[q * np + g.pidx(x, y, 0)] = f[q * n + y * nx + x];
+                }
+            }
+        }
+        write_host_moments(g, &hm, host);
+    }
+
+    fn handles_single_part_periodic_halo(&self) -> bool {
+        true
+    }
+
+    fn exchange_f<H: HaloExchange<f32>>(
+        &mut self,
+        _exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [GpuFields],
+    ) {
+        assert_eq!(
+            fields.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic part"
+        );
+        assert_eq!(
+            subs.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic subdomain"
+        );
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
@@ -1218,7 +1407,8 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             st.ops.push(Op::ClearProbe);
         }
         let cur = st.cur;
-        st.ops.push(Op::Fused { bg: cur });
+        let cached = st.use_cached_moments_once || has_open_faces::<L>(sub, _p);
+        st.ops.push(Op::Fused { bg: cur, cached });
         st.generation += 1;
         st.f_cache = None;
         // The probe force accumulates on-device; explicit readback via
@@ -1248,12 +1438,114 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         }
     }
 
-    fn update_moments(&mut self, _sub: &Subdomain, fields: &mut GpuFields, _p: &StepParams<f32>) {
-        // Lazy: the fused kernel re-derives (rho, u) from the identical
-        // pre-collide state, so the device moment buffers are refreshed only
-        // by read_moments. This call marks the end of a step — the chunked
-        // submit hook.
-        fields.state.borrow_mut().steps_recorded += 1;
+    fn update_moments(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
+        let has_uniform_force = p.force[0] != 0.0 || p.force[1] != 0.0 || p.force[2] != 0.0;
+        if has_uniform_force && fields.host_ff.is_none() {
+            self.ensure_params(sub, fields, p);
+            let mut st = fields.state.borrow_mut();
+            let cur = st.cur;
+            st.ops.push(Op::Moments { bg: cur });
+            st.steps_recorded += 1;
+        } else {
+            // Lazy: the fused kernel re-derives (rho, u) from the identical
+            // pre-collide state, so no device moment refresh is needed.
+            fields.state.borrow_mut().steps_recorded += 1;
+        }
+    }
+
+    fn run_span<H: HaloExchange<f32>>(
+        &mut self,
+        _exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [GpuFields],
+        p: &StepParams<f32>,
+        two_pass: bool,
+        probed_force: &mut [f32; 3],
+        steps: usize,
+    ) {
+        if steps == 0 {
+            return;
+        }
+        assert!(
+            !two_pass,
+            "WgpuBackend streams the full grid in one fused dispatch (no two-pass split)"
+        );
+        assert_eq!(
+            fields.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic part"
+        );
+        assert_eq!(
+            subs.len(),
+            1,
+            "WgpuBackend B-1 path supports one monolithic subdomain"
+        );
+        let sub = &subs[0];
+        let field = &mut fields[0];
+        let open_faces = std::array::from_fn::<_, 6, _>(|fi| {
+            let face = Face::ALL[fi];
+            face.axis() < L::D && sub.touches_global_face(face) && p.faces[fi].is_open()
+        });
+        self.ensure_params(sub, field, p);
+        self.ensure_bc(sub, field, p);
+        let mut st = field.state.borrow_mut();
+        assert!(
+            !st.pending_collide,
+            "run_span called with an unfinished collide/stream pair"
+        );
+        for _ in 0..steps {
+            if field.has_probe {
+                st.ops.push(Op::ClearProbe);
+            }
+            let cur = st.cur;
+            let cached = st.use_cached_moments_once || open_faces.iter().any(|&is_open| is_open);
+            st.ops.push(Op::Fused { bg: cur, cached });
+            st.generation += 1;
+            st.f_cache = None;
+            st.cur ^= 1;
+            let cur = st.cur;
+            for (face, &is_open) in open_faces.iter().enumerate() {
+                if is_open {
+                    st.ops.push(Op::Bc { face, bg: cur });
+                }
+            }
+            st.steps_recorded += 1;
+        }
+        // The probe force accumulates on-device and is read explicitly by
+        // GpuSolver::probed_force; the unified scalar slot stays at the same
+        // zero value returned by WgpuBackend::stream.
+        *probed_force = [0.0; 3];
+    }
+
+    fn run_chunk_size(&self, fields: &[GpuFields]) -> usize {
+        if fields
+            .iter()
+            .any(|field| field.state.borrow().use_cached_moments_once)
+        {
+            return 1;
+        }
+        self.submit_chunk.max(1)
+    }
+
+    fn finish_run_chunk(&mut self, fields: &[GpuFields], steps: usize) {
+        let start = std::time::Instant::now();
+        for field in fields {
+            self.flush(field);
+        }
+        let calibrating = !self.submit_chunk_calibrated;
+        if calibrating {
+            self.ctx.wait_idle();
+        }
+        for field in fields {
+            let mut st = field.state.borrow_mut();
+            if st.use_cached_moments_once {
+                st.use_cached_moments_once = false;
+                st.params_words = None;
+            }
+        }
+        if calibrating {
+            self.calibrate_submit_chunk(steps, start.elapsed());
+        }
     }
 
     fn reduce(
@@ -1338,7 +1630,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.rho, 0, staging, 0, plane);
         enc.copy_buffer_to_buffer(&fields.ux, 0, staging, plane, plane);
         enc.copy_buffer_to_buffer(&fields.uy, 0, staging, 2 * plane, plane);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
         out.rho.clear();
@@ -1387,7 +1679,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.ux, 0, staging, moments_offset + plane, plane);
         enc.copy_buffer_to_buffer(&fields.uy, 0, staging, moments_offset + 2 * plane, plane);
         enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, probe_offset, 12);
-        self.ctx.queue.submit(Some(enc.finish()));
+        self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
 
         let f_count = L::Q * n;
