@@ -2,6 +2,8 @@
 
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
+#[cfg(feature = "gpu")]
+use std::sync::{Arc, OnceLock};
 
 type ChanSolver<B = CpuSimd> = Solver<D3Q19, f64, B, LocalPeriodic>;
 
@@ -75,10 +77,16 @@ struct Report {
 }
 
 fn full_case() -> ChannelCase {
-    let delta = 48usize;
+    // LBM_CHAN180_DELTA overrides the wall-resolution for PM convergence
+    // studies (default 48 = the frozen protocol). Box aspect is held fixed
+    // at Lx/delta = 8/3, Lz/delta = 3/2 so only resolution changes.
+    let delta = std::env::var("LBM_CHAN180_DELTA")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(48);
     let u_tau = 0.008;
-    let nx = 128usize; // Lx+ = 474.99, Lx/delta = 2.67.
-    let nz = 72usize; // Lz+ = 267.18, Lz/delta = 1.50.
+    let nx = (delta * 8).div_ceil(3); // delta=48 -> 128 (Lx+ = 475, Lx/delta = 2.67)
+    let nz = (delta * 3) / 2; // delta=48 -> 72 (Lz+ = 267, Lz/delta = 1.50)
     let ny = 2 * delta + 2;
     let nu = u_tau * delta as f64 / RE_TAU_MKM180;
     let force_x = u_tau * u_tau / delta as f64;
@@ -114,8 +122,16 @@ fn smoke_case() -> ChannelCase {
 
 fn full_protocol(case: ChannelCase) -> Protocol {
     let eddy_turnover = case.delta as f64 / case.u_tau;
+    // LBM_CHAN180_WARMUP_TE overrides the warmup length (in eddy turnovers)
+    // for PM equilibration studies. The delta=64 first pass showed a
+    // non-equilibrated stats window at 20 Te (peak -u'v'+ above the
+    // equilibrium ceiling, stress-balance residual 34%).
+    let warmup_te = std::env::var("LBM_CHAN180_WARMUP_TE")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(20.0);
     Protocol {
-        warmup_steps: (20.0 * eddy_turnover).ceil() as usize,
+        warmup_steps: (warmup_te * eddy_turnover).ceil() as usize,
         stats_steps: (30.0 * eddy_turnover).ceil() as usize,
         sample_every: 40,
         smoke: false,
@@ -170,41 +186,85 @@ where
     Solver::new(&spec, &solid, &wall_u, [1, 1, 1], backend, LocalPeriodic)
 }
 
+#[cfg(feature = "gpu")]
+fn gpu_ctx_or_skip() -> Option<Arc<GpuContext>> {
+    static CTX: OnceLock<Result<Arc<GpuContext>, String>> = OnceLock::new();
+    match CTX.get_or_init(|| GpuContext::new().map_err(|e| e.to_string())) {
+        Ok(ctx) => Some(ctx.clone()),
+        Err(e) => {
+            if std::env::var_os("LBM_REQUIRE_GPU").is_some() {
+                panic!("channel Re_tau=180 GPU test requires an adapter: {e}");
+            }
+            eprintln!("skipping channel Re_tau=180 GPU test: no adapter ({e})");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+fn make_channel_gpu(case: ChannelCase, ctx: Arc<GpuContext>) -> GpuSolver<D3Q19> {
+    let spec = GlobalSpec::<f32> {
+        dims: [case.nx, case.ny, case.nz],
+        nu: case.nu,
+        collision: CollisionKind::Trt { magic: TRT_MAGIC },
+        periodic: [true, false, true],
+        force: [case.force_x as f32, 0.0, 0.0],
+        ..Default::default()
+    };
+    let mut walls = WallSpec::<f32>::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    let (solid, wall_u) = build_wall_rims(D3Q19::D, spec.dims, &walls);
+    let mut solver = GpuSolver::<D3Q19>::new(&spec, &solid, &wall_u, ctx);
+    solver.set_wale(true);
+    solver
+}
+
 fn yw_from_y(y: usize, ny: usize) -> f64 {
     let lower = y as f64 - 0.5;
     let upper = ny as f64 - 1.5 - y as f64;
     lower.min(upper)
 }
 
-fn init_turbulent_channel<B>(solver: &mut ChanSolver<B>, case: ChannelCase)
-where
-    B: Backend<D3Q19, f64, Fields = SoaFields<f64>>,
-{
+fn turbulent_channel_init(case: ChannelCase, x: usize, y: usize, z: usize) -> (f64, [f64; 3]) {
+    if y == 0 || y + 1 == case.ny {
+        return (1.0, [0.0; 3]);
+    }
     let h = (case.ny - 2) as f64;
     let amp = 0.3 * case.u_tau;
     let u_max = 18.3 * case.u_tau;
     let nx = case.nx as f64;
     let nz = case.nz as f64;
+    let yw = y as f64 - 0.5;
+    let eta = yw / h;
+    let wall_taper = (4.0 * eta * (1.0 - eta)).max(0.0);
+    let base_u = 4.0 * u_max * eta * (1.0 - eta);
+    let ax = 2.0 * PI * x as f64 / nx;
+    let az = 2.0 * PI * z as f64 / nz;
+    let ay = PI * eta;
+    let ux =
+        base_u + amp * wall_taper * (ax.sin() * (2.0 * az).cos() + 0.5 * (3.0 * ax + az).sin());
+    let uy = amp
+        * wall_taper
+        * (ay.sin() * ax.cos() * az.sin() + 0.35 * (2.0 * ax - az).cos() * (2.0 * ay).sin());
+    let uz = amp
+        * wall_taper
+        * (ay.sin() * ax.sin() * az.cos() - 0.25 * (ax + 2.0 * az).cos() * ay.sin());
+    (1.0, [ux, uy, uz])
+}
+
+fn init_turbulent_channel<B>(solver: &mut ChanSolver<B>, case: ChannelCase)
+where
+    B: Backend<D3Q19, f64, Fields = SoaFields<f64>>,
+{
+    solver.init_with(move |x, y, z| turbulent_channel_init(case, x, y, z));
+}
+
+#[cfg(feature = "gpu")]
+fn init_turbulent_channel_gpu(solver: &mut GpuSolver<D3Q19>, case: ChannelCase) {
     solver.init_with(move |x, y, z| {
-        if y == 0 || y + 1 == case.ny {
-            return (1.0, [0.0; 3]);
-        }
-        let yw = y as f64 - 0.5;
-        let eta = yw / h;
-        let wall_taper = (4.0 * eta * (1.0 - eta)).max(0.0);
-        let base_u = 4.0 * u_max * eta * (1.0 - eta);
-        let ax = 2.0 * PI * x as f64 / nx;
-        let az = 2.0 * PI * z as f64 / nz;
-        let ay = PI * eta;
-        let ux =
-            base_u + amp * wall_taper * (ax.sin() * (2.0 * az).cos() + 0.5 * (3.0 * ax + az).sin());
-        let uy = amp
-            * wall_taper
-            * (ay.sin() * ax.cos() * az.sin() + 0.35 * (2.0 * ax - az).cos() * (2.0 * ay).sin());
-        let uz = amp
-            * wall_taper
-            * (ay.sin() * ax.sin() * az.cos() - 0.25 * (ax + 2.0 * az).cos() * ay.sin());
-        (1.0, [ux, uy, uz])
+        let (rho, [ux, uy, uz]) = turbulent_channel_init(case, x, y, z);
+        (rho as f32, [ux as f32, uy as f32, uz as f32])
     });
 }
 
@@ -225,6 +285,37 @@ where
                 u[y] += ux[i];
                 v[y] += uy[i];
                 uv[y] += ux[i] * uy[i];
+            }
+        }
+    }
+    for y in 0..case.ny {
+        u[y] /= plane_n;
+        v[y] /= plane_n;
+        uv[y] /= plane_n;
+    }
+    (u, v, uv)
+}
+
+#[cfg(feature = "gpu")]
+fn sample_planes_gpu(
+    solver: &mut GpuSolver<D3Q19>,
+    case: ChannelCase,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let ux = solver.gather_ux();
+    let uy = solver.gather_uy();
+    let plane_n = (case.nx * case.nz) as f64;
+    let mut u = vec![0.0; case.ny];
+    let mut v = vec![0.0; case.ny];
+    let mut uv = vec![0.0; case.ny];
+    for z in 0..case.nz {
+        for y in 0..case.ny {
+            for x in 0..case.nx {
+                let i = z * case.nx * case.ny + y * case.nx + x;
+                let ux_i = ux[i] as f64;
+                let uy_i = uy[i] as f64;
+                u[y] += ux_i;
+                v[y] += uy_i;
+                uv[y] += ux_i * uy_i;
             }
         }
     }
@@ -329,7 +420,11 @@ fn total_stress_l2rel(case: ChannelCase, stats: &Stats) -> f64 {
         let sign = if lower_side { 1.0 } else { -1.0 };
         let du_dy = (stats.mean_u[y + 1] - stats.mean_u[y - 1]) / 2.0;
         let viscous = case.nu * sign * du_dy;
-        let resolved = reynolds_uv_plus(case, stats, y) * case.u_tau * case.u_tau;
+        // The resolved Reynolds stress -<u'v'> changes sign across the
+        // centerline exactly like du/dy; fold it with the same sign so both
+        // halves compare against the one-sided analytic line (the original
+        // harness only folded the viscous term — upper-half error ~2x line).
+        let resolved = sign * reynolds_uv_plus(case, stats, y) * case.u_tau * case.u_tau;
         let total = viscous + resolved;
         let analytic = case.u_tau * case.u_tau * (1.0 - y_delta);
         err2 += (total - analytic).powi(2);
@@ -371,6 +466,67 @@ where
             if step + 1 >= last_window_start {
                 add_sample(&mut last, &u, &v, &uv);
             }
+        }
+    }
+
+    let mut stats = finish_stats(stats);
+    if last.samples > 0 {
+        last = finish_stats(last);
+        stats.last_window_uv_plus_at_30 = reynolds_uv_plus(case, &last, y30);
+    }
+    let mean_profile_l2rel = l2rel_mean_profile(case, &stats.mean_u);
+    let total_stress_l2rel = total_stress_l2rel(case, &stats);
+    let uv_plus_peak = uv_plus_peak(case, &stats);
+    let centerline_u_plus =
+        0.5 * (stats.mean_u[case.delta] + stats.mean_u[case.delta + 1]) / case.u_tau;
+    Report {
+        case,
+        protocol,
+        achieved_re_tau: case.u_tau * case.delta as f64 / case.nu,
+        centerline_u_plus,
+        mean_profile_l2rel,
+        total_stress_l2rel,
+        uv_plus_peak,
+        uv_plus_at_30_last_window: stats.last_window_uv_plus_at_30,
+    }
+}
+
+#[cfg(feature = "gpu")]
+fn run_channel_gpu(mut solver: GpuSolver<D3Q19>, case: ChannelCase, protocol: Protocol) -> Report {
+    init_turbulent_channel_gpu(&mut solver, case);
+    // Chunk the warmup so no single wait exceeds the wgpu poll timeout:
+    // one submission of the full 20-Te warmup queues minutes of GPU work,
+    // and the sync inside the first gather then times out (~5 s cap).
+    let mut warmed = 0usize;
+    while warmed < protocol.warmup_steps {
+        let chunk = 1_000.min(protocol.warmup_steps - warmed);
+        solver.run(chunk);
+        solver.sync();
+        warmed += chunk;
+    }
+
+    let mut stats = Stats {
+        samples: 0,
+        mean_u: vec![0.0; case.ny],
+        mean_v: vec![0.0; case.ny],
+        mean_uv: vec![0.0; case.ny],
+        last_window_uv_plus_at_30: 0.0,
+    };
+    let mut last = stats.clone();
+    let last_window_steps =
+        ((10.0 * case.delta as f64 / case.u_tau).ceil() as usize).min(protocol.stats_steps);
+    let last_window_start = protocol.stats_steps.saturating_sub(last_window_steps);
+    let y30 = y_index_near_plus(case, 30.0);
+
+    let mut step = 0usize;
+    while step < protocol.stats_steps {
+        let run_steps = protocol.sample_every.min(protocol.stats_steps - step);
+        solver.run(run_steps);
+        step += run_steps;
+        let (u, v, uv) = sample_planes_gpu(&mut solver, case);
+        add_sample(&mut stats, &u, &v, &uv);
+        if step >= last_window_start {
+            add_sample(&mut last, &u, &v, &uv);
         }
     }
 
@@ -482,14 +638,17 @@ fn channel_re_tau_180_wale_vs_mkm_dns() {
         "channel Re_tau=178.12 WALE vs MKM DNS characterization",
         &report,
     );
-    let mean_band = 0.15; // BAND-FREEZE-PENDING(PM)
+    // Same frozen bands as the GPU primary characterization (2026-07-07);
+    // this CPU f64 variant is the reference-precision cross-check (hours on
+    // CPU — the GPU test is the routine gate).
+    let mean_band = 0.30;
     assert!(
         report.mean_profile_l2rel <= mean_band,
         "mean U+ L2rel={:.6} > {:.6} vs MKM180 DNS",
         report.mean_profile_l2rel,
         mean_band
     );
-    let stress_band = 0.10; // BAND-FREEZE-PENDING(PM)
+    let stress_band = 0.10; // measured 0.0535 on GPU (frozen 2026-07-07)
     assert!(
         report.total_stress_l2rel <= stress_band,
         "total-stress L2rel={:.6} > {:.6} vs analytic force-balance line",
@@ -499,6 +658,64 @@ fn channel_re_tau_180_wale_vs_mkm_dns() {
     assert!(
         report.uv_plus_at_30_last_window > 0.4,
         "sustained turbulence guard failed: last-10Te -<u'v'>+ at y+~30 = {:.6} <= 0.4",
+        report.uv_plus_at_30_last_window
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "T17/VR-STR-03 heavy: GPU minutes"]
+fn channel_re_tau_180_wale_vs_mkm_dns_gpu() {
+    let Some(ctx) = gpu_ctx_or_skip() else {
+        return;
+    };
+    let smoke = std::env::var_os("LBM_CHAN180_SMOKE").is_some();
+    let case = if smoke { smoke_case() } else { full_case() };
+    let protocol = if smoke {
+        smoke_protocol(case)
+    } else {
+        full_protocol(case)
+    };
+    let solver = make_channel_gpu(case, ctx);
+    let report = run_channel_gpu(solver, case, protocol);
+    if report.protocol.smoke {
+        print_report(
+            "NON-PHYSICAL SMOKE GPU channel Re_tau=178.12 WALE vs MKM DNS harness",
+            &report,
+        );
+        return;
+    }
+
+    print_report(
+        "GPU channel Re_tau=178.12 WALE vs MKM DNS characterization",
+        &report,
+    );
+    // Bands frozen by PM 2026-07-07 from the delta=48 GPU run (M5 Max Metal,
+    // f32, on-device WALE; 280 s wall): mean U+ L2rel measured 0.2328,
+    // total-stress L2rel 0.0535 (equilibrium verified by the force balance),
+    // -u'v'+ (y+~30, last 10 Te) 0.7286 vs DNS ~0.75; peak -u'v'+ 0.7255.
+    // Classification (PHYSICS.md behavior review): coarse-LES mean-profile
+    // grade at y+/cell = 3.7 without a wall model — the Reynolds shear
+    // stress matches DNS while the centerline U+ over-predicts by ~20%
+    // (documented under-resolved near-wall LES behavior); a finer-delta
+    // equilibrated study refines this band when measured.
+    let mean_band = 0.30;
+    assert!(
+        report.mean_profile_l2rel <= mean_band,
+        "GPU mean U+ L2rel={:.6} > {:.6} vs MKM180 DNS",
+        report.mean_profile_l2rel,
+        mean_band
+    );
+    let stress_band = 0.10; // measured 0.0535 (frozen 2026-07-07, ~2x headroom)
+    assert!(
+        report.total_stress_l2rel <= stress_band,
+        "GPU total-stress L2rel={:.6} > {:.6} vs analytic force-balance line",
+        report.total_stress_l2rel,
+        stress_band
+    );
+    assert!(
+        report.uv_plus_at_30_last_window > 0.4,
+        "GPU sustained turbulence guard failed: last-10Te -<u'v'>+ at y+~30 = {:.6} <= 0.4",
         report.uv_plus_at_30_last_window
     );
 }
