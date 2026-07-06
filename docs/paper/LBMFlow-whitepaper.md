@@ -11,19 +11,24 @@ Reproduction commands in Appendix A. MLUPS = million lattice-cell updates per se
 
 LBMFlow is a commercial-grade Lattice Boltzmann (LBM) fluid simulator that:
 
-- **Reproduces its physics on your hardware.** T1–T17 (200+ adversarial tests,
-  written against the spec by an independent agent) reproduces Ghia,
+- **Reproduces its physics on your hardware.** T1–T16 plus the landed T17
+  subsystem gates (200+ adversarial tests, written against the spec by an
+  independent agent) reproduce Ghia,
   Schäfer–Turek, Taylor–Green, Shan–Chen, and Rayleigh–Taylor references; domain
   decomposition is **bit-for-bit identical** to a monolithic run; rotational
   equivariance holds to 4×10⁻¹⁶. Re-runnable with one command.
 - **Is agent-native.** JSON scenario schema, seven MCP tools including an
   async job lifecycle, machine-readable divergence/stability diagnostics.
-- **Runs anywhere without CUDA lock-in.** Same scenario JSON runs in a browser
-  (WebAssembly), on the CPU (SIMD), on the GPU via wgpu (Metal / Vulkan / DX12),
-  and across an MPI cluster. On the M5 Max: **2D GPU 7,073 MLUPS** at 1024²,
+- **Runs without CUDA lock-in across the supported paths.** Scenario JSON runs
+  in a browser (WebAssembly), on the CPU (SIMD), and on the exposed 2D f32 GPU
+  path via wgpu (Metal / Vulkan / DX12); the core API also has measured 3D GPU
+  kernels and feature-gated MPI halo exchange, with multi-node scaling still
+  unmeasured. On the M5 Max: **2D GPU 7,073 MLUPS** at 1024²,
   **3D GPU 2,791–2,813 MLUPS** at 192³ (D3Q19, quiet-window A/B/A), CPU
-  **1,480 MLUPS** (2D) and **302 MLUPS** (3D). FP16 storage adds ~2× MLUPS at
-  2048² and doubles usable grid capacity (D3Q19 f16 >5 GLUPS).
+  **1,480 MLUPS** (2D) and **302 MLUPS** (3D). FP16 storage is a
+  capacity/throughput mode: it adds ~2× MLUPS at 2048² and doubles usable grid
+  capacity (D3Q19 f16 >5 GLUPS), while f32/f64 remain the validation-grade
+  long-transient reference modes.
 
 ## 2. Positioning
 
@@ -36,19 +41,22 @@ physics validation surface (not a slide deck), an agent-driven control plane
 
 ## 3. Method and architecture
 
-LBMFlow implements the Lattice Boltzmann method on the D2Q9 (2D) and D3Q19 (3D)
-lattices, with BGK and TRT collision operators (TRT with the magic parameter
-Λ=3/16 is the default: it makes the wall position exact and is as fast as BGK).
+LBMFlow implements the Lattice Boltzmann method on D2Q9 (2D), D3Q19 (3D), and
+D3Q27 (3D periodic / closed-wall scope) lattices, with BGK and TRT collision
+operators (TRT with the magic parameter Λ=3/16 is the default: it makes the
+wall position exact and is as fast as BGK).
 Body forces use second-order Guo forcing; solid walls are half-way bounce-back;
-open boundaries use a normal-parameterized Zou–He implementation covering velocity
-inlets and pressure outlets on any face. Force on immersed bodies is measured by the
-momentum-exchange method. The relaxation time is τ = 3ν + ½ (cs² = ⅓).
+open boundaries use a normal-parameterized Zou–He implementation covering D2Q9
+and D3Q19 velocity inlets and pressure outlets on open faces. D3Q27 open faces
+are not supported today. Prescribed rigid rotating-boundary IBM reports force,
+torque, slip, and momentum-spreading diagnostics; it is not a general structural
+FSI solver. The relaxation time is τ = 3ν + ½ (cs² = ⅓).
 
 The engine is one orthogonal core parameterized over **dimension × lattice ×
-precision × backend × partition**. That orthogonality is *why* one scenario is
-portable: the same physics definition is dispatched to a scalar CPU backend, a
-SIMD-vectorized CPU backend, a GPU compute backend (wgpu → Metal / Vulkan / DX12), or
-an MPI-partitioned run, without changing the scenario. A deviation-storage scheme
+precision × backend × partition**. That orthogonality is *why* the same physics
+definition can move across supported routes: scenario paths cover CPU, browser,
+and exposed 2D GPU runs; core APIs cover additional backend and partition
+combinations within the compatibility matrix in README. A deviation-storage scheme
 (distributions are stored as f−wᵢ) keeps single-precision (f32) at validation grade —
 the quiescent background is exactly zero, so f32 rounding acts only on the
 fluctuation scale.
@@ -79,7 +87,9 @@ The suite reproduces, with frozen numeric tolerances (all CPU, f64 where noted):
   Schiller–Naumann within ±10%.
 - **Multiphase (Shan–Chen)**: Laplace law R² = 0.9999, contact-angle full range,
   Rayleigh–Taylor growth rate γ within 12% of the tension-and-viscosity-corrected
-  reference.
+  reference. This is the validated Shan–Chen scope; conservative Allen-Cahn
+  free surface / VOF and aerated stirred-tank gas-liquid validation are not
+  measured release claims today.
 
 **Bit-exact partition invariance and backend equivalence.** The partition invariance
 above holds against adversarial attacks (obstacles and probes straddling the seam,
@@ -116,9 +126,11 @@ bandwidth-bound.
 The GPU path does not exist for OpenLB or Palabos on Apple Silicon (CUDA-only).
 
 **FP16 storage (compute stays f32), same GPU:**
-~2.0× MLUPS at 2048², D3Q19 f16 >5 GLUPS, ×2 grid capacity inherent.
+Capacity/throughput mode only: ~2.0× MLUPS at 2048², D3Q19 f16 >5 GLUPS,
+×2 grid capacity inherent.
 Accuracy bands frozen and measured: TGV transient 1.401×10⁻¹ (band 2×10⁻¹),
 cavity steady 2.579×10⁻³ (band 5×10⁻³). Steady-vs-transient dichotomy in PHYSICS.md.
+Use f32/f64 storage for validation-grade long-horizon references.
 
 **CPU, fused SIMD backend, f32:**
 
@@ -157,20 +169,25 @@ Runs are deterministic run-to-run at a fixed configuration, so an agent's sweep 
 reproducible.
 
 This makes LBMFlow the substrate for automated design exploration: an agent discovers
-the schema, generates a parameter sweep, runs it unattended across the portability
-ladder, reads structured results, and iterates — no human in the inner loop.
+the schema, generates a parameter sweep, runs it unattended across supported
+scenario backends, reads structured results, and iterates — no human in the
+inner loop.
 
-## 7. Roadmap — remaining acceptance items
+## 7. Not claimed as measured today
 
 Landed (measured, in §5 above): 3D GPU D3Q19 ≥1,500 MLUPS; FP16 storage
-≥1.5× MLUPS at 2048² with frozen accuracy bands.
+≥1.5× MLUPS at 2048² with frozen capacity/throughput-mode accuracy bands.
 
-Remaining (targets, measurement pending — status in claims-ledger):
+The following claims remain RED in the claims-ledger and are not current paper
+claims:
 
-- **Multi-node scaling.** ≥80% weak scaling at 64 ranks on an MPI cluster;
-  single-node weak scaling already at 97–99% for ≤4 cores.
-- **Full-physics stirred workload.** Two-phase + particles + scalar transport
-  + LES; publish the performance-degradation ratio vs single-phase kernel.
+- **Multi-node scaling.** True multi-node weak scaling is unmeasured; current MPI
+  evidence is multi-rank single-node functional coverage and n≤4 weak scaling.
+- **Full-physics stirred workload.** T17 is mixed: prescribed rigid rotating IBM,
+  well-balanced gravity, WALE LES characterization, and current one-way
+  Lagrangian particle/deposition scope are landed at subsystem level; free
+  surface / VOF, top boundary / degassing, scalar / reaction coupling, point
+  bubbles, and the full coupled reactor loop remain pending.
 
 ## 8. Reproduce
 
