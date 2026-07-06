@@ -984,6 +984,8 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
             T::r(sc.physics.force[1]),
             T::zero(),
         ],
+        sources: Vec::new(),
+        face_patches: Vec::new(),
     };
     let (solid, wall_u) = build_wall_rims::<T>(3, dims, &walls);
     // A-4: the single native config gate (extents, ν, periodic × open,

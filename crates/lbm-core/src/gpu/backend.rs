@@ -1794,6 +1794,10 @@ impl<L: Lattice> WgpuBackend<L> {
 impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     type Fields = GpuFields;
 
+    fn supports_localized_features(&self) -> bool {
+        false
+    }
+
     fn alloc(&self, sub: &Subdomain) -> GpuFields {
         self.try_alloc(sub).expect("GPU field allocation failed")
     }

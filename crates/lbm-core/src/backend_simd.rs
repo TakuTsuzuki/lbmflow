@@ -1746,6 +1746,15 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p)
     }
 
+    fn apply_volume_sources(
+        &mut self,
+        sub: &Subdomain,
+        fields: &mut SoaFields<T>,
+        p: &StepParams<T>,
+    ) {
+        crate::backend::apply_volume_sources_impl::<L, T>(sub, fields, p);
+    }
+
     /// Restore the previous step's post-collide populations into the open
     /// faces' unknown slots (the values a `CpuScalar` swap would have left
     /// there), run the shared BC pass, then rotate the stash pair.
@@ -1756,7 +1765,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             for face in Face::ALL {
                 if face.axis() >= L::D
                     || !sub.touches_global_face(face)
-                    || !p.faces[face.index()].is_open()
+                    || !face_has_open_bc(p, face)
                 {
                     continue;
                 }
@@ -1791,6 +1800,13 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         let fresh = fields.fused.as_deref().is_some_and(|s| s.fresh);
         if !fresh {
             update_moments_impl::<L, T>(fields, p, self.use_parallel(sub));
+            return;
+        }
+        if !p.sources.is_empty() {
+            update_moments_impl::<L, T>(fields, p, self.use_parallel(sub));
+            if let Some(s) = fields.fused.as_deref_mut() {
+                s.fresh = false;
+            }
             return;
         }
         if let Some(s) = fields.fused.as_deref_mut() {
@@ -1829,8 +1845,7 @@ fn capture_stale<L: Lattice, T: Real>(
     let g = ctx.g;
     let np = ctx.np;
     for face in Face::ALL {
-        if face.axis() >= L::D || !sub.touches_global_face(face) || !p.faces[face.index()].is_open()
-        {
+        if face.axis() >= L::D || !sub.touches_global_face(face) || !face_has_open_bc(p, face) {
             continue;
         }
         let unknowns = L::unknowns(face);
@@ -1908,8 +1923,7 @@ fn fix_open_face_moments<L: Lattice, T: Real>(
     let np = g.n_padded();
     let half = T::r(0.5);
     for face in Face::ALL {
-        if face.axis() >= L::D || !sub.touches_global_face(face) || !p.faces[face.index()].is_open()
-        {
+        if face.axis() >= L::D || !sub.touches_global_face(face) || !face_has_open_bc(p, face) {
             continue;
         }
         let ff = fields.force_field.as_deref();
@@ -1959,4 +1973,11 @@ fn fix_open_face_moments<L: Lattice, T: Real>(
             }
         });
     }
+}
+
+fn face_has_open_bc<T: Real>(p: &StepParams<T>, face: Face) -> bool {
+    p.faces[face.index()].is_open()
+        || p.face_patches
+            .iter()
+            .any(|patch| patch.face == face.index() && patch.bc.is_open())
 }

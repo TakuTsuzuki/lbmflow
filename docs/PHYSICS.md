@@ -382,3 +382,31 @@ TESTING_NOTES), NOT a long-transient accuracy grade. Scenarios needing
 long-horizon transient fidelity stay on f32. If a transient-grade f16 is ever
 required, the known remedy is a shifted-exponent custom format (FluidX3D's
 FP16S/FP16C) — recorded here as a roadmap option, not implemented.
+
+## 2026-07-06 localized volume sources and face patches (CR-1 / CR-2)
+
+**Volume-source discretization**: localized sources run after the open-boundary
+BC pass and before moment recomputation. A source's `q_lu` is divided uniformly
+over its inclusive cell box. Each owner subdomain applies the increment only to
+its owned core cells, so a region straddling an in-process partition seam is
+applied exactly once per global cell.
+
+For a MassFlow source, the per-cell mass increment `q_cell` is distributed as
+`delta_f_q = w_q q_cell`, which gives zero first moment. For a Jet source, the
+increment uses the second-order equilibrium-shaped delta
+`delta_f_q = w_q q_cell (1 + 3 c_q.u + 4.5 (c_q.u)^2 - 1.5 |u|^2)`, giving
+`sum_q delta_f_q = q_cell` and `sum_q c_q delta_f_q = q_cell u` by the lattice
+moment identities. This keeps the mass ledger `dM/dt = sum(q_lu)` to ordinary
+floating-point round-off while preserving the requested jet momentum flux.
+
+**Sink guard**: validation requires each sink's `q_cell > -1.0`. This is a
+conservative reference-density positivity guard for the explicit source pass:
+a cell at `rho = 1` remains positive immediately after the sink is applied.
+Stronger sinks require smaller model time steps or a future source model that
+limits withdrawal using the current local density.
+
+**Face patches**: a patch overrides the base face BC only inside its inclusive
+in-face rectangle; the base face BC applies elsewhere. A Closed base face with
+open patches is legal. CPU scalar and CpuSimd share the same selected-face BC
+implementation; the GPU backend rejects specs using sources or patches until
+matching device kernels are implemented.
