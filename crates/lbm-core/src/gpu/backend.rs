@@ -44,7 +44,7 @@ use crate::backend::{write_host_moments, Backend, CellRange, HostMoments};
 use crate::fields::SoaFields;
 use crate::halo::HaloExchange;
 use crate::lattice::{Face, Lattice};
-use crate::params::{FaceBC, Reduction, StepParams};
+use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
 use crate::subdomain::Subdomain;
 
 use super::wgsl;
@@ -494,6 +494,10 @@ struct Pipelines {
     step_cached: wgpu::ComputePipeline,
     step_wale: wgpu::ComputePipeline,
     step_cached_wale: wgpu::ComputePipeline,
+    step_cumulant: wgpu::ComputePipeline,
+    step_cached_cumulant: wgpu::ComputePipeline,
+    step_wale_cumulant: wgpu::ComputePipeline,
+    step_cached_wale_cumulant: wgpu::ComputePipeline,
     wale_omega: wgpu::ComputePipeline,
     moments: wgpu::ComputePipeline,
     bc: wgpu::ComputePipeline,
@@ -509,6 +513,7 @@ enum Op {
         bg: usize,
         cached: bool,
         wale: bool,
+        cumulant: bool,
     },
     /// WALE omega refresh from pre-step moments and populations.
     WaleOmega {
@@ -644,6 +649,56 @@ impl<L: Lattice> WgpuBackend<L> {
                 label: Some("lbm-core-gpu"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
+        let storage_ro = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let storage_rw = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let uniform = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let fused_entries = [
+            (0, uniform.clone()),
+            (1, storage_ro.clone()),
+            (2, storage_rw.clone()),
+            (3, storage_ro.clone()),
+            (4, storage_ro.clone()),
+            (5, storage_ro.clone()),
+            (6, storage_ro.clone()),
+            (7, storage_rw.clone()),
+            (8, storage_rw.clone()),
+            (9, storage_rw.clone()),
+            (10, storage_rw.clone()),
+            (11, storage_rw.clone()),
+            (14, storage_rw.clone()),
+            (15, storage_rw.clone()),
+        ]
+        .map(|(binding, ty)| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty,
+            count: None,
+        });
+        let fused_bgl = ctx
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fused-layout"),
+                entries: &fused_entries,
+            });
+        let fused_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("fused-pipeline-layout"),
+                bind_group_layouts: &[&fused_bgl],
+                push_constant_ranges: &[],
+            });
         let mk = |entry: &str| {
             ctx.device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -655,11 +710,26 @@ impl<L: Lattice> WgpuBackend<L> {
                     cache: None,
                 })
         };
+        let mk_fused = |entry: &str| {
+            ctx.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&fused_layout),
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+        };
         let pipelines = Arc::new(Pipelines {
-            step: mk("step"),
-            step_cached: mk("step_cached"),
-            step_wale: mk("step_wale"),
-            step_cached_wale: mk("step_cached_wale"),
+            step: mk_fused("step"),
+            step_cached: mk_fused("step_cached"),
+            step_wale: mk_fused("step_wale"),
+            step_cached_wale: mk_fused("step_cached_wale"),
+            step_cumulant: mk_fused("step_cumulant"),
+            step_cached_cumulant: mk_fused("step_cached_cumulant"),
+            step_wale_cumulant: mk_fused("step_wale_cumulant"),
+            step_cached_wale_cumulant: mk_fused("step_cached_wale_cumulant"),
             wale_omega: mk("wale_omega"),
             moments: mk("moments"),
             bc: mk("bc"),
@@ -755,13 +825,19 @@ impl<L: Lattice> WgpuBackend<L> {
                         pass.set_bind_group(0, &fields.clear_bg, &[]);
                         pass.dispatch_workgroups(1, 1, 1);
                     }
-                    Op::Fused { bg, cached, wale } => {
+                    Op::Fused {
+                        bg,
+                        cached,
+                        wale,
+                        cumulant,
+                    } => {
                         if wale {
                             let wb = fields.wale.as_ref().expect("WALE op without WALE buffers");
-                            pass.set_pipeline(if cached {
-                                &self.pipelines.step_cached_wale
-                            } else {
-                                &self.pipelines.step_wale
+                            pass.set_pipeline(match (cached, cumulant) {
+                                (true, true) => &self.pipelines.step_cached_wale_cumulant,
+                                (false, true) => &self.pipelines.step_wale_cumulant,
+                                (true, false) => &self.pipelines.step_cached_wale,
+                                (false, false) => &self.pipelines.step_wale,
                             });
                             let bind_group = if cached {
                                 &wb.fused_cached_bg[bg]
@@ -770,10 +846,11 @@ impl<L: Lattice> WgpuBackend<L> {
                             };
                             pass.set_bind_group(0, bind_group, &[]);
                         } else {
-                            pass.set_pipeline(if cached {
-                                &self.pipelines.step_cached
-                            } else {
-                                &self.pipelines.step
+                            pass.set_pipeline(match (cached, cumulant) {
+                                (true, true) => &self.pipelines.step_cached_cumulant,
+                                (false, true) => &self.pipelines.step_cumulant,
+                                (true, false) => &self.pipelines.step_cached,
+                                (false, false) => &self.pipelines.step,
                             });
                             let bind_group = if cached {
                                 &fields.fused_cached_bg[bg]
@@ -935,6 +1012,11 @@ impl<L: Lattice> WgpuBackend<L> {
         // Relaxation constants exactly as KParams::new builds them: f64
         // parameters converted to f32 once.
         let use_cached_moments = fields.state.borrow().use_cached_moments_once;
+        let collision_code = match p.collision {
+            CollisionKind::Bgk => 0u32,
+            CollisionKind::Trt { .. } => 1u32,
+            CollisionKind::Cumulant { .. } => 2u32,
+        };
         let words: [u32; 16] = [
             fields.nx,
             fields.ny,
@@ -977,8 +1059,8 @@ impl<L: Lattice> WgpuBackend<L> {
                 }
                 flags
             },
-            0,
-            0,
+            (p.collision.omega_shear((1.0 / p.omega_p - 0.5) / 3.0) as f32).to_bits(),
+            collision_code,
             0,
             0,
         ];
@@ -1217,6 +1299,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(10, &fields.ux),
                     e(11, &fields.uy),
                     e(14, &fields.uz),
+                    e(15, fields.wale.as_ref().map_or(&fields.rho, |w| &w.omega)),
                 ],
             })
         });
@@ -1238,6 +1321,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(10, &fields.ux),
                     e(11, &fields.uy),
                     e(14, &fields.uz),
+                    e(15, fields.wale.as_ref().map_or(&fields.rho, |w| &w.omega)),
                 ],
             })
         });
@@ -1680,6 +1764,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(10, &ux),
                     e(11, &uy),
                     e(14, &uz),
+                    e(15, &rho),
                 ],
             })
         });
@@ -1701,6 +1786,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(10, &ux),
                     e(11, &uy),
                     e(14, &uz),
+                    e(15, &rho),
                 ],
             })
         });
@@ -1857,10 +1943,6 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
-        assert!(
-            p.omega_m >= 0.0,
-            "GPU backend does not yet support cumulant/central-moment collision"
-        );
         self.ensure_params(sub, fields, p);
         let mut st = fields.state.borrow_mut();
         assert!(!st.pending_collide, "collide called twice without stream");
@@ -1891,6 +1973,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         let cur = st.cur;
         let cached = st.use_cached_moments_once || has_open_faces::<L>(sub, _p);
         let wale = fields.wale.is_some();
+        let cumulant = matches!(_p.collision, CollisionKind::Cumulant { .. });
         if wale {
             st.ops.push(Op::Moments { bg: cur });
             st.ops.push(Op::WaleOmega { bg: cur });
@@ -1899,6 +1982,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             bg: cur,
             cached,
             wale,
+            cumulant,
         });
         st.generation += 1;
         st.f_cache = None;
@@ -1991,6 +2075,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             let cur = st.cur;
             let cached = st.use_cached_moments_once || open_faces.iter().any(|&is_open| is_open);
             let wale = field.wale.is_some();
+            let cumulant = matches!(p.collision, CollisionKind::Cumulant { .. });
             if wale {
                 st.ops.push(Op::Moments { bg: cur });
                 st.ops.push(Op::WaleOmega { bg: cur });
@@ -1999,6 +2084,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
                 bg: cur,
                 cached,
                 wale,
+                cumulant,
             });
             st.generation += 1;
             st.f_cache = None;
@@ -2244,7 +2330,18 @@ impl<L: Lattice> WgpuBackend<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lattice::{D2Q9, D3Q19};
+    use crate::backend::CpuScalar;
+    use crate::halo::LocalPeriodic;
+    use crate::lattice::{D2Q9, D3Q19, D3Q27};
+    use crate::solver::{GlobalSpec, Solver};
+    use std::f64::consts::PI;
+    use std::sync::OnceLock;
+
+    fn ctx() -> Arc<GpuContext> {
+        static CTX: OnceLock<Arc<GpuContext>> = OnceLock::new();
+        CTX.get_or_init(|| GpuContext::new().expect("GPU backend tests require a GPU adapter"))
+            .clone()
+    }
 
     #[test]
     fn submit_chunk_calibration_targets_middle_of_window() {
@@ -2299,5 +2396,93 @@ mod tests {
         };
         let err = plan.validate(&limits).unwrap_err();
         assert!(err.to_string().contains("workgroup count"));
+    }
+
+    fn omega_from_nu(nu: f64) -> f64 {
+        1.0 / (3.0 * nu + 0.5)
+    }
+
+    fn cumulant_tgv_spec<L: Lattice>(n: usize) -> GlobalSpec<f32> {
+        let nu = 0.02;
+        let _ = L::Q;
+        GlobalSpec {
+            dims: [n, n, n],
+            nu,
+            collision: CollisionKind::Cumulant {
+                omega_shear: omega_from_nu(nu),
+            },
+            periodic: [true, true, true],
+            ..Default::default()
+        }
+    }
+
+    fn init_cumulant_tgv<L, B>(s: &mut Solver<L, f32, B, LocalPeriodic>, n: usize)
+    where
+        L: Lattice,
+        B: Backend<L, f32>,
+    {
+        let u0 = 1.28e-4 / n as f64;
+        s.init_with(move |x, y, z| {
+            let k = 2.0 * PI / n as f64;
+            let (xf, yf, zf) = (k * x as f64, k * y as f64, k * z as f64);
+            let p =
+                u0 * u0 / 16.0 * (((2.0 * xf).cos() + (2.0 * yf).cos()) * ((2.0 * zf).cos() + 2.0));
+            (
+                (1.0 + 3.0 * p) as f32,
+                [
+                    (u0 * xf.sin() * yf.cos() * zf.cos()) as f32,
+                    (-u0 * xf.cos() * yf.sin() * zf.cos()) as f32,
+                    0.0,
+                ],
+            )
+        });
+    }
+
+    fn max_delta(a: &[f32], b: &[f32]) -> f64 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (*x as f64 - *y as f64).abs())
+            .fold(0.0, f64::max)
+    }
+
+    fn cumulant_gpu_cpu_delta<L: Lattice>() -> f64 {
+        let n = 8;
+        let spec = cumulant_tgv_spec::<L>(n);
+        let mut cpu: Solver<L, f32, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let mut gpu: Solver<L, f32, WgpuBackend<L>, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            WgpuBackend::<L>::new(ctx()),
+            LocalPeriodic,
+        );
+        init_cumulant_tgv(&mut cpu, n);
+        init_cumulant_tgv(&mut gpu, n);
+        cpu.run(200);
+        gpu.run(200);
+        max_delta(&cpu.gather_rho(), &gpu.gather_rho())
+            .max(max_delta(&cpu.gather_ux(), &gpu.gather_ux()))
+            .max(max_delta(&cpu.gather_uy(), &gpu.gather_uy()))
+            .max(max_delta(&cpu.gather_uz(), &gpu.gather_uz()))
+    }
+
+    #[test]
+    fn cumulant_gpu_matches_cpu_measured_tgv3d_tolerance() {
+        let d3q19 = cumulant_gpu_cpu_delta::<D3Q19>();
+        let d3q27 = cumulant_gpu_cpu_delta::<D3Q27>();
+        eprintln!("cumulant GPU vs CPU 200-step TGV3D: D3Q19={d3q19:e} D3Q27={d3q27:e}");
+        // Measured 2026-07-06 on the Stage-3 WGSL path:
+        // D3Q19 = 1.5497207641601563e-6, D3Q27 = 3.4570693969726563e-6
+        // over a 200-step f32 TGV3D. Gates are measured * 10 headroom.
+        assert!(d3q19 <= 1.6e-5, "D3Q19 cumulant GPU delta {d3q19:e}");
+        assert!(d3q27 <= 3.5e-5, "D3Q27 cumulant GPU delta {d3q27:e}");
     }
 }

@@ -215,7 +215,7 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
     }
 }
 
-fn central_basis<L: Lattice>() -> [[u8; 3]; Q_MAX] {
+pub(crate) fn central_basis<L: Lattice>() -> [[u8; 3]; Q_MAX] {
     let mut basis = [[0u8; 3]; Q_MAX];
     let mut n = 0usize;
     for ax in 0..=2 {
@@ -248,7 +248,7 @@ fn pow_upto2(x: f64, e: u8) -> f64 {
     }
 }
 
-fn central_phi<L: Lattice>(q: usize, exp: [u8; 3], u: [f64; 3]) -> f64 {
+pub(crate) fn central_phi<L: Lattice>(q: usize, exp: [u8; 3], u: [f64; 3]) -> f64 {
     let c = L::C[q];
     let mut v = pow_upto2(c[0] as f64 - u[0], exp[0]);
     v *= pow_upto2(c[1] as f64 - u[1], exp[1]);
@@ -258,7 +258,7 @@ fn central_phi<L: Lattice>(q: usize, exp: [u8; 3], u: [f64; 3]) -> f64 {
     v
 }
 
-fn solve_moment_system<L: Lattice>(
+pub(crate) fn solve_moment_system<L: Lattice>(
     basis: &[[u8; 3]; Q_MAX],
     u: [f64; 3],
     rhs: &[f64; Q_MAX],
@@ -989,7 +989,7 @@ pub(crate) fn convective_face_selected<L: Lattice, T: Real>(
 mod tests {
     use super::*;
     use crate::lattice::{D2Q9, D3Q19, D3Q27};
-    use crate::params::{FaceBC, StepParams};
+    use crate::params::{CollisionKind, FaceBC, StepParams};
     use crate::real::Real;
 
     /// A-10f: `equilibrium()` and the feq computed inline by `collide_row`
@@ -1003,6 +1003,7 @@ mod tests {
     fn collide_fixed_point_on_equilibrium<L: Lattice, T: Real>() {
         let ncells = 64usize;
         let params = StepParams::<T> {
+            collision: CollisionKind::Trt { magic: 3.0 / 16.0 },
             omega_p: 1.25,
             omega_m: 0.7,
             force: [T::zero(); 3],
@@ -1074,8 +1075,9 @@ mod tests {
 
     fn cumulant_params<T: Real>() -> KParams<T> {
         let params = StepParams::<T> {
+            collision: CollisionKind::Cumulant { omega_shear: 1.25 },
             omega_p: 1.25,
-            omega_m: -1.25,
+            omega_m: 1.25,
             force: [T::zero(); 3],
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
@@ -1087,8 +1089,9 @@ mod tests {
     fn collide_cumulant_rest_fixed_point<L: Lattice>() {
         let ncells = 8usize;
         let params = StepParams::<f64> {
+            collision: CollisionKind::Cumulant { omega_shear: 1.25 },
             omega_p: 1.25,
-            omega_m: -1.25,
+            omega_m: 1.25,
             force: [0.0; 3],
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
@@ -1122,8 +1125,9 @@ mod tests {
     fn cumulant_uniform_velocity_stays_uniform_after_collide() {
         let ncells = 16usize;
         let params = StepParams::<f64> {
+            collision: CollisionKind::Cumulant { omega_shear: 1.1 },
             omega_p: 1.1,
-            omega_m: -1.1,
+            omega_m: 1.1,
             force: [0.0; 3],
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),

@@ -387,8 +387,8 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
             // SAFETY: each row index r is processed exactly once, and
             // collide_row writes only its own row's cells.
             unsafe {
-                if p.omega_m >= 0.0 {
-                    collide_row::<L, T>(
+                if kp.cumulant {
+                    collide_row_central_moment::<L, T>(
                         f,
                         np,
                         pb,
@@ -402,7 +402,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
                         &kp,
                     )
                 } else {
-                    collide_row_central_moment::<L, T>(
+                    collide_row::<L, T>(
                         f,
                         np,
                         pb,
