@@ -55,8 +55,8 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   physics kernels.
 - 2.2 Band-vacuity scan — **DONE** (commit 2e121c8). Retighten queue
   survives in `docs/qa/band-vacuity-scan.md`.
-- 2.3 Behavior-anchor coverage — **RUN** (combined 7.2/7.4/2.3 subagent
-  sweep in flight); output feeds a codex retrofit order.
+- 2.3 Behavior-anchor coverage — **DONE** (structural-sweep-2026-07-06.md):
+  17/23 sections dual-layer, T4 band-only justified; no retrofit needed.
 
 ## Axis 3 — Cross-intelligence review
 
@@ -121,11 +121,12 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 
 - 7.1 **W1** Ban-list grep sweep — case-identity branches, transported-
   quantity clamps, bare calibrated literals; recurring CI-able check.
-- 7.2 **W2** Numeric-literal provenance scan — every float in src/ physics
-  paths needs a provenance comment or named constant.
+- 7.2 Numeric-literal provenance scan — **DONE** (structural-sweep):
+  no new undocumented physics constants; P2 comment order queued.
 - 7.3 **W3** Unsafe/precision audit — SIMD unsafe UB; f32↔f64 cast audit;
   Kahan-summation needs.
-- 7.4 **W2** Docs/spec consistency — VALIDATION.md ↔ test files drift.
+- 7.4 Docs/spec consistency — **DONE** (structural-sweep): 14/14 verified
+  bands match exactly, zero drift; agent's missing-test rows PM-refuted.
 
 ## Axis 8 — Interface/tooling V&V (product surface)
 
