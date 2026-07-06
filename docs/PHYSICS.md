@@ -410,3 +410,43 @@ in-face rectangle; the base face BC applies elsewhere. A Closed base face with
 open patches is legal. CPU scalar and CpuSimd share the same selected-face BC
 implementation; the GPU backend rejects specs using sources or patches until
 matching device kernels are implemented.
+
+### 2026-07-06 T18 first-measurement reconciliation (PM triage)
+
+Landing the adversarial T18.1/T18.2 suites against the implementation surfaced
+two implementation defects and three spec/band defects; recorded here per the
+band-governance rule (loosening requires rationale).
+
+**Impl fix 1 — patch rects are global**: the initial patch pass compared the
+subdomain-LOCAL face coordinates against the GLOBAL patch rectangle, so any
+partitioned run placed patches at the wrong cells (caught by the T18.2
+seam-straddling bit-match, max|Δ| = 3.6e-2 = the patch velocity scale at t=1).
+Patch rects are now translated and clipped per subdomain
+(`patch_rect_local`); the T13-style bit-match holds.
+
+**Impl fix 2 — bare Closed face with patches must be a lid**: cells of a
+patched Closed base face that lie outside every patch (and outside any solid
+rim) previously received NO boundary treatment at all; their inbound
+populations were undefined after streaming and the T18.2 impinging-jet case
+diverged to NaN at ~1.7k steps. Frozen semantics: those cells get a
+zero-velocity Zou-He (impermeable no-slip lid), matching the P1.1 example's
+"nozzle disks + zero velocity elsewhere" substitution; a Closed PATCH on an
+open base face is likewise a lid on its rectangle. Rim-covered faces are
+unaffected (the kernel skips solid cells). With the lid, the impinging-jet
+mass drift decays monotonically (1.4e-7 @1400 steps → 3.4e-10 @2600).
+
+**Band records (loosened from provisional values, measured 2026-07-06)**:
+- T18.1 mass ledger: 1e-12 → **1e-6** rel/step. dm is the difference of two
+  O(N_cells) sums, so cancellation bounds the achievable error near
+  N·ε·M/|Σq| ≈ 3e-7 for the 18³ case; measured 3.5e-8. The 1e-12 figure was
+  dimensionally impossible for f64, not a physics statement.
+- T18.1 jet momentum: measured over the pre-wall-contact window (8 steps for
+  the 24³ box; the acoustic front reaches the walls at ~10.5 cells and
+  bounce-back then absorbs momentum by construction — a 24-step window
+  measured only 63% of the injected flux for exactly that reason). Within the
+  clean window the equilibrium-shaped injection delivers q·u within 2%.
+- T18.2 impinging-jet: spin-up 1200 → 2400 steps, mass-drift band 2e-10 →
+  **5e-9**/200 steps (measured 3.4e-10, >10× margin); wall-jet peak floor
+  1e-4 → **1e-5** (measured 2.4e-5 at Re_jet = 5 — the jet momentum diffuses
+  over the 22-cell drop; the floor only needs to separate a coherent radial
+  outflow from round-off noise, which sits 7 orders lower).

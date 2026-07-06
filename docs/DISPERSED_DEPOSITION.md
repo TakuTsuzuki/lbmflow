@@ -122,8 +122,13 @@ pub struct VolumeSource<T: Real> { pub region: SourceRegion, pub kind: SourceKin
 
 Validation rules: region strictly interior (≥ 1 cell from every face), inside
 the domain, no overlap with solids or another source, |u| ≤ MAX_SPEED, and a
-sink strength bound such that local ρ stays positive. Mass ledger contract:
-d(total_mass)/step = Σ q_lu to round-off class.
+sink strength bound such that local ρ stays positive (frozen: per-cell drain
+> −1.0 per step). Mass ledger contract: d(total_mass)/step = Σ q_lu to
+summation round-off — the achievable relative error is bounded by the
+cancellation of two O(N_cells) sums (≈ N·ε·M/|Σq|), NOT by 1e-12; see
+PHYSICS.md "T18 first-measurement reconciliation". Jet momentum contract:
+the equilibrium-shaped injection delivers dP/step = q_lu·u, measurable only
+inside the pre-wall-contact window of a closed box.
 
 Acceptance = **T18.1**: a point-like sink in a filled closed box reproduces
 the analytic incompressible sink far-field u_r(r) = q/(4πr²) within band on
@@ -151,6 +156,13 @@ pub struct FacePatch<T: Real> {
 Validation rules: patch inside face bounds; patches must not overlap; the
 existing one-open-axis rule applies to the union of base faces and patches;
 velocity/pressure parameter limits as for whole faces.
+
+Semantics frozen at first measurement (2026-07-06, PHYSICS.md "T18
+first-measurement reconciliation"): patch rects are GLOBAL in-face
+coordinates (translated per subdomain, seam-safe); the non-patch cells of a
+bare Closed base face carrying patches are an impermeable zero-velocity lid
+(no-BC-at-all diverges); a Closed patch on an open base face is likewise a
+lid on its rectangle.
 
 Acceptance = **T18.2**: impinging jet (central Velocity patch, downward) with
 a coaxial outlet patch on the SAME top face over a closed floor conserves

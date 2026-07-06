@@ -371,20 +371,33 @@ loosening requires PHYSICS.md rationale.
   - A point-like sink (small `SourceRegion`) in a filled closed box (D3Q19,
     all faces Closed) reproduces the analytic incompressible sink far-field
     `u_r(r) = q/(4πr²)` on shell-averaged radial profiles for r away from the
-    region and the walls; band ±10% target, frozen at first measurement.
-  - Mass ledger: d(total_mass)/step = Σ q_lu to round-off class (≤1e-12 rel).
-  - A `Jet` source delivers the prescribed momentum flux within band.
+    region and the walls; band ±10%, frozen at first measurement (64³ ignored
+    case: rel = 8.81e-2 at 2400 steps, residual = closed-box wall blockage;
+    32³ default case in-band at 360 steps).
+  - Mass ledger: d(total_mass)/step = Σ q_lu to summation round-off. Band
+    frozen at **1e-6 rel** (measured 3.5e-8; the achievable error is bounded
+    by cancellation of two O(N_cells) sums ≈ N·ε·M/|Σq| ≈ 3e-7 at 18³ — see
+    PHYSICS.md 2026-07-06, T18 reconciliation).
+  - A `Jet` source delivers the prescribed momentum flux within band
+    (±2%, measured inside the pre-wall-contact window of the closed box —
+    after the acoustic front reaches the walls, bounce-back absorbs momentum
+    by construction).
   - Validation errors: region touching a face, overlapping solids/sources,
     |u| > MAX_SPEED, sink strong enough to drive local ρ ≤ 0.
   - Partition invariance: T13-style bit match with the source region on a seam.
   - GPU: a spec with `sources` is rejected with `SpecError` (no silent physics).
 - **T18.2 Per-cell masked face BC (CR-2)** —
   `crates/lbm-core/tests/t18_2_masked_face.rs`:
-  - Impinging jet: central Velocity patch (downward) + coaxial Outflow/Pressure
-    patch on the SAME top face, closed floor and sides. At steady state global
-    mass is conserved (net flux band frozen at first measurement) and the floor
-    wall jet is radial: stagnation at the axis, off-axis peak in u_r, monotone
-    decay beyond the peak.
+  - Impinging jet: central Velocity patch (downward) + coaxial Pressure
+    annulus (4 rects) on the SAME top face, closed floor and sides. Frozen at
+    first measurement (2026-07-06): spin-up 2400 steps, then mass drift
+    ≤ 5e-9 rel / 200 steps (measured 3.4e-10); floor wall jet is radial —
+    stagnation at the axis (≤ 0.25× peak), off-axis peak > 1e-5 (measured
+    2.4e-5 at Re_jet = 5), monotone decay beyond the peak.
+  - Frozen semantics (PHYSICS.md 2026-07-06): patch rects are global in-face
+    coords (seam-safe per subdomain); non-patch cells of a bare Closed base
+    face with patches form a zero-velocity lid; a Closed patch on an open
+    base is a lid on its rect.
   - Validation errors: patch out of face bounds, overlapping patches,
     one-open-axis rule violated by the base∪patch union.
   - Partition invariance with a patch straddling a seam; GPU rejection as above.

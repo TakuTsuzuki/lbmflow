@@ -533,18 +533,51 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
             continue;
         }
         let bc = &p.faces[face.index()];
+        // Patch presence is a GLOBAL property of the face: a subdomain whose
+        // local window contains no patch rect still owes the non-patch cells
+        // their base treatment.
+        let face_has_patches = p
+            .face_patches
+            .iter()
+            .any(|patch| patch.face == face.index());
+        if !bc.is_open() && !face_has_patches {
+            continue;
+        }
+        // Patch rects are specified in GLOBAL in-face coordinates; the face
+        // kernels iterate this subdomain's LOCAL core cells, so translate and
+        // clip every rect by the subdomain origin (a patch straddling a seam
+        // must land on the same global cells in every decomposition — T18.2).
         let patches: Vec<_> = p
             .face_patches
             .iter()
             .filter(|patch| patch.face == face.index())
-            .copied()
+            .filter_map(|patch| {
+                patch_rect_local(sub, face, patch.lo, patch.hi)
+                    .map(|(lo, hi)| (patch.bc, lo, hi))
+            })
             .collect();
-        if !bc.is_open() && patches.iter().all(|patch| !patch.bc.is_open()) {
-            continue;
-        }
         let profiles = &fields.inlet_profiles;
+        let excluded: Vec<_> = patches.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
+        if !bc.is_open() && face_has_patches {
+            // A Closed base face carrying patches is an impermeable lid on the
+            // non-patch cells: prescribe u = 0 there (zero-velocity Zou-He).
+            // Rim-covered cells are solid and skipped by the kernel, so faces
+            // closed by a wall rim are unaffected; this arm exists for the
+            // bare Closed-plus-patches face (the CR-2 motivating case). The
+            // untreated alternative leaves those cells with no BC at all and
+            // slowly diverges (T18.2 impinging jet, NaN at ~1.7k steps).
+            zou_he_face_selected::<L, T>(
+                &mut fields.f,
+                np,
+                &g,
+                &fields.solid,
+                face,
+                &ZhKind::Velocity([T::zero(); 3]),
+                None,
+                FaceCellSelection::Excluding { rects: &excluded },
+            );
+        }
         if bc.is_open() {
-            let excluded: Vec<_> = patches.iter().map(|p| (p.lo, p.hi)).collect();
             match bc {
                 FaceBC::Closed => {}
                 FaceBC::Velocity { u } => zou_he_face_selected::<L, T>(
@@ -586,9 +619,20 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                 ),
             }
         }
-        for patch in patches {
-            match patch.bc {
-                FaceBC::Closed => {}
+        for (bc, lo, hi) in patches {
+            match bc {
+                // A Closed patch is an impermeable lid on its rect (same
+                // reasoning as the Closed-base-with-patches arm above).
+                FaceBC::Closed => zou_he_face_selected::<L, T>(
+                    &mut fields.f,
+                    np,
+                    &g,
+                    &fields.solid,
+                    face,
+                    &ZhKind::Velocity([T::zero(); 3]),
+                    None,
+                    FaceCellSelection::Rect { lo, hi },
+                ),
                 FaceBC::Velocity { u } => zou_he_face_selected::<L, T>(
                     &mut fields.f,
                     np,
@@ -597,10 +641,7 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     face,
                     &ZhKind::Velocity(u),
                     None,
-                    FaceCellSelection::Rect {
-                        lo: patch.lo,
-                        hi: patch.hi,
-                    },
+                    FaceCellSelection::Rect { lo, hi },
                 ),
                 FaceBC::Pressure { rho } => zou_he_face_selected::<L, T>(
                     &mut fields.f,
@@ -610,10 +651,7 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     face,
                     &ZhKind::Pressure(rho),
                     None,
-                    FaceCellSelection::Rect {
-                        lo: patch.lo,
-                        hi: patch.hi,
-                    },
+                    FaceCellSelection::Rect { lo, hi },
                 ),
                 FaceBC::Outflow => outflow_face_selected::<L, T>(
                     &mut fields.f,
@@ -621,10 +659,7 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     &g,
                     &fields.solid,
                     face,
-                    FaceCellSelection::Rect {
-                        lo: patch.lo,
-                        hi: patch.hi,
-                    },
+                    FaceCellSelection::Rect { lo, hi },
                 ),
                 FaceBC::Convective { u_conv } => convective_face_selected::<L, T>(
                     &mut fields.f,
@@ -633,14 +668,35 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     &fields.solid,
                     face,
                     u_conv,
-                    FaceCellSelection::Rect {
-                        lo: patch.lo,
-                        hi: patch.hi,
-                    },
+                    FaceCellSelection::Rect { lo, hi },
                 ),
             }
         }
     }
+}
+
+/// Translate a patch rect from global in-face coordinates to this subdomain's
+/// local core coordinates, clipping to the owned tangent range. Returns `None`
+/// when the rect does not intersect this subdomain's part of the face.
+fn patch_rect_local(
+    sub: &Subdomain,
+    face: Face,
+    lo: [usize; 2],
+    hi: [usize; 2],
+) -> Option<([usize; 2], [usize; 2])> {
+    let (t1, t2) = face.tangents();
+    let mut out_lo = [0usize; 2];
+    let mut out_hi = [0usize; 2];
+    for (i, t) in [t1, t2].into_iter().enumerate() {
+        let o = sub.origin[t];
+        let n = sub.geom.core[t];
+        if hi[i] < o || lo[i] >= o + n {
+            return None;
+        }
+        out_lo[i] = lo[i].saturating_sub(o);
+        out_hi[i] = (hi[i] - o).min(n - 1);
+    }
+    Some((out_lo, out_hi))
 }
 
 /// Apply volume sources on owner core cells only. The source pass runs after

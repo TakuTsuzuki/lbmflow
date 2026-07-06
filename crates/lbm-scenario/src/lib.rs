@@ -1382,6 +1382,7 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
         periodic,
         faces,
         force: [sc.physics.force[0] as f32, sc.physics.force[1] as f32, 0.0],
+        ..Default::default()
     };
     let (mut solid, wall_u) = build_wall_rims::<f32>(2, dims, &walls);
     let idx = |x: usize, y: usize| y * dims[0] + x;

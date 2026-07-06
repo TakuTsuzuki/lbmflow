@@ -74,6 +74,10 @@ pub enum GpuError {
     DeviceLost(String),
     /// Requested grid exceeds the selected adapter/device resource limits.
     ResourceLimit(String),
+    /// The spec was rejected before any device work was submitted (features
+    /// the GPU backend does not implement — honest failure instead of silent
+    /// wrong physics). Carries the `SpecError` message.
+    Spec(String),
 }
 
 impl std::fmt::Display for GpuError {
@@ -83,6 +87,7 @@ impl std::fmt::Display for GpuError {
             Self::Map(msg) => write!(f, "GPU staging buffer map failed: {msg}"),
             Self::DeviceLost(msg) => write!(f, "GPU device was lost: {msg}"),
             Self::ResourceLimit(msg) => write!(f, "GPU resource limit exceeded: {msg}"),
+            Self::Spec(msg) => write!(f, "GPU solver rejected spec: {msg}"),
         }
     }
 }

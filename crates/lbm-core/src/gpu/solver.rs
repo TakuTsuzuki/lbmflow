@@ -42,7 +42,8 @@ impl<L: Lattice> GpuSolver<L> {
         ctx: Arc<GpuContext>,
     ) -> Result<Self, GpuError> {
         let backend = WgpuBackend::<L>::new(ctx);
-        let inner = Solver::new(spec, solid, wall_u, [1, 1, 1], backend, LocalPeriodic);
+        let inner = Solver::try_new(spec, solid, wall_u, [1, 1, 1], backend, LocalPeriodic)
+            .map_err(|e| GpuError::Spec(e.to_string()))?;
         Ok(Self { inner })
     }
 
