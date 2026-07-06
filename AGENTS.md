@@ -84,6 +84,36 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 
 ## Working discipline (applies to every agent on this repo)
 
+- **Physical rigor is the prime directive; ad-hoc physics is BANNED (user
+  directive 2026-07-06).** Every physical behavior anywhere in the stack —
+  core, scenario, CLI, examples, demos, GUI — must be either resolved from
+  the governing equations or a literature-backed closure with a recorded
+  derivation, validity domain, and its own validation test (PHYSICS.md entry
+  mandatory). Prohibited outright: constants calibrated to pass an acceptance
+  band; branches keyed to sample/case identity (e.g. "harshness" switches);
+  position clamps or caps that silently absorb transport; decorative physics
+  terms. If a gate cannot be met without such a hack, STOP and report — the
+  spec gets revised, not the physics faked. Existing violations are being
+  inventoried and exterminated (V&V sweep commissioned 2026-07-06), not
+  grandfathered.
+- **V&V loop and finding routing.** V&V continuously runs experiment
+  matrices, visualizes the results (qa-viewer), and behavior-reviews them;
+  every anomaly becomes a finding. Routing: core-engine defect → send the
+  phenomenon report + data package (scenario JSON, exported fields, metrics,
+  repro command) to the core-engine session and request the fix;
+  demo/example defect → the PM dispatches a codex order; spec defect → spec
+  revision with the rationale recorded in PHYSICS.md.
+- **Behavior-validity review (user directive 2026-07-06).** After every
+  experiment/demo run, before reporting results: review whether the OBSERVED
+  behavior — spatial patterns, trends, signs, not just the gated metrics — is
+  physically plausible. Identify the dominant mechanism, separate resolved
+  physics from model closures / boundary artifacts (clamps, ad-hoc branches,
+  calibrated constants), and record the review in PHYSICS.md or the track's
+  findings file. A metric passing its band does NOT validate a pattern no
+  band covers. (Origin: the dispersed-deposition gentle case deposited in an
+  edge ring despite center dispensing — mechanism plausible, but the
+  magnitude was set by an uncalibrated closure branch + a side-wall position
+  clamp, and no gate looked at the spatial pattern.)
 - **Evidence-based progress.** Before reporting anything as done, match each
   claim against a tool result from THIS session (test output, file diff, run
   log). Report unverified work as unverified; report skipped steps as skipped;
