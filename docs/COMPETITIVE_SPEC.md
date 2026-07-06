@@ -1,15 +1,13 @@
 # Competitive Advantage Spec (established 2026-07-05)
 
-**Status (2026-07-07)**: The competitive-landscape narrative and milestone
-plan in this document have been superseded by the living whitepaper draft
-(`docs/paper/LBMFlow-whitepaper.md`) and the capability status snapshot
-(`docs/paper/claims-ledger.md`). What remains here is the section still
-cited from active code and specs: the **R1-R5 requirements** and the
-**T13-T16 equivalence-test framework**. For strategy/positioning, read the
-whitepaper. For current status per pillar, read the claims ledger. For
-milestones, read `docs/PLAN.md`.
+**Status (2026-07-07)**: This file is now a requirements/equivalence-test anchor, not the live competitive narrative.
+**Landed**: R5's compat facade and the T13-T16 test framework are represented in code/tests.
+**Current intent**: R1-R4 acceptance lines remain targets; current implementation status lives in `docs/paper/claims-ledger.md`.
+**Superseded**: strategy, milestone, and claim-status prose belongs in `docs/paper/LBMFlow-whitepaper.md`, `docs/paper/claims-ledger.md`, and `docs/PLAN.md`.
 
 ## R1-R5 — Required requirements (per user directive, 2026-07-05)
+
+(current intent 2026-07-07 — code/tests still cite this section; per-pillar status is tracked in `docs/paper/claims-ledger.md`)
 
 Cited by: `crates/lbm-core/tests/t13_split_invariance.rs` (§4),
 `t14_backend_equiv.rs` (§4, R2), `t15_3d.rs` (R1),
@@ -30,6 +28,8 @@ Cited by: `crates/lbm-core/tests/t13_split_invariance.rs` (§4),
 
 ## §4 Equivalence-test framework
 
+(landed 2026-07-07 — T13/T14/T15/T16 are executable test families; GPU/FP16 cases require the `gpu` feature and adapter)
+
 - **T13 partition invariance**: results of 1×1 / 2×2 / 4×1 partitioned runs
   match the monolithic run (bit-match target at f64, at least ≤1e-12)
 - **T14 backend equivalence**: CPU-SIMD vs wgpu vs (future CUDA) match on
@@ -39,6 +39,8 @@ Cited by: `crates/lbm-core/tests/t13_split_invariance.rs` (§4),
   storage vs f32 (tolerance band specified)
 
 ## §5 Multi-node measurement dependency
+
+(current intent 2026-07-07 — local MPI/partition gates are implemented; 64-rank cluster measurement remains unmeasured)
 
 Multi-node measurement requires access to a cluster/cloud HPC (locally we
 can only go as far as functional verification of multiple MPI ranks). See
