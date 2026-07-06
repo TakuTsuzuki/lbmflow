@@ -694,6 +694,35 @@ fn edge_speeds(e: &EdgesSpec) -> [f64; 6] {
     })
 }
 
+fn named_edge_spec(edges: &EdgesSpec, edge: EdgeName) -> EdgeSpec {
+    match edge {
+        EdgeName::Left => edges.left,
+        EdgeName::Right => edges.right,
+        EdgeName::Bottom => edges.bottom,
+        EdgeName::Top => edges.top,
+    }
+}
+
+fn validate_inlet_profile_request(sc: &Scenario) -> Result<(), ConfigError> {
+    let Some(p) = &sc.inlet_profile else {
+        return Ok(());
+    };
+    if !matches!(
+        named_edge_spec(&sc.edges, p.edge),
+        EdgeSpec::VelocityInlet { .. }
+    ) {
+        return Err(ConfigError::InvalidParameter {
+            what: "inletProfile edge must reference a velocityInlet boundary",
+            value: 0.0,
+        });
+    }
+    let speed = p.umax.abs();
+    if !(speed <= MAX_SPEED) {
+        return Err(ConfigError::VelocityTooHigh { speed });
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- build
 
 /// A built simulation, precision-erased for the runner.
@@ -857,6 +886,7 @@ pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
         Ok(None) => sc,
         Err(e) => return Err(Build3Error::Units(e)),
     };
+    validate_inlet_profile_request(sc)?;
     Ok(match sc.physics.precision {
         Precision::F32 => Sim3Handle::F32(build3d_t::<f32>(sc)?),
         Precision::F64 => Sim3Handle::F64(build3d_t::<f64>(sc)?),
@@ -1122,6 +1152,7 @@ pub fn build(sc: &Scenario) -> Result<SimHandle, BuildError> {
         Ok(None) => sc,
         Err(e) => return Err(BuildError::Units(e)),
     };
+    validate_inlet_profile_request(sc)?;
     if sc.is_3d() {
         return Err(ConfigError::InvalidParameter {
             what: "grid.nz (2D build requires nz == 1; the runner dispatches 3D to build3d)",
@@ -1316,6 +1347,7 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
         Ok(None) => sc,
         Err(e) => return Err(BuildError::Units(e)),
     };
+    validate_inlet_profile_request(sc)?;
     if sc.is_3d() {
         return Err(BuildError::Unsupported("build_gpu2d requires nz == 1"));
     }
@@ -1928,6 +1960,87 @@ mod tests {
                     || w.message
                         .contains("requested backend \"gpu\" is unsupported"))
         }));
+    }
+
+    #[test]
+    fn build_check_rejects_hard_scenario_physics_errors() {
+        let mut bad_nu = preset("cavity");
+        bad_nu.physics.nu = 0.0;
+        let err = build_check(&bad_nu).unwrap_err();
+        assert!(err.contains("kinematic viscosity must be > 0"), "{err}");
+        assert!(err.contains("tau = 3*nu + 0.5"), "{err}");
+
+        let mut too_fast_wall = preset("cavity");
+        too_fast_wall.edges.top = EdgeSpec::MovingWall { u: [0.31, 0.0] };
+        let err = build_check(&too_fast_wall).unwrap_err();
+        assert!(err.contains("low-Mach limit"), "{err}");
+
+        let mut adjacent_open = preset("cavity");
+        adjacent_open.edges.left = EdgeSpec::VelocityInlet { u: [0.05, 0.0] };
+        adjacent_open.edges.right = EdgeSpec::PressureOutlet { rho: 1.0 };
+        adjacent_open.edges.bottom = EdgeSpec::Outflow;
+        let err = build_check(&adjacent_open).unwrap_err();
+        assert!(
+            err.contains("orthogonal") || err.contains("adjacent") || err.contains("perpendicular"),
+            "{err}"
+        );
+
+        let mut profile_not_on_inlet = preset("cavity");
+        profile_not_on_inlet.inlet_profile = Some(InletProfile {
+            edge: EdgeName::Top,
+            kind: ProfileKind::Parabolic,
+            umax: 0.05,
+        });
+        let err = build_check(&profile_not_on_inlet).unwrap_err();
+        assert!(err.contains("inletProfile edge"), "{err}");
+
+        let mut too_fast_profile = preset("cylinder-karman");
+        too_fast_profile.inlet_profile = Some(InletProfile {
+            edge: EdgeName::Left,
+            kind: ProfileKind::Parabolic,
+            umax: 0.31,
+        });
+        let err = build_check(&too_fast_profile).unwrap_err();
+        assert!(err.contains("low-Mach limit"), "{err}");
+    }
+
+    #[test]
+    fn unsupported_source_sink_schema_fields_are_rejected() {
+        let with_sources = serde_json::json!({
+            "name": "unsupported-sources",
+            "grid": { "nx": 16, "ny": 16 },
+            "physics": { "nu": 0.05 },
+            "edges": {
+                "left": { "type": "periodic" },
+                "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" },
+                "top": { "type": "bounceBack" }
+            },
+            "sources": [],
+            "run": { "steps": 1 }
+        });
+        let err = serde_json::from_value::<Scenario>(with_sources)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `sources`"), "{err}");
+
+        let with_sinks = serde_json::json!({
+            "name": "unsupported-sinks",
+            "grid": { "nx": 16, "ny": 16 },
+            "physics": { "nu": 0.05 },
+            "edges": {
+                "left": { "type": "periodic" },
+                "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" },
+                "top": { "type": "bounceBack" }
+            },
+            "sinks": [],
+            "run": { "steps": 1 }
+        });
+        let err = serde_json::from_value::<Scenario>(with_sinks)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `sinks`"), "{err}");
     }
 
     #[test]
