@@ -8,7 +8,7 @@
 
 use lbm_core::compat::prelude::*;
 use lbm_core::compat::rotor::Rotor;
-use std::f64::consts::{PI, SQRT_2};
+use std::f64::consts::PI;
 
 const TRT: Collision = Collision::Trt {
     magic: Collision::MAGIC_STD,
@@ -489,12 +489,105 @@ fn uniform_force_impulse_current_wrong_value_pin_anom_p2_001() {
     );
 }
 
+// 3D Stokes first problem — the analytic case that is (a) not covered by any
+// T15 steady test, (b) exercises the D3Q19 moving-wall + open-face BC path
+// (ME-1's just-landed 3D GPU kernels ride on this via T14, so a CPU-reference
+// nonsteady analytic probe here gates GPU accuracy transitively per PM rule
+// (b) of the merge-queue requirements — GPU landing evidence is PM-run, but
+// CPU-reference correctness of the analytic form is here).
+//
+// Setup: x=periodic (12 cells), z=periodic (4 cells; the flow is z-invariant
+// so this is a pure degeneracy plane), y = 96 cells with YNeg = MovingWall
+// [U, 0, 0] and YPos = BounceBack. The domain far exceeds the diffusion
+// depth ~4*sqrt(nu*t) at the tested step counts so the top wall doesn't
+// contaminate. Analytic: u(y_w, t) = U * erfc(y_w / (2 sqrt(nu t))).
+fn stokes_first_3d_error(ny: usize, steps: usize) -> (f64, f64) {
+    use lbm_core::prelude::{
+        build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic,
+        Solver, WallSpec, D3Q19,
+    };
+    let (nx, nz) = (12usize, 4usize);
+    let u_wall = 0.02_f64;
+    let nu = 0.1_f64;
+    let mut walls = WallSpec::<f64>::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    walls.u[Face::YNeg.index()] = [u_wall, 0.0, 0.0];
+    let spec = GlobalSpec::<f64> {
+        dims: [nx, ny, nz],
+        nu,
+        periodic: [true, false, true],
+        collision: CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
+        faces: [FaceBC::Closed; 6],
+        ..Default::default()
+    };
+    let (solid, wall_u) = build_wall_rims(3, spec.dims, &walls);
+    let mut s: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    s.init_with(|_, _, _| (1.0, [0.0; 3]));
+    s.run(steps);
+
+    // Depth of the diffusion boundary layer; sample cells whose distance from
+    // the moving wall (y=0 rim, half-way BB surface at y=0.5) stays inside it.
+    let layer = 4.0 * (nu * steps as f64).sqrt();
+    let ux = s.gather_ux();
+    let idx = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
+    let (x0, z0) = (nx / 2, nz / 2);
+    let mut actual = Vec::new();
+    let mut reference = Vec::new();
+    for y in 1..ny - 1 {
+        let y_w = y as f64 - 0.5;
+        if y_w > layer {
+            continue;
+        }
+        reference.push(u_wall * erfc_approx(y_w / (2.0 * (nu * steps as f64).sqrt())));
+        actual.push(ux[idx(x0, y, z0)]);
+    }
+    // Also verify z-invariance (the flow has no z gradient) — the 3D case
+    // must match its z-slabs exactly (this is the value-add over 2D Stokes-I:
+    // it detects any spurious z-coupling introduced by D3Q19 stream + BC).
+    let mut z_asym = 0.0_f64;
+    for y in 1..ny - 1 {
+        let a = ux[idx(x0, y, 1)];
+        let b = ux[idx(x0, y, nz - 2)];
+        z_asym = z_asym.max((a - b).abs());
+    }
+    let l2 = l2_rel(&actual, &reference);
+    (l2, z_asym)
+}
+
 #[test]
-#[ignore = "native 3D Solver probe reserved for ACC-AUDIT extension once a non-steady 3D analytic target is selected"]
-fn native_3d_accuracy_audit_placeholder_spec_gap() {
-    // SPEC-GAP: The order requests native 3D Solver use "where noted", but no
-    // specific 3D item in this audit list identifies a native-only analytic
-    // target. Keep this ignored marker so the gap is explicit instead of
-    // silently claiming 3D coverage from unrelated T15 steady tests.
-    let _ = SQRT_2;
+fn native_3d_stokes_first_transient_matches_erfc() {
+    let (e100, z_asym100) = stokes_first_3d_error(96, 100);
+    let (e400, z_asym400) = stokes_first_3d_error(96, 400);
+    let ratio = e100 / e400;
+    println!(
+        "ACC 3D Stokes-I: e100={e100:.6e} z_asym100={z_asym100:.3e} \
+         e400={e400:.6e} z_asym400={z_asym400:.3e} ratio={ratio:.3}"
+    );
+    // Same bands as 2D Stokes-I light (VALIDATION time-accuracy tolerance
+    // is set by the analytic-solution error, not the dimension).
+    assert!(e100 <= 8.0e-2, "3D Stokes-I t=100 L2rel={e100:e}");
+    assert!(e400 <= 6.0e-2, "3D Stokes-I t=400 L2rel={e400:e}");
+    assert!(
+        (2.5..=5.5).contains(&ratio),
+        "3D Stokes-I error ratio e100/e400={ratio:e}"
+    );
+    // z-invariance: analytic zero. Denominator = u_wall (0.02); a real
+    // z-coupling defect (e.g. streaming corner asymmetry) would exceed
+    // this by orders of magnitude.
+    let band = 1.0e-14;
+    assert!(
+        z_asym100.max(z_asym400) <= band,
+        "3D Stokes-I z-invariance defect: max({z_asym100:e}, {z_asym400:e}) > {band:e} \
+         (denominator = u_wall = 0.02; band is 5e-13 of u_wall)"
+    );
 }
