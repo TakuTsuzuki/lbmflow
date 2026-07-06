@@ -376,7 +376,7 @@ struct RecState {
     /// Written Params uniform (asserts step-parameter stability per run).
     params_words: Option<[u32; 16]>,
     /// Written per-face BC uniforms.
-    bc_words: Option<[[u32; 32]; 6]>,
+    bc_words: Option<[[u32; 64]; 6]>,
     /// Bumped per fused dispatch; invalidates the readback cache.
     generation: u64,
     /// Cached population readback (generation, shared data).
@@ -810,9 +810,10 @@ impl<L: Lattice> WgpuBackend<L> {
         fields.state.borrow_mut().bc_words = Some(words);
     }
 
-    fn bc_words(&self, sub: &Subdomain, fields: &GpuFields, p: &StepParams<f32>) -> [[u32; 32]; 6] {
-        let (nx, ny) = (fields.nx, fields.ny);
-        let mut out = [[0u32; 32]; 6];
+    fn bc_words(&self, sub: &Subdomain, fields: &GpuFields, p: &StepParams<f32>) -> [[u32; 64]; 6] {
+        let dims = [fields.nx, fields.ny, fields.nz];
+        let strides = [1u32, fields.nx, fields.nx * fields.ny];
+        let mut out = [[0u32; 64]; 6];
         for face in Face::ALL {
             let fi = face.index();
             if face.axis() >= L::D || !sub.touches_global_face(face) {
@@ -822,24 +823,40 @@ impl<L: Lattice> WgpuBackend<L> {
             if !bc.is_open() {
                 continue;
             }
-            let (base, stride, extent, joff): (u32, u32, u32, i32) = match face {
-                Face::XNeg => (0, nx, ny, 1),
-                Face::XPos => (nx - 1, nx, ny, -1),
-                Face::YNeg => (0, 1, nx, nx as i32),
-                Face::YPos => ((ny - 1) * nx, 1, nx, -(nx as i32)),
-                _ => unreachable!("2D lattice"),
+            let a = face.axis();
+            let (t1, t2) = face.tangents();
+            let base = if face.is_neg() { 0 } else { (dims[a] - 1) * strides[a] };
+            let stride1 = strides[t1];
+            let stride2 = strides[t2];
+            let extent1 = dims[t1];
+            let extent = dims[t1] * dims[t2];
+            let joff = if face.is_neg() {
+                strides[a] as i32
+            } else {
+                -(strides[a] as i32)
             };
-            // Zou–He direction indices, derived exactly like zou_he_face.
             let n_in = face.n_in();
-            let (nxi, nyi) = (n_in[0] as i32, n_in[1] as i32);
-            let (tx, ty) = (-nyi, nxi);
-            let q_n = L::dir_index([nxi as i8, nyi as i8, 0]);
-            let q_d1 = L::dir_index([(nxi + tx) as i8, (nyi + ty) as i8, 0]);
-            let q_d2 = L::dir_index([(nxi - tx) as i8, (nyi - ty) as i8, 0]);
-            let q_t = L::dir_index([tx as i8, ty as i8, 0]);
-            let q_mt = L::dir_index([-tx as i8, -ty as i8, 0]);
+            let unit = |axis: usize, sign: i8| -> [i8; 3] {
+                let mut v = [0i8; 3];
+                v[axis] = sign;
+                v
+            };
+            let add = |p: [i8; 3], q: [i8; 3]| [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
+            let q_n = L::dir_index(n_in);
+            let q_p1 = L::dir_index(add(n_in, unit(t1, 1)));
+            let q_m1 = L::dir_index(add(n_in, unit(t1, -1)));
+            let q_t1 = L::dir_index(unit(t1, 1));
+            let q_mt1 = L::dir_index(unit(t1, -1));
+            let q_p2 = if L::D == 3 { L::dir_index(add(n_in, unit(t2, 1))) } else { q_p1 };
+            let q_m2 = if L::D == 3 { L::dir_index(add(n_in, unit(t2, -1))) } else { q_m1 };
+            let q_t2 = if L::D == 3 { L::dir_index(unit(t2, 1)) } else { q_t1 };
+            let q_mt2 = if L::D == 3 { L::dir_index(unit(t2, -1)) } else { q_mt1 };
+            let q_pp = if L::D == 3 { L::dir_index(add(unit(t1, 1), unit(t2, 1))) } else { q_t1 };
+            let q_pm = if L::D == 3 { L::dir_index(add(unit(t1, 1), unit(t2, -1))) } else { q_t1 };
+            let q_mp = if L::D == 3 { L::dir_index(add(unit(t1, -1), unit(t2, 1))) } else { q_mt1 };
+            let q_mm = if L::D == 3 { L::dir_index(add(unit(t1, -1), unit(t2, -1))) } else { q_mt1 };
             let unk = L::unknowns(face);
-            assert_eq!(unk.len(), 3, "D2Q9 face unknown count");
+            assert!(unk.len() == 3 || unk.len() == 5, "GPU open face unknown count must be 3 or 5");
             let (kind, p0, p1) = match *bc {
                 FaceBC::Closed => unreachable!(),
                 FaceBC::Velocity { u } => (wgsl::BC_VELOCITY, u[0], u[1]),
@@ -857,32 +874,55 @@ impl<L: Lattice> WgpuBackend<L> {
             let w = &mut out[fi];
             w[0] = kind;
             w[1] = base;
-            w[2] = stride;
+            w[2] = stride1;
             w[3] = extent;
             w[4] = joff as u32;
             w[5] = u32::from(fields.profile_set[fi]);
-            w[6] = q_n as u32;
-            w[7] = L::OPP[q_n] as u32;
-            w[8] = q_d1 as u32;
-            w[9] = L::OPP[q_d1] as u32;
-            w[10] = q_d2 as u32;
-            w[11] = L::OPP[q_d2] as u32;
-            w[12] = q_t as u32;
-            w[13] = q_mt as u32;
-            w[14] = unk[0] as u32;
-            w[15] = unk[1] as u32;
-            w[16] = unk[2] as u32;
-            w[17] = p0.to_bits();
-            w[18] = p1.to_bits();
-            w[19] = (nxi as f32).to_bits();
-            w[20] = (nyi as f32).to_bits();
-            w[21] = (tx as f32).to_bits();
-            w[22] = (ty as f32).to_bits();
-            w[23] = (L::W[unk[0]] as f32).to_bits();
-            w[24] = (L::W[unk[1]] as f32).to_bits();
-            w[25] = (L::W[unk[2]] as f32).to_bits();
-            w[26] = (ws as f32).to_bits();
-            w[27] = cinv.to_bits();
+            w[6] = stride2;
+            w[7] = extent1;
+            w[8] = q_n as u32;
+            w[9] = L::OPP[q_n] as u32;
+            w[10] = q_p1 as u32;
+            w[11] = L::OPP[q_p1] as u32;
+            w[12] = q_m1 as u32;
+            w[13] = L::OPP[q_m1] as u32;
+            w[14] = q_p2 as u32;
+            w[15] = L::OPP[q_p2] as u32;
+            w[16] = q_m2 as u32;
+            w[17] = L::OPP[q_m2] as u32;
+            w[18] = q_t1 as u32;
+            w[19] = q_mt1 as u32;
+            w[20] = q_t2 as u32;
+            w[21] = q_mt2 as u32;
+            w[22] = q_pp as u32;
+            w[23] = q_pm as u32;
+            w[24] = q_mp as u32;
+            w[25] = q_mm as u32;
+            for (k, &q) in unk.iter().enumerate() {
+                w[26 + k] = q as u32;
+            }
+            w[31] = unk.len() as u32;
+            let p2 = match *bc {
+                FaceBC::Velocity { u } => u[2],
+                _ => 0.0,
+            };
+            w[32] = p0.to_bits();
+            w[33] = p1.to_bits();
+            w[34] = p2.to_bits();
+            w[35] = (n_in[0] as f32).to_bits();
+            w[36] = (n_in[1] as f32).to_bits();
+            w[37] = (n_in[2] as f32).to_bits();
+            w[38] = (unit(t1, 1)[0] as f32).to_bits();
+            w[39] = (unit(t1, 1)[1] as f32).to_bits();
+            w[40] = (unit(t1, 1)[2] as f32).to_bits();
+            w[41] = (unit(t2, 1)[0] as f32).to_bits();
+            w[42] = (unit(t2, 1)[1] as f32).to_bits();
+            w[43] = (unit(t2, 1)[2] as f32).to_bits();
+            for (k, &q) in unk.iter().enumerate() {
+                w[44 + k] = (L::W[q] as f32).to_bits();
+            }
+            w[49] = (ws as f32).to_bits();
+            w[50] = cinv.to_bits();
         }
         out
     }
@@ -1145,10 +1185,11 @@ impl<L: Lattice> WgpuBackend<L> {
             let fi = face.index();
             fields.profile_set[fi] = false;
             if let Some(prof) = &host.inlet_profiles[fi] {
-                let mut pv = vec![0f32; 2 * prof.len()];
+                let mut pv = vec![0f32; 4 * prof.len()];
                 for (t, u) in prof.iter().enumerate() {
-                    pv[2 * t] = u[0];
-                    pv[2 * t + 1] = u[1];
+                    pv[4 * t] = u[0];
+                    pv[4 * t + 1] = u[1];
+                    pv[4 * t + 2] = u[2];
                 }
                 q.write_buffer(&fields.profiles[fi], 0, bytemuck::cast_slice(&pv));
                 fields.profile_set[fi] = true;
@@ -1222,7 +1263,7 @@ impl<L: Lattice> WgpuBackend<L> {
         let uz = buf("uz", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let probe_acc = buf("probe_acc", 12, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let params_ub = buf("params", 64, U::UNIFORM | U::COPY_DST);
-        let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 128, U::UNIFORM | U::COPY_DST));
+        let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 256, U::UNIFORM | U::COPY_DST));
         let profiles = std::array::from_fn(|i| {
             let (t1, t2) = Face::ALL[i].tangents();
             let dims = [nx, ny, nz];

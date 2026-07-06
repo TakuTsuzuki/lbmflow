@@ -60,6 +60,39 @@ fn check(cpu: &mut Cpu3, gpu: &mut GpuSolver<D3Q19>, what: &str) {
     assert!(f_rel <= 1e-4, "{what} f rel {f_rel:e}");
 }
 
+fn check_open_fields(cpu: &mut Cpu3, gpu: &mut GpuSolver<D3Q19>, what: &str) {
+    let t = cpu.time();
+    let cr = cpu.gather_rho();
+    let gr = gpu.gather_rho();
+    let ux = cpu.gather_ux();
+    let uy = cpu.gather_uy();
+    let uz = cpu.gather_uz();
+    let gx = gpu.gather_ux();
+    let gy = gpu.gather_uy();
+    let gz = gpu.gather_uz();
+    let mut dr = 0.0f64;
+    let mut du = 0.0f64;
+    for i in 0..cr.len() {
+        dr = dr.max((cr[i] as f64 - gr[i] as f64).abs());
+        du = du
+            .max((ux[i] as f64 - gx[i] as f64).abs())
+            .max((uy[i] as f64 - gy[i] as f64).abs())
+            .max((uz[i] as f64 - gz[i] as f64).abs());
+    }
+    let mut df = 0.0f64;
+    for q in 0..D3Q19::Q {
+        let cf = cpu.gather_f(q);
+        let gf = gpu.gather_f(q);
+        for (a, b) in cf.iter().zip(&gf) {
+            df = df.max((*a as f64 - *b as f64).abs());
+        }
+    }
+    eprintln!("{what} t={t}: rho_abs={dr:.3e} u_abs={du:.3e} f_abs={df:.3e}");
+    assert!(dr <= 1e-4, "{what} pressure/density abs {dr:e}");
+    assert!(du <= 1e-5, "{what} velocity abs {du:e}");
+    assert!(df <= 1e-4, "{what} population abs {df:e}");
+}
+
 #[test]
 fn t14_3d_tgv_periodic_d3q19() {
     let n = 32usize;
@@ -128,5 +161,66 @@ fn t14_3d_lid_cavity_d3q19() {
         cpu.run(40);
         gpu.run(40);
         check(&mut cpu, &mut gpu, "cavity3D");
+    }
+}
+
+#[test]
+fn t14_3d_open_faces_with_body_force_d3q19() {
+    let dims = [20usize, 12usize, 10usize];
+    let mut walls = WallSpec::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    walls.is_wall[Face::ZNeg.index()] = true;
+    walls.is_wall[Face::ZPos.index()] = true;
+    let mut faces = [FaceBC::<f32>::Closed; 6];
+    faces[Face::XNeg.index()] = FaceBC::Velocity {
+        u: [0.035, 0.0, 0.0],
+    };
+    faces[Face::XPos.index()] = FaceBC::Pressure { rho: 1.0 };
+    let spec = GlobalSpec::<f32> {
+        dims,
+        nu: 0.04,
+        periodic: [false, false, false],
+        faces,
+        force: [1.0e-6, 2.0e-7, 0.0],
+        ..Default::default()
+    };
+    let (solid, wall_u) = build_wall_rims(3, dims, &walls);
+    let mut cpu = Cpu3::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    let mut gpu = GpuSolver::<D3Q19>::new(&spec, &solid, &wall_u, ctx());
+    let [_nx, ny, nz] = dims;
+    let profile = |_: usize, y: usize, z: usize| {
+        let hy = (ny - 2) as f64;
+        let hz = (nz - 2) as f64;
+        let py = if y == 0 || y == ny - 1 {
+            0.0
+        } else {
+            let w = y as f64 - 0.5;
+            4.0 * w * (hy - w) / (hy * hy)
+        };
+        let pz = if z == 0 || z == nz - 1 {
+            0.0
+        } else {
+            let w = z as f64 - 0.5;
+            4.0 * w * (hz - w) / (hz * hz)
+        };
+        [(0.04 * py * pz) as f32, 0.0, 0.0]
+    };
+    let profile_values = (0..nz)
+        .flat_map(|z| (0..ny).map(move |y| profile(0, y, z)))
+        .collect::<Vec<_>>();
+    cpu.set_inlet_profile_with(Face::XNeg, |y, z| profile(0, y, z));
+    gpu.set_inlet_profile(Face::XNeg, &profile_values);
+    for _ in 0..4 {
+        cpu.run(30);
+        gpu.run(30);
+        check_open_fields(&mut cpu, &mut gpu, "open3D+force");
     }
 }

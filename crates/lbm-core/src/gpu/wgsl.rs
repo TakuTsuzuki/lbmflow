@@ -66,39 +66,71 @@ pub(crate) const BC_OUTFLOW: u32 = 3;
 pub(crate) const BC_CONVECTIVE: u32 = 4;
 
 /// `BcParams` field order. Rust writes `bc_words[face][index]` in this order.
-pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 32] = [
+pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 64] = [
     ("kind", "u32"),
     ("base", "u32"),
-    ("stride", "u32"),
+    ("stride1", "u32"),
     ("extent", "u32"),
     ("joff", "i32"),
     ("has_profile", "u32"),
+    ("stride2", "u32"),
+    ("extent1", "u32"),
     ("q_n", "u32"),
     ("o_n", "u32"),
-    ("q_d1", "u32"),
-    ("o_d1", "u32"),
-    ("q_d2", "u32"),
-    ("o_d2", "u32"),
-    ("q_t", "u32"),
-    ("q_mt", "u32"),
+    ("q_p1", "u32"),
+    ("o_p1", "u32"),
+    ("q_m1", "u32"),
+    ("o_m1", "u32"),
+    ("q_p2", "u32"),
+    ("o_p2", "u32"),
+    ("q_m2", "u32"),
+    ("o_m2", "u32"),
+    ("q_t1", "u32"),
+    ("q_mt1", "u32"),
+    ("q_t2", "u32"),
+    ("q_mt2", "u32"),
+    ("q_pp", "u32"),
+    ("q_pm", "u32"),
+    ("q_mp", "u32"),
+    ("q_mm", "u32"),
     ("unk0", "u32"),
     ("unk1", "u32"),
     ("unk2", "u32"),
+    ("unk3", "u32"),
+    ("unk4", "u32"),
+    ("unk_count", "u32"),
     ("p0", "f32"),
     ("p1", "f32"),
+    ("p2", "f32"),
     ("nxr", "f32"),
     ("nyr", "f32"),
-    ("txr", "f32"),
-    ("tyr", "f32"),
+    ("nzr", "f32"),
+    ("t1x", "f32"),
+    ("t1y", "f32"),
+    ("t1z", "f32"),
+    ("t2x", "f32"),
+    ("t2y", "f32"),
+    ("t2z", "f32"),
     ("cw0", "f32"),
     ("cw1", "f32"),
     ("cw2", "f32"),
+    ("cw3", "f32"),
+    ("cw4", "f32"),
     ("wsum", "f32"),
     ("cinv", "f32"),
     ("pad0", "u32"),
     ("pad1", "u32"),
     ("pad2", "u32"),
     ("pad3", "u32"),
+    ("pad4", "u32"),
+    ("pad5", "u32"),
+    ("pad6", "u32"),
+    ("pad7", "u32"),
+    ("pad8", "u32"),
+    ("pad9", "u32"),
+    ("pad10", "u32"),
+    ("pad11", "u32"),
+    ("pad12", "u32"),
 ];
 
 /// Stash slots per buffer: `sum_faces |unknowns(face)| * extent(face)`,
@@ -487,7 +519,7 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "@group(0) @binding(11) var<storage, read_write> uy_out: array<f32>;\n";
     s += "@group(0) @binding(14) var<storage, read_write> uz_out: array<f32>;\n";
     s += "@group(0) @binding(12) var<uniform> B: BcParams;\n";
-    s += "@group(0) @binding(13) var<storage, read> profile: array<vec2<f32>>;\n\n";
+    s += "@group(0) @binding(13) var<storage, read> profile: array<vec3<f32>>;\n\n";
     let _ = writeln!(s, "const FLAG_FF: u32 = {FLAG_FORCE_FIELD}u;");
     s += "\n";
     // f32 atomic add via compare-exchange (WGSL has no float atomics). The
@@ -596,50 +628,79 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "fn bc(@builtin(global_invocation_id) gid: vec3<u32>) {\n";
     s += "    let t = gid.x;\n";
     s += "    if (t >= B.extent) { return; }\n";
-    s += "    let n = P.nx * P.ny;\n";
-    s += "    let i = B.base + t * B.stride;\n";
+    s += "    let n = P.nx * P.ny * P.nz;\n";
+    s += "    let c1 = t % B.extent1;\n";
+    s += "    let c2 = t / B.extent1;\n";
+    s += "    let i = B.base + c1 * B.stride1 + c2 * B.stride2;\n";
     s += "    if ((mask[i] & 1u) != 0u) { return; }\n";
     let _ = writeln!(
         s,
         "    if (B.kind == {BC_VELOCITY}u || B.kind == {BC_PRESSURE}u) {{"
     );
-    s += "        let ft = f_out[B.q_t * n + i];\n";
-    s += "        let fmt = f_out[B.q_mt * n + i];\n";
-    let _ = writeln!(s, "        let s0 = f_out[{rest}u * n + i] + ft + fmt;");
-    s += "        let sneg = f_out[B.o_n * n + i] + f_out[B.o_d1 * n + i] + f_out[B.o_d2 * n + i];\n";
+    s += "        let ft1 = f_out[B.q_t1 * n + i];\n";
+    s += "        let fmt1 = f_out[B.q_mt1 * n + i];\n";
+    s += "        let ft2 = f_out[B.q_t2 * n + i];\n";
+    s += "        let fmt2 = f_out[B.q_mt2 * n + i];\n";
+    s += "        let fpp = f_out[B.q_pp * n + i];\n";
+    s += "        let fpm = f_out[B.q_pm * n + i];\n";
+    s += "        let fmp = f_out[B.q_mp * n + i];\n";
+    s += "        let fmm = f_out[B.q_mm * n + i];\n";
+    let _ = writeln!(s, "        var s0 = f_out[{rest}u * n + i] + ft1 + fmt1;");
+    s += "        var sneg = f_out[B.o_n * n + i] + f_out[B.o_p1 * n + i] + f_out[B.o_m1 * n + i];\n";
+    s += "        if (B.unk_count == 5u) {\n";
+    s += "            s0 = s0 + ft2 + fmt2 + fpp + fpm + fmp + fmm;\n";
+    s += "            sneg = sneg + f_out[B.o_p2 * n + i] + f_out[B.o_m2 * n + i];\n";
+    s += "        }\n";
     s += "        let closure = s0 + 2.0f * sneg + 1.0f;\n";
     s += "        var r = 0.0f;\n";
     s += "        var un = 0.0f;\n";
-    s += "        var ut = 0.0f;\n";
+    s += "        var ut1 = 0.0f;\n";
+    s += "        var ut2 = 0.0f;\n";
     let _ = writeln!(s, "        if (B.kind == {BC_VELOCITY}u) {{");
     s += "            var ubx = B.p0;\n";
     s += "            var uby = B.p1;\n";
+    s += "            var ubz = B.p2;\n";
     s += "            if (B.has_profile != 0u) {\n";
     s += "                let pr = profile[t];\n";
     s += "                ubx = pr.x;\n";
     s += "                uby = pr.y;\n";
+    s += "                ubz = pr.z;\n";
     s += "            }\n";
-    s += "            un = ubx * B.nxr + uby * B.nyr;\n";
-    s += "            ut = ubx * B.txr + uby * B.tyr;\n";
+    s += "            un = ubx * B.nxr + uby * B.nyr + ubz * B.nzr;\n";
+    s += "            ut1 = ubx * B.t1x + uby * B.t1y + ubz * B.t1z;\n";
+    s += "            ut2 = ubx * B.t2x + uby * B.t2y + ubz * B.t2z;\n";
     s += "            r = closure / (1.0f - un);\n";
     s += "        } else {\n";
     s += "            r = B.p0;\n";
     s += "            un = 1.0f - closure / r;\n";
-    s += "            ut = 0.0f;\n";
+    s += "            ut1 = 0.0f;\n";
+    s += "            ut2 = 0.0f;\n";
     s += "        }\n";
-    s += "        let tcorr = 0.5f * (r * ut - (ft - fmt));\n";
+    s += "        if (B.unk_count == 3u) {\n";
+    s += "            let tcorr = 0.5f * (r * ut1 - (ft1 - fmt1));\n";
     let _ = writeln!(
         s,
         "        f_out[B.q_n * n + i] = f_out[B.o_n * n + i] + {c23} * r * un;"
     );
     let _ = writeln!(
         s,
-        "        f_out[B.q_d1 * n + i] = f_out[B.o_d1 * n + i] + {c16} * r * un + tcorr;"
+        "            f_out[B.q_p1 * n + i] = f_out[B.o_p1 * n + i] + {c16} * r * un + tcorr;"
     );
     let _ = writeln!(
         s,
-        "        f_out[B.q_d2 * n + i] = f_out[B.o_d2 * n + i] + {c16} * r * un - tcorr;"
+        "            f_out[B.q_m1 * n + i] = f_out[B.o_m1 * n + i] + {c16} * r * un - tcorr;"
     );
+    s += "        } else {\n";
+    s += "            let qt1 = ft1 - fmt1 + fpp + fpm - fmp - fmm;\n";
+    s += "            let qt2 = ft2 - fmt2 + fpp - fpm + fmp - fmm;\n";
+    s += "            let n1 = (1.0f / 3.0f) * r * ut1 - 0.5f * qt1;\n";
+    s += "            let n2 = (1.0f / 3.0f) * r * ut2 - 0.5f * qt2;\n";
+    s += "            f_out[B.q_n * n + i] = f_out[B.o_n * n + i] + (1.0f / 3.0f) * r * un;\n";
+    s += "            f_out[B.q_p1 * n + i] = f_out[B.o_p1 * n + i] + (1.0f / 6.0f) * r * (un + ut1) + n1;\n";
+    s += "            f_out[B.q_m1 * n + i] = f_out[B.o_m1 * n + i] + (1.0f / 6.0f) * r * (un - ut1) - n1;\n";
+    s += "            f_out[B.q_p2 * n + i] = f_out[B.o_p2 * n + i] + (1.0f / 6.0f) * r * (un + ut2) + n2;\n";
+    s += "            f_out[B.q_m2 * n + i] = f_out[B.o_m2 * n + i] + (1.0f / 6.0f) * r * (un - ut2) - n2;\n";
+    s += "        }\n";
     s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
     s += "    }\n";
@@ -652,15 +713,19 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "        f_out[B.unk0 * n + i] = f_out[B.unk0 * n + j];\n";
     s += "        f_out[B.unk1 * n + i] = f_out[B.unk1 * n + j];\n";
     s += "        f_out[B.unk2 * n + i] = f_out[B.unk2 * n + j];\n";
+    s += "        if (B.unk_count == 5u) {\n";
+    s += "            f_out[B.unk3 * n + i] = f_out[B.unk3 * n + j];\n";
+    s += "            f_out[B.unk4 * n + i] = f_out[B.unk4 * n + j];\n";
+    s += "        }\n";
     s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
     s += "    }\n";
     let _ = writeln!(s, "    if (B.kind == {BC_CONVECTIVE}u) {{");
     s += "        let lam = B.p0;\n";
-    for k in 0..3 {
+    for k in 0..5 {
         let _ = writeln!(
             s,
-            "        f_out[B.unk{k} * n + i] = (f_out[B.unk{k} * n + i] + lam * f_out[B.unk{k} * n + j]) * B.cinv;"
+            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = (f_out[B.unk{k} * n + i] + lam * f_out[B.unk{k} * n + j]) * B.cinv; }}"
         );
     }
     // Mass pinning: rho(edge) := rho(neighbour), deficit spread over the
@@ -670,10 +735,10 @@ pub(crate) fn generate<L: Lattice>() -> String {
     let _ = writeln!(s, "        let di = {};", di.join(" + "));
     let _ = writeln!(s, "        let dj = {};", dj.join(" + "));
     s += "        let corr = dj - di;\n";
-    for k in 0..3 {
+    for k in 0..5 {
         let _ = writeln!(
             s,
-            "        f_out[B.unk{k} * n + i] = f_out[B.unk{k} * n + i] + corr * B.cw{k} / B.wsum;"
+            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = f_out[B.unk{k} * n + i] + corr * B.cw{k} / B.wsum; }}"
         );
     }
     s += "        fix_bc_moments(i, n);\n";
@@ -722,36 +787,68 @@ mod tests {
         let expected = [
             "kind",
             "base",
-            "stride",
+            "stride1",
             "extent",
             "joff",
             "has_profile",
+            "stride2",
+            "extent1",
             "q_n",
             "o_n",
-            "q_d1",
-            "o_d1",
-            "q_d2",
-            "o_d2",
-            "q_t",
-            "q_mt",
+            "q_p1",
+            "o_p1",
+            "q_m1",
+            "o_m1",
+            "q_p2",
+            "o_p2",
+            "q_m2",
+            "o_m2",
+            "q_t1",
+            "q_mt1",
+            "q_t2",
+            "q_mt2",
+            "q_pp",
+            "q_pm",
+            "q_mp",
+            "q_mm",
             "unk0",
             "unk1",
             "unk2",
+            "unk3",
+            "unk4",
+            "unk_count",
             "p0",
             "p1",
+            "p2",
             "nxr",
             "nyr",
-            "txr",
-            "tyr",
+            "nzr",
+            "t1x",
+            "t1y",
+            "t1z",
+            "t2x",
+            "t2y",
+            "t2z",
             "cw0",
             "cw1",
             "cw2",
+            "cw3",
+            "cw4",
             "wsum",
             "cinv",
             "pad0",
             "pad1",
             "pad2",
             "pad3",
+            "pad4",
+            "pad5",
+            "pad6",
+            "pad7",
+            "pad8",
+            "pad9",
+            "pad10",
+            "pad11",
+            "pad12",
         ];
         let actual: Vec<&str> = BC_PARAMS_FIELDS.iter().map(|(name, _)| *name).collect();
         assert_eq!(actual, expected);
@@ -771,9 +868,9 @@ mod tests {
         ] {
             assert!(src.contains(needle), "missing {needle:?} in generated WGSL");
         }
-        // All four faces get stash blocks; offsets: 0, 3ny, 6ny, 6ny+3nx.
+        // All four faces get stash blocks; exact offsets are generated from
+        // the lattice face tables and covered by `stash_len_counts_all_face_slots`.
         assert!(src.contains("XNeg edge stash"));
-        assert!(src.contains("6u * nx * ny"));
     }
 
     #[test]
