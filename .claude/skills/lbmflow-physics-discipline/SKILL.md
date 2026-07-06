@@ -113,6 +113,12 @@ no band covers.
 
 1. **Look**: visualize the result (lbmflow-qa-viewer; for the deposition
    demo use its tray variant). Never review from scalars alone.
+   **Every experiment run MUST leave a visual artifact** (field PNG,
+   cross-section, density map, or a viewer dashboard) alongside its
+   metrics — a run that only emits scalars is unreviewable and its results
+   may not be reported. Division of labor: agents without a browser (codex)
+   GENERATE the artifact and list its path in the report; the reviewing
+   Claude session (PM / V&V) does the LOOKING and writes the record.
 2. **Name the mechanism**: one sentence — "the pattern is X because Y".
    If you cannot fill Y with physics, escalate (table below).
 3. **List active non-resolved terms**: every closure/limiter that was live
@@ -153,5 +159,7 @@ Routing: none | core session (data package) | codex order | spec revision
 - [ ] Gates green per `lbmflow-build-verify` tier for the touched files.
 - [ ] New/changed acceptance has both layers (band + behavior anchor).
 - [ ] Behavior-validity review record attached (if anything was run).
+- [ ] Every reported run lists its visual artifact path (PNG / VTK +
+      viewer / dashboard) — no scalar-only runs.
 - [ ] Report is evidence-based: every claim maps to a tool output from this
       session; unverified things are labeled unverified.

@@ -76,7 +76,9 @@ CV bands produced an unreviewed edge-ring deposition pattern):
    recalibrate constants to force green; that is a PM decision."
 4. **Two-layer acceptance**: state the band AND at least one behavior anchor
    (sign / monotonicity / spatial structure) the result must satisfy, plus
-   "attach the behavior-validity review record for every run you report".
+   "attach the behavior-validity review record for every run you report,
+   and list the visual artifact path (PNG / VTK / dashboard) for every run —
+   scalar-only runs are unreportable; the PM does the looking".
 
 The stop-rule clause has a proven track record: the P2 integration v1 order
 stopped exactly right on a deposition-parity failure instead of recalibrating
