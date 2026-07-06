@@ -317,3 +317,55 @@ under domain-edge kernel truncation: a body tangent to a wall rim measured
 momentum_error_rel = 6.2e-15 (audit B3 "conservative surprise" branch) —
 the mobility normalization renormalizes truncated kernels. Recorded as a
 contract observation; the SPEC-GAP candidate is closed as not-a-gap.
+
+### Pass 4 continued — particle (cx/audit-particles) and sources
+(cx/audit-sources) suites
+
+**Verified-exact results (both suites green after triage)**: trilinear
+sampler exact on affine fields (6.9e-18); buoyancy sign antisymmetry exact
+(rel 0); step vs step_depositing bit-identical over 200 steps; the drag
+integrator is PINNED as semi-implicit (backward) Euler with SN drag —
+agreement 3.3e-7 across tau_p ∈ {2,5,10,40}, unconditionally stable at
+tau_p = 0.4 (monotone, no sign flips) — consistent with T18.3 passing at
+tau_p = 1e-4. Near-wall sampler contract pinned: solid-node zeros are
+blended linearly (u decays toward a stationary wall; SPEC-GAP noted for
+moving-wall particle coupling — the Sample has no wall-velocity channel).
+Jet per-step momentum ledger EXACT (abs err ~1e-24 vs band 6e-22, all axes,
+8 steps) once q_lu semantics are read as region-total; source-dipole far
+field r^-3 verified (slope 3.04, r² 0.9995); source and patch mirror
+equivariance at 1e-16..1e-25; masked-patch BC nodes exact at machine
+precision ON THE FACE LAYER (vel 3.5e-18, lid 4.1e-20, rho 1.1e-16,
+patch-lid seam 4.1e-20).
+
+**ANOM-P4-004** — C1/C2 first-pass failures (rel 1.3e-3) were TEST-SIDE:
+hitting tau_p = 2 needs d = 1.34 lattice units, so v0 = 1e-4 gave
+Re_p = 1.3e-3 and the SN factor polluted the Stokes-limit identity by
+exactly the observed deviation. Fixed v0 = 1e-10 (SN residual 1.2e-7 <
+band 1e-6). S3, test-fix (in-worktree), derivation in the test comment.
+
+**ANOM-P4-005** — D1 first-pass failure was TEST-SIDE + a DOC GAP: the
+audit order read `SourceKind` q_lu as per-cell; the implementation (and the
+T18.1 mass-ledger wording Σ q_lu) means REGION TOTAL. First measurement
+over-predicted by exactly N_region = 64. Fixed; the identity then holds to
+round-off. S3 doc action: make the per-region-total semantics explicit in
+DISPERSED_DEPOSITION.md §5 (queued with the D-track PM).
+
+**ANOM-P4-006** — D4 first-pass failure was TEST-SIDE (sampling layer): the
+patch BC nodes are the face layer z = nz−1 (exact at machine precision);
+the adjacent interior layer carries developed flow (7.4e-3), not BC error.
+Convention pinned in the test.
+
+**ANOM-P4-007** — cumulant viscosity-offset audit (cx/audit-cumulant,
+Order E) first pass: verdict **OPEN, order being revised**. What stands:
+orientation consistency of the scalar correction PASSED (spread 2.2e-10);
+at the calibration point (N=32, diffusive u0) residual −5.9e-4. What is
+confounded (audit-design side, not yet engine evidence): E1's u0-sweep at
+fixed N conflates O(Ma²) compressibility with the cubic defect (TRT control
+c=7.98 vs cumulant c=8.22 — both dominated by compressibility); E2's N=24
+band ignored the O(h²) spatial-error floor of the nu_eff fit (~1.7e-2 at
+N=24). GENUINE flag to resolve: D3Q27 with offset=0 shows defect 9.1e-3 at
+N=32 where D3Q19 shows −5.9e-4 — 15x, unexplained by spatial error at that
+N; the "D3Q19-only bias" story needs the revised probes. Revision order
+queued: tau-sweep to expose the omega-space correction's tau-dependent
+nu-space footprint, N-sweep at fixed Ma for D3Q27, spatial-error-modeled
+bands. 3.1 (B) vs (C) reclassification stays undecided until then.
