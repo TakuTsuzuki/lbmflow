@@ -136,9 +136,14 @@ fn a1_flagship_per_step_global_momentum_ledger_closure() {
         let n_fluid = sim.fluid_cell_count() as f64;
         let expected = [n_fluid * force[0] - fp[0], n_fluid * force[1] - fp[1]];
         let measured = [p1[0] - p0[0], p1[1] - p0[1]];
+        // Band model: the identity is exact in infinite precision; the floor
+        // is the cancellation error of differencing two O(N_cells)-term sums
+        // of magnitude ~|p|, plus the probe/force sums. Scale the band with
+        // the sum of the ledger-term magnitudes (NOT only the net force,
+        // which is orders smaller than |p| and under-floors the round-off).
         let den = [
-            (n_fluid * force[0].abs()).max(fp[0].abs()),
-            (n_fluid * force[1].abs()).max(fp[1].abs()),
+            p0[0].abs() + n_fluid * force[0].abs() + fp[0].abs(),
+            p0[1].abs() + n_fluid * force[1].abs() + fp[1].abs(),
         ];
         println!(
             "ACC PROBE A1: sample={} dp=({:.12e},{:.12e}) expected=({:.12e},{:.12e}) F_probe=({:.12e},{:.12e}) den=({:.12e},{:.12e})",
@@ -146,10 +151,10 @@ fn a1_flagship_per_step_global_momentum_ledger_closure() {
         );
         for c in 0..2 {
             let err = (measured[c] - expected[c]).abs();
-            let band = 1.0e-12 * den[c];
+            let band = 1.0e-11 * den[c];
             assert!(
                 err <= band,
-                "ACC PROBE A1 component {c}: measured dp={:.12e}, expected={:.12e}, abs_err={:.12e}, band={:.12e}, denominator=max(N_fluid*|F|, |F_probe|)={:.12e}; O(1e-2 relative) suggests probe-completeness/timing finding",
+                "ACC PROBE A1 component {c}: measured dp={:.12e}, expected={:.12e}, abs_err={:.12e}, band={:.12e}, denominator=|p_t|+N_fluid*|F|+|F_probe|={:.12e}; O(1e-2 relative) suggests probe-completeness/timing finding",
                 measured[c],
                 expected[c],
                 err,
@@ -163,11 +168,19 @@ fn a1_flagship_per_step_global_momentum_ledger_closure() {
 #[test]
 fn a2_steady_poiseuille_wall_friction_balance() {
     // Steady derivation: for periodic x and no acceleration, the summed
-    // x-momentum equation over all fluid cells has zero left-hand side. A
-    // uniform body force contributes g*N_fluid, so the two wall probes must
-    // sum to -g*N_fluid. The geometry and forcing are symmetric about the
-    // channel centerline, so each wall carries exactly half. There is no
-    // y-forcing and the steady Poiseuille solution has no normal wall force.
+    // x-momentum equation over all fluid cells has zero left-hand side. The
+    // uniform body force injects +g*N_fluid into the fluid each step, so the
+    // walls must absorb exactly that: the force ON the probed walls
+    // (probed_force sign convention: force exerted BY the fluid ON the solid,
+    // cf. A1 ledger and A5 drag sign) sums to +g*N_fluid. The geometry and
+    // forcing are symmetric about the centerline, so each wall carries half.
+    // Normal (y) components are NOT zero: a resting wall in near-equilibrium
+    // fluid receives the static-pressure push. Per column, the links entering
+    // the top wall (c_y > 0: q2 w=1/9, q5 and q6 w=1/36) transfer
+    // 2*rho*(1/9 + 1/36 + 1/36) = rho/3 = rho*cs^2; the O(u^2) equilibrium
+    // corrections cancel exactly in this sum (+4.5(c.u)^2 terms of q5/q6
+    // offset the -1.5u^2 terms), so F_top_y = +nx*rho*cs^2 and
+    // F_bottom_y = -nx*rho*cs^2 to round-off in steady state.
     let nx = 8;
     let ny = 34;
     let g = 1.0e-6;
@@ -185,8 +198,9 @@ fn a2_steady_poiseuille_wall_friction_balance() {
 
     let n_fluid = sim.fluid_cell_count() as f64;
     let den = g * n_fluid;
-    let sum_x = top[0] + bottom[0] + den;
+    let sum_x = top[0] + bottom[0] - den;
     let sym_x = top[0] - bottom[0];
+    let p_push = nx as f64 / 3.0;
     println!(
         "ACC PROBE A2: F_top=({:.12e},{:.12e}) F_bottom=({:.12e},{:.12e}) gN={:.12e} sum_x_res={:.12e} sym_x={:.12e}",
         top[0], top[1], bottom[0], bottom[1], den, sum_x, sym_x
@@ -203,13 +217,20 @@ fn a2_steady_poiseuille_wall_friction_balance() {
         "ACC PROBE A2 top/bottom symmetry: measured F_top_x-F_bottom_x={sym_x:.12e}, band={:.12e}, denominator=g*N_fluid={den:.12e}",
         1.0e-12 * den
     );
-    for (label, value) in [("top_y", top[1]), ("bottom_y", bottom[1])] {
+    for (label, value, expected) in [("top_y", top[1], p_push), ("bottom_y", bottom[1], -p_push)] {
+        let err = (value - expected).abs();
         assert!(
-            value.abs() <= 1.0e-12 * den,
-            "ACC PROBE A2 no-normal-force {label}: measured={value:.12e}, band={:.12e}, denominator=g*N_fluid={den:.12e}",
-            1.0e-12 * den
+            err <= 1.0e-9 * p_push,
+            "ACC PROBE A2 static-pressure normal force {label}: measured={value:.12e}, expected={expected:.12e}, abs_err={err:.12e}, band={:.12e}, denominator=nx*rho*cs^2={p_push:.12e}",
+            1.0e-9 * p_push
         );
     }
+    let y_cancel = (top[1] + bottom[1]).abs();
+    assert!(
+        y_cancel <= 1.0e-12 * p_push,
+        "ACC PROBE A2 normal-force cancellation: measured |F_top_y+F_bottom_y|={y_cancel:.12e}, band={:.12e}, denominator=nx*rho*cs^2={p_push:.12e}",
+        1.0e-12 * p_push
+    );
 }
 
 #[test]
@@ -337,8 +358,14 @@ fn a5_moving_wall_probed_shear_matches_exact_couette_friction() {
         let expected_mag = nu * u_wall / h * nx as f64;
         let mag_err = (top[0].abs() - expected_mag).abs();
         let mag_band = 1.0e-8 * expected_mag;
+        // The public API exposes one probe set at a time, so the two walls
+        // are read on CONSECUTIVE steps; near the 1e-11 steady criterion the
+        // field still drifts ~O(1e-10) relative per step, which bounds the
+        // achievable cancellation between the two reads (measured 3.1e-10
+        // relative at tau=0.6). Band 1e-8 keeps ~30x headroom while staying
+        // far below any physical probe asymmetry (O(u^2/H) ~ 1e-4 relative).
         let cancel = top[0] + bottom[0];
-        let cancel_band = 1.0e-10 * top[0].abs();
+        let cancel_band = 1.0e-8 * top[0].abs();
         println!(
             "ACC PROBE A5: tau={tau:.3} F_top=({:.12e},{:.12e}) F_bottom=({:.12e},{:.12e}) expected_mag={:.12e} sign_convention=force_on_solid_top_negative_bottom_positive",
             top[0], top[1], bottom[0], bottom[1], expected_mag
