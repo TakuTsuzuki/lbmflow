@@ -1173,3 +1173,30 @@ purely through arithmetic reassociation (trunk 5/5 green, r2-b1 2/5, same physic
 Changed the assertion denominator to the force-vector L_inf scale, consistent with the
 T14 field-scale-relative convention. This is a denominator fix, not a gate loosening:
 effective absolute limit at this config 4.5e-4, measured deltas have 3 orders headroom.
+
+## W-GRAV well-balanced gravity gate (2026-07-06)
+
+Targeted command:
+`cargo test -p lbm-core --release --test gravity -- --nocapture`
+passed 9/9. This includes the interim public gravity tests unchanged
+(`set_gravity(g)` equals a raw per-cell `rho*g` force field, periodic momentum
+growth, 3D additivity, solid exclusion, and Shan-Chen force overwrite
+composition) plus the W-GRAV additions.
+
+Measured VR-STR-06 residuals after 5,000 steps in closed boxes:
+D2Q9/f64 `max|u|=3.125692086243839e-10`,
+D2Q9/f32 `1.235706095366519e-7`,
+D3Q19/f64 `3.372688635697144e-15`,
+D3Q19/f32 `8.086668657928531e-8`. Frozen bands are respectively
+`2e-9`, `5e-7`, `1e-13`, `5e-7`, all tighter than the provisional
+`1e-6` lattice-unit VR-STR-06 gate.
+
+Additional W-GRAV checks in the same file:
+gravity-driven channel flow is bit-identical to the same setup expressed via a
+raw `rho*g` body-force field; tilted gravity `[gx, gy]` in a periodic channel
+matches the Poiseuille profile within `L_inf_rel <= 2e-2`.
+
+Scenario validation command:
+`cargo test -p lbm-scenario --release scenario_gravity_validation_rejects_bad_vectors_with_reason -- --nocapture`
+passed. It checks wrong-length JSON gravity arrays, NaN gravity components, and
+nonzero `gz` in 2D are rejected with field-specific reasons.

@@ -119,11 +119,11 @@ pub struct Physics {
     pub collision: CollisionSpec,
     #[serde(default)]
     pub force: [f64; 2],
-    /// Per-mass gravity g (lattice units): applied each step as a per-cell
-    /// force density rho(x)*g on fluid cells, additive with `force` and any
-    /// multiphase/rotor per-cell force. Unlike `force` (a constant force
-    /// DENSITY, hydrostatically balanced), gravity produces buoyancy. 2D
-    /// scenarios require g[2] == 0.
+    /// Per-mass gravity g (lattice units): lowered to the solver's single
+    /// Guo-force composition point as `rho(x)*g`, additive with `force` and
+    /// any caller-owned per-cell force. W-VOF will substitute `rho(phi)*g`
+    /// at that same solver point; this schema field is intentionally just
+    /// the acceleration vector.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gravity: Option<[f64; 3]>,
     #[serde(default)]
@@ -923,6 +923,7 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     );
 
     if let Some(g) = sc.physics.gravity {
+        validate_gravity_vector(g, true)?;
         s.set_gravity([T::r(g[0]), T::r(g[1]), T::r(g[2])]);
     }
 
@@ -1085,12 +1086,7 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
     .build()?;
 
     if let Some(g) = sc.physics.gravity {
-        if g[2] != 0.0 {
-            return Err(ConfigError::InvalidParameter {
-                what: "physics.gravity[2] (2D scenarios require gz == 0)",
-                value: g[2],
-            });
-        }
+        validate_gravity_vector(g, false)?;
         sim.set_gravity([T::r(g[0]), T::r(g[1])]);
     }
 
@@ -1200,6 +1196,27 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
         model
     });
     Ok((sim, mp))
+}
+
+fn validate_gravity_vector(g: [f64; 3], is_3d: bool) -> Result<(), ConfigError> {
+    for (i, v) in g.iter().enumerate() {
+        if !v.is_finite() {
+            return Err(ConfigError::NonFiniteParameter {
+                what: match i {
+                    0 => "physics.gravity[0]",
+                    1 => "physics.gravity[1]",
+                    _ => "physics.gravity[2]",
+                },
+            });
+        }
+    }
+    if !is_3d && g[2] != 0.0 {
+        return Err(ConfigError::InvalidParameter {
+            what: "physics.gravity[2] (2D scenarios require gz == 0)",
+            value: g[2],
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- presets
@@ -1676,6 +1693,46 @@ mod tests {
             _ => panic!("expected an f64 single-phase CPU compat build"),
         }
         assert!(build_check(&sc).is_ok());
+    }
+
+    #[test]
+    fn scenario_gravity_validation_rejects_bad_vectors_with_reason() {
+        let wrong_dim = serde_json::from_str::<Scenario>(
+            r#"{
+                "name": "bad-gravity-dim",
+                "grid": { "nx": 8, "ny": 8 },
+                "physics": { "nu": 0.1, "gravity": [0.0, -1e-6] },
+                "edges": {
+                    "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                    "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" }
+                },
+                "run": { "steps": 1 }
+            }"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            wrong_dim.contains("invalid length") || wrong_dim.contains("expected an array"),
+            "{wrong_dim}"
+        );
+
+        let mut nan = preset("cavity");
+        nan.physics.gravity = Some([f64::NAN, 0.0, 0.0]);
+        let err = match build(&nan) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("NaN gravity should fail"),
+        };
+        assert!(err.contains("physics.gravity[0]"), "{err}");
+        assert!(err.contains("finite"), "{err}");
+
+        let mut bad_z = preset("cavity");
+        bad_z.physics.gravity = Some([0.0, 0.0, 1.0e-6]);
+        let err = match build(&bad_z) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("2D nonzero gz should fail"),
+        };
+        assert!(err.contains("physics.gravity[2]"), "{err}");
+        assert!(err.contains("2D scenarios require gz == 0"), "{err}");
     }
 
     /// The z-periodic 3D parabolic inlet degenerates to the 2D parabola:

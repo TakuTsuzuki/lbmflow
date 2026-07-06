@@ -155,6 +155,217 @@ fn closed_box_gravity_forms_stable_hydrostatic_stratification() {
     );
 }
 
+fn closed_box_quiescence_2d<T: lbm_core::prelude::Real>(name: &str, bound: f64) -> f64 {
+    let (nx, ny) = (48, 48);
+    let mut sim: Simulation<T> = SimConfig {
+        nx,
+        ny,
+        nu: 1.0 / 6.0,
+        collision: Collision::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
+        edges: Edges {
+            left: EdgeBC::BounceBack,
+            right: EdgeBC::BounceBack,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.set_gravity([T::zero(), T::r(-1.0e-6)]);
+    sim.run(5_000);
+
+    let mut max_u = 0.0f64;
+    for y in 0..ny {
+        for x in 0..nx {
+            if sim.is_solid(x, y) {
+                continue;
+            }
+            let ux = sim.ux(x, y).as_f64();
+            let uy = sim.uy(x, y).as_f64();
+            assert!(
+                ux.is_finite() && uy.is_finite(),
+                "{name}: non-finite velocity at ({x},{y})"
+            );
+            max_u = max_u.max(ux.hypot(uy));
+        }
+    }
+    assert!(
+        max_u <= bound,
+        "{name}: VR-STR-06 residual max|u|={max_u:e}, bound={bound:e}"
+    );
+    max_u
+}
+
+fn closed_box_quiescence_3d<T: lbm_core::prelude::Real>(name: &str, bound: f64) -> f64 {
+    let dims = [24, 24, 16];
+    let mut walls = WallSpec::<T>::default();
+    walls.is_wall = [true; 6];
+    let (solid, wall_u) = lbm_core::prelude::build_wall_rims(3, dims, &walls);
+    let spec = GlobalSpec::<T> {
+        dims,
+        nu: 1.0 / 6.0,
+        collision: CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
+        periodic: [false, false, false],
+        ..Default::default()
+    };
+    let mut solver = Solver::<D3Q19, T, CpuScalar, LocalPeriodic>::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    solver.set_gravity([T::r(3.0e-7), T::r(-8.0e-7), T::r(2.0e-7)]);
+    solver.run(5_000);
+
+    let ux = solver.gather_ux();
+    let uy = solver.gather_uy();
+    let uz = solver.gather_uz();
+    let mut max_u = 0.0f64;
+    for z in 0..dims[2] {
+        for y in 0..dims[1] {
+            for x in 0..dims[0] {
+                if solver.is_solid(x, y, z) {
+                    continue;
+                }
+                let i = (z * dims[1] + y) * dims[0] + x;
+                let u = ux[i].as_f64().hypot(uy[i].as_f64()).hypot(uz[i].as_f64());
+                assert!(
+                    u.is_finite(),
+                    "{name}: non-finite velocity at ({x},{y},{z})"
+                );
+                max_u = max_u.max(u);
+            }
+        }
+    }
+    assert!(
+        max_u <= bound,
+        "{name}: VR-STR-06 residual max|u|={max_u:e}, bound={bound:e}"
+    );
+    max_u
+}
+
+#[test]
+fn vr_str_06_static_stratification_quiescent_all_lattices_and_precisions() {
+    let d2_f64 = closed_box_quiescence_2d::<f64>("D2Q9/f64", 2.0e-9);
+    let d2_f32 = closed_box_quiescence_2d::<f32>("D2Q9/f32", 5.0e-7);
+    let d3_f64 = closed_box_quiescence_3d::<f64>("D3Q19/f64", 1.0e-13);
+    let d3_f32 = closed_box_quiescence_3d::<f32>("D3Q19/f32", 5.0e-7);
+    eprintln!(
+        "measured VR-STR-06 residuals: D2/f64={d2_f64:e}, D2/f32={d2_f32:e}, D3/f64={d3_f64:e}, D3/f32={d3_f32:e}"
+    );
+    assert!(
+        d2_f64 < 2.0e-9 && d3_f64 < 1.0e-13 && d2_f32 < 5.0e-7 && d3_f32 < 5.0e-7,
+        "measured VR-STR-06 residuals: D2/f64={d2_f64:e}, D2/f32={d2_f32:e}, D3/f64={d3_f64:e}, D3/f32={d3_f32:e}"
+    );
+}
+
+#[test]
+fn gravity_channel_is_bit_identical_to_raw_rho_g_force_field() {
+    let (nx, ny) = (48, 18);
+    let g = [8.0e-7, 0.0];
+    let build = || -> Simulation<f64> {
+        SimConfig {
+            nx,
+            ny,
+            nu: 0.1,
+            collision: Collision::Trt {
+                magic: CollisionKind::MAGIC_STD,
+            },
+            edges: Edges {
+                left: EdgeBC::Periodic,
+                right: EdgeBC::Periodic,
+                bottom: EdgeBC::BounceBack,
+                top: EdgeBC::BounceBack,
+            },
+            ..Default::default()
+        }
+        .build()
+        .unwrap()
+    };
+    let mut grav = build();
+    grav.set_gravity(g);
+    let mut raw = build();
+    for _ in 0..600 {
+        let mut force = vec![[0.0; 2]; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                if !raw.is_solid(x, y) {
+                    force[y * nx + x] = [raw.rho(x, y) * g[0], raw.rho(x, y) * g[1]];
+                }
+            }
+        }
+        raw.force_field_mut().copy_from_slice(&force);
+        grav.step();
+        raw.step();
+    }
+    for y in 0..ny {
+        for x in 0..nx {
+            assert_eq!(
+                grav.rho(x, y).to_bits(),
+                raw.rho(x, y).to_bits(),
+                "rho differs at ({x},{y})"
+            );
+            assert_eq!(
+                grav.ux(x, y).to_bits(),
+                raw.ux(x, y).to_bits(),
+                "ux differs at ({x},{y})"
+            );
+            assert_eq!(
+                grav.uy(x, y).to_bits(),
+                raw.uy(x, y).to_bits(),
+                "uy differs at ({x},{y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn tilted_gravity_channel_matches_poiseuille_profile() {
+    let (nx, ny) = (64, 34);
+    let nu = 0.1;
+    let gx = 1.0e-6;
+    let mut sim = SimConfig {
+        nx,
+        ny,
+        nu,
+        collision: Collision::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
+        edges: Edges {
+            left: EdgeBC::Periodic,
+            right: EdgeBC::Periodic,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.set_gravity([gx, -2.0e-7]);
+    sim.run(25_000);
+
+    let h = (ny - 2) as f64;
+    let mut linf_rel = 0.0f64;
+    for y in 1..ny - 1 {
+        let d = y as f64 - 0.5;
+        let theory = gx * d * (h - d) / (2.0 * nu);
+        let measured = sim.ux(nx / 2, y);
+        let rel = ((measured - theory) / theory.max(1.0e-30)).abs();
+        linf_rel = linf_rel.max(rel);
+    }
+    assert!(
+        linf_rel <= 2.0e-2,
+        "tilted gravity Poiseuille L_inf_rel={linf_rel:e}, bound=2e-2"
+    );
+}
+
 fn phase_center_of_mass_y(sim: &Simulation<f64>, light: bool) -> f64 {
     let mut m = 0.0;
     let mut my = 0.0;
