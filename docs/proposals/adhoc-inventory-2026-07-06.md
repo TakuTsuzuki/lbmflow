@@ -85,3 +85,32 @@ Adversarial-accuracy audit running in parallel (same session): codex orders
 A (momentum-exchange probe + walls) and B (rotating IBM) dispatched; C
 (particles) and D (sources/patches) queued. Findings will be triaged into
 docs/qa/anomaly-log.md per protocol.
+
+---
+
+## 6. PM triage (D-track PM, 2026-07-06)
+
+- **1.1–1.11 APPROVED as ONE kill order** (`cx/kill-deposition-closures`):
+  rebuild dispersed_seeding on co-evolved resolved physics — solver stepped
+  WITH the particles (point-sampled live field), closures/clamps/kicks/jitter
+  deleted, agitation = oscillating body force on the fluid + matched
+  density-weighted pseudo-force on particles (same frozen §3.2 pattern),
+  reservoir extraction from the VALIDATED core settling column, spin-up by
+  criterion. 1.4 decision: the dispersion constant is DELETED, not replaced —
+  if the resolved field under-disperses, that is a finding (literature
+  closure with the four artifacts, or capability-gap routing), not a knob.
+  All P1.1/T18.4 bands measured through the (C) layer are INVALIDATED; the
+  order reports new values + visual artifacts, PM re-freezes.
+- **2.1–2.2 APPROVED as a second order** (`cx/stirred-penalization-migrate`):
+  migrate the example to the landed core penalization, delete α/f_cap, cite
+  the standard Rushton proportions.
+- **3.1 ENDORSED**: accuracy-audit Order E (functional-form sweep across u
+  AND N) decides (B) vs (C); core session notified. No comment-only fix
+  before the audit verdict.
+- **4.3 APPROVED as a light order** (`cx/mock-engine-warning`): runtime
+  console.warn + visible UI badge when the mock engine is active.
+- **4.4, 1.11, 2.2 doc items**: folded into the respective orders above.
+- Sequencing: kill order runs at current sample parameters (100 µm);
+  the 20 µm real-problem reparameterization (Phase B: exact ballistic-settle
+  switch, budget redesign) follows as a separate order once the bead
+  material/density is confirmed by the user.
