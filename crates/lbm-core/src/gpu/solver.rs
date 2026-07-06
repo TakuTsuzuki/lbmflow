@@ -181,6 +181,11 @@ impl<L: Lattice> GpuSolver<L> {
         self.inner.gather_uy()
     }
 
+    /// Global z-velocity field.
+    pub fn gather_uz(&mut self) -> Vec<f32> {
+        self.inner.gather_uz()
+    }
+
     /// Global strain-rate tensor through the host staging mirror.
     pub fn gather_strain_rate(&mut self) -> Vec<[f32; 6]> {
         self.sync();

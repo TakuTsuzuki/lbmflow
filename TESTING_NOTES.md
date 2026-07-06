@@ -1239,3 +1239,72 @@ checkpoint test covers 50 -> save -> load -> 50 bit-exact equality against a
 explicit `CKPT_PAYLOAD_CORRUPT` and truncated-file rejection; explicit
 `CKPT_SCENARIO_MISMATCH`; byte preservation of `ftmp` stale storage; and a
 carried solid-cell `rho` value restored from the `MOMENTS` section.
+## ME-1 partial D3Q19 GPU core bring-up (2026-07-06)
+
+This worktree widened the WgpuBackend core path from 2D-only to compact 3D
+addressing for D3Q19 closed/periodic grids: WGSL cell index
+`z*(nx*ny)+y*nx+x`, q-major SoA, D3 force/moment vectors, `uz` readback, 16-byte
+`vec3` wall/force storage, and D3 edge-stash sizing. Direction tables remain
+generated from `Lattice`; no D3Q19 direction table was re-declared in WGSL.
+
+Focused evidence from this session:
+- `cargo test -p lbm-core --release --features gpu --test t14_3d_backend_equiv -- --nocapture`
+  passed. Measured bands:
+  - D3Q19 periodic TGV, 32^3, t=40/80/120:
+    rho rel max 7.148e-7, velocity rel max 2.779e-6, population state rel max
+    3.596e-5.
+  - D3Q19 lid cavity, 24^3, t=40/80/120:
+    rho rel max 7.031e-7, velocity rel max 1.673e-6, population state rel max
+    1.650e-5.
+- `cargo test -p lbm-core --release --features gpu wgsl_parses_and_validates -- --nocapture`
+  passed: D2Q9 and D3Q19 generated WGSL parse and Naga validation.
+- Existing D2 T14 spot-check after the widening:
+  `cargo test -p lbm-core --release --features gpu --test t14_backend_equiv t14_tgv_periodic -- --nocapture`
+  passed; velocity rel max 3.832e-6, rho rel max 5.940e-7.
+- `cargo build -p lbm-core --release --features gpu --example bench_gpu` passed.
+  `cargo run -p lbm-core --release --features gpu --example bench_gpu -- --gpu-only`
+  could not measure MLUPS in this session because adapter acquisition returned
+  `no usable GPU adapter was found`.
+
+## ME-1 continuation: D3 open faces and scenario GPU dispatch (2026-07-06)
+
+Focused evidence from this continuation:
+- `cargo test -p lbm-core --features gpu wgsl --release --no-fail-fast` passed.
+  D2Q9 and D3Q19 generated WGSL parse and Naga validation stayed green after the
+  generic open-face descriptor expansion.
+- `cargo test -p lbm-core --features gpu --test t14_3d_backend_equiv --release --no-fail-fast`
+  passed. The added `t14_3d_open_faces_with_body_force_d3q19` case uses an X
+  velocity inlet, X pressure outlet, four wall faces, and body force; asserted
+  bands are velocity abs <= 1e-5, density/pressure abs <= 1e-4, populations abs
+  <= 1e-4.
+- `cargo test -p lbm-scenario -p lbm-cli --release --no-fail-fast` passed.
+- `cargo test -p lbm-scenario -p lbm-cli --features gpu --release --no-fail-fast`
+  passed.
+- A direct CLI f32 GPU cavity smoke reached the new dispatch path and logged
+  `compute.backend selected gpu`, then adapter creation failed in that process
+  with `requested backend "gpu" is unavailable: no usable GPU adapter was found`.
+  The lower-level T14 GPU tests did acquire/use an adapter in this session, so
+  this is recorded as a sandbox/process adapter limitation rather than a bench
+  result.
+
+Bench status: BENCH-PENDING (sandbox adapter). Per order, `bench_gpu` was not
+attempted in this continuation.
+
+## ME-2 FP16 storage scaffolding (2026-07-06)
+
+Implemented host-visible FP16 storage scaffolding: `KernelCfg`, `GpuStorage`,
+conditional `GpuContext::new_with_shader_f16(true)` feature request, and
+centralized population/stash storage encode/decode using `GpuFields.element_bytes`
+instead of hard-coded 4-byte population assumptions on the resource path.
+
+Verification:
+- `cargo test -p lbm-core --features gpu wgsl --release --no-fail-fast` passed.
+  The f32 shader path still parses and validates for D2Q9 and D3Q19.
+- T16 tests were added as ignored tests:
+  `t16_tgv2d_f16_storage_degradation_vs_f32_gpu` and
+  `t16_cavity2d_f16_storage_degradation_vs_f32_gpu`.
+
+T16 status: BENCH-PENDING / CHARACTERIZATION-PENDING. No f16 degradation values
+were frozen in this sandbox; PM should unignore the T16 matrix on a reliable
+SHADER_F16 adapter, record measured f16-vs-f32 deltas, and replace the pending
+assertions with bands that include measured headroom.

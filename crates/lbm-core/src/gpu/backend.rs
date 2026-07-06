@@ -101,12 +101,27 @@ pub enum GpuInitError {
         /// wgpu's device-request failure text.
         message: String,
     },
+    /// The selected adapter does not expose a required feature.
+    MissingFeature {
+        /// Adapter selected before the feature check failed.
+        adapter_info: wgpu::AdapterInfo,
+        /// Feature that was required.
+        feature: &'static str,
+    },
 }
 
 impl std::fmt::Display for GpuInitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoAdapter => write!(f, "no usable GPU adapter was found"),
+            Self::MissingFeature {
+                adapter_info,
+                feature,
+            } => write!(
+                f,
+                "GPU adapter '{}' ({:?}) does not support required feature {feature}",
+                adapter_info.name, adapter_info.backend
+            ),
             Self::RequestDevice {
                 adapter_info,
                 message,
@@ -115,6 +130,111 @@ impl std::fmt::Display for GpuInitError {
                 "failed to create GPU device for adapter '{}' ({:?}): {message}",
                 adapter_info.name, adapter_info.backend
             ),
+        }
+    }
+}
+
+/// Distribution-buffer storage precision requested for generated kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuStorage {
+    /// f32 distribution buffers.
+    F32,
+    /// f16 distribution buffers; shader arithmetic remains f32.
+    F16,
+}
+
+impl GpuStorage {
+    fn element_bytes(self) -> u64 {
+        match self {
+            Self::F32 => 4,
+            Self::F16 => 2,
+        }
+    }
+}
+
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let x = value.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32 - 127 + 15;
+    let mant = x & 0x7f_ffff;
+    if exp <= 0 {
+        if exp < -10 {
+            return sign;
+        }
+        let mant = mant | 0x80_0000;
+        let shift = (14 - exp) as u32;
+        let mut half = (mant >> shift) as u16;
+        if ((mant >> (shift - 1)) & 1) != 0 {
+            half = half.wrapping_add(1);
+        }
+        return sign | half;
+    }
+    if exp >= 31 {
+        return sign | 0x7c00;
+    }
+    let mut half = sign | ((exp as u16) << 10) | ((mant >> 13) as u16);
+    if (mant & 0x1000) != 0 {
+        half = half.wrapping_add(1);
+    }
+    half
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = (bits & 0x03ff) as u32;
+    let out = if exp == 0 {
+        if mant == 0 {
+            sign
+        } else {
+            let mut mantissa = mant;
+            let mut e = -14i32;
+            while (mantissa & 0x400) == 0 {
+                mantissa <<= 1;
+                e -= 1;
+            }
+            mantissa &= 0x3ff;
+            sign | (((e + 127) as u32) << 23) | (mantissa << 13)
+        }
+    } else if exp == 31 {
+        sign | 0x7f80_0000 | (mant << 13)
+    } else {
+        sign | ((((exp as i32 - 15 + 127) as u32) << 23) | (mant << 13))
+    };
+    f32::from_bits(out)
+}
+
+fn encode_storage(storage: GpuStorage, values: &[f32]) -> Vec<u8> {
+    match storage {
+        GpuStorage::F32 => bytemuck::cast_slice(values).to_vec(),
+        GpuStorage::F16 => values
+            .iter()
+            .flat_map(|&v| f32_to_f16_bits(v).to_le_bytes())
+            .collect(),
+    }
+}
+
+fn decode_storage(storage: GpuStorage, bytes: &[u8]) -> Vec<f32> {
+    match storage {
+        GpuStorage::F32 => bytemuck::cast_slice(bytes).to_vec(),
+        GpuStorage::F16 => bytes
+            .chunks_exact(2)
+            .map(|b| f16_bits_to_f32(u16::from_le_bytes([b[0], b[1]])))
+            .collect(),
+    }
+}
+
+/// GPU kernel configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelCfg {
+    /// Distribution-buffer storage format.
+    pub storage: GpuStorage,
+}
+
+impl Default for KernelCfg {
+    fn default() -> Self {
+        Self {
+            storage: GpuStorage::F32,
         }
     }
 }
@@ -142,6 +262,7 @@ pub(crate) fn calibrate_submit_chunk(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GpuResourcePlan {
     n: usize,
+    element_bytes: u64,
     fbytes: u64,
     stash_bytes: u64,
     mask_bytes: u64,
@@ -150,13 +271,15 @@ struct GpuResourcePlan {
     staging_bytes: u64,
     gx: u32,
     gy: u32,
+    gz: u32,
     max_bc_groups: u32,
 }
 
 impl GpuResourcePlan {
-    fn for_grid<L: Lattice>(nx: usize, ny: usize) -> Result<Self, GpuError> {
+    fn for_grid<L: Lattice>(nx: usize, ny: usize, nz: usize, element_bytes: u64) -> Result<Self, GpuError> {
         let n = nx
             .checked_mul(ny)
+            .and_then(|xy| xy.checked_mul(nz))
             .ok_or_else(|| GpuError::ResourceLimit(format!("grid {nx}x{ny} overflows usize")))?;
         let qn = L::Q.checked_mul(n).ok_or_else(|| {
             GpuError::ResourceLimit(format!(
@@ -181,17 +304,22 @@ impl GpuResourcePlan {
         let ny_u32 = u32::try_from(ny).map_err(|_| {
             GpuError::ResourceLimit(format!("ny = {ny} exceeds u32::MAX for WGSL indexing"))
         })?;
-        let max_ext = nx_u32.max(ny_u32);
+        let nz_u32 = u32::try_from(nz).map_err(|_| {
+            GpuError::ResourceLimit(format!("nz = {nz} exceeds u32::MAX for WGSL indexing"))
+        })?;
+        let max_ext = nx_u32.max(ny_u32).max(nz_u32);
         Ok(Self {
             n,
-            fbytes: bytes(qn, 4, "population buffer")?,
-            stash_bytes: bytes(wgsl::stash_len::<L>(nx, ny), 4, "edge stash")?,
+            element_bytes,
+            fbytes: bytes(qn, element_bytes, "population buffer")?,
+            stash_bytes: bytes(wgsl::stash_len::<L>(nx, ny, nz), element_bytes, "edge stash")?,
             mask_bytes: bytes(n, 4, "solid mask")?,
-            vec2_bytes: bytes(n, 8, "vec2 field")?,
+            vec2_bytes: bytes(n, 16, "vec3 field")?,
             moments_bytes: bytes(n, 4, "moment buffer")?,
             staging_bytes: bytes(qn, 4, "population staging")?,
             gx: nx_u32.div_ceil(wgsl::WG.0),
             gy: ny_u32.div_ceil(wgsl::WG.1),
+            gz: nz_u32,
             max_bc_groups: max_ext.div_ceil(wgsl::WG_BC),
         })
     }
@@ -225,6 +353,7 @@ impl GpuResourcePlan {
             ("rho moment", self.moments_bytes),
             ("ux moment", self.moments_bytes),
             ("uy moment", self.moments_bytes),
+            ("uz moment", self.moments_bytes),
         ] {
             check_storage(label, bytes)?;
         }
@@ -233,6 +362,7 @@ impl GpuResourcePlan {
         for (axis, groups) in [
             ("x", self.gx),
             ("y", self.gy),
+            ("z", self.gz),
             ("boundary", self.max_bc_groups),
         ] {
             if groups > max_groups {
@@ -248,6 +378,11 @@ impl GpuResourcePlan {
 impl GpuContext {
     /// Create a context on the highest-performance adapter.
     pub fn new() -> Result<Arc<Self>, GpuInitError> {
+        Self::new_with_shader_f16(false)
+    }
+
+    /// Create a context, optionally requiring `SHADER_F16`.
+    pub fn new_with_shader_f16(require_shader_f16: bool) -> Result<Arc<Self>, GpuInitError> {
         let instance = wgpu::Instance::default();
         let mut adapter = None;
         for power_preference in [
@@ -267,14 +402,26 @@ impl GpuContext {
         }
         let adapter = adapter.ok_or(GpuInitError::NoAdapter)?;
         let adapter_info = adapter.get_info();
+        let adapter_features = adapter.features();
+        if require_shader_f16 && !adapter_features.contains(wgpu::Features::SHADER_F16) {
+            return Err(GpuInitError::MissingFeature {
+                adapter_info,
+                feature: "SHADER_F16",
+            });
+        }
         let al = adapter.limits();
         let mut limits = wgpu::Limits::default();
         limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
         limits.max_buffer_size = al.max_buffer_size;
         limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage;
+        let required_features = if require_shader_f16 {
+            wgpu::Features::SHADER_F16
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("lbm-core-gpu"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits: limits,
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
@@ -364,9 +511,9 @@ struct RecState {
     pending_collide: bool,
     use_cached_moments_once: bool,
     /// Written Params uniform (asserts step-parameter stability per run).
-    params_words: Option<[u32; 12]>,
+    params_words: Option<[u32; 16]>,
     /// Written per-face BC uniforms.
-    bc_words: Option<[[u32; 32]; 6]>,
+    bc_words: Option<[[u32; 64]; 6]>,
     /// Bumped per fused dispatch; invalidates the readback cache.
     generation: u64,
     /// Cached population readback (generation, shared data).
@@ -382,7 +529,9 @@ struct StagingBuffer {
 pub struct GpuFields {
     nx: u32,
     ny: u32,
+    nz: u32,
     n: usize,
+    element_bytes: u64,
     f: [wgpu::Buffer; 2],
     stash: [wgpu::Buffer; 2],
     mask: wgpu::Buffer,
@@ -393,6 +542,7 @@ pub struct GpuFields {
     rho: wgpu::Buffer,
     ux: wgpu::Buffer,
     uy: wgpu::Buffer,
+    uz: wgpu::Buffer,
     probe_acc: wgpu::Buffer,
     params_ub: wgpu::Buffer,
     bc_ub: [wgpu::Buffer; 6],
@@ -433,6 +583,7 @@ fn has_open_faces<L: Lattice>(sub: &Subdomain, p: &StepParams<f32>) -> bool {
 /// GPU_EVALUATION.md §2).
 pub struct WgpuBackend<L: Lattice> {
     ctx: Arc<GpuContext>,
+    cfg: KernelCfg,
     pipelines: Arc<Pipelines>,
     submissions: Cell<u64>,
     cache_next_upload_moments_once: Cell<bool>,
@@ -447,16 +598,20 @@ pub struct WgpuBackend<L: Lattice> {
 impl<L: Lattice> WgpuBackend<L> {
     /// Compile the generated WGSL and build the pipeline set.
     pub fn new(ctx: Arc<GpuContext>) -> Self {
-        assert_eq!(
-            L::D,
-            2,
-            "WgpuBackend currently generates 2D (D2Q9) kernels; D3Q19 lands with M-C+"
-        );
-        let source = wgsl::generate::<L>();
+        Self::with_config(ctx, KernelCfg::default())
+    }
+
+    /// Compile kernels with an explicit storage configuration.
+    pub fn with_config(ctx: Arc<GpuContext>, cfg: KernelCfg) -> Self {
+        let storage = match cfg.storage {
+            GpuStorage::F32 => wgsl::Storage::F32,
+            GpuStorage::F16 => wgsl::Storage::F16,
+        };
+        let source = wgsl::generate_with_storage::<L>(storage);
         let module = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("lbm-core-d2q9"),
+                label: Some("lbm-core-gpu"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
         let mk = |entry: &str| {
@@ -479,6 +634,7 @@ impl<L: Lattice> WgpuBackend<L> {
         });
         Self {
             ctx,
+            cfg,
             pipelines,
             submissions: Cell::new(0),
             cache_next_upload_moments_once: Cell::new(false),
@@ -491,6 +647,11 @@ impl<L: Lattice> WgpuBackend<L> {
     /// The shared device context.
     pub fn context(&self) -> &Arc<GpuContext> {
         &self.ctx
+    }
+
+    /// Kernel/storage configuration.
+    pub fn config(&self) -> KernelCfg {
+        self.cfg
     }
 
     /// Number of queue submissions issued by this backend instance.
@@ -515,19 +676,18 @@ impl<L: Lattice> WgpuBackend<L> {
         self.cache_next_upload_moments_once.set(false);
     }
 
-    fn workgroups(&self, fields: &GpuFields) -> (u32, u32) {
+    fn workgroups(&self, fields: &GpuFields) -> (u32, u32, u32) {
         (
             fields.nx.div_ceil(wgsl::WG.0),
             fields.ny.div_ceil(wgsl::WG.1),
+            fields.nz,
         )
     }
 
     fn bc_extent(&self, fields: &GpuFields, face: usize) -> u32 {
-        if Face::ALL[face].axis() == 0 {
-            fields.ny
-        } else {
-            fields.nx
-        }
+        let (t1, t2) = Face::ALL[face].tangents();
+        let dims = [fields.nx, fields.ny, fields.nz];
+        dims[t1] * dims[t2]
     }
 
     /// Materialise recorded ops into one encoder/pass and submit — without
@@ -543,7 +703,7 @@ impl<L: Lattice> WgpuBackend<L> {
         if st.ops.is_empty() {
             return Ok(());
         }
-        let (gx, gy) = self.workgroups(fields);
+        let (gx, gy, gz) = self.workgroups(fields);
         let mut enc = self
             .ctx
             .device
@@ -574,7 +734,7 @@ impl<L: Lattice> WgpuBackend<L> {
                             &fields.fused_bg[bg]
                         };
                         pass.set_bind_group(0, bind_group, &[]);
-                        pass.dispatch_workgroups(gx, gy, 1);
+                        pass.dispatch_workgroups(gx, gy, gz);
                     }
                     Op::Bc { face, bg } => {
                         pass.set_pipeline(&self.pipelines.bc);
@@ -585,7 +745,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     Op::Moments { bg } => {
                         pass.set_pipeline(&self.pipelines.moments);
                         pass.set_bind_group(0, &fields.moments_bg[bg], &[]);
-                        pass.dispatch_workgroups(gx, gy, 1);
+                        pass.dispatch_workgroups(gx, gy, gz);
                     }
                 }
             }
@@ -646,7 +806,7 @@ impl<L: Lattice> WgpuBackend<L> {
             }
         }
         self.try_flush(fields)?;
-        let bytes = (L::Q * fields.n * 4) as u64;
+        let bytes = L::Q as u64 * fields.n as u64 * fields.element_bytes;
         self.ensure_staging(fields, bytes);
         let staging_ref = fields.staging.borrow();
         let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
@@ -659,7 +819,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, staging, 0, bytes);
         self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
-        let data = Arc::new(bytemuck::cast_slice(&raw).to_vec());
+        let data = Arc::new(decode_storage(self.cfg.storage, &raw));
         let mut st = fields.state.borrow_mut();
         let generation = st.generation;
         st.f_cache = Some((generation, Arc::clone(&data)));
@@ -721,19 +881,22 @@ impl<L: Lattice> WgpuBackend<L> {
         // Relaxation constants exactly as KParams::new builds them: f64
         // parameters converted to f32 once.
         let use_cached_moments = fields.state.borrow().use_cached_moments_once;
-        let words: [u32; 12] = [
+        let words: [u32; 16] = [
             fields.nx,
             fields.ny,
+            fields.nz,
+            0,
             (p.omega_p as f32).to_bits(),
             (p.omega_m as f32).to_bits(),
             ((1.0 - p.omega_p / 2.0) as f32).to_bits(),
             ((1.0 - p.omega_m / 2.0) as f32).to_bits(),
             p.force[0].to_bits(),
             p.force[1].to_bits(),
+            p.force[2].to_bits(),
             {
                 let halo = sub.halo_flags();
                 let mut flags = 0u32;
-                for (i, &h) in halo.iter().take(4).enumerate() {
+                for (i, &h) in halo.iter().take(2 * L::D).enumerate() {
                     if h {
                         flags |= wgsl::FLAG_HALO[i];
                     }
@@ -747,13 +910,17 @@ impl<L: Lattice> WgpuBackend<L> {
                 if use_cached_moments {
                     flags |= wgsl::FLAG_CACHED_MOMENTS;
                 }
-                for face in &Face::ALL[..4] {
+                for face in Face::ALL {
+                    if face.axis() >= L::D {
+                        continue;
+                    }
                     if p.faces[face.index()].is_open() {
                         flags |= wgsl::FLAG_OPEN_FACE[face.index()];
                     }
                 }
                 flags
             },
+            0,
             0,
             0,
             0,
@@ -796,9 +963,10 @@ impl<L: Lattice> WgpuBackend<L> {
         fields.state.borrow_mut().bc_words = Some(words);
     }
 
-    fn bc_words(&self, sub: &Subdomain, fields: &GpuFields, p: &StepParams<f32>) -> [[u32; 32]; 6] {
-        let (nx, ny) = (fields.nx, fields.ny);
-        let mut out = [[0u32; 32]; 6];
+    fn bc_words(&self, sub: &Subdomain, fields: &GpuFields, p: &StepParams<f32>) -> [[u32; 64]; 6] {
+        let dims = [fields.nx, fields.ny, fields.nz];
+        let strides = [1u32, fields.nx, fields.nx * fields.ny];
+        let mut out = [[0u32; 64]; 6];
         for face in Face::ALL {
             let fi = face.index();
             if face.axis() >= L::D || !sub.touches_global_face(face) {
@@ -808,24 +976,40 @@ impl<L: Lattice> WgpuBackend<L> {
             if !bc.is_open() {
                 continue;
             }
-            let (base, stride, extent, joff): (u32, u32, u32, i32) = match face {
-                Face::XNeg => (0, nx, ny, 1),
-                Face::XPos => (nx - 1, nx, ny, -1),
-                Face::YNeg => (0, 1, nx, nx as i32),
-                Face::YPos => ((ny - 1) * nx, 1, nx, -(nx as i32)),
-                _ => unreachable!("2D lattice"),
+            let a = face.axis();
+            let (t1, t2) = face.tangents();
+            let base = if face.is_neg() { 0 } else { (dims[a] - 1) * strides[a] };
+            let stride1 = strides[t1];
+            let stride2 = strides[t2];
+            let extent1 = dims[t1];
+            let extent = dims[t1] * dims[t2];
+            let joff = if face.is_neg() {
+                strides[a] as i32
+            } else {
+                -(strides[a] as i32)
             };
-            // Zou–He direction indices, derived exactly like zou_he_face.
             let n_in = face.n_in();
-            let (nxi, nyi) = (n_in[0] as i32, n_in[1] as i32);
-            let (tx, ty) = (-nyi, nxi);
-            let q_n = L::dir_index([nxi as i8, nyi as i8, 0]);
-            let q_d1 = L::dir_index([(nxi + tx) as i8, (nyi + ty) as i8, 0]);
-            let q_d2 = L::dir_index([(nxi - tx) as i8, (nyi - ty) as i8, 0]);
-            let q_t = L::dir_index([tx as i8, ty as i8, 0]);
-            let q_mt = L::dir_index([-tx as i8, -ty as i8, 0]);
+            let unit = |axis: usize, sign: i8| -> [i8; 3] {
+                let mut v = [0i8; 3];
+                v[axis] = sign;
+                v
+            };
+            let add = |p: [i8; 3], q: [i8; 3]| [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
+            let q_n = L::dir_index(n_in);
+            let q_p1 = L::dir_index(add(n_in, unit(t1, 1)));
+            let q_m1 = L::dir_index(add(n_in, unit(t1, -1)));
+            let q_t1 = L::dir_index(unit(t1, 1));
+            let q_mt1 = L::dir_index(unit(t1, -1));
+            let q_p2 = if L::D == 3 { L::dir_index(add(n_in, unit(t2, 1))) } else { q_p1 };
+            let q_m2 = if L::D == 3 { L::dir_index(add(n_in, unit(t2, -1))) } else { q_m1 };
+            let q_t2 = if L::D == 3 { L::dir_index(unit(t2, 1)) } else { q_t1 };
+            let q_mt2 = if L::D == 3 { L::dir_index(unit(t2, -1)) } else { q_mt1 };
+            let q_pp = if L::D == 3 { L::dir_index(add(unit(t1, 1), unit(t2, 1))) } else { q_t1 };
+            let q_pm = if L::D == 3 { L::dir_index(add(unit(t1, 1), unit(t2, -1))) } else { q_t1 };
+            let q_mp = if L::D == 3 { L::dir_index(add(unit(t1, -1), unit(t2, 1))) } else { q_mt1 };
+            let q_mm = if L::D == 3 { L::dir_index(add(unit(t1, -1), unit(t2, -1))) } else { q_mt1 };
             let unk = L::unknowns(face);
-            assert_eq!(unk.len(), 3, "D2Q9 face unknown count");
+            assert!(unk.len() == 3 || unk.len() == 5, "GPU open face unknown count must be 3 or 5");
             let (kind, p0, p1) = match *bc {
                 FaceBC::Closed => unreachable!(),
                 FaceBC::Velocity { u } => (wgsl::BC_VELOCITY, u[0], u[1]),
@@ -843,32 +1027,55 @@ impl<L: Lattice> WgpuBackend<L> {
             let w = &mut out[fi];
             w[0] = kind;
             w[1] = base;
-            w[2] = stride;
+            w[2] = stride1;
             w[3] = extent;
             w[4] = joff as u32;
             w[5] = u32::from(fields.profile_set[fi]);
-            w[6] = q_n as u32;
-            w[7] = L::OPP[q_n] as u32;
-            w[8] = q_d1 as u32;
-            w[9] = L::OPP[q_d1] as u32;
-            w[10] = q_d2 as u32;
-            w[11] = L::OPP[q_d2] as u32;
-            w[12] = q_t as u32;
-            w[13] = q_mt as u32;
-            w[14] = unk[0] as u32;
-            w[15] = unk[1] as u32;
-            w[16] = unk[2] as u32;
-            w[17] = p0.to_bits();
-            w[18] = p1.to_bits();
-            w[19] = (nxi as f32).to_bits();
-            w[20] = (nyi as f32).to_bits();
-            w[21] = (tx as f32).to_bits();
-            w[22] = (ty as f32).to_bits();
-            w[23] = (L::W[unk[0]] as f32).to_bits();
-            w[24] = (L::W[unk[1]] as f32).to_bits();
-            w[25] = (L::W[unk[2]] as f32).to_bits();
-            w[26] = (ws as f32).to_bits();
-            w[27] = cinv.to_bits();
+            w[6] = stride2;
+            w[7] = extent1;
+            w[8] = q_n as u32;
+            w[9] = L::OPP[q_n] as u32;
+            w[10] = q_p1 as u32;
+            w[11] = L::OPP[q_p1] as u32;
+            w[12] = q_m1 as u32;
+            w[13] = L::OPP[q_m1] as u32;
+            w[14] = q_p2 as u32;
+            w[15] = L::OPP[q_p2] as u32;
+            w[16] = q_m2 as u32;
+            w[17] = L::OPP[q_m2] as u32;
+            w[18] = q_t1 as u32;
+            w[19] = q_mt1 as u32;
+            w[20] = q_t2 as u32;
+            w[21] = q_mt2 as u32;
+            w[22] = q_pp as u32;
+            w[23] = q_pm as u32;
+            w[24] = q_mp as u32;
+            w[25] = q_mm as u32;
+            for (k, &q) in unk.iter().enumerate() {
+                w[26 + k] = q as u32;
+            }
+            w[31] = unk.len() as u32;
+            let p2 = match *bc {
+                FaceBC::Velocity { u } => u[2],
+                _ => 0.0,
+            };
+            w[32] = p0.to_bits();
+            w[33] = p1.to_bits();
+            w[34] = p2.to_bits();
+            w[35] = (n_in[0] as f32).to_bits();
+            w[36] = (n_in[1] as f32).to_bits();
+            w[37] = (n_in[2] as f32).to_bits();
+            w[38] = (unit(t1, 1)[0] as f32).to_bits();
+            w[39] = (unit(t1, 1)[1] as f32).to_bits();
+            w[40] = (unit(t1, 1)[2] as f32).to_bits();
+            w[41] = (unit(t2, 1)[0] as f32).to_bits();
+            w[42] = (unit(t2, 1)[1] as f32).to_bits();
+            w[43] = (unit(t2, 1)[2] as f32).to_bits();
+            for (k, &q) in unk.iter().enumerate() {
+                w[44 + k] = (L::W[q] as f32).to_bits();
+            }
+            w[49] = (ws as f32).to_bits();
+            w[50] = cinv.to_bits();
         }
         out
     }
@@ -913,6 +1120,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(9, &fields.rho),
                     e(10, &fields.ux),
                     e(11, &fields.uy),
+                    e(14, &fields.uz),
                 ],
             })
         });
@@ -933,6 +1141,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(9, &fields.rho),
                     e(10, &fields.ux),
                     e(11, &fields.uy),
+                    e(14, &fields.uz),
                 ],
             })
         });
@@ -949,6 +1158,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(9, &fields.rho),
                     e(10, &fields.ux),
                     e(11, &fields.uy),
+                    e(14, &fields.uz),
                 ],
             })
         });
@@ -966,6 +1176,7 @@ impl<L: Lattice> WgpuBackend<L> {
                         e(9, &fields.rho),
                         e(10, &fields.ux),
                         e(11, &fields.uy),
+                        e(14, &fields.uz),
                         e(12, &fields.bc_ub[face]),
                         e(13, &fields.profiles[face]),
                     ],
@@ -985,7 +1196,9 @@ impl<L: Lattice> WgpuBackend<L> {
         let g = host.geom;
         assert_eq!(g.core[0] as u32, fields.nx);
         assert_eq!(g.core[1] as u32, fields.ny);
-        let (nx, ny, n) = (g.core[0], g.core[1], fields.n);
+        assert_eq!(g.core[2] as u32, fields.nz);
+        let (nx, ny, nz, n) = (g.core[0], g.core[1], g.core[2], fields.n);
+        let xy = nx * ny;
         let np = g.n_padded();
         let q = self.ctx.queue.clone();
         {
@@ -1001,58 +1214,69 @@ impl<L: Lattice> WgpuBackend<L> {
         let mut buf = vec![0f32; L::Q * n];
         for (src, dst) in [(&host.f, cur), (&host.ftmp, 1 - cur)] {
             for qi in 0..L::Q {
-                for y in 0..ny {
-                    for x in 0..nx {
-                        buf[qi * n + y * nx + x] = src[qi * np + g.pidx(x, y, 0)];
+                for z in 0..nz {
+                    for y in 0..ny {
+                        for x in 0..nx {
+                            let c = z * xy + y * nx + x;
+                            buf[qi * n + c] = src[qi * np + g.pidx(x, y, z)];
+                        }
                     }
                 }
             }
-            q.write_buffer(&fields.f[dst], 0, bytemuck::cast_slice(&buf));
+            q.write_buffer(&fields.f[dst], 0, &encode_storage(self.cfg.storage, &buf));
         }
         // Edge stash (stash_in of the next fused dispatch = stash[cur]):
         // the ftmp values V1 would leave in the skipped slots.
-        let slen = wgsl::stash_len::<L>(nx, ny);
+        let slen = wgsl::stash_len::<L>(nx, ny, nz);
         let mut stash = vec![0f32; slen];
         let mut off = 0usize;
-        for face in &Face::ALL[..4] {
-            let unk = L::unknowns(*face);
-            let ext = if face.axis() == 0 { ny } else { nx };
-            if !sub.has_halo(*face) {
+        for face in Face::ALL {
+            if face.axis() >= L::D {
+                continue;
+            }
+            let unk = L::unknowns(face);
+            let (t1, t2) = face.tangents();
+            let dims = [nx, ny, nz];
+            let ext = dims[t1] * dims[t2];
+            if !sub.has_halo(face) {
                 for (k, &u) in unk.iter().enumerate() {
-                    for t in 0..ext {
-                        let (x, y) = match face {
-                            Face::XNeg => (0, t),
-                            Face::XPos => (nx - 1, t),
-                            Face::YNeg => (t, 0),
-                            Face::YPos => (t, ny - 1),
-                            _ => unreachable!(),
-                        };
-                        stash[off + k * ext + t] = host.ftmp[u * np + g.pidx(x, y, 0)];
+                    for c2 in 0..dims[t2] {
+                        for c1 in 0..dims[t1] {
+                            let t = c2 * dims[t1] + c1;
+                            let mut pos = [0usize; 3];
+                            pos[face.axis()] = if face.is_neg() { 0 } else { dims[face.axis()] - 1 };
+                            pos[t1] = c1;
+                            pos[t2] = c2;
+                            stash[off + k * ext + t] =
+                                host.ftmp[u * np + g.pidx(pos[0], pos[1], pos[2])];
+                        }
                     }
                 }
             }
             off += unk.len() * ext;
         }
-        q.write_buffer(&fields.stash[cur], 0, bytemuck::cast_slice(&stash));
+        q.write_buffer(&fields.stash[cur], 0, &encode_storage(self.cfg.storage, &stash));
         q.write_buffer(
             &fields.stash[1 - cur],
             0,
-            bytemuck::cast_slice(&vec![0f32; slen]),
+            &encode_storage(self.cfg.storage, &vec![0f32; slen]),
         );
         // Mask (bit0 solid, bit1 probe) + host copies for reduce().
         let mut mask = vec![0u32; n];
         let mut host_solid = vec![false; n];
-        for y in 0..ny {
-            for x in 0..nx {
-                let pi = g.pidx(x, y, 0);
-                let c = y * nx + x;
-                if host.solid[pi] {
-                    mask[c] |= 1;
-                    host_solid[c] = true;
-                }
-                if let Some(pm) = &host.probe {
-                    if pm[pi] {
-                        mask[c] |= 2;
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let pi = g.pidx(x, y, z);
+                    let c = z * xy + y * nx + x;
+                    if host.solid[pi] {
+                        mask[c] |= 1;
+                        host_solid[c] = true;
+                    }
+                    if let Some(pm) = &host.probe {
+                        if pm[pi] {
+                            mask[c] |= 2;
+                        }
                     }
                 }
             }
@@ -1064,12 +1288,12 @@ impl<L: Lattice> WgpuBackend<L> {
         let needs_force_field = host.force_field.is_some();
         let mut rebuild_bgs = false;
         if needs_wall_u && !fields.wall_u_full {
-            fields.wall_u = self.storage_buffer("wall_u", (n * 8) as u64, true);
+            fields.wall_u = self.storage_buffer("wall_u", (n * 16) as u64, true);
             fields.wall_u_full = true;
             rebuild_bgs = true;
         }
         if needs_force_field && !fields.force_field_full {
-            fields.force_field = self.storage_buffer("force_field", (n * 8) as u64, true);
+            fields.force_field = self.storage_buffer("force_field", (n * 16) as u64, true);
             fields.force_field_full = true;
             rebuild_bgs = true;
         }
@@ -1078,12 +1302,16 @@ impl<L: Lattice> WgpuBackend<L> {
         }
         // Wall velocities (read only at solid neighbours).
         if fields.wall_u_full {
-            let mut wu = vec![0f32; 2 * n];
-            for y in 0..ny {
-                for x in 0..nx {
-                    let v = host.wall_u[g.pidx(x, y, 0)];
-                    wu[2 * (y * nx + x)] = v[0];
-                    wu[2 * (y * nx + x) + 1] = v[1];
+            let mut wu = vec![0f32; 4 * n];
+            for z in 0..nz {
+                for y in 0..ny {
+                    for x in 0..nx {
+                        let c = z * xy + y * nx + x;
+                        let v = host.wall_u[g.pidx(x, y, z)];
+                        wu[4 * c] = v[0];
+                        wu[4 * c + 1] = v[1];
+                        wu[4 * c + 2] = v[2];
+                    }
                 }
             }
             q.write_buffer(&fields.wall_u, 0, bytemuck::cast_slice(&wu));
@@ -1091,10 +1319,11 @@ impl<L: Lattice> WgpuBackend<L> {
         // Per-cell force field (compact already).
         fields.host_ff = host.force_field.clone();
         if let Some(ff) = &host.force_field {
-            let mut fv = vec![0f32; 2 * n];
+            let mut fv = vec![0f32; 4 * n];
             for (c, v) in ff.iter().enumerate() {
-                fv[2 * c] = v[0];
-                fv[2 * c + 1] = v[1];
+                fv[4 * c] = v[0];
+                fv[4 * c + 1] = v[1];
+                fv[4 * c + 2] = v[2];
             }
             q.write_buffer(&fields.force_field, 0, bytemuck::cast_slice(&fv));
         }
@@ -1103,15 +1332,17 @@ impl<L: Lattice> WgpuBackend<L> {
         q.write_buffer(&fields.rho, 0, bytemuck::cast_slice(&host.rho));
         q.write_buffer(&fields.ux, 0, bytemuck::cast_slice(&host.ux));
         q.write_buffer(&fields.uy, 0, bytemuck::cast_slice(&host.uy));
+        q.write_buffer(&fields.uz, 0, bytemuck::cast_slice(&host.uz));
         // Inlet profiles.
         for face in Face::ALL {
             let fi = face.index();
             fields.profile_set[fi] = false;
             if let Some(prof) = &host.inlet_profiles[fi] {
-                let mut pv = vec![0f32; 2 * prof.len()];
+                let mut pv = vec![0f32; 4 * prof.len()];
                 for (t, u) in prof.iter().enumerate() {
-                    pv[2 * t] = u[0];
-                    pv[2 * t + 1] = u[1];
+                    pv[4 * t] = u[0];
+                    pv[4 * t + 1] = u[1];
+                    pv[4 * t + 2] = u[2];
                 }
                 q.write_buffer(&fields.profiles[fi], 0, bytemuck::cast_slice(&pv));
                 fields.profile_set[fi] = true;
@@ -1143,11 +1374,11 @@ impl<L: Lattice> WgpuBackend<L> {
         full_force_field: bool,
     ) -> Result<GpuFields, GpuError> {
         let g = sub.geom;
-        assert_eq!(g.d, 2, "WgpuBackend fields are 2D (D2Q9)");
-        assert_eq!(g.core[2], 1);
-        let (nx, ny) = (g.core[0] as u32, g.core[1] as u32);
-        let n = (nx as usize) * (ny as usize);
-        let plan = GpuResourcePlan::for_grid::<L>(nx as usize, ny as usize)?;
+        assert_eq!(g.d, L::D, "WgpuBackend lattice/domain dimension mismatch");
+        let (nx, ny, nz) = (g.core[0] as u32, g.core[1] as u32, g.core[2] as u32);
+        let n = (nx as usize) * (ny as usize) * (nz as usize);
+        let element_bytes = self.cfg.storage.element_bytes();
+        let plan = GpuResourcePlan::for_grid::<L>(nx as usize, ny as usize, nz as usize, element_bytes)?;
         plan.validate(&self.ctx.device.limits())?;
         let device = &self.ctx.device;
         use wgpu::BufferUsages as U;
@@ -1159,19 +1390,20 @@ impl<L: Lattice> WgpuBackend<L> {
                 mapped_at_creation: false,
             })
         };
-        let fbytes = (L::Q * n * 4) as u64;
+        let fbytes = plan.fbytes;
         let f = [
             buf("f0", fbytes, U::STORAGE | U::COPY_DST | U::COPY_SRC),
             buf("f1", fbytes, U::STORAGE | U::COPY_DST | U::COPY_SRC),
         ];
-        let slen = (wgsl::stash_len::<L>(nx as usize, ny as usize) * 4) as u64;
+        let slen =
+            wgsl::stash_len::<L>(nx as usize, ny as usize, nz as usize) as u64 * element_bytes;
         let stash = [
             buf("stash0", slen, U::STORAGE | U::COPY_DST),
             buf("stash1", slen, U::STORAGE | U::COPY_DST),
         ];
         let mask = buf("mask", (n * 4) as u64, U::STORAGE | U::COPY_DST);
-        let wall_u_size = if full_wall_u { (n * 8) as u64 } else { 8 };
-        let force_field_size = if full_force_field { (n * 8) as u64 } else { 8 };
+        let wall_u_size = if full_wall_u { (n * 16) as u64 } else { 16 };
+        let force_field_size = if full_force_field { (n * 16) as u64 } else { 16 };
         let wall_u = buf("wall_u", wall_u_size, U::STORAGE | U::COPY_DST);
         let force_field = buf("force_field", force_field_size, U::STORAGE | U::COPY_DST);
         let rho = buf(
@@ -1181,14 +1413,17 @@ impl<L: Lattice> WgpuBackend<L> {
         );
         let ux = buf("ux", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let uy = buf("uy", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
+        let uz = buf("uz", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let probe_acc = buf("probe_acc", 12, U::STORAGE | U::COPY_DST | U::COPY_SRC);
-        let params_ub = buf("params", 48, U::UNIFORM | U::COPY_DST);
-        let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 128, U::UNIFORM | U::COPY_DST));
+        let params_ub = buf("params", 64, U::UNIFORM | U::COPY_DST);
+        let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 256, U::UNIFORM | U::COPY_DST));
         let profiles = std::array::from_fn(|i| {
-            let ext = if i < 2 { ny } else { nx } as u64;
+            let (t1, t2) = Face::ALL[i].tangents();
+            let dims = [nx, ny, nz];
+            let ext = (dims[t1] * dims[t2]) as u64;
             buf(
                 &format!("profile{i}"),
-                (ext * 8).max(8),
+                (ext * 16).max(16),
                 U::STORAGE | U::COPY_DST,
             )
         });
@@ -1217,6 +1452,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(9, &rho),
                     e(10, &ux),
                     e(11, &uy),
+                    e(14, &uz),
                 ],
             })
         });
@@ -1237,6 +1473,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(9, &rho),
                     e(10, &ux),
                     e(11, &uy),
+                    e(14, &uz),
                 ],
             })
         });
@@ -1253,6 +1490,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     e(9, &rho),
                     e(10, &ux),
                     e(11, &uy),
+                    e(14, &uz),
                 ],
             })
         });
@@ -1270,6 +1508,7 @@ impl<L: Lattice> WgpuBackend<L> {
                         e(9, &rho),
                         e(10, &ux),
                         e(11, &uy),
+                        e(14, &uz),
                         e(12, &bc_ub[face]),
                         e(13, &profiles[face]),
                     ],
@@ -1286,7 +1525,9 @@ impl<L: Lattice> WgpuBackend<L> {
         Ok(GpuFields {
             nx,
             ny,
+            nz,
             n,
+            element_bytes,
             f,
             stash,
             mask,
@@ -1297,6 +1538,7 @@ impl<L: Lattice> WgpuBackend<L> {
             rho,
             ux,
             uy,
+            uz,
             probe_acc,
             params_ub,
             bc_ub,
@@ -1344,12 +1586,16 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             .expect("GPU stage-out readback failed");
         let g = host.geom;
         debug_assert_eq!(sub.geom, g);
-        let (nx, ny, np) = (g.core[0], g.core[1], g.n_padded());
-        let n = nx * ny;
+        let (nx, ny, nz, np) = (g.core[0], g.core[1], g.core[2], g.n_padded());
+        let xy = nx * ny;
+        let n = xy * nz;
         for q in 0..L::Q {
-            for y in 0..ny {
-                for x in 0..nx {
-                    host.f[q * np + g.pidx(x, y, 0)] = f[q * n + y * nx + x];
+            for z in 0..nz {
+                for y in 0..ny {
+                    for x in 0..nx {
+                        let c = z * xy + y * nx + x;
+                        host.f[q * np + g.pidx(x, y, z)] = f[q * n + c];
+                    }
                 }
             }
         }
@@ -1439,7 +1685,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
-        let has_uniform_force = p.force[0] != 0.0 || p.force[1] != 0.0 || p.force[2] != 0.0;
+        let has_uniform_force = p.force.iter().any(|&f| f != 0.0);
         if has_uniform_force && fields.host_ff.is_none() {
             self.ensure_params(sub, fields, p);
             let mut st = fields.state.borrow_mut();
@@ -1558,7 +1804,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         // Host-side exact V1 loop over the read-back populations: compact
         // cell order (y, x ascending), q inner, f64 accumulation — the same
         // sequence as CpuScalar::reduce on a monolithic subdomain.
-        let (nx, ny, n) = (fields.nx as usize, fields.ny as usize, fields.n);
+        let (nx, ny, nz, n) = (
+            fields.nx as usize,
+            fields.ny as usize,
+            fields.nz as usize,
+            fields.n,
+        );
+        let xy = nx * ny;
         if kind == Reduction::FluidCells {
             return fields.host_solid.iter().filter(|&&solid| !solid).count() as f64;
         }
@@ -1566,29 +1818,31 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             .try_read_f(fields)
             .expect("GPU population readback failed");
         let mut acc = 0.0f64;
-        for y in 0..ny {
-            for x in 0..nx {
-                let c = y * nx + x;
-                if fields.host_solid[c] {
-                    continue;
-                }
-                match kind {
-                    Reduction::FluidCells => unreachable!("handled before population readback"),
-                    Reduction::MassDeviation => {
-                        for q in 0..L::Q {
-                            acc += f[q * n + c] as f64;
-                        }
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let c = z * xy + y * nx + x;
+                    if fields.host_solid[c] {
+                        continue;
                     }
-                    Reduction::Momentum(a) => {
-                        let mut m = 0.0f64;
-                        for q in 0..L::Q {
-                            m += L::C[q][a] as f64 * f[q * n + c] as f64;
+                    match kind {
+                        Reduction::FluidCells => unreachable!("handled before population readback"),
+                        Reduction::MassDeviation => {
+                            for q in 0..L::Q {
+                                acc += f[q * n + c] as f64;
+                            }
                         }
-                        let fa = match &fields.host_ff {
-                            Some(field) => p.force[a] as f64 + field[c][a] as f64,
-                            None => p.force[a] as f64,
-                        };
-                        acc += m + 0.5 * fa;
+                        Reduction::Momentum(a) => {
+                            let mut m = 0.0f64;
+                            for q in 0..L::Q {
+                                m += L::C[q][a] as f64 * f[q * n + c] as f64;
+                            }
+                            let fa = match &fields.host_ff {
+                                Some(field) => p.force[a] as f64 + field[c][a] as f64,
+                                None => p.force[a] as f64,
+                            };
+                            acc += m + 0.5 * fa;
+                        }
                     }
                 }
             }
@@ -1617,7 +1871,7 @@ impl<L: Lattice> WgpuBackend<L> {
         self.try_flush(fields)?;
         let n = fields.n;
         let plane = (n * 4) as u64;
-        let bytes = 3 * plane;
+        let bytes = 4 * plane;
         self.ensure_staging(fields, bytes);
         let staging_ref = fields.staging.borrow();
         let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
@@ -1630,6 +1884,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.rho, 0, staging, 0, plane);
         enc.copy_buffer_to_buffer(&fields.ux, 0, staging, plane, plane);
         enc.copy_buffer_to_buffer(&fields.uy, 0, staging, 2 * plane, plane);
+        enc.copy_buffer_to_buffer(&fields.uz, 0, staging, 3 * plane, plane);
         self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
         let v: &[f32] = bytemuck::cast_slice(&raw);
@@ -1640,7 +1895,7 @@ impl<L: Lattice> WgpuBackend<L> {
         out.uy.clear();
         out.uy.extend_from_slice(&v[2 * n..3 * n]);
         out.uz.clear();
-        out.uz.resize(n, 0.0);
+        out.uz.extend_from_slice(&v[3 * n..4 * n]);
         Ok(())
     }
 
@@ -1660,10 +1915,10 @@ impl<L: Lattice> WgpuBackend<L> {
         self.try_flush(fields)?;
 
         let n = fields.n;
-        let fbytes = (L::Q * n * 4) as u64;
+        let fbytes = L::Q as u64 * n as u64 * fields.element_bytes;
         let plane = (n * 4) as u64;
         let moments_offset = fbytes;
-        let probe_offset = moments_offset + 3 * plane;
+        let probe_offset = moments_offset + 4 * plane;
         let bytes = probe_offset + 12;
         self.ensure_staging(fields, bytes);
         let staging_ref = fields.staging.borrow();
@@ -1678,6 +1933,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.rho, 0, staging, moments_offset, plane);
         enc.copy_buffer_to_buffer(&fields.ux, 0, staging, moments_offset + plane, plane);
         enc.copy_buffer_to_buffer(&fields.uy, 0, staging, moments_offset + 2 * plane, plane);
+        enc.copy_buffer_to_buffer(&fields.uz, 0, staging, moments_offset + 3 * plane, plane);
         enc.copy_buffer_to_buffer(&fields.probe_acc, 0, staging, probe_offset, 12);
         self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
@@ -1693,7 +1949,7 @@ impl<L: Lattice> WgpuBackend<L> {
         out.uy.clear();
         out.uy.extend_from_slice(&moments[2 * n..3 * n]);
         out.uz.clear();
-        out.uz.resize(n, 0.0);
+        out.uz.extend_from_slice(&moments[3 * n..4 * n]);
         let probe: &[f32] = bytemuck::cast_slice(&raw[probe_offset as usize..bytes as usize]);
 
         let mut st = fields.state.borrow_mut();
@@ -1734,14 +1990,14 @@ mod tests {
 
     #[test]
     fn resource_plan_rejects_qn_overflow() {
-        let err = GpuResourcePlan::for_grid::<D3Q19>(15_050, 15_050).unwrap_err();
+        let err = GpuResourcePlan::for_grid::<D3Q19>(15_050, 15_050, 1, 4).unwrap_err();
         assert!(err.to_string().contains("Q*n"));
         assert!(err.to_string().contains("u32::MAX"));
     }
 
     #[test]
     fn resource_plan_rejects_storage_binding_limit() {
-        let plan = GpuResourcePlan::for_grid::<D2Q9>(64, 64).unwrap();
+        let plan = GpuResourcePlan::for_grid::<D2Q9>(64, 64, 1, 4).unwrap();
         let limits = wgpu::Limits {
             max_storage_buffer_binding_size: 1024,
             max_buffer_size: u64::MAX,
@@ -1753,7 +2009,7 @@ mod tests {
 
     #[test]
     fn resource_plan_rejects_dispatch_limit() {
-        let plan = GpuResourcePlan::for_grid::<D2Q9>(16_777_216, 1).unwrap();
+        let plan = GpuResourcePlan::for_grid::<D2Q9>(16_777_216, 1, 1, 4).unwrap();
         let limits = wgpu::Limits {
             max_storage_buffer_binding_size: u32::MAX,
             max_buffer_size: u64::MAX,

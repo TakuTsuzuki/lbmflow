@@ -60,6 +60,26 @@ pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> 
     } else {
         sc
     };
+    #[cfg(feature = "gpu")]
+    if lbm_scenario::selected_backend(sc) == lbm_scenario::BackendChoice::Gpu {
+        eprintln!(
+            "compute.backend selected gpu for scenario '{}' ({} cells)",
+            sc.name,
+            sc.grid.nx * sc.grid.ny * sc.grid.nz
+        );
+        if sc.is_3d() {
+            anyhow::bail!("{}", lbm_scenario::gpu_capability_error(sc).unwrap_or(
+                "requested backend \"gpu\" is not wired to the 3D CLI runner yet"
+            ));
+        }
+        return run_gpu2d(sc, lbm_scenario::build_gpu2d(sc)?, out_dir, units);
+    }
+    #[cfg(not(feature = "gpu"))]
+    if lbm_scenario::selected_backend(sc) == lbm_scenario::BackendChoice::Gpu
+        && lbm_scenario::requested_backend(sc) == lbm_scenario::BackendSpec::Gpu
+    {
+        anyhow::bail!("{}", lbm_scenario::build_check(sc).unwrap_err());
+    }
     if sc.is_3d() {
         return match lbm_scenario::build3d(sc)? {
             Sim3Handle::F64(s) => run3d_t(sc, s, out_dir, units, options),
@@ -82,6 +102,110 @@ fn checkpoint_path(options: &RunOptions, step: usize) -> Option<PathBuf> {
         .clone()
         .unwrap_or_else(|| PathBuf::from("checkpoints"));
     Some(root.join(format!("ckpt_{step}")))
+}
+
+#[cfg(feature = "gpu")]
+fn run_gpu2d(
+    sc: &Scenario,
+    mut sim: lbm_scenario::GpuSim2,
+    out_dir: &Path,
+    units: Option<lbm_scenario::UnitReport>,
+) -> Result<Manifest> {
+    let t0 = Instant::now();
+    let mut files = Vec::new();
+    let total = sc.run.steps;
+    sim.run(total);
+    sim.sync();
+    for (i, o) in sc.outputs.iter().enumerate() {
+        if o.every == 0 {
+            files.push(write_output_gpu2d(&mut sim, o, i, total, out_dir)?);
+        }
+    }
+    let wall = t0.elapsed().as_secs_f64();
+    let ux = sim.gather_ux();
+    let uy = sim.gather_uy();
+    let max_speed = ux
+        .iter()
+        .zip(&uy)
+        .map(|(a, b)| ((*a as f64).powi(2) + (*b as f64).powi(2)).sqrt())
+        .fold(0.0f64, f64::max);
+    let dims = sim.dims();
+    let manifest = Manifest {
+        scenario: sc.name.clone(),
+        status: "completed".to_string(),
+        steps_run: total as u64,
+        wall_seconds: wall,
+        mlups: (dims[0] * dims[1]) as f64 * total as f64 / wall.max(1e-9) / 1e6,
+        diagnostics: Diagnostics {
+            total_mass: sim.total_mass() as f64,
+            max_speed,
+            tau: 3.0 * sc.physics.nu + 0.5,
+        },
+        warnings: lbm_scenario::validate(sc),
+        units,
+        files,
+    };
+    fs::write(
+        out_dir.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    Ok(manifest)
+}
+
+#[cfg(feature = "gpu")]
+fn write_output_gpu2d(
+    sim: &mut lbm_scenario::GpuSim2,
+    o: &OutputSpec,
+    _index: usize,
+    step: usize,
+    out_dir: &Path,
+) -> Result<String> {
+    let [nx, ny, _] = sim.dims();
+    let kind_name = format!("{:?}", o.field).to_lowercase();
+    let ux = sim.gather_ux();
+    let uy = sim.gather_uy();
+    let rho = sim.gather_rho();
+    let values: Vec<f64> = match o.field {
+        FieldKind::Ux => ux.iter().map(|v| *v as f64).collect(),
+        FieldKind::Uy => uy.iter().map(|v| *v as f64).collect(),
+        FieldKind::Rho => rho.iter().map(|v| *v as f64).collect(),
+        FieldKind::Speed => ux
+            .iter()
+            .zip(&uy)
+            .map(|(a, b)| ((*a as f64).powi(2) + (*b as f64).powi(2)).sqrt())
+            .collect(),
+        _ => anyhow::bail!("GPU 2D output does not support field {:?}", o.field),
+    };
+    match o.format {
+        OutputFormat::Png => {
+            let solid: Vec<bool> = (0..ny)
+                .flat_map(|y| (0..nx).map(move |x| (x, y)))
+                .map(|(x, y)| sim.is_solid(x, y, 0))
+                .collect();
+            let name = format!("{kind_name}_{step}.png");
+            write_png_scaled(
+                &out_dir.join(&name),
+                &values,
+                &solid,
+                nx,
+                ny,
+                colormap_for(o.field),
+                None,
+                1,
+            )?;
+            Ok(name)
+        }
+        OutputFormat::Csv => {
+            let name = format!("{kind_name}_{step}.csv");
+            let mut file = fs::File::create(out_dir.join(&name))?;
+            for y in 0..ny {
+                let row: Vec<String> = (0..nx).map(|x| format!("{}", values[y * nx + x])).collect();
+                writeln!(file, "{}", row.join(","))?;
+            }
+            Ok(name)
+        }
+        OutputFormat::Vtk => anyhow::bail!("GPU 2D output does not support VTK yet"),
+    }
 }
 
 struct CsvProbe {

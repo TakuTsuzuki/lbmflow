@@ -25,7 +25,7 @@
 //! mask loads changes nothing — cache-served) and the workgroup shape
 //! (256×1 beat 128×1 / 64×2 / 32×4 for the push kernel).
 
-use lbm_core::lattice::D2Q9;
+use lbm_core::lattice::{D2Q9, D3Q19};
 use lbm_core::prelude::*;
 use std::time::Instant;
 
@@ -59,9 +59,37 @@ fn spec(n: usize) -> GlobalSpec<f32> {
     }
 }
 
+fn spec3(n: usize) -> GlobalSpec<f32> {
+    GlobalSpec {
+        dims: [n, n, n],
+        nu: NU,
+        periodic: [true, true, true],
+        ..Default::default()
+    }
+}
+
 fn gpu_solver(ctx: &std::sync::Arc<GpuContext>, n: usize) -> GpuSolver<D2Q9> {
     let mut s = GpuSolver::<D2Q9>::new(&spec(n), &[], &[], ctx.clone());
     s.init_with(|x, y, _| tgv_ic(x, y, n));
+    s
+}
+
+fn tgv3_ic(x: usize, y: usize, z: usize, n: usize) -> (f32, [f32; 3]) {
+    let k = 2.0 * std::f64::consts::PI / n as f64;
+    let (xf, yf, zf) = (k * x as f64, k * y as f64, k * z as f64);
+    (
+        1.0,
+        [
+            (U0 * xf.sin() * yf.cos() * zf.cos()) as f32,
+            (-U0 * xf.cos() * yf.sin() * zf.cos()) as f32,
+            0.0,
+        ],
+    )
+}
+
+fn gpu_solver3(ctx: &std::sync::Arc<GpuContext>, n: usize) -> GpuSolver<D3Q19> {
+    let mut s = GpuSolver::<D3Q19>::new(&spec3(n), &[], &[], ctx.clone());
+    s.init_with(|x, y, z| tgv3_ic(x, y, z, n));
     s
 }
 
@@ -84,6 +112,25 @@ fn bench_gpu(ctx: &std::sync::Arc<GpuContext>, n: usize, target_s: f64) -> f64 {
     // kernel masquerading as a fast one).
     let m = s.total_mass();
     assert!(m.is_finite(), "diverged during benchmark");
+    mlups
+}
+
+fn bench_gpu3(ctx: &std::sync::Arc<GpuContext>, n: usize, target_s: f64) -> f64 {
+    let mut s = gpu_solver3(ctx, n);
+    s.run(20);
+    s.wait_idle();
+    let cells = (n * n * n) as f64;
+    let t = Instant::now();
+    s.run(40);
+    s.wait_idle();
+    let rate = 40.0 * cells / t.elapsed().as_secs_f64().max(1e-9);
+    let steps = ((target_s * rate / cells) as usize).clamp(40, 20_000);
+    let t = Instant::now();
+    s.run(steps);
+    s.wait_idle();
+    let mlups = cells * steps as f64 / t.elapsed().as_secs_f64() / 1e6;
+    let m = s.total_mass();
+    assert!(m.is_finite(), "diverged during D3Q19 benchmark");
     mlups
 }
 
@@ -154,5 +201,12 @@ fn main() {
                 g / c
             );
         }
+    }
+    println!("\n## D3Q19 f32 periodic TGV\n");
+    println!("| grid | GPU MLUPS |");
+    println!("|---|---|");
+    for n in [128usize, 192usize] {
+        let g = bench_gpu3(&ctx, n, 1.2);
+        println!("| {n}^3 | {g:.0} |");
     }
 }
