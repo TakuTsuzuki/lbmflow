@@ -250,3 +250,16 @@ re-tagged GATED — needs MCMP per-component sources (capability gap) or
 MF-gamma phase-field gas inflow (VR-STR-02 sparger unit test is the
 planned home). Routing package = branch cx/vv-sparger (example + report +
 PNGs). The STOP-rule/honesty machinery worked as designed.
+
+### ANOM-P4-014 CLOSED as characterization (cx/mp-hard rev 5)
+Wetted-wall bookkeeping settled (wall_rho applies to ALL solids incl. rim —
+compat/multiphase.rs:356, in-code comment added); with the correct
+two-wetted-channel contrast the intercept collapses −20 → −1.4 and the law
+is exact (r² = 0.99998). Remaining coefficient anomaly FROZEN: measured
+slope 1312.7 = 1.54× the flat-wall theory 852.2 (in-situ θ ≈ 66° both
+channels, so it is not an angle error). THREE-WAY REFEREE now stands on
+the SC interface tension: Laplace σ (1.0 by construction, T11), Taylor-
+Culick mechanical σ (0.49×, P4-017), Jurin meniscus σcosθ (1.54×, this) —
+the lane-1.7 SC pressure-tensor audit is promoted to the highest-value W2
+item; its job is to derive which σ the SC pressure tensor actually
+delivers on curved menisci vs flat interfaces vs retracting rims.
