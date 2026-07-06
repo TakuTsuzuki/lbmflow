@@ -41,6 +41,26 @@ pub struct DepositEvent {
     pub particle: Particle,
 }
 
+/// Runtime error from Lagrangian particle advancement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParticleError {
+    pub particle_index: usize,
+    pub re: f64,
+    pub re_max: f64,
+}
+
+impl std::fmt::Display for ParticleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Schiller-Naumann drag is outside its validity domain for particle {}: Re_p={:e} exceeds {:e}",
+            self.particle_index, self.re, self.re_max
+        )
+    }
+}
+
+impl std::error::Error for ParticleError {}
+
 /// Fluid sample at a particle position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
@@ -81,7 +101,7 @@ impl ParticleSet {
     /// `sample` supplies the fluid velocity and solid mask at arbitrary
     /// positions. `exposure_rate`, when present, supplies a deterministic local
     /// rate accumulated as `exposure += rate(pos) * dt` with `dt = 1`.
-    pub fn step<F, E>(&mut self, sample: F, exposure_rate: Option<E>)
+    pub fn step<F, E>(&mut self, sample: F, exposure_rate: Option<E>) -> Result<(), ParticleError>
     where
         F: Fn([f64; 3]) -> Sample,
         E: Fn([f64; 3]) -> f64,
@@ -93,7 +113,7 @@ impl ParticleSet {
             "restitution must be in [0, 1]"
         );
 
-        for p in &mut self.particles {
+        for (particle_index, p) in self.particles.iter_mut().enumerate() {
             assert!(p.d > 0.0, "particle diameter must be positive");
             assert!(p.rho_p > 0.0, "particle density must be positive");
 
@@ -102,7 +122,12 @@ impl ParticleSet {
                 p.exposure += rate(p.pos);
             }
 
-            let v_new = particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g);
+            let v_new = particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g)
+                .map_err(|re| ParticleError {
+                    particle_index,
+                    re,
+                    re_max: SCHILLER_NAUMANN_RE_MAX,
+                })?;
             let pos_new = add(p.pos, v_new);
 
             if sample(pos_new).solid {
@@ -115,6 +140,7 @@ impl ParticleSet {
                 p.vel = v_new;
             }
         }
+        Ok(())
     }
 
     /// Advances all particles by one lattice time step and records floor hits.
@@ -130,7 +156,8 @@ impl ParticleSet {
         exposure_rate: Option<E>,
         floor_z: f64,
         deposits: &mut Vec<DepositEvent>,
-    ) where
+    ) -> Result<(), ParticleError>
+    where
         F: Fn([f64; 3]) -> Sample,
         E: Fn([f64; 3]) -> f64,
     {
@@ -142,7 +169,9 @@ impl ParticleSet {
         );
 
         let mut suspended = Vec::with_capacity(self.particles.len());
-        for mut p in self.particles.drain(..) {
+        let particles = std::mem::take(&mut self.particles);
+        let mut iter = particles.into_iter().enumerate();
+        while let Some((particle_index, mut p)) = iter.next() {
             assert!(p.d > 0.0, "particle diameter must be positive");
             assert!(p.rho_p > 0.0, "particle density must be positive");
 
@@ -151,7 +180,20 @@ impl ParticleSet {
                 p.exposure += rate(p.pos);
             }
 
-            let v_new = particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g);
+            let v_new =
+                match particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g) {
+                    Ok(v) => v,
+                    Err(re) => {
+                        suspended.push(p);
+                        suspended.extend(iter.map(|(_, p)| p));
+                        self.particles = suspended;
+                        return Err(ParticleError {
+                            particle_index,
+                            re,
+                            re_max: SCHILLER_NAUMANN_RE_MAX,
+                        });
+                    }
+                };
             let pos_new = add(p.pos, v_new);
 
             if let Some(pos) = floor_crossing(p.pos, pos_new, floor_z) {
@@ -171,6 +213,7 @@ impl ParticleSet {
             }
         }
         self.particles = suspended;
+        Ok(())
     }
 }
 
@@ -186,6 +229,8 @@ impl Default for ParticleSet {
     }
 }
 
+const SCHILLER_NAUMANN_RE_MAX: f64 = 800.0;
+
 fn particle_velocity(
     v: [f64; 3],
     u: [f64; 3],
@@ -194,15 +239,10 @@ fn particle_velocity(
     rho_f: f64,
     nu: f64,
     g: [f64; 3],
-) -> [f64; 3] {
+) -> Result<[f64; 3], f64> {
     let slip = sub(u, v);
     let re = norm(slip) * d / nu;
-    debug_assert!(
-        re < 800.0,
-        "Schiller-Naumann drag is used outside its Re_p < 800 range: {re}"
-    );
-    let re = re.min(800.0);
-    let drag_correction = 1.0 + 0.15 * re.powf(0.687);
+    let drag_correction = schiller_naumann_drag_correction(re)?;
     let tau_p = rho_p * d * d / (18.0 * rho_f * nu * drag_correction);
     let g_eff = scale(g, 1.0 - rho_f / rho_p);
 
@@ -210,7 +250,14 @@ fn particle_velocity(
     for a in 0..3 {
         out[a] = (tau_p * v[a] + u[a] + tau_p * g_eff[a]) / (tau_p + 1.0);
     }
-    out
+    Ok(out)
+}
+
+fn schiller_naumann_drag_correction(re: f64) -> Result<f64, f64> {
+    if re > SCHILLER_NAUMANN_RE_MAX {
+        return Err(re);
+    }
+    Ok(1.0 + 0.15 * re.powf(0.687))
 }
 
 fn resolve_solid_contact<F>(
@@ -402,14 +449,15 @@ mod tests {
         );
 
         for _ in 0..200_000 {
-            set.step(fluid([0.0; 3]), None::<fn([f64; 3]) -> f64>);
+            set.step(fluid([0.0; 3]), None::<fn([f64; 3]) -> f64>)
+                .unwrap();
         }
 
         let g_eff = (1.0_f64 - rho_f / rho_p) * g[1].abs();
         let mut vt = 0.0_f64;
         for _ in 0..10_000 {
             let re = vt * d / nu;
-            let f = 1.0 + 0.15 * re.min(800.0).powf(0.687);
+            let f = schiller_naumann_drag_correction(re).unwrap();
             let tau_p = rho_p * d * d / (18.0 * rho_f * nu * f);
             let next = tau_p * g_eff;
             if (next - vt).abs() < 1e-15 {
@@ -442,7 +490,7 @@ mod tests {
         );
 
         let u = [0.2, -0.1, 0.05];
-        set.step(fluid(u), None::<fn([f64; 3]) -> f64>);
+        set.step(fluid(u), None::<fn([f64; 3]) -> f64>).unwrap();
         for (got, want) in set.particles[0].vel.iter().zip(u) {
             assert!((*got - want).abs() < 1e-12, "got {got:e}, want {want:e}");
         }
@@ -471,7 +519,7 @@ mod tests {
             nu,
             g,
         );
-        set.step(fluid(u), None::<fn([f64; 3]) -> f64>);
+        set.step(fluid(u), None::<fn([f64; 3]) -> f64>).unwrap();
 
         let speed = norm(set.particles[0].vel);
         let bound = norm(u) + norm(g) * tau_p + 1e-12;
@@ -498,7 +546,8 @@ mod tests {
         );
 
         for _ in 0..1000 {
-            set.step(|p| floor(p, [0.0; 3]), None::<fn([f64; 3]) -> f64>);
+            set.step(|p| floor(p, [0.0; 3]), None::<fn([f64; 3]) -> f64>)
+                .unwrap();
             assert!(
                 set.particles[0].pos[1] >= 0.0,
                 "particle tunneled through floor"
@@ -511,7 +560,8 @@ mod tests {
         let y = set.particles[0].pos[1];
         let x = set.particles[0].pos[0];
         for _ in 0..20 {
-            set.step(|p| floor(p, [0.1, 0.0, 0.0]), None::<fn([f64; 3]) -> f64>);
+            set.step(|p| floor(p, [0.1, 0.0, 0.0]), None::<fn([f64; 3]) -> f64>)
+                .unwrap();
         }
         assert!((set.particles[0].pos[1] - y).abs() < 1e-12);
         assert!(
@@ -570,7 +620,7 @@ mod tests {
             vec![Particle {
                 pos: [0.0, 0.0, 0.0],
                 vel: [2.0, 0.0, 0.0],
-                d: 1000.0,
+                d: 30.0,
                 rho_p: 1.0,
                 exposure: 0.0,
             }],
@@ -578,7 +628,7 @@ mod tests {
             0.1,
             [0.0; 3],
         );
-        set.step(wall, None::<fn([f64; 3]) -> f64>);
+        set.step(wall, None::<fn([f64; 3]) -> f64>).unwrap();
         assert!(
             set.particles[0].pos[0] < 1.0,
             "particle tunneled to x={}",
@@ -601,8 +651,74 @@ mod tests {
             [0.0; 3],
         );
         for _ in 0..37 {
-            set.step(fluid([0.0; 3]), Some(|_| 2.5));
+            set.step(fluid([0.0; 3]), Some(|_| 2.5)).unwrap();
         }
         assert_eq!(set.particles[0].exposure, 92.5);
+    }
+
+    #[test]
+    fn schiller_naumann_out_of_domain_reports_particle_index_and_re() {
+        let mut set = ParticleSet::new(
+            vec![
+                Particle {
+                    pos: [0.0; 3],
+                    vel: [0.0; 3],
+                    d: 1.0,
+                    rho_p: 1.0,
+                    exposure: 0.0,
+                },
+                Particle {
+                    pos: [1.0, 0.0, 0.0],
+                    vel: [0.0; 3],
+                    d: 10.0,
+                    rho_p: 1.0,
+                    exposure: 0.0,
+                },
+            ],
+            1.0,
+            0.1,
+            [0.0; 3],
+        );
+
+        let err = set
+            .step(
+                |p| Sample {
+                    u: if p[0] == 0.0 {
+                        [1.0, 0.0, 0.0]
+                    } else {
+                        [9.0, 0.0, 0.0]
+                    },
+                    solid: false,
+                },
+                None::<fn([f64; 3]) -> f64>,
+            )
+            .unwrap_err();
+
+        assert_eq!(err.particle_index, 1);
+        assert_eq!(err.re, 900.0);
+        assert_eq!(err.re_max, SCHILLER_NAUMANN_RE_MAX);
+        assert!(
+            err.to_string().contains("particle 1") && err.to_string().contains("9e2"),
+            "error message should include particle index and Re_p: {err}"
+        );
+    }
+
+    #[test]
+    fn schiller_naumann_in_domain_matches_formula_and_is_monotone() {
+        let mut previous = schiller_naumann_drag_correction(0.0).unwrap();
+        for i in 1..=800 {
+            let re = i as f64;
+            let got = schiller_naumann_drag_correction(re).unwrap();
+            let want = 1.0 + 0.15 * re.powf(0.687);
+            assert_eq!(got.to_bits(), want.to_bits(), "Re_p={re:e}");
+            assert!(
+                got > previous,
+                "Schiller-Naumann factor must increase on [0, 800]: f({})={previous:e}, f({re})={got:e}",
+                i - 1
+            );
+            previous = got;
+        }
+        assert!(schiller_naumann_drag_correction(SCHILLER_NAUMANN_RE_MAX).is_ok());
+        assert!(schiller_naumann_drag_correction(800.000_000_000_1).is_err());
     }
 }

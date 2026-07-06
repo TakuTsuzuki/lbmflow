@@ -388,3 +388,28 @@ table, two-layer gate template, stop-rule report format, escalation table
 — lives in `.claude/skills/lbmflow-physics-discipline/SKILL.md`. Every
 developer agent follows it mechanically; every physics-affecting codex
 order embeds its clauses. Do not duplicate that content here.
+
+---
+
+### 2026-07-07 Schiller-Naumann particle drag validity domain (`crates/lbm-core/src/particles.rs:particle_velocity`)
+- Form: one-way particle drag uses
+  `f(Re_p) = 1 + 0.15 Re_p^0.687`,
+  `tau_p = rho_p d^2 / (18 rho_f nu f(Re_p))`, and the semi-implicit update
+  `v_{n+1,a} = (tau_p v_{n,a} + u_a + tau_p g_a(1 - rho_f/rho_p)) / (tau_p + 1)`.
+  The implemented validity boundary is `SCHILLER_NAUMANN_RE_MAX = 800.0`;
+  `Re_p > 800` returns `ParticleError` with the particle index and offending
+  Reynolds number.
+- Source: Schiller and Naumann (1935), standard drag correction for isolated
+  spherical particles; retained here as the existing T18.3 particle closure.
+- Validity domain: one-way dilute spherical particles in the Schiller-Naumann
+  drag-correction range, enforced as `0 <= Re_p <= 800` in this code path.
+- Validation: `crates/lbm-core/src/particles.rs::tests::schiller_naumann_in_domain_matches_formula_and_is_monotone`
+  checks bit-identical in-domain formula evaluation and monotonicity on
+  `[0, 800]`; `crates/lbm-core/src/particles.rs::tests::schiller_naumann_out_of_domain_reports_particle_index_and_re`
+  checks the hard error for `Re_p > 800`; existing T18.3 settling/deposition
+  tests continue to cover in-domain particle transport.
+- Replaces / interacts with: replaces the previous silent release-build
+  `Re_p.min(800)` clipping in particle drag evaluation. The clip was a banned
+  transport-absorbing behavior because it silently switched the drag law
+  outside the closure's validity domain instead of making the invalid state
+  visible to the caller.

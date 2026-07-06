@@ -67,7 +67,7 @@ fn one_step_lambda(tau_p: f64) -> f64 {
         NU,
         [0.0; 3],
     );
-    set.step(still_fluid, None::<fn([f64; 3]) -> f64>);
+    set.step(still_fluid, None::<fn([f64; 3]) -> f64>).unwrap();
     -(set.particles[0].vel[0] / V0).ln()
 }
 
@@ -205,7 +205,7 @@ fn c2_sub_relaxation_time_behavior() {
 
     let mut velocities = vec![set.particles[0].vel[0]];
     for _ in 0..20 {
-        set.step(still_fluid, None::<fn([f64; 3]) -> f64>);
+        set.step(still_fluid, None::<fn([f64; 3]) -> f64>).unwrap();
         velocities.push(set.particles[0].vel[0]);
     }
     let abs_velocities: Vec<f64> = velocities.iter().map(|v| v.abs()).collect();
@@ -361,8 +361,8 @@ fn c5_buoyancy_sign_antisymmetry() {
         [0.0, 0.0, -1.0e-6],
     );
     for _ in 0..2_000 {
-        down.step(still_fluid, None::<fn([f64; 3]) -> f64>);
-        up.step(still_fluid, None::<fn([f64; 3]) -> f64>);
+        down.step(still_fluid, None::<fn([f64; 3]) -> f64>).unwrap();
+        up.step(still_fluid, None::<fn([f64; 3]) -> f64>).unwrap();
     }
 
     let v_down = down.particles[0].vel[2];
@@ -414,8 +414,10 @@ fn c6_step_vs_step_depositing_degeneracy() {
     let mut deposits = Vec::<DepositEvent>::new();
 
     for step in 0..200 {
-        stepping.step(affine_sample, Some(exposure));
-        depositing.step_depositing(affine_sample, Some(exposure), -1.0e9, &mut deposits);
+        stepping.step(affine_sample, Some(exposure)).unwrap();
+        depositing
+            .step_depositing(affine_sample, Some(exposure), -1.0e9, &mut deposits)
+            .unwrap();
         assert_eq!(
             stepping.particles, depositing.particles,
             "C6 step/step_depositing trajectory drift at step {step}: step={:?}, depositing={:?}",

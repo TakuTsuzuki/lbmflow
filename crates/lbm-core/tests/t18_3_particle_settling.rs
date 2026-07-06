@@ -56,7 +56,11 @@ fn schiller_naumann_terminal_velocity(d: f64, g: f64) -> (f64, f64, usize, f64) 
 
     for iter in 1..=10_000 {
         let re = v.abs() * d / NU;
-        let drag_correction = 1.0 + 0.15 * re.min(800.0).powf(0.687);
+        assert!(
+            re <= 800.0,
+            "reference Schiller-Naumann solve left its validity domain: Re_p={re:e}"
+        );
+        let drag_correction = 1.0 + 0.15 * re.powf(0.687);
         let next = tau_stokes * g_eff / drag_correction;
         last_delta = (next - v).abs();
         v = next;
@@ -73,7 +77,8 @@ fn schiller_naumann_terminal_velocity(d: f64, g: f64) -> (f64, f64, usize, f64) 
 fn run_until_terminal(d: f64, g: f64) -> f64 {
     let mut set = ParticleSet::new(vec![particle(d)], RHO_F, NU, [0.0, 0.0, -g]);
     for _ in 0..20_000 {
-        set.step(fluid([0.0; 3]), None::<fn([f64; 3]) -> f64>);
+        set.step(fluid([0.0; 3]), None::<fn([f64; 3]) -> f64>)
+            .unwrap();
     }
     -set.particles[0].vel[2]
 }
@@ -190,8 +195,8 @@ fn t18_3_particle_step_is_bit_deterministic() {
     let exposure = |p: [f64; 3]| 0.125 + 0.01 * p[0] - 0.02 * p[2];
 
     for step in 0..256 {
-        a.step(sample, Some(exposure));
-        b.step(sample, Some(exposure));
+        a.step(sample, Some(exposure)).unwrap();
+        b.step(sample, Some(exposure)).unwrap();
         assert_eq!(
             a.particles, b.particles,
             "bit-identical replay diverged at step {step}: left={:?}, right={:?}",
