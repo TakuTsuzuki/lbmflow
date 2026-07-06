@@ -216,6 +216,14 @@ pub enum SpecError {
         /// The axis extent.
         extent: usize,
     },
+    /// Open-face kernels currently support only the 3-unknown D2Q9 and
+    /// 5-unknown D3Q19 closures.
+    UnsupportedOpenFaceLattice {
+        /// Lattice name.
+        lattice: &'static str,
+        /// Number of unknown populations on each straight face.
+        unknowns: usize,
+    },
 }
 
 impl std::fmt::Display for SpecError {
@@ -265,6 +273,11 @@ impl std::fmt::Display for SpecError {
             SpecError::OpenFaceAxisTooShort { face, extent } => write!(
                 f,
                 "open face {face} needs its own axis to span >= 3 cells (got {extent})"
+            ),
+            SpecError::UnsupportedOpenFaceLattice { lattice, unknowns } => write!(
+                f,
+                "{lattice} has {unknowns} unknown populations per open face; D3Q27 open-face \
+                 support is stage-4 work"
             ),
         }
     }
@@ -414,6 +427,25 @@ impl<T: Real> GlobalSpec<T> {
                 if !face_is_full_solid_rim(face, self.dims, solid) {
                     return Err(SpecError::UncoveredFace { face: face.index() });
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate against the full lattice, including open-face kernel support.
+    pub fn validate_lattice<L: Lattice>(&self, solid: &[bool]) -> Result<(), SpecError> {
+        self.validate(L::D, solid)?;
+        if (0..L::D).any(|a| {
+            let neg = Face::ALL[2 * a];
+            let pos = Face::ALL[2 * a + 1];
+            self.faces[neg.index()].is_open() || self.faces[pos.index()].is_open()
+        }) {
+            let unknowns = L::unknowns(Face::ALL[0]).len();
+            if unknowns != 3 && unknowns != 5 {
+                return Err(SpecError::UnsupportedOpenFaceLattice {
+                    lattice: lattice_name::<L>(),
+                    unknowns,
+                });
             }
         }
         Ok(())
@@ -576,6 +608,7 @@ fn lattice_name<L: Lattice>() -> &'static str {
     match (L::D, L::Q) {
         (2, 9) => "D2Q9",
         (3, 19) => "D3Q19",
+        (3, 27) => "D3Q27",
         _ => "unknown",
     }
 }
@@ -584,6 +617,7 @@ fn lattice_id<L: Lattice>() -> u16 {
     match (L::D, L::Q) {
         (2, 9) => 29,
         (3, 19) => 319,
+        (3, 27) => 327,
         _ => 0,
     }
 }
@@ -983,6 +1017,20 @@ where
         backend: B,
         exchange: H,
     ) -> Self {
+        Self::try_new(spec, solid, wall_u, decomp, backend, exchange)
+            .unwrap_or_else(|e| panic!("invalid GlobalSpec: {e}"))
+    }
+
+    /// Fallible variant of [`Self::new`] that returns validation failures
+    /// before allocating or entering backend kernels.
+    pub fn try_new(
+        spec: &GlobalSpec<T>,
+        solid: &[bool],
+        wall_u: &[[T; 3]],
+        decomp: [usize; 3],
+        backend: B,
+        exchange: H,
+    ) -> Result<Self, SpecError> {
         Self::build(spec, solid, wall_u, decomp, None, backend, exchange)
     }
 
@@ -1007,6 +1055,20 @@ where
         backend: B,
         exchange: H,
     ) -> Self {
+        Self::try_new_local_part(spec, solid, wall_u, decomp, part, backend, exchange)
+            .unwrap_or_else(|e| panic!("invalid GlobalSpec: {e}"))
+    }
+
+    /// Fallible variant of [`Self::new_local_part`].
+    pub fn try_new_local_part(
+        spec: &GlobalSpec<T>,
+        solid: &[bool],
+        wall_u: &[[T; 3]],
+        decomp: [usize; 3],
+        part: usize,
+        backend: B,
+        exchange: H,
+    ) -> Result<Self, SpecError> {
         Self::build(spec, solid, wall_u, decomp, Some(part), backend, exchange)
     }
 
@@ -1018,7 +1080,7 @@ where
         only: Option<usize>,
         backend: B,
         exchange: H,
-    ) -> Self {
+    ) -> Result<Self, SpecError> {
         if L::D == 2 {
             assert_eq!(spec.dims[2], 1, "2D lattice requires nz == 1");
         }
@@ -1030,8 +1092,7 @@ where
         // typed error; this call is the last-line guard that turns an invalid
         // native `GlobalSpec` (uncovered face, ν = 0, periodic × open, …) into
         // a clear panic instead of silent non-physical output.
-        spec.validate(L::D, solid)
-            .unwrap_or_else(|e| panic!("invalid GlobalSpec: {e}"));
+        spec.validate_lattice::<L>(solid)?;
         let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
         let params = StepParams {
             omega_p,
@@ -1114,7 +1175,7 @@ where
                 .update_moments(&solver.subs[i], &mut solver.parts[i], &solver.params);
         }
         solver.device_ahead = true;
-        solver
+        Ok(solver)
     }
 
     fn sync_masks(&mut self) {
@@ -2294,7 +2355,11 @@ where
         spec_hash::<T, L>(&spec, &fields.solid, &fields.wall_u)
     }
 
-    fn load_into(&mut self, dir: impl AsRef<Path>, expected_spec_hash: u64) -> Result<(), CheckpointError> {
+    fn load_into(
+        &mut self,
+        dir: impl AsRef<Path>,
+        expected_spec_hash: u64,
+    ) -> Result<(), CheckpointError> {
         let dir = dir.as_ref();
         let manifest_text = std::fs::read_to_string(dir.join("manifest.json"))?;
         let manifest: CheckpointManifest = serde_json::from_str(&manifest_text)?;
@@ -2316,7 +2381,11 @@ where
         if manifest.dtype != dtype_name::<T>() {
             return Err(CheckpointError::new(
                 "CKPT_DTYPE_MISMATCH",
-                format!("checkpoint dtype {} differs from run dtype {}", manifest.dtype, dtype_name::<T>()),
+                format!(
+                    "checkpoint dtype {} differs from run dtype {}",
+                    manifest.dtype,
+                    dtype_name::<T>()
+                ),
             ));
         }
         if manifest.lattice != lattice_name::<L>() {
@@ -2332,7 +2401,10 @@ where
         if manifest.global != self.dims {
             return Err(CheckpointError::new(
                 "CKPT_GEOM_MISMATCH",
-                format!("checkpoint global {:?} differs from run {:?}", manifest.global, self.dims),
+                format!(
+                    "checkpoint global {:?} differs from run {:?}",
+                    manifest.global, self.dims
+                ),
             ));
         }
         let expected = hash_string(expected_spec_hash);
@@ -2390,7 +2462,10 @@ where
                 "rank file dtype differs from requested run precision",
             ));
         }
-        if header.lattice_id != lattice_id::<L>() || header.q != L::Q as u16 || header.d != L::D as u16 {
+        if header.lattice_id != lattice_id::<L>()
+            || header.q != L::Q as u16
+            || header.d != L::D as u16
+        {
             return Err(CheckpointError::new(
                 "CKPT_LATTICE_MISMATCH",
                 "rank file lattice metadata differs from requested lattice",
@@ -2924,15 +2999,31 @@ mod tests {
             dims,
             nu: 0.08,
             periodic: [true, true, L::D == 3],
-            force: [T::r(1.0e-6), T::r(-2.0e-6), T::r(if L::D == 3 { 3.0e-7 } else { 0.0 })],
+            force: [
+                T::r(1.0e-6),
+                T::r(-2.0e-6),
+                T::r(if L::D == 3 { 3.0e-7 } else { 0.0 }),
+            ],
             ..Default::default()
         };
         let solid = solid_box(dims);
         let wall_u = vec![[T::zero(); 3]; solid.len()];
-        let mut continuous: Solver<L, T, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
-        let mut resumed: Solver<L, T, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut continuous: Solver<L, T, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let mut resumed: Solver<L, T, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
         continuous.run(100);
         resumed.run(50);
         let dir = tmp_ckpt("bit-resume");
@@ -2968,8 +3059,14 @@ mod tests {
             force: [1.0e-6, 0.0, 0.0],
             ..Default::default()
         };
-        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
         s.run(3);
         let dir = tmp_ckpt("errors");
         s.save(&dir).unwrap();
@@ -3026,14 +3123,19 @@ mod tests {
             Ok(_) => panic!("truncated rank file must reject checkpoint load"),
             Err(e) => e,
         };
-        assert!(matches!(err.code, "CKPT_TRUNCATED" | "CKPT_PAYLOAD_CORRUPT"));
+        assert!(matches!(
+            err.code,
+            "CKPT_TRUNCATED" | "CKPT_PAYLOAD_CORRUPT"
+        ));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn checkpoint_preserves_stale_stash_and_carried_solid_moments() {
         let mut faces = [FaceBC::<f32>::Closed; 6];
-        faces[Face::XNeg.index()] = FaceBC::Velocity { u: [0.03, 0.0, 0.0] };
+        faces[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.03, 0.0, 0.0],
+        };
         faces[Face::XPos.index()] = FaceBC::Convective { u_conv: 0.03 };
         let dims = [18, 10, 1];
         let mut walls = WallSpec::<f32>::default();
@@ -3048,8 +3150,14 @@ mod tests {
             force: [2.0e-6, 0.0, 0.0],
             ..Default::default()
         };
-        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
         s.run(8);
         {
             let f = s.fields_mut(0);
@@ -3070,10 +3178,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            loaded.fields(0).ftmp.iter().map(|&v| bits(v)).collect::<Vec<_>>(),
+            loaded
+                .fields(0)
+                .ftmp
+                .iter()
+                .map(|&v| bits(v))
+                .collect::<Vec<_>>(),
             saved_ftmp.iter().map(|&v| bits(v)).collect::<Vec<_>>()
         );
-        assert_eq!(bits(loaded.fields(0).rho[loaded.fields(0).geom.cidx(0, 0, 0)]), bits(1.2345f32));
+        assert_eq!(
+            bits(loaded.fields(0).rho[loaded.fields(0).geom.cidx(0, 0, 0)]),
+            bits(1.2345f32)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3147,7 +3263,7 @@ mod tests {
     // A-4: GlobalSpec::validate
     // ----------------------------------------------------------------------
 
-    use crate::lattice::D3Q19;
+    use crate::lattice::{D3Q19, D3Q27};
     use crate::params::FaceBC;
 
     /// Full solid rims for a walled non-periodic D3Q19 box (so a "closed
@@ -3359,6 +3475,59 @@ mod tests {
             ..Default::default()
         };
         assert!(walled.validate(3, &walled_box_solid(dims)).is_ok());
+    }
+
+    #[test]
+    fn d3q27_rejects_open_faces_before_build() {
+        let mut faces = [FaceBC::<f64>::Closed; 6];
+        faces[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.02, 0.0, 0.0],
+        };
+        faces[Face::XPos.index()] = FaceBC::Outflow;
+        let spec = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [false, true, true],
+            faces,
+            ..Default::default()
+        };
+        assert!(matches!(
+            spec.validate_lattice::<D3Q27>(&[]),
+            Err(SpecError::UnsupportedOpenFaceLattice {
+                lattice: "D3Q27",
+                unknowns: 9,
+            })
+        ));
+        assert!(matches!(
+            Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
+                &spec,
+                &[],
+                &[],
+                [1, 1, 1],
+                CpuScalar::default(),
+                LocalPeriodic,
+            ),
+            Err(SpecError::UnsupportedOpenFaceLattice { .. })
+        ));
+    }
+
+    #[test]
+    fn d3q27_periodic_and_walled_specs_validate() {
+        let periodic = GlobalSpec::<f64> {
+            dims: [6, 6, 6],
+            periodic: [true, true, true],
+            ..Default::default()
+        };
+        assert!(periodic.validate_lattice::<D3Q27>(&[]).is_ok());
+
+        let dims = [6, 6, 6];
+        let walled = GlobalSpec::<f64> {
+            dims,
+            periodic: [false, false, false],
+            ..Default::default()
+        };
+        assert!(walled
+            .validate_lattice::<D3Q27>(&walled_box_solid(dims))
+            .is_ok());
     }
 
     /// The internal build-time guard fires for an uncovered native spec even
