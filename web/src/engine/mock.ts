@@ -1,5 +1,7 @@
 import type { Engine, EngineConfig } from "./types.ts";
 
+let warnedMockActivation = false;
+
 /**
  * Mock engine.
  *
@@ -52,6 +54,15 @@ export class MockEngine implements Engine {
   private solidCy = 0;
   private solidR = 0;
   private solidCount = 0;
+
+  constructor() {
+    if (!warnedMockActivation) {
+      console.warn(
+        "LBMFlow: mock engine active. Output is synthetic UI fallback data, not a simulation result.",
+      );
+      warnedMockActivation = true;
+    }
+  }
 
   get nx(): number {
     return this.cfg.nx;

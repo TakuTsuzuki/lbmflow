@@ -1,5 +1,5 @@
 import "./style.css";
-import { createEngine } from "./engine/index.ts";
+import { createEngine, isMockEngine } from "./engine/index.ts";
 import type { EngineConfig } from "./engine/types.ts";
 import { PRESETS, type Preset } from "./presets.ts";
 import {
@@ -29,6 +29,7 @@ const btnRunLabel = $<HTMLSpanElement>("btn-run-label");
 const btnReset = $<HTMLButtonElement>("btn-reset");
 const canvas = $<HTMLCanvasElement>("sim-canvas");
 const canvasWrap = $<HTMLDivElement>("canvas-wrap");
+const mockBadge = $<HTMLDivElement>("mock-engine-badge");
 const presetDesc = $<HTMLParagraphElement>("preset-desc");
 const visModeSelect = $<HTMLSelectElement>("vis-mode");
 const visHint = $<HTMLParagraphElement>("vis-hint");
@@ -60,6 +61,7 @@ const firstHintClose = $<HTMLButtonElement>("first-hint-close");
 
 const engine = await createEngine();
 const renderer = new FieldRenderer(canvas);
+mockBadge.hidden = !isMockEngine(engine);
 
 let currentPreset: Preset = PRESETS[0]!;
 let running = false;
