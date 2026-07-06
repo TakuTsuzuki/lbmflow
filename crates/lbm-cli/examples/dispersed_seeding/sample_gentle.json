@@ -1,0 +1,16 @@
+{
+  "grid":       { "res_nx": 32, "res_ny": 32, "res_nz": 128,
+                  "tray_nx": 96, "tray_ny": 96, "tray_nz": 24, "dx_m": 5e-4 },
+  "fluid":      { "nu_m2s": 1.0e-6, "rho_f_kgm3": 1000.0 },
+  "particles":  { "rho_p_kgm3": 1050.0, "d_p_m": 100e-6, "d_p_cv": 0.1, "count": 20000, "seed": 1 },
+  "reservoir":  { "height_m": 0.10, "width_m": 0.016, "fill_height_m": 0.06, "initial_conc": 1.0 },
+  "target":     { "width_m": 0.048, "depth_m": 0.048, "height_m": 0.012, "partitions_x": 12, "partitions_y": 12 },
+  "protocol": [
+    { "op": "settle",   "duration_s": 30.0 },
+    { "op": "withdraw", "volume_frac": 0.5, "rate_uLs": 300.0, "depth_frac": 0.8 },
+    { "op": "eject",    "points_xy_frac": [[0.5,0.5]], "rate_uLs": 179.0, "height_m": 0.008 },
+    { "op": "agitate",  "pattern": "translational", "count": 0, "speed_mms": 90.0, "amplitude_mm": 5.0 },
+    { "op": "settle",   "duration_s": 20.0 }
+  ],
+  "output":     { "dir": "out/dispersed_seeding/gentle", "csv": true, "volume": true }
+}
