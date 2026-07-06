@@ -196,3 +196,11 @@ smoke test, in parallel.
 - **Trusted `task_complete` as "all green".** It only means the run ended —
   `last_agent_message` may report intentionally red tests. Verify with the gate
   Skill before merging.
+- **Sandbox cannot `git commit` in a worktree (`index.lock` EPERM on the shared
+  `.git`).** Intermittent; 2/4 orders hit it on 2026-07-06. The order text must
+  always include the committed-ready fallback clause; PM commits on codex's
+  behalf at merge time. Do not treat it as a failed order.
+- **Sandbox cannot acquire the Metal GPU adapter.** `bench_gpu`/GPU tests report
+  `no usable GPU adapter was found` inside codex while the same binary works
+  outside. GPU benches and GPU suites are ALWAYS PM-run landing evidence; orders
+  must say "build only, report BENCH-PENDING (sandbox adapter)".
