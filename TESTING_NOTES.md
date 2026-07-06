@@ -1308,3 +1308,13 @@ T16 status: BENCH-PENDING / CHARACTERIZATION-PENDING. No f16 degradation values
 were frozen in this sandbox; PM should unignore the T16 matrix on a reliable
 SHADER_F16 adapter, record measured f16-vs-f32 deltas, and replace the pending
 assertions with bands that include measured headroom.
+
+## 2026-07-06 PM GPU bench post-merge (trunk 2ad3e45, load 3-18)
+D2 (three samples, load 4-18): 512² 5519-9042, 1024² 2230-2354, 2048² 1928-2068 MLUPS.
+D3Q19 (three samples): 128³ 1058-1197, 192³ 1038-1353 MLUPS.
+Pre-merge same-machine reference (quiet window, load ~1.8): 512² 11745, 1024² 7010, 2048² 5886.
+
+D2 spread with load matches roofline behavior — no code regression detected.
+D3Q19 target ≥1500 MLUPS NOT MET (peak measured 1353); the D3Q19 kernel needs
+further optimization. Claims-ledger 3D-GPU-perf remains RED. Kernel work (esoteric
+pull / better cache traversal / 19-population LDS bin) queued as ME-1-perf follow-up.
