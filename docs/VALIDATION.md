@@ -264,6 +264,14 @@ File: `crates/lbm-core/tests/t15_3d.rs`.
    **u0 coefficient frozen at u0 = 1.28e-4/N** (classic 3D TGV isn't an exact NS solution → a
    resolution-independent relative offset ≈ 0.13·u0/(νk) under diffusive scaling would
    destroy the order; PHYSICS.md).
+   D3Q27 coverage is currently periodic / closed-wall only: any open face
+   (velocity inlet, pressure outlet, outflow, convective outflow) is rejected
+   with `UnsupportedOpenFaceLattice` because D3Q27 has 9 unknown populations
+   per open face. Open-face D3Q27 validation gates are future work; current
+   D3Q27 tests cover periodic TGV / split invariance and closed-wall specs
+   (`crates/lbm-core/src/solver.rs::validate_lattice`,
+   `crates/lbm-core/tests/t15_3d.rs`,
+   `crates/lbm-core/tests/t13_split_invariance.rs`).
 5. **T15.5 3D cavity** (Albensoeder & Kuhlmann 2005, Re=1000): reference in
    [T15_5_CAVITY3D_REFERENCE.md](T15_5_CAVITY3D_REFERENCE.md); file `t15_5_cavity3d.rs`.
    - Default N=64 qualitative sentinel: mass drift, symmetry-plane |v|/U, extrema
@@ -279,13 +287,46 @@ File: `crates/lbm-core/tests/t15_3d.rs`.
      the half-way moving-wall layer with reference endpoints (u-line RMS degrades to 0.037
      at N=72 otherwise).
 
-### T16. (M-E, FP16 storage) — **not yet implemented**
-Quantify f16-storage (f32 arithmetic) degradation on TGV / cavity and freeze the band.
-Deviation storage (f−w) is a prerequisite (spec C-12).
+### T16. (M-E, FP16 storage) — **implemented, gated for capacity/throughput mode**
+File: `crates/lbm-core/tests/t16_fp16_storage.rs` (`#[ignore]`, feature `gpu`, requires
+SHADER_F16 adapter). Implementation surface: `GpuStorage::F16` on the wgpu backend stores
+distribution buffers as IEEE f16 and keeps arithmetic in f32; generated WGSL validates f16
+storage for D2Q9, D3Q19, and D3Q27. The frozen accuracy bands are currently enforced on
+D2Q9 wgpu f32-vs-f16 scenarios:
 
-### T17. (M-F, VR-STR coupled multiphysics) — **spec wired, awaiting implementation**
+- **TGV 256² transient over one decay time (41,501 steps)**: f16-vs-f32 velocity L2_rel
+  must be ≤ 2.0e-1; frozen measured value 1.401e-1. f16-vs-analytic velocity L2_rel
+  must be ≤ 2.0e-1; frozen measured value 1.413e-1.
+- **Lid cavity 128², Re=100, 40k steps**: f16-vs-f32 centerline L2_rel must be ≤
+  5.0e-3; frozen measured value 2.579e-3.
+
+Use: FP16 storage is a capacity/throughput mode, not a validation-grade long-time reference
+mode. It doubles on-device distribution capacity and performance characterization records
+~2.0x MLUPS at 2048² plus D3Q19 f16 > 5 GLUPS (`docs/PERFORMANCE.md`), but long transients
+accumulate f16 store-rounding as a random walk on a decaying signal (`docs/PHYSICS.md`).
+Use f32/f64 storage for validation-grade long-horizon references.
+
+### T17. (M-F, VR-STR coupled multiphysics) — **mixed: landed subsystems plus pending critical path**
 Source: [REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md) §8 rev.4. Tests are adversarially
 authored from the REQ by orders separate from implementation.
+
+Subsystem status synced to `REQ_STIRRED_REACTOR.md` "Landed vs. pending" and spot-checked
+against code/tests where feasible:
+
+| Subsystem | Spec status | Implementation status | Validation status |
+|---|---|---|---|
+| W0 / MF-alpha core basis (D3Q19/D3Q27, cumulant, Guo) | Fidelity basis | LANDED | VALIDATED for current scope (`cumulant_acceptance.rs`, T13/T15 D3Q27 periodic/closed-wall gates) |
+| W-ROT rotating IBM | IBM-inertial fidelity default; MRF Phase 2 | LANDED | VALIDATED at subsystem level (`rotating_ibm.rs`, `mf_interim.rs`); full VR-STR-01 tank/PIV gate NOT YET |
+| W-GRAV well-balanced gravity | Gravity axis reference | LANDED | VALIDATED for single-phase static stratification / force equivalence (`gravity.rs`, VR-STR-06 gravity axis); active-scalar 06+ NOT YET |
+| W-LES turbulence SGS | WALE default; Smagorinsky separate equation | LANDED | VALIDATED/CHARACTERIZED for WALE TGV, stabilization, CPU/GPU equivalence (`wale_les.rs`, `t14_wale_gpu_equiv.rs`); Re_tau DNS acceptance NOT YET |
+| W-STRESS stress fields | FR-STRESS convention fixed | PARTIAL/PENDING | NOT YET complete T17 VR-STR-03 |
+| W-VOF resolved interface | Conservative Allen-Cahn free surface, fidelity default | PENDING | NOT YET; blocks VR-STR-02 and W-BCTOP/interfacial transfer |
+| W-BCTOP top boundary / degassing / contact angle | Waits on W-VOF | PENDING | NOT YET |
+| W-SCAL scalar ADE | Passive scalar path specified; active scalar fidelity default waits on coupling/VOF | PENDING | NOT YET; scalar total-mass and active dt-halving negative/consistency gates remain pending |
+| W-REACT reaction / active feedback | Waits on W-SCAL; active mode waits on W-VOF | PENDING | NOT YET |
+| W-PART / D-track particles + deposition | D-track P2 landed; higher-density four-way Phase 2 | LANDED for current D-track P2 scope | VALIDATED for current particle/deposition scope (`t18_*.rs`, `particles_deposition_smoke.rs`, `accuracy_audit_particles.rs`); full VR-STR particle coupling still incremental |
+| W-BUB point bubbles + PBM | Phase 2 / API-reserved | PENDING | NOT YET |
+| W-COUP / W-IO coupled loop and reactor outputs | Incremental across producing subsystems | PENDING | NOT YET full coupled VR-STR-05/07 |
 
 **Band governance (rev.4)**: each row has a provisional numeric band (Np ±10%; PIV L2<15% /
 L∞<30%; droplet mass drift <0.1%/1000 step; U_t ±10%; k_La ±25%; stratification |u|<1e-6 l.u.;
