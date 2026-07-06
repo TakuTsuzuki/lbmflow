@@ -365,6 +365,74 @@ impinging-jet class of scenarios.
 Without these notes, someone re-tightening the bands from "1e-12 looks
 tight" chases physically impossible numbers.
 
+### 2026-07-07 — D3Q19 cumulant shear-rate offset is empirical calibration
+- Form: in the D3Q19 cumulant/central-moment CPU paths only, the configured
+  second-order shear relaxation is adjusted as
+  `omega_eff = omega_shear * (1 + 0.0025 - 0.16 |u|^2)` and clamped to
+  `<= 2`. D3Q27 uses no `+0.0025` lattice offset. The scalar and SIMD CPU
+  implementation sites are `crates/lbm-core/src/kernels.rs` and
+  `crates/lbm-core/src/backend_simd.rs`.
+- Source: empirical calibration, not a first-principles closure. The training
+  benchmark is the existing TGV3D decay-rate fit described above in this file
+  ("small D3Q19-only shear-rate offset" and "calibrated against TGV3D").
+  The coefficient is therefore not a general physics law and must be defended
+  by holdout evidence before any broader claim.
+- Training / holdout split: training = TGV3D decay at the calibration settings
+  used to select `+0.0025` and `0.16`; holdout =
+  `crates/lbm-core/tests/cumulant_holdout.rs` with (1) advected TGV3D at mean
+  frames `u_frame = {0, 0.05, 0.1}`, (2) off-calibration-Re TGV3D with
+  `nu = 0.04`, and (3) D3Q19-vs-D3Q27 TGV3D at the off-calibration Re.
+- Validation results from
+  `cargo test -p lbm-core --release --test cumulant_holdout -- --include-ignored --nocapture`
+  on 2026-07-07:
+  - Advected TGV3D, D3Q19 cumulant, `N=32`, `nu=0.02`, `u0=0.012`,
+    160 steps: rates were `4.634861882e-3` (`u_frame=0`),
+    `4.639833752e-3` (`u_frame=0.05`), and `4.654339667e-3`
+    (`u_frame=0.1`) vs analytic `4.626377063e-3`; relative errors were
+    `1.834009427e-3`, `2.908688268e-3`, and `6.044168839e-3`. The
+    frame-spread was `4.195075506e-3`, exceeding the derived
+    `Ma_frame,max^2 * (k dx)^2 = 1.156594266e-3` band. **Finding:** the
+    calibrated correction does not establish Galilean-invariant viscous decay
+    on this holdout.
+  - Off-calibration Re, D3Q19 cumulant, `N=32`, `nu=0.04`, `u0=0.012`,
+    160 steps: rate `9.223420342e-3` vs analytic `9.252754126e-3`,
+    `nu_eff = 3.987318896e-2`, relative error `3.170276018e-3`, passing the
+    T15 decay-rate class band `2e-2`.
+  - D3Q19 vs D3Q27 cross-check at the off-calibration Re: D3Q19 relative
+    error `3.170276018e-3`; D3Q27 rate `9.299938977e-3`, analytic
+    `9.252754126e-3`, relative error `5.099546655e-3`. D3Q19 is not an
+    outlier against the D3Q27 error plus the T15 band (`2.509954666e-2`).
+- Validity domain: this correction is currently valid only as an empirical
+  D3Q19 cumulant calibration for non-advected or weakly framed periodic TGV3D
+  decay-rate use cases covered by the passing holdouts above. It must not be
+  cited as evidence of Galilean-invariant finite-frame viscosity for
+  `N=32`, `nu=0.02`, `u0=0.012`, `u_frame <= 0.1`; that domain has a holdout
+  failure and needs a core cumulant follow-up or a narrower product claim.
+- Replaces / interacts with: augments the central-moment/cascaded cumulant
+  collision described in the 2026-07-06 cumulant entries. It does not replace
+  resolved LBM viscosity (`tau = 3 nu + 0.5`) and should not be reused as a
+  generic LES, wall, or stability limiter coefficient.
+
+### 2026-07-07 behavior review — cumulant holdout integral runs
+Pattern: all reported TGV3D runs had positive decay rates and monotonically
+decreasing fluctuation kinetic energy; the advected-frame sequence showed a
+systematic increase in measured decay rate as `u_frame` increased.
+Mechanism: the Fourier-mode velocity field decays by viscous diffusion, while
+the frame trend indicates residual frame-dependent numerical viscosity after
+the empirical D3Q19 correction.
+Resolved vs closure: viscous decay and periodic streaming are resolved by the
+LBM update; the D3Q19-only `+0.0025` and `-0.16 |u|^2` shear-rate adjustment
+is an active empirical calibration term and controls the reviewed failure.
+Artifacts checked: these are fully periodic integral-metric tests with no
+walls, outlets, clamps, or seams. Per REV-6, no field-visualization artifact
+was produced or expected for these integral metrics; the behavior anchor is
+the positive-rate and monotone-energy check embedded in every run.
+Verdict: CLOSURE-DRIVEN finding for finite-frame Galilean invariance; passing
+off-Re and D3Q27 cross-checks do not validate the failed frame-dependence
+behavior.
+Routing: core cumulant follow-up / claim narrowing; do not loosen the
+holdout band without a new physics derivation recorded here.
+
 ---
 
 ## 3. Prohibited patterns
