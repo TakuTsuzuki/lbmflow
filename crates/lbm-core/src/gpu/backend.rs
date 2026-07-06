@@ -1632,6 +1632,10 @@ impl<L: Lattice> WgpuBackend<L> {
 impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     type Fields = GpuFields;
 
+    fn supports_localized_features(&self) -> bool {
+        false
+    }
+
     fn alloc(&self, sub: &Subdomain) -> GpuFields {
         self.try_alloc(sub).expect("GPU field allocation failed")
     }
@@ -2000,10 +2004,7 @@ impl<L: Lattice> WgpuBackend<L> {
         let raw = self.map_staging(staging, bytes)?;
 
         let f_count = L::Q * n;
-        let f = Arc::new(decode_storage(
-            self.cfg.storage,
-            &raw[..fbytes as usize],
-        ));
+        let f = Arc::new(decode_storage(self.cfg.storage, &raw[..fbytes as usize]));
         let moments: &[f32] =
             bytemuck::cast_slice(&raw[moments_offset as usize..probe_offset as usize]);
         out.rho.clear();

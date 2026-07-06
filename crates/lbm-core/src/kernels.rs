@@ -378,12 +378,51 @@ pub(crate) fn for_face_cells(
     face: Face,
     mut body: impl FnMut(usize, [usize; 3]),
 ) {
+    for_face_cells_selected(geom, face, FaceCellSelection::All, |coord, pos| {
+        body(coord, pos)
+    });
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FaceCellSelection<'a> {
+    All,
+    Rect {
+        lo: [usize; 2],
+        hi: [usize; 2],
+    },
+    Excluding {
+        rects: &'a [([usize; 2], [usize; 2])],
+    },
+}
+
+fn selected(sel: FaceCellSelection<'_>, c1: usize, c2: usize) -> bool {
+    match sel {
+        FaceCellSelection::All => true,
+        FaceCellSelection::Rect { lo, hi } => {
+            lo[0] <= c1 && c1 <= hi[0] && lo[1] <= c2 && c2 <= hi[1]
+        }
+        FaceCellSelection::Excluding { rects } => !rects
+            .iter()
+            .any(|(lo, hi)| lo[0] <= c1 && c1 <= hi[0] && lo[1] <= c2 && c2 <= hi[1]),
+    }
+}
+
+pub(crate) fn for_face_cells_selected(
+    geom: &LocalGeom,
+    face: Face,
+    selection: FaceCellSelection<'_>,
+    mut body: impl FnMut(usize, [usize; 3]),
+) {
     let a = face.axis();
     let fixed = if face.is_neg() { 0 } else { geom.core[a] - 1 };
     let (t1, t2) = face.tangents();
     let mut coord = 0;
     for c2 in 0..geom.core[t2] {
         for c1 in 0..geom.core[t1] {
+            if !selected(selection, c1, c2) {
+                coord += 1;
+                continue;
+            }
             let mut pos = [0usize; 3];
             pos[a] = fixed;
             pos[t1] = c1;
@@ -455,7 +494,7 @@ pub(crate) fn for_face_cells(
 /// projects exactly onto the D2Q9 one (sum populations over `c_z`): the
 /// z-corrections vanish by z-reflection symmetry and the x/y formulas add up
 /// to V1's — the T15 degeneracy tests pin this down numerically.
-pub(crate) fn zou_he_face<L: Lattice, T: Real>(
+pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
     f: &mut [T],
     np: usize,
     geom: &LocalGeom,
@@ -463,9 +502,10 @@ pub(crate) fn zou_he_face<L: Lattice, T: Real>(
     face: Face,
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
+    selection: FaceCellSelection<'_>,
 ) {
     if L::D == 3 {
-        return zou_he_face_3d::<L, T>(f, np, geom, solid, face, kind, profile);
+        return zou_he_face_3d::<L, T>(f, np, geom, solid, face, kind, profile, selection);
     }
     let n = face.n_in();
     let (nxi, nyi) = (n[0] as i32, n[1] as i32);
@@ -478,7 +518,7 @@ pub(crate) fn zou_he_face<L: Lattice, T: Real>(
     let (half, c23, c16, two) = (T::r(0.5), T::r(2.0 / 3.0), T::r(1.0 / 6.0), T::r(2.0));
     let (nxr, nyr) = (T::r(nxi as f64), T::r(nyi as f64));
     let (txr, tyr) = (T::r(tx as f64), T::r(ty as f64));
-    for_face_cells(geom, face, |coord, pos| {
+    for_face_cells_selected(geom, face, selection, |coord, pos| {
         let i = geom.pidx(pos[0], pos[1], pos[2]);
         if solid[i] {
             return;
@@ -527,6 +567,7 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
     face: Face,
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
+    selection: FaceCellSelection<'_>,
 ) {
     // This branch reconstructs exactly 5 unknowns (the D3Q19 in-face set).
     // A lattice with a different unknown count (e.g. a future D3Q27, planned
@@ -569,7 +610,7 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
     let (half, c13, c16, two) = (T::r(0.5), T::r(1.0 / 3.0), T::r(1.0 / 6.0), T::r(2.0));
     // u·n_in for the single non-zero normal component (±1).
     let nsign = T::r(n[a] as f64);
-    for_face_cells(geom, face, |coord, pos| {
+    for_face_cells_selected(geom, face, selection, |coord, pos| {
         let i = geom.pidx(pos[0], pos[1], pos[2]);
         if solid[i] {
             return;
@@ -620,16 +661,17 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
 
 /// Zero-gradient outflow: copy the unknown populations from the cell one
 /// step inward along the face normal (V1 `outflow`). Generic over D.
-pub(crate) fn outflow_face<L: Lattice, T: Real>(
+pub(crate) fn outflow_face_selected<L: Lattice, T: Real>(
     f: &mut [T],
     np: usize,
     geom: &LocalGeom,
     solid: &[bool],
     face: Face,
+    selection: FaceCellSelection<'_>,
 ) {
     let n = face.n_in();
     let unknowns = L::unknowns(face);
-    for_face_cells(geom, face, |_, pos| {
+    for_face_cells_selected(geom, face, selection, |_, pos| {
         let i = geom.pidx(pos[0], pos[1], pos[2]);
         let j = geom.pidx_i(
             pos[0] as isize + n[0] as isize,
@@ -652,13 +694,14 @@ pub(crate) fn outflow_face<L: Lattice, T: Real>(
 /// `f(edge,t+1) = (f(edge,t) + Uc f(interior,t+1)) / (1 + Uc)` needs no extra
 /// storage. The mass correction pins `rho(edge)` to `rho(neighbour)` by
 /// distributing the deficit over the unknowns by weight.
-pub(crate) fn convective_face<L: Lattice, T: Real>(
+pub(crate) fn convective_face_selected<L: Lattice, T: Real>(
     f: &mut [T],
     np: usize,
     geom: &LocalGeom,
     solid: &[bool],
     face: Face,
     u_conv: T,
+    selection: FaceCellSelection<'_>,
 ) {
     let n = face.n_in();
     let unknowns = L::unknowns(face);
@@ -671,7 +714,7 @@ pub(crate) fn convective_face<L: Lattice, T: Real>(
         ws += L::W[q];
     }
     let wsum = T::r(ws);
-    for_face_cells(geom, face, |_, pos| {
+    for_face_cells_selected(geom, face, selection, |_, pos| {
         let i = geom.pidx(pos[0], pos[1], pos[2]);
         let j = geom.pidx_i(
             pos[0] as isize + n[0] as isize,
@@ -720,6 +763,8 @@ mod tests {
             omega_m: 0.7,
             force: [T::zero(); 3],
             faces: [FaceBC::Closed; 6],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
         };
         let kp = KParams::new::<L>(&params);
 

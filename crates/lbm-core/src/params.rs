@@ -75,10 +75,46 @@ impl<T: Real> FaceBC<T> {
     }
 }
 
+/// Inclusive global-cell box for a localized volume source/sink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceRegion {
+    pub lo: [usize; 3],
+    pub hi: [usize; 3],
+}
+
+/// Per-step mass source over a [`SourceRegion`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SourceKind<T: Real> {
+    /// Total mass per lattice step, distributed uniformly over the region.
+    /// Negative values are sinks.
+    MassFlow { q_lu: T },
+    /// Total mass per lattice step carrying prescribed velocity `u`.
+    Jet { q_lu: T, u: [T; 3] },
+}
+
+/// Localized interior volume source/sink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VolumeSource<T: Real> {
+    pub region: SourceRegion,
+    pub kind: SourceKind<T>,
+}
+
+/// Rectangular boundary-condition override on one global face.
+///
+/// `lo`/`hi` are inclusive in-face coordinates on the two remaining axes in
+/// ascending axis order, matching [`crate::lattice::Face::tangents`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacePatch<T: Real> {
+    pub face: usize,
+    pub lo: [usize; 2],
+    pub hi: [usize; 2],
+    pub bc: FaceBC<T>,
+}
+
 /// Per-step scalar parameters (uniform over the grid). Relaxation rates are
 /// kept in `f64` and converted to `T` when kernel constants are built, so a
 /// step sees exactly the values V1 computes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct StepParams<T: Real> {
     /// Symmetric relaxation rate `1/tau`.
     pub omega_p: f64,
@@ -88,6 +124,10 @@ pub struct StepParams<T: Real> {
     pub force: [T; 3],
     /// Open BC per global face, `Face::index()` order.
     pub faces: [FaceBC<T>; 6],
+    /// Localized interior volume sources/sinks.
+    pub sources: Vec<VolumeSource<T>>,
+    /// Per-cell open-BC patches on global faces.
+    pub face_patches: Vec<FacePatch<T>>,
 }
 
 /// Kernel constants in working precision, rebuilt from [`StepParams`] each

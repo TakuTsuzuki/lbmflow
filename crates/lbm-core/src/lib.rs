@@ -49,7 +49,10 @@ pub mod prelude {
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};
     pub use crate::les::{WaleLes, WALE_CW};
-    pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
+    pub use crate::params::{
+        CollisionKind, FaceBC, FacePatch, Reduction, SourceKind, SourceRegion, StepParams,
+        VolumeSource,
+    };
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{

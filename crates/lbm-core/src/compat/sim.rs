@@ -109,6 +109,8 @@ impl<T: Real> Simulation<T> {
             periodic,
             faces,
             force: [cfg.force[0], cfg.force[1], T::zero()],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
         };
         let (solid, wall_u) = build_wall_rims(2, spec.dims, &walls);
         let solver = Solver::new(

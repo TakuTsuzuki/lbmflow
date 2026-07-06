@@ -11,7 +11,10 @@ use crate::fields::SoaFields;
 use crate::halo::{ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice};
-use crate::params::{CollisionKind, FaceBC, KParams, Reduction, StepParams, MAX_SPEED};
+use crate::params::{
+    CollisionKind, FaceBC, FacePatch, KParams, Reduction, SourceKind, SourceRegion, StepParams,
+    VolumeSource, MAX_SPEED,
+};
 use crate::real::Real;
 use crate::rotating_ibm::{
     add3, cross, marker_stencil, norm, to_real3, DirectForcingConfig, IbmDiagnostics, RotatingBody,
@@ -127,6 +130,10 @@ pub struct GlobalSpec<T: Real> {
     pub faces: [FaceBC<T>; 6],
     /// Uniform body force (Guo forcing).
     pub force: [T; 3],
+    /// Localized interior volume sources/sinks.
+    pub sources: Vec<VolumeSource<T>>,
+    /// Rectangular per-face boundary-condition overrides.
+    pub face_patches: Vec<FacePatch<T>>,
 }
 
 impl<T: Real> Default for GlobalSpec<T> {
@@ -140,6 +147,8 @@ impl<T: Real> Default for GlobalSpec<T> {
             periodic: [true, true, false],
             faces: [FaceBC::Closed; 6],
             force: [T::zero(); 3],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
         }
     }
 }
@@ -216,6 +225,60 @@ pub enum SpecError {
         /// The axis extent.
         extent: usize,
     },
+    /// A volume-source region is outside the domain or touches a global face.
+    SourceRegionNotInterior {
+        /// Offending source index.
+        source: usize,
+        /// Region low corner.
+        lo: [usize; 3],
+        /// Region high corner.
+        hi: [usize; 3],
+    },
+    /// Two volume-source regions overlap.
+    SourceOverlap {
+        /// First source index.
+        a: usize,
+        /// Second source index.
+        b: usize,
+    },
+    /// A volume-source region covers a solid cell.
+    SourceOverlapsSolid {
+        /// Offending source index.
+        source: usize,
+        /// First solid cell found.
+        cell: [usize; 3],
+    },
+    /// A sink removes too much mass from each cell in one step.
+    SourceSinkTooStrong {
+        /// Offending source index.
+        source: usize,
+        /// Per-cell mass increment.
+        q_cell: f64,
+    },
+    /// A face patch references an inactive/out-of-range face or lies outside
+    /// the face's tangent-coordinate bounds.
+    FacePatchOutOfBounds {
+        /// Offending patch index.
+        patch: usize,
+        /// Face index.
+        face: usize,
+        /// Patch low coordinate.
+        lo: [usize; 2],
+        /// Patch high coordinate.
+        hi: [usize; 2],
+    },
+    /// Two patches on the same face overlap.
+    FacePatchOverlap {
+        /// First patch index.
+        a: usize,
+        /// Second patch index.
+        b: usize,
+    },
+    /// GPU backends do not yet implement localized sources or face patches.
+    UnsupportedOnGpu {
+        /// Feature name.
+        feature: &'static str,
+    },
 }
 
 impl std::fmt::Display for SpecError {
@@ -266,6 +329,30 @@ impl std::fmt::Display for SpecError {
                 f,
                 "open face {face} needs its own axis to span >= 3 cells (got {extent})"
             ),
+            SpecError::SourceRegionNotInterior { source, lo, hi } => write!(
+                f,
+                "source {source} region {lo:?}..={hi:?} must be inside the domain and at least one cell from every face"
+            ),
+            SpecError::SourceOverlap { a, b } => {
+                write!(f, "source regions {a} and {b} overlap")
+            }
+            SpecError::SourceOverlapsSolid { source, cell } => {
+                write!(f, "source {source} overlaps solid cell {cell:?}")
+            }
+            SpecError::SourceSinkTooStrong { source, q_cell } => write!(
+                f,
+                "source {source} sink removes {q_cell} mass per cell per step; q_cell must be > -1.0 to keep reference-density cells positive"
+            ),
+            SpecError::FacePatchOutOfBounds { patch, face, lo, hi } => write!(
+                f,
+                "face patch {patch} on face {face} has out-of-bounds rectangle {lo:?}..={hi:?}"
+            ),
+            SpecError::FacePatchOverlap { a, b } => {
+                write!(f, "face patches {a} and {b} overlap on the same face")
+            }
+            SpecError::UnsupportedOnGpu { feature } => {
+                write!(f, "GPU backend does not yet support {feature}")
+            }
         }
     }
 }
@@ -341,11 +428,17 @@ impl<T: Real> GlobalSpec<T> {
                 return Err(SpecError::DomainTooSmall { dims: self.dims });
             }
         }
-        // Per-axis: periodic × open exclusivity, and gather open axes.
+        // Per-axis: periodic × open exclusivity, and gather open axes from
+        // both whole-face BCs and patch BCs.
         let mut open_axes = 0usize;
         for a in 0..d {
             let (neg, pos) = (Face::ALL[2 * a], Face::ALL[2 * a + 1]);
-            let axis_open = self.faces[neg.index()].is_open() || self.faces[pos.index()].is_open();
+            let axis_open = self.faces[neg.index()].is_open()
+                || self.faces[pos.index()].is_open()
+                || self
+                    .face_patches
+                    .iter()
+                    .any(|p| p.face < 6 && Face::ALL[p.face].axis() == a && p.bc.is_open());
             if self.periodic[a] && axis_open {
                 return Err(SpecError::PeriodicOpenConflict { axis: a });
             }
@@ -378,46 +471,184 @@ impl<T: Real> GlobalSpec<T> {
                     });
                 }
                 match bc {
-                    FaceBC::Velocity { u } => {
-                        let mut sq = 0.0f64;
-                        for c in u.iter() {
-                            let v = c.as_f64();
-                            if !v.is_finite() {
-                                return Err(SpecError::NonFiniteParameter {
-                                    what: "inlet velocity",
-                                });
-                            }
-                            sq += v * v;
-                        }
-                        let s = sq.sqrt();
-                        if !(s <= MAX_SPEED) {
-                            return Err(SpecError::VelocityTooHigh { speed: s });
-                        }
-                    }
-                    FaceBC::Pressure { rho } => {
-                        let r = rho.as_f64();
-                        if !(r > 0.0) {
-                            return Err(SpecError::NonPositiveDensity { rho: r });
-                        }
-                    }
-                    FaceBC::Convective { u_conv } => {
-                        let v = u_conv.as_f64();
-                        if !(v > 0.0 && v <= 1.0) {
-                            return Err(SpecError::InvalidConvectiveSpeed { u_conv: v });
-                        }
-                    }
-                    FaceBC::Outflow | FaceBC::Closed => {}
+                    FaceBC::Outflow => {}
+                    _ => validate_face_bc(*bc)?,
                 }
             } else {
                 // Closed, non-periodic face: it must be a full solid wall rim,
-                // else its halo feeds stale interior values (E2).
-                if !face_is_full_solid_rim(face, self.dims, solid) {
+                // unless open patches cover part of the face. A Closed base
+                // with open patches is legal: closed cells are handled by the
+                // solid rim and patched cells run the open-BC pass.
+                if !face_is_full_solid_rim(face, self.dims, solid)
+                    && !self.face_patches.iter().any(|p| p.face == face.index())
+                {
                     return Err(SpecError::UncoveredFace { face: face.index() });
+                }
+            }
+        }
+        self.validate_sources(d, solid)?;
+        self.validate_face_patches(d)?;
+        Ok(())
+    }
+
+    fn validate_sources(&self, d: usize, solid: &[bool]) -> Result<(), SpecError> {
+        for (i, source) in self.sources.iter().enumerate() {
+            let SourceRegion { lo, hi } = source.region;
+            let mut volume = 1usize;
+            for a in 0..3 {
+                let active = a < d;
+                let expected = if active { self.dims[a] } else { 1 };
+                if lo[a] > hi[a]
+                    || hi[a] >= expected
+                    || (active && (lo[a] == 0 || hi[a] + 1 >= expected))
+                {
+                    return Err(SpecError::SourceRegionNotInterior { source: i, lo, hi });
+                }
+                volume = volume.saturating_mul(hi[a] - lo[a] + 1);
+            }
+            let q_lu = match source.kind {
+                SourceKind::MassFlow { q_lu } => q_lu,
+                SourceKind::Jet { q_lu, u } => {
+                    validate_velocity(u)?;
+                    q_lu
+                }
+            };
+            let q = q_lu.as_f64();
+            if !q.is_finite() {
+                return Err(SpecError::NonFiniteParameter {
+                    what: "source q_lu",
+                });
+            }
+            let q_cell = q / volume as f64;
+            // Conservative positivity guard for deviation-form density:
+            // a reference-density cell (rho = 1) remains positive after the
+            // source pass. Stronger sinks need smaller time steps or a model
+            // that couples sink strength to the current local rho.
+            if !(q_cell > -1.0) {
+                return Err(SpecError::SourceSinkTooStrong { source: i, q_cell });
+            }
+            if !solid.is_empty() {
+                for z in lo[2]..=hi[2] {
+                    for y in lo[1]..=hi[1] {
+                        for x in lo[0]..=hi[0] {
+                            let gi = (z * self.dims[1] + y) * self.dims[0] + x;
+                            if solid[gi] {
+                                return Err(SpecError::SourceOverlapsSolid {
+                                    source: i,
+                                    cell: [x, y, z],
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for a in 0..self.sources.len() {
+            for b in a + 1..self.sources.len() {
+                if regions_overlap(self.sources[a].region, self.sources[b].region) {
+                    return Err(SpecError::SourceOverlap { a, b });
                 }
             }
         }
         Ok(())
     }
+
+    fn validate_face_patches(&self, d: usize) -> Result<(), SpecError> {
+        for (i, patch) in self.face_patches.iter().enumerate() {
+            if patch.face >= 6 {
+                return Err(SpecError::FacePatchOutOfBounds {
+                    patch: i,
+                    face: patch.face,
+                    lo: patch.lo,
+                    hi: patch.hi,
+                });
+            }
+            let face = Face::ALL[patch.face];
+            if face.axis() >= d {
+                return Err(SpecError::FacePatchOutOfBounds {
+                    patch: i,
+                    face: patch.face,
+                    lo: patch.lo,
+                    hi: patch.hi,
+                });
+            }
+            let (t1, t2) = face.tangents();
+            if patch.lo[0] > patch.hi[0]
+                || patch.lo[1] > patch.hi[1]
+                || patch.hi[0] >= self.dims[t1]
+                || patch.hi[1] >= self.dims[t2]
+            {
+                return Err(SpecError::FacePatchOutOfBounds {
+                    patch: i,
+                    face: patch.face,
+                    lo: patch.lo,
+                    hi: patch.hi,
+                });
+            }
+            validate_face_bc(patch.bc)?;
+            if patch.bc.is_open() && self.dims[face.axis()] < 3 {
+                return Err(SpecError::OpenFaceAxisTooShort {
+                    face: patch.face,
+                    extent: self.dims[face.axis()],
+                });
+            }
+        }
+        for a in 0..self.face_patches.len() {
+            for b in a + 1..self.face_patches.len() {
+                let pa = self.face_patches[a];
+                let pb = self.face_patches[b];
+                if pa.face == pb.face && rects_overlap(pa.lo, pa.hi, pb.lo, pb.hi) {
+                    return Err(SpecError::FacePatchOverlap { a, b });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_face_bc<T: Real>(bc: FaceBC<T>) -> Result<(), SpecError> {
+    match bc {
+        FaceBC::Velocity { u } => validate_velocity(u),
+        FaceBC::Pressure { rho } => {
+            let r = rho.as_f64();
+            if !(r > 0.0) {
+                return Err(SpecError::NonPositiveDensity { rho: r });
+            }
+            Ok(())
+        }
+        FaceBC::Convective { u_conv } => {
+            let v = u_conv.as_f64();
+            if !(v > 0.0 && v <= 1.0) {
+                return Err(SpecError::InvalidConvectiveSpeed { u_conv: v });
+            }
+            Ok(())
+        }
+        FaceBC::Closed | FaceBC::Outflow => Ok(()),
+    }
+}
+
+fn validate_velocity<T: Real>(u: [T; 3]) -> Result<(), SpecError> {
+    let mut sq = 0.0f64;
+    for c in u {
+        let v = c.as_f64();
+        if !v.is_finite() {
+            return Err(SpecError::NonFiniteParameter { what: "velocity" });
+        }
+        sq += v * v;
+    }
+    let speed = sq.sqrt();
+    if !(speed <= MAX_SPEED) {
+        return Err(SpecError::VelocityTooHigh { speed });
+    }
+    Ok(())
+}
+
+fn regions_overlap(a: SourceRegion, b: SourceRegion) -> bool {
+    (0..3).all(|i| a.lo[i] <= b.hi[i] && b.lo[i] <= a.hi[i])
+}
+
+fn rects_overlap(alo: [usize; 2], ahi: [usize; 2], blo: [usize; 2], bhi: [usize; 2]) -> bool {
+    alo[0] <= bhi[0] && blo[0] <= ahi[0] && alo[1] <= bhi[1] && blo[1] <= ahi[1]
 }
 
 /// Whether every cell on `face`'s plane is solid (a full wall rim). An empty
@@ -522,6 +753,37 @@ fn spec_hash<T: Real, L: Lattice>(
     }
     for v in spec.force {
         hash_real(&mut h, v);
+    }
+    for source in &spec.sources {
+        for v in source.region.lo {
+            hash_u64(&mut h, v as u64);
+        }
+        for v in source.region.hi {
+            hash_u64(&mut h, v as u64);
+        }
+        match source.kind {
+            SourceKind::MassFlow { q_lu } => {
+                hash_u64(&mut h, 1);
+                hash_real(&mut h, q_lu);
+            }
+            SourceKind::Jet { q_lu, u } => {
+                hash_u64(&mut h, 2);
+                hash_real(&mut h, q_lu);
+                for v in u {
+                    hash_real(&mut h, v);
+                }
+            }
+        }
+    }
+    for patch in &spec.face_patches {
+        hash_u64(&mut h, patch.face as u64);
+        for v in patch.lo {
+            hash_u64(&mut h, v as u64);
+        }
+        for v in patch.hi {
+            hash_u64(&mut h, v as u64);
+        }
+        hash_face_bc(&mut h, patch.bc);
     }
     h
 }
@@ -1032,12 +1294,27 @@ where
         // a clear panic instead of silent non-physical output.
         spec.validate(L::D, solid)
             .unwrap_or_else(|e| panic!("invalid GlobalSpec: {e}"));
+        if (!spec.sources.is_empty() || !spec.face_patches.is_empty())
+            && !backend.supports_localized_features()
+        {
+            let feature = if !spec.sources.is_empty() {
+                "localized volume sources"
+            } else {
+                "masked face patches"
+            };
+            panic!(
+                "invalid GlobalSpec: {}",
+                SpecError::UnsupportedOnGpu { feature }
+            );
+        }
         let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
         let params = StepParams {
             omega_p,
             omega_m,
             force: spec.force,
             faces: spec.faces,
+            sources: spec.sources.clone(),
+            face_patches: spec.face_patches.clone(),
         };
         let mut subs = partition(L::D, spec.dims, spec.periodic, decomp);
         if let Some(part) = only {
@@ -2285,12 +2562,18 @@ where
             periodic: self.periodic,
             faces: self.params.faces,
             force: self.params.force,
+            sources: self.params.sources.clone(),
+            face_patches: self.params.face_patches.clone(),
         };
         let fields = &self.host_parts[0];
         spec_hash::<T, L>(&spec, &fields.solid, &fields.wall_u)
     }
 
-    fn load_into(&mut self, dir: impl AsRef<Path>, expected_spec_hash: u64) -> Result<(), CheckpointError> {
+    fn load_into(
+        &mut self,
+        dir: impl AsRef<Path>,
+        expected_spec_hash: u64,
+    ) -> Result<(), CheckpointError> {
         let dir = dir.as_ref();
         let manifest_text = std::fs::read_to_string(dir.join("manifest.json"))?;
         let manifest: CheckpointManifest = serde_json::from_str(&manifest_text)?;
@@ -2312,7 +2595,11 @@ where
         if manifest.dtype != dtype_name::<T>() {
             return Err(CheckpointError::new(
                 "CKPT_DTYPE_MISMATCH",
-                format!("checkpoint dtype {} differs from run dtype {}", manifest.dtype, dtype_name::<T>()),
+                format!(
+                    "checkpoint dtype {} differs from run dtype {}",
+                    manifest.dtype,
+                    dtype_name::<T>()
+                ),
             ));
         }
         if manifest.lattice != lattice_name::<L>() {
@@ -2328,7 +2615,10 @@ where
         if manifest.global != self.dims {
             return Err(CheckpointError::new(
                 "CKPT_GEOM_MISMATCH",
-                format!("checkpoint global {:?} differs from run {:?}", manifest.global, self.dims),
+                format!(
+                    "checkpoint global {:?} differs from run {:?}",
+                    manifest.global, self.dims
+                ),
             ));
         }
         let expected = hash_string(expected_spec_hash);
@@ -2386,7 +2676,10 @@ where
                 "rank file dtype differs from requested run precision",
             ));
         }
-        if header.lattice_id != lattice_id::<L>() || header.q != L::Q as u16 || header.d != L::D as u16 {
+        if header.lattice_id != lattice_id::<L>()
+            || header.q != L::Q as u16
+            || header.d != L::D as u16
+        {
             return Err(CheckpointError::new(
                 "CKPT_LATTICE_MISMATCH",
                 "rank file lattice metadata differs from requested lattice",
@@ -2920,15 +3213,31 @@ mod tests {
             dims,
             nu: 0.08,
             periodic: [true, true, L::D == 3],
-            force: [T::r(1.0e-6), T::r(-2.0e-6), T::r(if L::D == 3 { 3.0e-7 } else { 0.0 })],
+            force: [
+                T::r(1.0e-6),
+                T::r(-2.0e-6),
+                T::r(if L::D == 3 { 3.0e-7 } else { 0.0 }),
+            ],
             ..Default::default()
         };
         let solid = solid_box(dims);
         let wall_u = vec![[T::zero(); 3]; solid.len()];
-        let mut continuous: Solver<L, T, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
-        let mut resumed: Solver<L, T, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut continuous: Solver<L, T, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let mut resumed: Solver<L, T, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
         continuous.run(100);
         resumed.run(50);
         let dir = tmp_ckpt("bit-resume");
@@ -2964,8 +3273,14 @@ mod tests {
             force: [1.0e-6, 0.0, 0.0],
             ..Default::default()
         };
-        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
         s.run(3);
         let dir = tmp_ckpt("errors");
         s.save(&dir).unwrap();
@@ -3022,14 +3337,19 @@ mod tests {
             Ok(_) => panic!("truncated rank file must reject checkpoint load"),
             Err(e) => e,
         };
-        assert!(matches!(err.code, "CKPT_TRUNCATED" | "CKPT_PAYLOAD_CORRUPT"));
+        assert!(matches!(
+            err.code,
+            "CKPT_TRUNCATED" | "CKPT_PAYLOAD_CORRUPT"
+        ));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn checkpoint_preserves_stale_stash_and_carried_solid_moments() {
         let mut faces = [FaceBC::<f32>::Closed; 6];
-        faces[Face::XNeg.index()] = FaceBC::Velocity { u: [0.03, 0.0, 0.0] };
+        faces[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [0.03, 0.0, 0.0],
+        };
         faces[Face::XPos.index()] = FaceBC::Convective { u_conv: 0.03 };
         let dims = [18, 10, 1];
         let mut walls = WallSpec::<f32>::default();
@@ -3044,8 +3364,14 @@ mod tests {
             force: [2.0e-6, 0.0, 0.0],
             ..Default::default()
         };
-        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> =
-            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
         s.run(8);
         {
             let f = s.fields_mut(0);
@@ -3066,10 +3392,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            loaded.fields(0).ftmp.iter().map(|&v| bits(v)).collect::<Vec<_>>(),
+            loaded
+                .fields(0)
+                .ftmp
+                .iter()
+                .map(|&v| bits(v))
+                .collect::<Vec<_>>(),
             saved_ftmp.iter().map(|&v| bits(v)).collect::<Vec<_>>()
         );
-        assert_eq!(bits(loaded.fields(0).rho[loaded.fields(0).geom.cidx(0, 0, 0)]), bits(1.2345f32));
+        assert_eq!(
+            bits(loaded.fields(0).rho[loaded.fields(0).geom.cidx(0, 0, 0)]),
+            bits(1.2345f32)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
