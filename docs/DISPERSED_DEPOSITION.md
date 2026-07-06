@@ -179,6 +179,14 @@ determinism under partition invariance — bit-identical deposit records when
 the sampled fluid field comes from an unpartitioned vs a partitioned (T13)
 run; (c) floor-crossing capture is exact for a straight-line crossing.
 
+Payload convention (frozen 2026-07-06, resolving the ambiguity filed in
+SPEC_NOTES_T18_3): `DepositEvent.particle` carries the particle state AT
+DEPOSITION — `pos` = the interpolated crossing point (duplicated in
+`DepositEvent.pos`), `vel` = the impact velocity used for the crossing step
+(the post-drag v_new; physically useful for future resuspension/bounce
+criteria, unlike the pre-step state), `exposure` = as accumulated through the
+depositing step's start sample.
+
 ## 6. Validation anchors (forward-model monotone signs) = T18.4
 
 The forward model must reproduce these monotone trends:

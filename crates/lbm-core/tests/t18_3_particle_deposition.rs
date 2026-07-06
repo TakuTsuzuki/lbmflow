@@ -182,8 +182,22 @@ fn t18_3_deposit_records_are_in_particle_index_order_within_a_step() {
         "same-step deposited count = {}, want 2",
         deposits.len()
     );
-    assert_particle_exact_bits(&deposits[0].particle, &particles[0], "event[0]");
-    assert_particle_exact_bits(&deposits[1].particle, &particles[1], "event[1]");
+    // Frozen payload convention (DISPERSED_DEPOSITION.md §5 CR-3): the recorded
+    // particle carries the deposition state — pos = interpolated crossing, vel =
+    // impact velocity. Here slip = 0 and g = 0, so vel is unchanged and only pos
+    // moves to the crossing point.
+    let expected0 = Particle {
+        pos: [10.0, 0.0, 0.0],
+        ..particles[0].clone()
+    };
+    let expected1 = Particle {
+        pos: [20.0, 0.0, 0.0],
+        ..particles[1].clone()
+    };
+    assert_vec3_exact_bits(deposits[0].pos, expected0.pos, "event[0] crossing");
+    assert_vec3_exact_bits(deposits[1].pos, expected1.pos, "event[1] crossing");
+    assert_particle_exact_bits(&deposits[0].particle, &expected0, "event[0]");
+    assert_particle_exact_bits(&deposits[1].particle, &expected1, "event[1]");
 }
 
 #[test]
