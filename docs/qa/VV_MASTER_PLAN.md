@@ -34,9 +34,20 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 - 1.8 Tracer-limit particle audit (near-neutral buoyancy) — **GATE
   (Phase B spec)** — v→u relaxation in nonuniform flow; BBO validity floor.
 
+- 1.9 **Dynamic multiphase exact suite** — **RUN** (codex cx/mp-dynamics in
+  flight): capillary-wave dispersion (omega^2 = sigma k^3/(rho_l+rho_v),
+  k^3-law fit), Lamb n=2 droplet oscillation (R^-3/2 scaling), two-layer
+  stratified Couette exact piecewise profile under shear, Lucas-Washburn
+  x^2 ~ t imbibition. Research agent enumerating the next tier (Tomotika,
+  Taylor deformation D(Ca), spinodal exponents, KH threshold, Jurin) →
+  docs/qa/multiphase-hard-cases.md.
+
 ## Axis 2 — Meta-V&V: does the net catch fish?
 
-- 2.1 **Mutation testing of the validation suite** — **W1**: inject
+- 2.1 **Mutation testing** — **RUN (split)**: cx/vv-mutation (other V&V
+  worker) landed the runner + 3 mutants, all KILLED (moving-wall sign,
+  Zou-He pressure normal sign, outflow stale slot); extension order queued
+  (task #8) for the remaining mutants: inject
   deliberate physics bugs one at a time (sign flip in Guo source, factor-2
   in MW term, w_q swap, off-by-half wall position, dropped corner link,
   tau→omega typo, feq u² coefficient); every MISSED mutant = a coverage hole.
@@ -44,9 +55,8 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   physics kernels.
 - 2.2 Band-vacuity scan — **DONE** (commit 2e121c8). Retighten queue
   survives in `docs/qa/band-vacuity-scan.md`.
-- 2.3 Behavior-anchor coverage — **W2**: for every VALIDATION.md band,
-  check a pattern/sign/monotonicity anchor exists (two-layer rule); list
-  band-only gates → codex retrofit order.
+- 2.3 Behavior-anchor coverage — **RUN** (combined 7.2/7.4/2.3 subagent
+  sweep in flight); output feeds a codex retrofit order.
 
 ## Axis 3 — Cross-intelligence review
 
@@ -55,8 +65,10 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   derivation. Cumulant naming routed to D-track.
 - 3.2 **W2** Code→spec back-translation — subagent derives "what equations
   does this code actually solve" per module; diff against PHYSICS.md.
-- 3.3 **W2** Claims-ledger cross-check — every PHYSICS.md / whitepaper
-  claim mapped to the test that proves it; red rows.
+- 3.3 Claims-ledger cross-check — **DONE (by the parallel V&V campaign)**:
+  cx/vv-trace docs/VV_TRACEABILITY.md — 27 VALIDATED / 4 VERIFIED-ONLY /
+  3 BENCH-PENDING / 8 SPEC-ONLY / 1 UNSAFE-CLAIM (T17-03 stress/LES/IBM,
+  consistent with our ANOM-P4-001 routing). Merge via task #12.
 - 3.4 Review panel on fix designs — **GATE (P4-001/010 core landing)** —
   2-3 agent judge panel on the fix design before gate-running.
 
@@ -100,8 +112,10 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   cavity/cylinder/TGV.
 - 6.2 **W3** Spectral mini-referee — 64-line Python spectral NS for 2D TGV
   / Kolmogorov.
-- 6.3 GPU absolute physics — **GATE (R2-D3 lands)** — TGV order + cavity
-  Ghia directly on GPU; PM-run.
+- 6.3 GPU absolute physics — **PARTIAL**: cx/vv-backend (parallel campaign)
+  landed D2Q9 GPU-direct TGV (order 1.883) + pressure-channel sentinels;
+  remaining: D3Q19 direct, GPU Ghia cavity, GPU conservation — GATE (R2-D3)
+  for the full matrix.
 
 ## Axis 7 — Static & structural verification
 
@@ -130,7 +144,8 @@ visual artifacts (PNG series / viewer), behavior-validity review by the PM,
 findings to anomaly-log. Capability tags: RUN-NOW / AFTER-FIX (named) /
 GATED (named track).
 
-- 9.1 **Sparger bubble injection into a liquid pool** — RUN-NOW at the
+- 9.1 **Sparger bubble injection into a liquid pool** — **RUN** (codex
+  cx/vv-sparger in flight) at the
   Shan-Chen achievable density ratio (~15; REAL air-water 1000:1 is GATED
   on MF-γ — say so in every report). 2D column, SC liquid pool + gas
   injected through a bottom masked patch / volume source; observables:
