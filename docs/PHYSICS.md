@@ -312,3 +312,48 @@ fluid during spin-up is positive and the reported reaction torque is negative.
 the strict interior blade cells after 5k steps measured
 `max |u_phys - u_target| / u_tip = 0.000928` over 116 cells. The unit test freezes
 the bound at `0.01` (about 10x headroom).
+
+## 2026-07-06 direct-forcing IBM for rotating bodies
+
+**Model**: marker-based direct-forcing IBM for rigid rotation, following the
+Uhlmann direct-forcing sequence (interpolate marker velocity, compute the force
+needed to match the rigid target, spread to the Eulerian grid) and the Wang
+multi-direct-forcing correction when one sweep leaves too much marker slip. The
+implemented target velocity is `U = Omega x r`. Force spreading is added to the
+existing per-cell force field and therefore enters the solver only through the
+existing Guo force path.
+
+**Kernel choices**: the API supports a 2-point linear tensor kernel
+(`kernel_radius=1`) and a 3-point quadratic B-spline tensor kernel
+(`kernel_radius=2`). The direct force is normalized by the discrete
+marker-to-grid mobility `sum W^2/(2 rho)` so the interpolated Guo half-force
+velocity increment matches the requested marker slip for that stencil. Dynamic
+near-wall validation cases use under-relaxed sweeps (`relaxation=0.05`) because
+full direct forcing is stiff on this coarse BGK/TRT grid; the standalone
+multi-direct-forcing slip test keeps `relaxation=1.0`.
+
+**Characterization freeze** (`cargo test -p lbm-core --release --test
+rotating_ibm -- --nocapture`):
+- Rotating cylinder force update, 48x48 periodic, `R=8`, `omega=0.003`, 96
+  markers, 3-point kernel: one sweep `slip_max_rel=2.400000e-2`; four-sweep
+  multi-direct-forcing `slip_max_rel=2.922798e-3`,
+  `slip_rms_rel=1.839415e-3`, `momentum_error_rel=2.721937e-15`,
+  `torque_z=6.913391e0`.
+- T13 marker-straddling split, 64x64 periodic, circle centered exactly on the
+  2x2 partition seam: monolithic vs `[2,2,1]` max velocity difference
+  `0.000000e0`.
+- IBM moving-wall Couette vs native moving-wall BC, 48x34, `U=0.002`,
+  2-point kernel, under-relaxed: `slip_max_rel=1.169682e-3`,
+  `slip_rms_rel=1.169079e-3`, profile `L2_rel=5.735445e-1`,
+  `Linf/U=4.568079e-1`. This is a coarse-grid BC-equivalence
+  characterization, not a high-order wall-model claim.
+- Taylor-Couette annulus, 80x80, `r_i=10`, `r_o=30`, `omega=0.00015`,
+  stationary solid outer wall, under-relaxed 2-point IBM inner rotor:
+  `slip_max_rel=3.582527e-4`, `slip_rms_rel=3.190028e-4`,
+  `torque_z=-1.221330e-1`, `momentum_error_rel=5.187458e-12`,
+  analytic-profile `L2_rel=8.999944e-1`, `Linf/U_i=5.645982e0`.
+
+**Torque convention**: IBM diagnostics report reaction torque on the body,
+`sum r x (-F_fluid)`, using the represented force actually spread to fluid
+cells. The global momentum-conservation diagnostic compares the represented
+marker force with the Eulerian spread sum.

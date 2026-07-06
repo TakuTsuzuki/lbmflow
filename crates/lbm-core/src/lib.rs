@@ -36,6 +36,7 @@ pub mod les;
 pub mod params;
 pub mod particles;
 pub mod real;
+pub mod rotating_ibm;
 pub mod solver;
 pub mod subdomain;
 
@@ -50,6 +51,7 @@ pub mod prelude {
     pub use crate::les::{WaleLes, WALE_CW};
     pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
     pub use crate::real::Real;
+    pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{
         build_wall_rims, partition, Diverged, GlobalSpec, Solver, SpecError, WallSpec,
     };

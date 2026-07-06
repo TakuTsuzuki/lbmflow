@@ -13,6 +13,9 @@ use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice};
 use crate::params::{CollisionKind, FaceBC, KParams, Reduction, StepParams, MAX_SPEED};
 use crate::real::Real;
+use crate::rotating_ibm::{
+    add3, cross, marker_stencil, norm, to_real3, DirectForcingConfig, IbmDiagnostics, RotatingBody,
+};
 use crate::subdomain::Subdomain;
 
 /// Global scenario description, backend/decomposition agnostic.
@@ -1203,6 +1206,209 @@ where
             fields.force_field = None;
         }
         self.host_dirty = true;
+    }
+
+    /// Add a rotating rigid-body direct-forcing IBM source to the current
+    /// per-cell body-force field and return marker-level diagnostics.
+    ///
+    /// This method does not advance the solver. Call it after all earlier
+    /// force sources for the step have been written and before [`Solver::step`]
+    /// so the IBM contribution enters collision through the existing Guo
+    /// forcing path. The spread increment is accumulated into any existing
+    /// force field, matching the documented source-composition order.
+    pub fn apply_rotating_ibm(
+        &mut self,
+        body: &RotatingBody,
+        cfg: DirectForcingConfig,
+    ) -> IbmDiagnostics {
+        assert!(L::D == 2 || L::D == 3, "IBM requires a 2D or 3D lattice");
+        assert!(
+            cfg.max_iterations > 0,
+            "IBM max_iterations must be positive"
+        );
+        assert!(
+            cfg.slip_tolerance >= 0.0 && cfg.slip_tolerance.is_finite(),
+            "IBM slip_tolerance must be finite and non-negative"
+        );
+        assert!(
+            cfg.relaxation > 0.0 && cfg.relaxation <= 1.0 && cfg.relaxation.is_finite(),
+            "IBM relaxation must be finite and in (0, 1]"
+        );
+        self.stage_out_all();
+
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        let rho = self.gather_rho();
+        let mut u_now = vec![[0.0f64; 3]; n];
+        let mut solid = vec![false; n];
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let g = sub.geom;
+            let np = g.n_padded();
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let pi = g.pidx(x, y, z);
+                        let c = g.cidx(x, y, z);
+                        solid[gi] = fields.solid[pi];
+                        if solid[gi] {
+                            continue;
+                        }
+                        let mut mom = [0.0f64; 3];
+                        for q in 0..L::Q {
+                            let fq = fields.f[q * np + pi].as_f64();
+                            for (a, ma) in mom.iter_mut().enumerate().take(L::D) {
+                                *ma += L::C[q][a] as f64 * fq;
+                            }
+                        }
+                        let mut force = [
+                            self.params.force[0].as_f64(),
+                            self.params.force[1].as_f64(),
+                            self.params.force[2].as_f64(),
+                        ];
+                        if let Some(ff) = fields.force_field.as_ref() {
+                            for (a, fa) in force.iter_mut().enumerate() {
+                                *fa += ff[c][a].as_f64();
+                            }
+                        }
+                        let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
+                        for a in 0..L::D {
+                            u_now[gi][a] = (mom[a] + 0.5 * force[a]) * inv_rho;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut du = vec![[0.0f64; 3]; n];
+        let mut spread = vec![[0.0f64; 3]; n];
+        let mut diag = IbmDiagnostics::default();
+        let mut max_target = 0.0f64;
+        for marker in body.markers() {
+            max_target = max_target.max(norm(body.target_velocity(marker.position), L::D));
+        }
+        let scale = max_target.max(1.0);
+
+        for iter in 0..cfg.max_iterations {
+            diag = IbmDiagnostics {
+                iterations: iter + 1,
+                ..IbmDiagnostics::default()
+            };
+            let mut slip_sq_weighted = 0.0;
+            let mut weight_sum = 0.0;
+
+            for marker in body.markers() {
+                let stencil = marker_stencil(marker.position, self.dims, L::D, cfg.kernel_radius);
+                assert!(
+                    !stencil.is_empty(),
+                    "IBM marker stencil is outside the domain"
+                );
+                let target = body.target_velocity(marker.position);
+                let mut um = [0.0f64; 3];
+                let mut mobility = 0.0f64;
+                for sp in &stencil {
+                    let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
+                    if solid[gi] {
+                        continue;
+                    }
+                    let rc = rho[gi].as_f64();
+                    um[0] += sp.w * (u_now[gi][0] + du[gi][0]);
+                    um[1] += sp.w * (u_now[gi][1] + du[gi][1]);
+                    um[2] += sp.w * (u_now[gi][2] + du[gi][2]);
+                    mobility += marker.weight * sp.w * sp.w / rc.max(1.0e-30);
+                }
+                if mobility == 0.0 {
+                    continue;
+                }
+                let slip = [target[0] - um[0], target[1] - um[1], target[2] - um[2]];
+                let slip_mag = norm(slip, L::D);
+                diag.slip_max = diag.slip_max.max(slip_mag);
+                slip_sq_weighted += marker.weight * slip_mag * slip_mag;
+                weight_sum += marker.weight;
+
+                // Chosen so interpolation of the Guo half-force velocity
+                // increment, sum W * F_cell/(2 rho), equals this sweep's slip.
+                let f_marker = [
+                    cfg.relaxation * 2.0 * slip[0] / mobility,
+                    cfg.relaxation * 2.0 * slip[1] / mobility,
+                    cfg.relaxation * 2.0 * slip[2] / mobility,
+                ];
+                let mut represented_marker_force = [0.0f64; 3];
+                for sp in &stencil {
+                    let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
+                    if solid[gi] {
+                        continue;
+                    }
+                    let cell_force = [
+                        f_marker[0] * marker.weight * sp.w,
+                        f_marker[1] * marker.weight * sp.w,
+                        f_marker[2] * marker.weight * sp.w,
+                    ];
+                    add3(&mut spread[gi], cell_force);
+                    add3(&mut diag.fluid_force, cell_force);
+                    add3(&mut represented_marker_force, cell_force);
+                    let inv_2rho = 0.5 / rho[gi].as_f64().max(1.0e-30);
+                    du[gi][0] += cell_force[0] * inv_2rho;
+                    du[gi][1] += cell_force[1] * inv_2rho;
+                    du[gi][2] += cell_force[2] * inv_2rho;
+                }
+                add3(&mut diag.marker_force, represented_marker_force);
+                let r = [
+                    marker.position[0] - body.center()[0],
+                    marker.position[1] - body.center()[1],
+                    marker.position[2] - body.center()[2],
+                ];
+                let tq_fluid = cross(r, represented_marker_force);
+                diag.torque[0] -= tq_fluid[0];
+                diag.torque[1] -= tq_fluid[1];
+                diag.torque[2] -= tq_fluid[2];
+            }
+
+            diag.slip_rms = if weight_sum > 0.0 {
+                (slip_sq_weighted / weight_sum).sqrt()
+            } else {
+                0.0
+            };
+            diag.slip_max_rel = diag.slip_max / scale;
+            diag.slip_rms_rel = diag.slip_rms / scale;
+            let err = [
+                diag.fluid_force[0] - diag.marker_force[0],
+                diag.fluid_force[1] - diag.marker_force[1],
+                diag.fluid_force[2] - diag.marker_force[2],
+            ];
+            diag.momentum_error_rel = norm(err, L::D) / norm(diag.marker_force, L::D).max(1.0e-30);
+            if diag.slip_max_rel <= cfg.slip_tolerance {
+                break;
+            }
+        }
+
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let g = sub.geom;
+            let ff = fields
+                .force_field
+                .get_or_insert_with(|| vec![[T::zero(); 3]; g.n_core()]);
+            if ff.len() != g.n_core() {
+                ff.clear();
+                ff.resize(g.n_core(), [T::zero(); 3]);
+            }
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let c = g.cidx(x, y, z);
+                        let add = to_real3::<T>(spread[gi]);
+                        for a in 0..3 {
+                            ff[c][a] = ff[c][a] + add[a];
+                        }
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        diag
     }
 
     /// Set per-mass gravity `g`; at the start of each step, `rho(x) * g` is
