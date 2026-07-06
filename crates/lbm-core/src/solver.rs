@@ -2469,6 +2469,11 @@ where
         &mut self.host_parts[i]
     }
 
+    #[cfg(debug_assertions)]
+    pub(crate) fn host_dirty_for_debug(&self) -> bool {
+        self.host_dirty
+    }
+
     /// Synchronize backend-owned populations and moments into host staging.
     /// Device backends use this only at explicit read/edit boundaries.
     pub fn sync_host(&mut self) {

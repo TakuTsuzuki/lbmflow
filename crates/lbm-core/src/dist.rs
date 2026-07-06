@@ -606,9 +606,10 @@ where
         &self.inner
     }
 
-    /// Mutable access to the local solver (see [`MpiSolver::local`] caveats;
-    /// mask edits through this must be followed by [`Solver::mark_masks_dirty`]
-    /// *on every rank*).
+    /// Mutable access to the local solver (see [`MpiSolver::local`] caveats).
+    /// Prefer collective [`MpiSolver`] methods for edits that must be applied
+    /// consistently across ranks; debug builds fail fast if only a subset of
+    /// ranks leaves host staging dirty before [`MpiSolver::step`].
     pub fn local_mut(&mut self) -> &mut Solver<L, T, B, MpiExchange<T>> {
         &mut self.inner
     }
@@ -625,6 +626,8 @@ where
     /// Advance one step (collective). Refreshes the global probed force when
     /// a probe is active.
     pub fn step(&mut self) {
+        #[cfg(debug_assertions)]
+        self.assert_host_dirty_consistent();
         self.inner.step();
         if self.probe_active {
             let lf = self.inner.probed_force();
@@ -634,6 +637,27 @@ where
                 .all_reduce_into(&local[..], &mut global[..], SystemOperation::sum());
             self.probed_force = [T::r(global[0]), T::r(global[1]), T::r(global[2])];
         }
+    }
+
+    /// Debug-only guard against single-rank host edits. A mixed host_dirty
+    /// state means some ranks will stage edited host fields while others will
+    /// keep backend-owned data, a classic distributed control-flow trap when
+    /// paired with later collectives. Release builds compile this call out.
+    #[cfg(debug_assertions)]
+    fn assert_host_dirty_consistent(&self) {
+        let local = [if self.inner.host_dirty_for_debug() {
+            0b01u8
+        } else {
+            0b10u8
+        }];
+        let mut global = [0u8];
+        self.comm
+            .all_reduce_into(&local, &mut global, SystemOperation::bitwise_or());
+        assert_ne!(
+            global[0], 0b11,
+            "MpiSolver host_dirty mismatch across ranks before step; apply local edits \
+             through collective MpiSolver APIs, or perform the same local edit on every rank"
+        );
     }
 
     /// Advance `steps` steps (collective).
