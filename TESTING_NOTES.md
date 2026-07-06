@@ -1224,3 +1224,22 @@ Focused evidence from this continuation:
 
 Bench status: BENCH-PENDING (sandbox adapter). Per order, `bench_gpu` was not
 attempted in this continuation.
+
+## ME-2 FP16 storage scaffolding (2026-07-06)
+
+Implemented host-visible FP16 storage scaffolding: `KernelCfg`, `GpuStorage`,
+conditional `GpuContext::new_with_shader_f16(true)` feature request, and
+centralized population/stash storage encode/decode using `GpuFields.element_bytes`
+instead of hard-coded 4-byte population assumptions on the resource path.
+
+Verification:
+- `cargo test -p lbm-core --features gpu wgsl --release --no-fail-fast` passed.
+  The f32 shader path still parses and validates for D2Q9 and D3Q19.
+- T16 tests were added as ignored tests:
+  `t16_tgv2d_f16_storage_degradation_vs_f32_gpu` and
+  `t16_cavity2d_f16_storage_degradation_vs_f32_gpu`.
+
+T16 status: BENCH-PENDING / CHARACTERIZATION-PENDING. No f16 degradation values
+were frozen in this sandbox; PM should unignore the T16 matrix on a reliable
+SHADER_F16 adapter, record measured f16-vs-f32 deltas, and replace the pending
+assertions with bands that include measured headroom.

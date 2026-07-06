@@ -101,12 +101,27 @@ pub enum GpuInitError {
         /// wgpu's device-request failure text.
         message: String,
     },
+    /// The selected adapter does not expose a required feature.
+    MissingFeature {
+        /// Adapter selected before the feature check failed.
+        adapter_info: wgpu::AdapterInfo,
+        /// Feature that was required.
+        feature: &'static str,
+    },
 }
 
 impl std::fmt::Display for GpuInitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoAdapter => write!(f, "no usable GPU adapter was found"),
+            Self::MissingFeature {
+                adapter_info,
+                feature,
+            } => write!(
+                f,
+                "GPU adapter '{}' ({:?}) does not support required feature {feature}",
+                adapter_info.name, adapter_info.backend
+            ),
             Self::RequestDevice {
                 adapter_info,
                 message,
@@ -115,6 +130,111 @@ impl std::fmt::Display for GpuInitError {
                 "failed to create GPU device for adapter '{}' ({:?}): {message}",
                 adapter_info.name, adapter_info.backend
             ),
+        }
+    }
+}
+
+/// Distribution-buffer storage precision requested for generated kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuStorage {
+    /// f32 distribution buffers.
+    F32,
+    /// f16 distribution buffers; shader arithmetic remains f32.
+    F16,
+}
+
+impl GpuStorage {
+    fn element_bytes(self) -> u64 {
+        match self {
+            Self::F32 => 4,
+            Self::F16 => 2,
+        }
+    }
+}
+
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let x = value.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32 - 127 + 15;
+    let mant = x & 0x7f_ffff;
+    if exp <= 0 {
+        if exp < -10 {
+            return sign;
+        }
+        let mant = mant | 0x80_0000;
+        let shift = (14 - exp) as u32;
+        let mut half = (mant >> shift) as u16;
+        if ((mant >> (shift - 1)) & 1) != 0 {
+            half = half.wrapping_add(1);
+        }
+        return sign | half;
+    }
+    if exp >= 31 {
+        return sign | 0x7c00;
+    }
+    let mut half = sign | ((exp as u16) << 10) | ((mant >> 13) as u16);
+    if (mant & 0x1000) != 0 {
+        half = half.wrapping_add(1);
+    }
+    half
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = (bits & 0x03ff) as u32;
+    let out = if exp == 0 {
+        if mant == 0 {
+            sign
+        } else {
+            let mut mantissa = mant;
+            let mut e = -14i32;
+            while (mantissa & 0x400) == 0 {
+                mantissa <<= 1;
+                e -= 1;
+            }
+            mantissa &= 0x3ff;
+            sign | (((e + 127) as u32) << 23) | (mantissa << 13)
+        }
+    } else if exp == 31 {
+        sign | 0x7f80_0000 | (mant << 13)
+    } else {
+        sign | ((((exp as i32 - 15 + 127) as u32) << 23) | (mant << 13))
+    };
+    f32::from_bits(out)
+}
+
+fn encode_storage(storage: GpuStorage, values: &[f32]) -> Vec<u8> {
+    match storage {
+        GpuStorage::F32 => bytemuck::cast_slice(values).to_vec(),
+        GpuStorage::F16 => values
+            .iter()
+            .flat_map(|&v| f32_to_f16_bits(v).to_le_bytes())
+            .collect(),
+    }
+}
+
+fn decode_storage(storage: GpuStorage, bytes: &[u8]) -> Vec<f32> {
+    match storage {
+        GpuStorage::F32 => bytemuck::cast_slice(bytes).to_vec(),
+        GpuStorage::F16 => bytes
+            .chunks_exact(2)
+            .map(|b| f16_bits_to_f32(u16::from_le_bytes([b[0], b[1]])))
+            .collect(),
+    }
+}
+
+/// GPU kernel configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelCfg {
+    /// Distribution-buffer storage format.
+    pub storage: GpuStorage,
+}
+
+impl Default for KernelCfg {
+    fn default() -> Self {
+        Self {
+            storage: GpuStorage::F32,
         }
     }
 }
@@ -258,6 +378,11 @@ impl GpuResourcePlan {
 impl GpuContext {
     /// Create a context on the highest-performance adapter.
     pub fn new() -> Result<Arc<Self>, GpuInitError> {
+        Self::new_with_shader_f16(false)
+    }
+
+    /// Create a context, optionally requiring `SHADER_F16`.
+    pub fn new_with_shader_f16(require_shader_f16: bool) -> Result<Arc<Self>, GpuInitError> {
         let instance = wgpu::Instance::default();
         let mut adapter = None;
         for power_preference in [
@@ -277,14 +402,26 @@ impl GpuContext {
         }
         let adapter = adapter.ok_or(GpuInitError::NoAdapter)?;
         let adapter_info = adapter.get_info();
+        let adapter_features = adapter.features();
+        if require_shader_f16 && !adapter_features.contains(wgpu::Features::SHADER_F16) {
+            return Err(GpuInitError::MissingFeature {
+                adapter_info,
+                feature: "SHADER_F16",
+            });
+        }
         let al = adapter.limits();
         let mut limits = wgpu::Limits::default();
         limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
         limits.max_buffer_size = al.max_buffer_size;
         limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage;
+        let required_features = if require_shader_f16 {
+            wgpu::Features::SHADER_F16
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("lbm-core-gpu"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits: limits,
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
@@ -446,6 +583,7 @@ fn has_open_faces<L: Lattice>(sub: &Subdomain, p: &StepParams<f32>) -> bool {
 /// GPU_EVALUATION.md §2).
 pub struct WgpuBackend<L: Lattice> {
     ctx: Arc<GpuContext>,
+    cfg: KernelCfg,
     pipelines: Arc<Pipelines>,
     submissions: Cell<u64>,
     cache_next_upload_moments_once: Cell<bool>,
@@ -460,7 +598,16 @@ pub struct WgpuBackend<L: Lattice> {
 impl<L: Lattice> WgpuBackend<L> {
     /// Compile the generated WGSL and build the pipeline set.
     pub fn new(ctx: Arc<GpuContext>) -> Self {
-        let source = wgsl::generate::<L>();
+        Self::with_config(ctx, KernelCfg::default())
+    }
+
+    /// Compile kernels with an explicit storage configuration.
+    pub fn with_config(ctx: Arc<GpuContext>, cfg: KernelCfg) -> Self {
+        let storage = match cfg.storage {
+            GpuStorage::F32 => wgsl::Storage::F32,
+            GpuStorage::F16 => wgsl::Storage::F16,
+        };
+        let source = wgsl::generate_with_storage::<L>(storage);
         let module = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -487,6 +634,7 @@ impl<L: Lattice> WgpuBackend<L> {
         });
         Self {
             ctx,
+            cfg,
             pipelines,
             submissions: Cell::new(0),
             cache_next_upload_moments_once: Cell::new(false),
@@ -499,6 +647,11 @@ impl<L: Lattice> WgpuBackend<L> {
     /// The shared device context.
     pub fn context(&self) -> &Arc<GpuContext> {
         &self.ctx
+    }
+
+    /// Kernel/storage configuration.
+    pub fn config(&self) -> KernelCfg {
+        self.cfg
     }
 
     /// Number of queue submissions issued by this backend instance.
@@ -666,7 +819,7 @@ impl<L: Lattice> WgpuBackend<L> {
         enc.copy_buffer_to_buffer(&fields.f[fields.cur()], 0, staging, 0, bytes);
         self.submit(enc.finish());
         let raw = self.map_staging(staging, bytes)?;
-        let data = Arc::new(bytemuck::cast_slice(&raw).to_vec());
+        let data = Arc::new(decode_storage(self.cfg.storage, &raw));
         let mut st = fields.state.borrow_mut();
         let generation = st.generation;
         st.f_cache = Some((generation, Arc::clone(&data)));
@@ -1070,7 +1223,7 @@ impl<L: Lattice> WgpuBackend<L> {
                     }
                 }
             }
-            q.write_buffer(&fields.f[dst], 0, bytemuck::cast_slice(&buf));
+            q.write_buffer(&fields.f[dst], 0, &encode_storage(self.cfg.storage, &buf));
         }
         // Edge stash (stash_in of the next fused dispatch = stash[cur]):
         // the ftmp values V1 would leave in the skipped slots.
@@ -1102,11 +1255,11 @@ impl<L: Lattice> WgpuBackend<L> {
             }
             off += unk.len() * ext;
         }
-        q.write_buffer(&fields.stash[cur], 0, bytemuck::cast_slice(&stash));
+        q.write_buffer(&fields.stash[cur], 0, &encode_storage(self.cfg.storage, &stash));
         q.write_buffer(
             &fields.stash[1 - cur],
             0,
-            bytemuck::cast_slice(&vec![0f32; slen]),
+            &encode_storage(self.cfg.storage, &vec![0f32; slen]),
         );
         // Mask (bit0 solid, bit1 probe) + host copies for reduce().
         let mut mask = vec![0u32; n];
@@ -1224,7 +1377,7 @@ impl<L: Lattice> WgpuBackend<L> {
         assert_eq!(g.d, L::D, "WgpuBackend lattice/domain dimension mismatch");
         let (nx, ny, nz) = (g.core[0] as u32, g.core[1] as u32, g.core[2] as u32);
         let n = (nx as usize) * (ny as usize) * (nz as usize);
-        let element_bytes = 4;
+        let element_bytes = self.cfg.storage.element_bytes();
         let plan = GpuResourcePlan::for_grid::<L>(nx as usize, ny as usize, nz as usize, element_bytes)?;
         plan.validate(&self.ctx.device.limits())?;
         let device = &self.ctx.device;

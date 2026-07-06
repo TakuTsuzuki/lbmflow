@@ -21,6 +21,6 @@ mod backend;
 mod solver;
 mod wgsl;
 
-pub use backend::{GpuContext, GpuError, GpuFields, GpuInitError, WgpuBackend};
+pub use backend::{GpuContext, GpuError, GpuFields, GpuInitError, GpuStorage, KernelCfg, WgpuBackend};
 #[allow(deprecated)]
 pub use solver::GpuSolver;

@@ -52,6 +52,14 @@ pub(crate) const WG: (u32, u32) = (256, 1);
 /// Workgroup size of the 1D face kernels.
 pub(crate) const WG_BC: u32 = 64;
 
+/// Distribution-buffer storage precision. Arithmetic stays f32; this controls
+/// only `f`/stash buffer declarations and load/store wrappers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Storage {
+    F32,
+    F16,
+}
+
 /// Flag bits of `Params.flags` (must match the generated WGSL constants).
 pub(crate) const FLAG_HALO: [u32; 6] = [1, 2, 4, 8, 16, 32];
 pub(crate) const FLAG_FORCE_FIELD: u32 = 64;
@@ -482,7 +490,13 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
 /// Generate the complete shader module for lattice `L` (asserted 2D by the
 /// backend). Everything below `binding(0..13)` is shared by all entry
 /// points; auto pipeline layouts keep each entry point's bind group minimal.
+#[cfg(test)]
 pub(crate) fn generate<L: Lattice>() -> String {
+    generate_with_storage::<L>(Storage::F32)
+}
+
+/// Generate the complete shader module for lattice `L`.
+pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     let (wgx, wgy) = WG;
     let rest = L::REST;
     let mut s = String::with_capacity(32 * 1024);
@@ -492,7 +506,10 @@ pub(crate) fn generate<L: Lattice>() -> String {
         L::D,
         L::Q
     );
-    s += "// Deviation-form f32 SoA planes f[q*n + z*(nx*ny) + y*nx + x]; push-fused collide+stream.\n\n";
+    if storage == Storage::F16 {
+        s += "enable f16;\n";
+    }
+    s += "// Deviation-form SoA planes f[q*n + z*(nx*ny) + y*nx + x]; push-fused collide+stream.\n\n";
     s += "struct Params {\n";
     s += "    nx: u32,\n    ny: u32,\n    nz: u32,\n    pad_dim: u32,\n";
     s += "    omega_p: f32,\n    omega_m: f32,\n";
@@ -506,13 +523,14 @@ pub(crate) fn generate<L: Lattice>() -> String {
     }
     s += "}\n\n";
     s += "@group(0) @binding(0) var<uniform> P: Params;\n";
-    s += "@group(0) @binding(1) var<storage, read> f_in: array<f32>;\n";
-    s += "@group(0) @binding(2) var<storage, read_write> f_out: array<f32>;\n";
+    let f_ty = if storage == Storage::F16 { "f16" } else { "f32" };
+    let _ = writeln!(s, "@group(0) @binding(1) var<storage, read> f_in: array<{f_ty}>;");
+    let _ = writeln!(s, "@group(0) @binding(2) var<storage, read_write> f_out: array<{f_ty}>;");
     s += "@group(0) @binding(3) var<storage, read> mask: array<u32>;\n";
     s += "@group(0) @binding(4) var<storage, read> wall_u: array<vec3<f32>>;\n";
     s += "@group(0) @binding(5) var<storage, read> force_field: array<vec3<f32>>;\n";
-    s += "@group(0) @binding(6) var<storage, read> stash_in: array<f32>;\n";
-    s += "@group(0) @binding(7) var<storage, read_write> stash_out: array<f32>;\n";
+    let _ = writeln!(s, "@group(0) @binding(6) var<storage, read> stash_in: array<{f_ty}>;");
+    let _ = writeln!(s, "@group(0) @binding(7) var<storage, read_write> stash_out: array<{f_ty}>;");
     s += "@group(0) @binding(8) var<storage, read_write> probe_acc: array<atomic<u32>, 3>;\n";
     s += "@group(0) @binding(9) var<storage, read_write> rho_out: array<f32>;\n";
     s += "@group(0) @binding(10) var<storage, read_write> ux_out: array<f32>;\n";
