@@ -1897,6 +1897,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         false
     }
 
+    fn supports_d3q27_open_faces(&self) -> bool {
+        false
+    }
+
     fn supports_gravity_body_force(&self) -> bool {
         true
     }

@@ -231,13 +231,23 @@ pub enum SpecError {
         /// The axis extent.
         extent: usize,
     },
-    /// Open-face kernels currently support only the 3-unknown D2Q9 and
-    /// 5-unknown D3Q19 closures.
+    /// Open-face kernels support D2Q9/D3Q19 open types, and D3Q27 velocity /
+    /// pressure faces only.
     UnsupportedOpenFaceLattice {
         /// Lattice name.
         lattice: &'static str,
         /// Number of unknown populations on each straight face.
         unknowns: usize,
+    },
+    /// This lattice has an open-face kernel, but not for the requested face
+    /// kind.
+    UnsupportedOpenFaceKind {
+        /// Lattice name.
+        lattice: &'static str,
+        /// The offending face index.
+        face: usize,
+        /// Boundary kind name.
+        kind: &'static str,
     },
     /// A volume-source region is outside the domain or touches a global face.
     SourceRegionNotInterior {
@@ -349,8 +359,17 @@ impl std::fmt::Display for SpecError {
             ),
             SpecError::UnsupportedOpenFaceLattice { lattice, unknowns } => write!(
                 f,
-                "{lattice} has {unknowns} unknown populations per open face; D3Q27 open-face \
-                 support is stage-4 work"
+                "{lattice} has {unknowns} unknown populations per open face; no open-face \
+                 closure is implemented for this lattice"
+            ),
+            SpecError::UnsupportedOpenFaceKind {
+                lattice,
+                face,
+                kind,
+            } => write!(
+                f,
+                "{lattice} open face {face} uses {kind}, but this lattice currently supports \
+                 only velocity inlet and pressure outlet open faces"
             ),
             SpecError::SourceRegionNotInterior { source, lo, hi } => write!(
                 f,
@@ -593,11 +612,37 @@ impl<T: Real> GlobalSpec<T> {
             self.faces[neg.index()].is_open() || self.faces[pos.index()].is_open()
         }) {
             let unknowns = L::unknowns(Face::ALL[0]).len();
-            if unknowns != 3 && unknowns != 5 {
+            if unknowns != 3 && unknowns != 5 && unknowns != 9 {
                 return Err(SpecError::UnsupportedOpenFaceLattice {
                     lattice: lattice_name::<L>(),
                     unknowns,
                 });
+            }
+        }
+        if L::D == 3 && L::Q == 27 {
+            for face in Face::ALL {
+                match self.faces[face.index()] {
+                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
+                    FaceBC::Outflow | FaceBC::Convective { .. } => {
+                        return Err(SpecError::UnsupportedOpenFaceKind {
+                            lattice: lattice_name::<L>(),
+                            face: face.index(),
+                            kind: face_bc_name(self.faces[face.index()]),
+                        });
+                    }
+                }
+            }
+            for patch in &self.face_patches {
+                match patch.bc {
+                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
+                    FaceBC::Outflow | FaceBC::Convective { .. } => {
+                        return Err(SpecError::UnsupportedOpenFaceKind {
+                            lattice: lattice_name::<L>(),
+                            face: patch.face,
+                            kind: face_bc_name(patch.bc),
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -773,6 +818,16 @@ fn hash_face_bc<T: Real>(h: &mut u64, bc: FaceBC<T>) {
             hash_u64(h, 4);
             hash_real(h, u_conv);
         }
+    }
+}
+
+fn face_bc_name<T: Real>(bc: FaceBC<T>) -> &'static str {
+    match bc {
+        FaceBC::Closed => "Closed",
+        FaceBC::Velocity { .. } => "Velocity",
+        FaceBC::Pressure { .. } => "Pressure",
+        FaceBC::Outflow => "Outflow",
+        FaceBC::Convective { .. } => "Convective",
     }
 }
 
@@ -1386,6 +1441,13 @@ where
                 "masked face patches"
             };
             return Err(SpecError::UnsupportedOnGpu { feature });
+        }
+        let has_open_faces = spec.faces.iter().any(FaceBC::is_open)
+            || spec.face_patches.iter().any(|patch| patch.bc.is_open());
+        if L::D == 3 && L::Q == 27 && has_open_faces && !backend.supports_d3q27_open_faces() {
+            return Err(SpecError::UnsupportedOnGpu {
+                feature: "D3Q27 open faces",
+            });
         }
         let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
         let params = StepParams {
@@ -4181,7 +4243,7 @@ mod tests {
     }
 
     #[test]
-    fn d3q27_rejects_open_faces_before_build() {
+    fn d3q27_rejects_unimplemented_open_face_kinds_before_build() {
         let mut faces = [FaceBC::<f64>::Closed; 6];
         faces[Face::XNeg.index()] = FaceBC::Velocity {
             u: [0.02, 0.0, 0.0],
@@ -4195,10 +4257,12 @@ mod tests {
         };
         assert!(matches!(
             spec.validate_lattice::<D3Q27>(&[]),
-            Err(SpecError::UnsupportedOpenFaceLattice {
+            Err(SpecError::UnsupportedOpenFaceKind {
                 lattice: "D3Q27",
-                unknowns: 9,
+                face,
+                ..
             })
+            if face == Face::XPos.index()
         ));
         assert!(matches!(
             Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
@@ -4209,7 +4273,7 @@ mod tests {
                 CpuScalar::default(),
                 LocalPeriodic,
             ),
-            Err(SpecError::UnsupportedOpenFaceLattice { .. })
+            Err(SpecError::UnsupportedOpenFaceKind { .. })
         ));
     }
 

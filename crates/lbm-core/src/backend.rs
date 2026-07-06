@@ -169,6 +169,13 @@ pub trait Backend<L: Lattice, T: Real> {
         true
     }
 
+    /// Whether this backend implements D3Q27 open-face velocity/pressure
+    /// closures. CPU backends use the scalar reference boundary pass; GPU
+    /// kernels still only carry D2Q9/D3Q19 open-face parameter blocks.
+    fn supports_d3q27_open_faces(&self) -> bool {
+        true
+    }
+
     /// Whether this backend supports the orchestrator's interior/boundary
     /// streaming split. Backends that fuse whole-grid kernels can return
     /// `false` so callers can reject two-pass mode before a run is recorded.
