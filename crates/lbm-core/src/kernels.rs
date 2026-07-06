@@ -730,6 +730,9 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
     selection: FaceCellSelection<'_>,
 ) {
     if L::D == 3 {
+        if L::unknowns(face).len() == 9 {
+            return zou_he_face_d3q27::<L, T>(f, np, geom, solid, face, kind, profile, selection);
+        }
         return zou_he_face_3d::<L, T>(f, np, geom, solid, face, kind, profile, selection);
     }
     let n = face.n_in();
@@ -768,6 +771,101 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
         f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c23 * r * un;
         f[q_d1 * np + i] = f[L::OPP[q_d1] * np + i] + c16 * r * un + tcorr;
         f[q_d2 * np + i] = f[L::OPP[q_d2] * np + i] + c16 * r * un - tcorr;
+    });
+}
+
+/// D3Q27 extension of the Zou-He / Hecht-Harting on-site velocity and
+/// pressure closure. The unknown plane has nine links, `n + j t1 + k t2`
+/// with `j,k in {-1,0,1}`. Non-equilibrium bounce-back gives
+/// `f_q = f_opp + 6 w_q rho c_q.u + delta_q`. Its mass and normal momentum
+/// are exact under the usual closure relation; the remaining two constraints
+/// are the tangent moment deficits
+/// `C_t = rho u_t - Q0_t - 6 rho u_t sum_unknown w c_t^2`, where `Q0_t`
+/// is carried by the known face-parallel links. D3Q27 tensor-product
+/// symmetry gives zero cross-coupling, so distributing
+/// `delta_q = C_t1 w_q c_t1 / S_t1 + C_t2 w_q c_t2 / S_t2` exactly enforces
+/// both tangent moments without changing mass or normal momentum.
+#[allow(clippy::too_many_arguments)]
+fn zou_he_face_d3q27<L: Lattice, T: Real>(
+    f: &mut [T],
+    np: usize,
+    geom: &LocalGeom,
+    solid: &[bool],
+    face: Face,
+    kind: &ZhKind<T>,
+    profile: Option<&[[T; 3]]>,
+    selection: FaceCellSelection<'_>,
+) {
+    assert_eq!(
+        L::unknowns(face).len(),
+        9,
+        "zou_he_face_d3q27 expects 9 unknowns; lattice {:?} face has {}",
+        std::any::type_name::<L>(),
+        L::unknowns(face).len()
+    );
+    let a = face.axis();
+    let (t1, t2) = face.tangents();
+    let n = face.n_in();
+    let nsign = T::r(n[a] as f64);
+    let unknowns = L::unknowns(face);
+
+    let mut s2_t1 = 0.0f64;
+    let mut s2_t2 = 0.0f64;
+    for &q in unknowns {
+        let c = L::C[q];
+        s2_t1 += L::W[q] * (c[t1] as f64) * (c[t1] as f64);
+        s2_t2 += L::W[q] * (c[t2] as f64) * (c[t2] as f64);
+    }
+    let (s2_t1, s2_t2) = (T::r(s2_t1), T::r(s2_t2));
+    let (one, two, six) = (T::one(), T::r(2.0), T::r(6.0));
+
+    for_face_cells_selected(geom, face, selection, |coord, pos| {
+        let i = geom.pidx(pos[0], pos[1], pos[2]);
+        if solid[i] {
+            return;
+        }
+
+        let mut s0 = T::zero();
+        let mut sneg = T::zero();
+        let mut q0_t1 = T::zero();
+        let mut q0_t2 = T::zero();
+        for q in 0..L::Q {
+            let c = L::C[q];
+            let dot = c[a] as i32 * n[a] as i32;
+            let fq = f[q * np + i];
+            if dot == 0 {
+                s0 = s0 + fq;
+                q0_t1 = q0_t1 + T::r(c[t1] as f64) * fq;
+                q0_t2 = q0_t2 + T::r(c[t2] as f64) * fq;
+            } else if dot < 0 {
+                sneg = sneg + fq;
+            }
+        }
+
+        let closure = s0 + two * sneg + one;
+        let (rho, un, ut1, ut2) = match *kind {
+            ZhKind::Velocity(u) => {
+                let u = profile.map_or(u, |p| p[coord]);
+                (closure / (one - u[a] * nsign), u[a] * nsign, u[t1], u[t2])
+            }
+            ZhKind::Pressure(rho_bc) => {
+                let un = one - closure / rho_bc;
+                (rho_bc, un, T::zero(), T::zero())
+            }
+        };
+
+        let c_t1 = rho * ut1 * (one - six * s2_t1) - q0_t1;
+        let c_t2 = rho * ut2 * (one - six * s2_t2) - q0_t2;
+        for &q in unknowns {
+            let c = L::C[q];
+            let cdotu = T::r(c[a] as f64) * nsign * un
+                + T::r(c[t1] as f64) * ut1
+                + T::r(c[t2] as f64) * ut2;
+            let w = T::r(L::W[q]);
+            let delta =
+                c_t1 * w * T::r(c[t1] as f64) / s2_t1 + c_t2 * w * T::r(c[t2] as f64) / s2_t2;
+            f[q * np + i] = f[L::OPP[q] * np + i] + six * w * rho * cdotu + delta;
+        }
     });
 }
 

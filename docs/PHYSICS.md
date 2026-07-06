@@ -364,6 +364,77 @@ impinging-jet class of scenarios.
   needs to separate a coherent radial outflow from round-off noise, which
   sits 7 orders lower.
 
+### 2026-07-07 D3Q27 open-face velocity/pressure closure (`kernels.rs::zou_he_face_d3q27`)
+- Form: D3Q27 velocity inlet and pressure outlet use non-equilibrium
+  bounce-back on the nine incoming face links. For a face with inward normal
+  `n` and tangent axes `t1,t2`, unknown links are
+  `U = {q: c_q·n = 1}`. The density/normal-velocity closure is
+  `rho (1 - u_n) = S0 + 2 S-`, with `S0 = sum_{c·n=0} f_q`,
+  `S- = sum_{c·n=-1} f_q`; deviation storage adds the same analytic `+1`
+  constant used by the D2Q9/D3Q19 closure. Velocity faces prescribe
+  `u_n,u_t1,u_t2` and solve `rho`; pressure faces prescribe `rho`, solve
+  `u_n`, and set `u_t1 = u_t2 = 0`. Each unknown is reconstructed as
+  `f_q = f_opp(q) + 6 w_q rho (c_q·u) + delta_q`, with
+  `delta_q = C1 w_q c_q,t1 / S1 + C2 w_q c_q,t2 / S2`,
+  `Sk = sum_{q in U} w_q c_q,tk^2`, and
+  `Ck = rho u_tk - Q0_k - 6 rho u_tk Sk`,
+  `Q0_k = sum_{c·n=0} c_tk f_q`. D3Q27 tensor-product symmetry makes
+  `sum_U w c_t1 c_t2 = 0`, so these two correction components do not
+  cross-couple. The correction has zero mass and zero normal moment because
+  `sum_U w c_tk = 0`; it supplies exactly `Ck` to the corresponding tangent
+  moment. Therefore the post-closure node satisfies `rho` and all three
+  velocity components to rounding.
+- Source: Zou and He, "On pressure and velocity flow boundary conditions for
+  the lattice Boltzmann BGK model" (Physics of Fluids, 1997; arXiv
+  `comp-gas/9611001`, https://arxiv.org/abs/comp-gas/9611001) introduced
+  the non-equilibrium bounce-back pressure / velocity construction. Hecht
+  and Harting, "Implementation of on-site velocity boundary conditions for
+  D3Q19 lattice Boltzmann" (J. Stat. Mech. P01018, 2010; arXiv `0811.4593`,
+  https://arxiv.org/abs/0811.4593) give the D3Q19 on-site moment closure.
+  The D3Q27 addition is the algebra above: the D3Q19 tangent deficit
+  correction is distributed over the full nine-link D3Q27 incoming plane by
+  the lattice weights, including the four body-diagonal corner links.
+- Validity domain: planar axis-aligned D3Q27 velocity and pressure faces on
+  the CPU backends, under the existing one-open-axis rule and low-Mach
+  prescribed-speed guard (`MAX_SPEED = 0.3`). It does not implement D3Q27
+  `Outflow` or `Convective` faces, and GPU/WGSL still rejects D3Q27 open
+  faces explicitly.
+- Validation: `crates/lbm-core/tests/d3q27_open_bc.rs`:
+  `d3q27_open_faces_enforce_velocity_and_pressure_moments_all_orientations`
+  measured max velocity-face moment error `6.939e-18`, pressure density error
+  `0`, and pressure transverse velocity error `0` across all six faces;
+  `d3q27_open_duct_matches_series_shape_and_d3q19` measured duct
+  flux-scaled profile L2rel `2.143e-4`, unscaled L2rel `7.416e-3`
+  (compressible mass-flux scaling `1.007413`), D3Q27-vs-D3Q19 L2rel
+  `3.421e-4`, mass-flux imbalance `4.212e-5`, cross-flow ratio
+  `3.588e-7`, and monotone pressure drop; `t13_d3q27_open_duct_split_invariant_with_bc_seams`
+  passed bit-exact split invariance with seams crossing inlet/outlet cells;
+  `d3q27_unimplemented_open_face_kinds_are_rejected` preserves explicit
+  rejection for unimplemented D3Q27 open kinds.
+- Replaces / interacts with: lifts the previous `UnsupportedOpenFaceLattice`
+  restriction only for D3Q27 velocity inlet / pressure outlet. D2Q9 and
+  D3Q19 keep their existing code paths. The D3Q27 outflow and convective
+  closures remain unimplemented rather than inheriting a new model silently.
+
+### 2026-07-07 behavior review — D3Q27 open rectangular duct
+Pattern: the duct run is predominantly unidirectional in `x`; transverse
+velocity is negligible (`cross_rel = 3.588e-7`), mass flux is balanced
+inlet-to-outlet within `4.212e-5`, and the plane-averaged density decreases
+from inlet to outlet.
+Mechanism: the prescribed inlet flux plus fixed outlet density establish an
+axial pressure gradient; half-way wall rims impose the rectangular-duct shear
+profile, and the D3Q27 closure supplies only the missing incoming face
+populations needed to satisfy the boundary moments.
+Resolved vs closure: the duct shear and pressure-gradient response are
+resolved LBM dynamics with half-way walls; the only non-resolved term active
+is the D3Q27 open-face moment closure recorded above.
+Artifacts checked: `crates/lbm-core/target/d3q27_open_duct_profile.csv`.
+No clamps, caps, walls-as-absorbers beyond the documented wall rim, or
+partition seam artifacts were observed; the T13 open-duct split case was
+bit-exact with seams crossing the boundary cells.
+Verdict: PHYSICAL.
+Routing: none.
+
 Without these notes, someone re-tightening the bands from "1e-12 looks
 tight" chases physically impossible numbers.
 

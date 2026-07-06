@@ -1,5 +1,5 @@
 //! D3Q27 stage-1 smoke tests: closed-wall BGK/TRT kernels, wall rims,
-//! moving-wall bounce-back, and the explicit open-face scope guard.
+//! moving-wall bounce-back, and the explicit unimplemented-open-kind guard.
 
 use lbm_core::prelude::*;
 
@@ -71,7 +71,7 @@ fn d3q27_closed_box_stays_finite_and_conserves_mass() {
 }
 
 #[test]
-fn d3q27_open_face_returns_unsupported_lattice_error() {
+fn d3q27_outflow_still_returns_unsupported_kind_error() {
     let mut faces = [FaceBC::Closed; 6];
     faces[Face::XNeg.index()] = FaceBC::Velocity {
         u: [0.02, 0.0, 0.0],
@@ -97,12 +97,14 @@ fn d3q27_open_face_returns_unsupported_lattice_error() {
     assert!(
         matches!(
             err,
-            SpecError::UnsupportedOpenFaceLattice {
+            SpecError::UnsupportedOpenFaceKind {
                 lattice: "D3Q27",
-                unknowns: 9
+                face,
+                ..
             }
+            if face == Face::XPos.index()
         ),
-        "expected UnsupportedOpenFaceLattice(D3Q27, 9), got {err:?}"
+        "expected UnsupportedOpenFaceKind(D3Q27, XPos Outflow), got {err:?}"
     );
 }
 
