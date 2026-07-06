@@ -1,8 +1,14 @@
 # WASM Bridge Design (Phase 5)
 
+**Status (2026-07-07)**: **Landed**: `crates/lbm-wasm` exposes `WasmSim` over `compat::Simulation<f32>` and `web/src/engine/wasm.ts` adapts it to `Engine`.
+**Landed with drift**: zero-copy field pointers and rebuild-on-erase are implemented; SCMP f32 config is also present.
+**Superseded/current intent**: shared `lbm-scenario` config conversion and `set_inlet_profile_parabolic` are not the landed WASM API; performance targets were not remeasured in this sweep.
+
 The layer that connects `lbm-core` to the GUI's (web/, TypeScript) `Engine` interface.
 
 ## Crate: crates/lbm-wasm
+
+(landed 2026-07-07 — wasm-bindgen crate depends on `lbm-core` with default features disabled and emits the committed `web/src/engine/pkg` wrapper)
 
 - `wasm-bindgen` + `lbm-core` (`default-features = false`, rayon disabled =
   single-threaded. Targets the scale that can run within a single browser frame)
@@ -12,6 +18,8 @@ The layer that connects `lbm-core` to the GUI's (web/, TypeScript) `Engine` inte
   → outputs to `web/src/engine/pkg/`, wrapped by the `WasmEngine implements Engine` adapter
 
 ## Public API (1:1 with the TS Engine interface)
+
+(landed with API drift 2026-07-07 — `WasmSim` exposes init/step/nx/ny/time/field pointers/solid editing; `set_inlet_profile_parabolic` is not implemented, and errors are English `JsError` strings)
 
 ```rust
 #[wasm_bindgen]
@@ -39,6 +47,8 @@ impl WasmSim {
 
 ### EngineConfig(JSON) → SimConfig conversion
 
+(partially superseded 2026-07-07 — WASM uses local `JsConfig`/`JsEdge`; GUI scenario export targets `lbm-scenario`, but conversion code is not shared)
+
 - `collision: "bgk" | "trt"` → `Collision::Bgk | Trt{magic: 3/16}`
 - edges' tagged union → `EdgeBC` (deserialized via serde, defined inside lbm-wasm)
 - **This JSON representation is made identical in shape to the `edges`/`physics` sections of
@@ -46,6 +56,8 @@ impl WasmSim {
   (serde types live in the shared crate `lbm-scenario` — both lbm-cli and lbm-wasm depend on it)
 
 ## Handling setSolid's "erase" operation
+
+(landed via rebuild path 2026-07-07 — the planned live `clear_solid` core API is not implemented)
 
 `Simulation` has no unset_solid (to protect the rim). The GUI's eraser works as follows:
 - On the lbm-wasm side, separately maintain a "user drawing layer" (Vec<bool>)
@@ -57,6 +69,8 @@ impl WasmSim {
   robustness test to VALIDATION confirming "mass stays finite and no NaN appears after clear_solid."
 
 ## Performance target
+
+(current intent 2026-07-07 — target retained as design guidance; no benchmark was run for this status sweep)
 
 - 256×128 (32k cells) f32 single-threaded: target ≥ 30 MLUPS → ~15 step/frame at 60fps.
   GUI default is set to either 192×96 or 256×128.
