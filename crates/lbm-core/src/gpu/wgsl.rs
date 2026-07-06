@@ -224,9 +224,23 @@ fn sum_expr<L: Lattice>(prefix: &str, suffix: &str, coef: impl Fn(usize) -> i8) 
     s
 }
 
+fn storage_load(storage: Storage, expr: &str) -> String {
+    match storage {
+        Storage::F32 => expr.to_string(),
+        Storage::F16 => format!("f32({expr})"),
+    }
+}
+
+fn storage_store(storage: Storage, expr: &str) -> String {
+    match storage {
+        Storage::F32 => expr.to_string(),
+        Storage::F16 => format!("f16({expr})"),
+    }
+}
+
 /// Shared prologue of `step` / `moments`: bounds check, solid skip,
 /// population loads (`f0..`), force vector and V1-order moments.
-fn emit_cell_prologue<L: Lattice>(s: &mut String, allow_cached_moments: bool) {
+fn emit_cell_prologue<L: Lattice>(s: &mut String, allow_cached_moments: bool, storage: Storage) {
     *s += "    let nx = P.nx;\n";
     *s += "    let ny = P.ny;\n";
     *s += "    let nz = P.nz;\n";
@@ -240,9 +254,13 @@ fn emit_cell_prologue<L: Lattice>(s: &mut String, allow_cached_moments: bool) {
     *s += "    if ((mask[i] & 1u) != 0u) { return; }\n";
     for q in 0..L::Q {
         if q == 0 {
-            let _ = writeln!(s, "    let fq0 = f_in[i];");
+            let _ = writeln!(s, "    let fq0 = {};", storage_load(storage, "f_in[i]"));
         } else {
-            let _ = writeln!(s, "    let fq{q} = f_in[{q}u * n + i];");
+            let _ = writeln!(
+                s,
+                "    let fq{q} = {};",
+                storage_load(storage, &format!("f_in[{q}u * n + i]"))
+            );
         }
     }
     // fv = uniform force + optional per-cell field (V1 collide_row order).
@@ -337,14 +355,19 @@ fn emit_push_coord(s: &mut String, axis: usize, c: i8, var: &str, extent: &str) 
     }
 }
 
-fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments: bool) {
+fn emit_step_entry<L: Lattice>(
+    s: &mut String,
+    name: &str,
+    allow_cached_moments: bool,
+    storage: Storage,
+) {
     let (wgx, wgy) = WG;
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
     let _ = writeln!(
         s,
         "fn {name}(@builtin(global_invocation_id) gid: vec3<u32>) {{"
     );
-    emit_cell_prologue::<L>(s, allow_cached_moments);
+    emit_cell_prologue::<L>(s, allow_cached_moments, storage);
     if !allow_cached_moments {
         *s += "    let _keep_moment_bindings = arrayLength(&rho_out) + arrayLength(&ux_out) + arrayLength(&uy_out) + arrayLength(&uz_out);\n";
     }
@@ -397,7 +420,11 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         );
     }
     // Push (stream_row's scatter dual). Rest population stays home.
-    let _ = writeln!(s, "    f_out[{rest}u * n + i] = fc{rest};");
+    let _ = writeln!(
+        s,
+        "    f_out[{rest}u * n + i] = {};",
+        storage_store(storage, &format!("fc{rest}"))
+    );
     for q in 0..L::Q {
         if q == rest {
             continue;
@@ -426,7 +453,11 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         *s += "                let wu = wall_u[j];\n";
         let _ = writeln!(s, "                let cub = {cub};");
         let _ = writeln!(s, "                let fin = fc{q} + {sixw} * rho * cub;");
-        let _ = writeln!(s, "                f_out[{o}u * n + i] = fin;");
+        let _ = writeln!(
+            s,
+            "                f_out[{o}u * n + i] = {};",
+            storage_store(storage, "fin")
+        );
         *s += "                if ((mj & 2u) != 0u) {\n";
         let _ = writeln!(s, "                    let ftot = fc{q} + fin + {twow};");
         for (axis, &ca) in c.iter().enumerate() {
@@ -442,7 +473,11 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         }
         *s += "                }\n";
         *s += "            } else {\n";
-        let _ = writeln!(s, "                f_out[{q}u * n + j] = fc{q};");
+        let _ = writeln!(
+            s,
+            "                f_out[{q}u * n + j] = {};",
+            storage_store(storage, &format!("fc{q}"))
+        );
         *s += "            }\n";
         *s += "        }\n";
         *s += "    }\n";
@@ -478,11 +513,24 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         );
         for (k, &u) in unk.iter().enumerate() {
             let _ = writeln!(s, "        let sl{k} = {off} + {k}u * ({ext}) + {tvar};");
-            let _ = writeln!(s, "        f_out[{u}u * n + i] = stash_in[sl{k}];");
-            let _ = writeln!(s, "        stash_out[sl{k}] = fc{u};");
+            let _ = writeln!(
+                s,
+                "        f_out[{u}u * n + i] = {};",
+                storage_store(storage, &storage_load(storage, &format!("stash_in[sl{k}]")))
+            );
+            let _ = writeln!(
+                s,
+                "        stash_out[sl{k}] = {};",
+                storage_store(storage, &format!("fc{u}"))
+            );
         }
         *s += "    }\n";
-        offset_terms.push(format!("{}u * {} * {}", unk.len(), ext_names[t1], ext_names[t2]));
+        offset_terms.push(format!(
+            "{}u * {} * {}",
+            unk.len(),
+            ext_names[t1],
+            ext_names[t2]
+        ));
     }
     *s += "}\n\n";
 }
@@ -523,14 +571,30 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     }
     s += "}\n\n";
     s += "@group(0) @binding(0) var<uniform> P: Params;\n";
-    let f_ty = if storage == Storage::F16 { "f16" } else { "f32" };
-    let _ = writeln!(s, "@group(0) @binding(1) var<storage, read> f_in: array<{f_ty}>;");
-    let _ = writeln!(s, "@group(0) @binding(2) var<storage, read_write> f_out: array<{f_ty}>;");
+    let f_ty = if storage == Storage::F16 {
+        "f16"
+    } else {
+        "f32"
+    };
+    let _ = writeln!(
+        s,
+        "@group(0) @binding(1) var<storage, read> f_in: array<{f_ty}>;"
+    );
+    let _ = writeln!(
+        s,
+        "@group(0) @binding(2) var<storage, read_write> f_out: array<{f_ty}>;"
+    );
     s += "@group(0) @binding(3) var<storage, read> mask: array<u32>;\n";
     s += "@group(0) @binding(4) var<storage, read> wall_u: array<vec3<f32>>;\n";
     s += "@group(0) @binding(5) var<storage, read> force_field: array<vec3<f32>>;\n";
-    let _ = writeln!(s, "@group(0) @binding(6) var<storage, read> stash_in: array<{f_ty}>;");
-    let _ = writeln!(s, "@group(0) @binding(7) var<storage, read_write> stash_out: array<{f_ty}>;");
+    let _ = writeln!(
+        s,
+        "@group(0) @binding(6) var<storage, read> stash_in: array<{f_ty}>;"
+    );
+    let _ = writeln!(
+        s,
+        "@group(0) @binding(7) var<storage, read_write> stash_out: array<{f_ty}>;"
+    );
     s += "@group(0) @binding(8) var<storage, read_write> probe_acc: array<atomic<u32>, 3>;\n";
     s += "@group(0) @binding(9) var<storage, read_write> rho_out: array<f32>;\n";
     s += "@group(0) @binding(10) var<storage, read_write> ux_out: array<f32>;\n";
@@ -554,13 +618,13 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "}\n\n";
 
     // ------------------------------------------------------------- step
-    emit_step_entry::<L>(&mut s, "step", false);
-    emit_step_entry::<L>(&mut s, "step_cached", true);
+    emit_step_entry::<L>(&mut s, "step", false, storage);
+    emit_step_entry::<L>(&mut s, "step_cached", true, storage);
 
     // ---------------------------------------------------------- moments
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
     s += "fn moments(@builtin(global_invocation_id) gid: vec3<u32>) {\n";
-    emit_cell_prologue::<L>(&mut s, false);
+    emit_cell_prologue::<L>(&mut s, false, storage);
     s += "    rho_out[i] = rho;\n";
     s += "    ux_out[i] = ux;\n";
     s += "    uy_out[i] = uy;\n";
@@ -569,27 +633,38 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
 
     // --------------------------------------------- open-face moment fixup
     s += "fn fix_bc_moments(i: u32, n: u32) {\n";
-    let terms: Vec<String> = (0..L::Q).map(|q| format!("f_out[{q}u * n + i]")).collect();
+    let terms: Vec<String> = (0..L::Q)
+        .map(|q| storage_load(storage, &format!("f_out[{q}u * n + i]")))
+        .collect();
     let mx_terms: Vec<String> = (0..L::Q)
         .filter_map(|q| match L::C[q][0] {
-            1 => Some(format!("f_out[{q}u * n + i]")),
-            -1 => Some(format!("-f_out[{q}u * n + i]")),
+            1 => Some(storage_load(storage, &format!("f_out[{q}u * n + i]"))),
+            -1 => Some(format!(
+                "-{}",
+                storage_load(storage, &format!("f_out[{q}u * n + i]"))
+            )),
             0 => None,
             _ => unreachable!(),
         })
         .collect();
     let my_terms: Vec<String> = (0..L::Q)
         .filter_map(|q| match L::C[q][1] {
-            1 => Some(format!("f_out[{q}u * n + i]")),
-            -1 => Some(format!("-f_out[{q}u * n + i]")),
+            1 => Some(storage_load(storage, &format!("f_out[{q}u * n + i]"))),
+            -1 => Some(format!(
+                "-{}",
+                storage_load(storage, &format!("f_out[{q}u * n + i]"))
+            )),
             0 => None,
             _ => unreachable!(),
         })
         .collect();
     let mz_terms: Vec<String> = (0..L::Q)
         .filter_map(|q| match L::C[q][2] {
-            1 => Some(format!("f_out[{q}u * n + i]")),
-            -1 => Some(format!("-f_out[{q}u * n + i]")),
+            1 => Some(storage_load(storage, &format!("f_out[{q}u * n + i]"))),
+            -1 => Some(format!(
+                "-{}",
+                storage_load(storage, &format!("f_out[{q}u * n + i]"))
+            )),
             0 => None,
             _ => unreachable!(),
         })
@@ -655,19 +730,66 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
         s,
         "    if (B.kind == {BC_VELOCITY}u || B.kind == {BC_PRESSURE}u) {{"
     );
-    s += "        let ft1 = f_out[B.q_t1 * n + i];\n";
-    s += "        let fmt1 = f_out[B.q_mt1 * n + i];\n";
-    s += "        let ft2 = f_out[B.q_t2 * n + i];\n";
-    s += "        let fmt2 = f_out[B.q_mt2 * n + i];\n";
-    s += "        let fpp = f_out[B.q_pp * n + i];\n";
-    s += "        let fpm = f_out[B.q_pm * n + i];\n";
-    s += "        let fmp = f_out[B.q_mp * n + i];\n";
-    s += "        let fmm = f_out[B.q_mm * n + i];\n";
-    let _ = writeln!(s, "        var s0 = f_out[{rest}u * n + i] + ft1 + fmt1;");
-    s += "        var sneg = f_out[B.o_n * n + i] + f_out[B.o_p1 * n + i] + f_out[B.o_m1 * n + i];\n";
+    let _ = writeln!(
+        s,
+        "        let ft1 = {};",
+        storage_load(storage, "f_out[B.q_t1 * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let fmt1 = {};",
+        storage_load(storage, "f_out[B.q_mt1 * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let ft2 = {};",
+        storage_load(storage, "f_out[B.q_t2 * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let fmt2 = {};",
+        storage_load(storage, "f_out[B.q_mt2 * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let fpp = {};",
+        storage_load(storage, "f_out[B.q_pp * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let fpm = {};",
+        storage_load(storage, "f_out[B.q_pm * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let fmp = {};",
+        storage_load(storage, "f_out[B.q_mp * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        let fmm = {};",
+        storage_load(storage, "f_out[B.q_mm * n + i]")
+    );
+    let _ = writeln!(
+        s,
+        "        var s0 = {} + ft1 + fmt1;",
+        storage_load(storage, &format!("f_out[{rest}u * n + i]"))
+    );
+    let _ = writeln!(
+        s,
+        "        var sneg = {} + {} + {};",
+        storage_load(storage, "f_out[B.o_n * n + i]"),
+        storage_load(storage, "f_out[B.o_p1 * n + i]"),
+        storage_load(storage, "f_out[B.o_m1 * n + i]")
+    );
     s += "        if (B.unk_count == 5u) {\n";
     s += "            s0 = s0 + ft2 + fmt2 + fpp + fpm + fmp + fmm;\n";
-    s += "            sneg = sneg + f_out[B.o_p2 * n + i] + f_out[B.o_m2 * n + i];\n";
+    let _ = writeln!(
+        s,
+        "            sneg = sneg + {} + {};",
+        storage_load(storage, "f_out[B.o_p2 * n + i]"),
+        storage_load(storage, "f_out[B.o_m2 * n + i]")
+    );
     s += "        }\n";
     s += "        let closure = s0 + 2.0f * sneg + 1.0f;\n";
     s += "        var r = 0.0f;\n";
@@ -698,26 +820,97 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "            let tcorr = 0.5f * (r * ut1 - (ft1 - fmt1));\n";
     let _ = writeln!(
         s,
-        "        f_out[B.q_n * n + i] = f_out[B.o_n * n + i] + {c23} * r * un;"
+        "        f_out[B.q_n * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + {c23} * r * un",
+                storage_load(storage, "f_out[B.o_n * n + i]")
+            )
+        )
     );
     let _ = writeln!(
         s,
-        "            f_out[B.q_p1 * n + i] = f_out[B.o_p1 * n + i] + {c16} * r * un + tcorr;"
+        "            f_out[B.q_p1 * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + {c16} * r * un + tcorr",
+                storage_load(storage, "f_out[B.o_p1 * n + i]")
+            )
+        )
     );
     let _ = writeln!(
         s,
-        "            f_out[B.q_m1 * n + i] = f_out[B.o_m1 * n + i] + {c16} * r * un - tcorr;"
+        "            f_out[B.q_m1 * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + {c16} * r * un - tcorr",
+                storage_load(storage, "f_out[B.o_m1 * n + i]")
+            )
+        )
     );
     s += "        } else {\n";
     s += "            let qt1 = ft1 - fmt1 + fpp + fpm - fmp - fmm;\n";
     s += "            let qt2 = ft2 - fmt2 + fpp - fpm + fmp - fmm;\n";
     s += "            let n1 = (1.0f / 3.0f) * r * ut1 - 0.5f * qt1;\n";
     s += "            let n2 = (1.0f / 3.0f) * r * ut2 - 0.5f * qt2;\n";
-    s += "            f_out[B.q_n * n + i] = f_out[B.o_n * n + i] + (1.0f / 3.0f) * r * un;\n";
-    s += "            f_out[B.q_p1 * n + i] = f_out[B.o_p1 * n + i] + (1.0f / 6.0f) * r * (un + ut1) + n1;\n";
-    s += "            f_out[B.q_m1 * n + i] = f_out[B.o_m1 * n + i] + (1.0f / 6.0f) * r * (un - ut1) - n1;\n";
-    s += "            f_out[B.q_p2 * n + i] = f_out[B.o_p2 * n + i] + (1.0f / 6.0f) * r * (un + ut2) + n2;\n";
-    s += "            f_out[B.q_m2 * n + i] = f_out[B.o_m2 * n + i] + (1.0f / 6.0f) * r * (un - ut2) - n2;\n";
+    let _ = writeln!(
+        s,
+        "            f_out[B.q_n * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + (1.0f / 3.0f) * r * un",
+                storage_load(storage, "f_out[B.o_n * n + i]")
+            )
+        )
+    );
+    let _ = writeln!(
+        s,
+        "            f_out[B.q_p1 * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + (1.0f / 6.0f) * r * (un + ut1) + n1",
+                storage_load(storage, "f_out[B.o_p1 * n + i]")
+            )
+        )
+    );
+    let _ = writeln!(
+        s,
+        "            f_out[B.q_m1 * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + (1.0f / 6.0f) * r * (un - ut1) - n1",
+                storage_load(storage, "f_out[B.o_m1 * n + i]")
+            )
+        )
+    );
+    let _ = writeln!(
+        s,
+        "            f_out[B.q_p2 * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + (1.0f / 6.0f) * r * (un + ut2) + n2",
+                storage_load(storage, "f_out[B.o_p2 * n + i]")
+            )
+        )
+    );
+    let _ = writeln!(
+        s,
+        "            f_out[B.q_m2 * n + i] = {};",
+        storage_store(
+            storage,
+            &format!(
+                "{} + (1.0f / 6.0f) * r * (un - ut2) - n2",
+                storage_load(storage, "f_out[B.o_m2 * n + i]")
+            )
+        )
+    );
     s += "        }\n";
     s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
@@ -728,12 +921,32 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "        return;\n";
     s += "    }\n";
     let _ = writeln!(s, "    if (B.kind == {BC_OUTFLOW}u) {{");
-    s += "        f_out[B.unk0 * n + i] = f_out[B.unk0 * n + j];\n";
-    s += "        f_out[B.unk1 * n + i] = f_out[B.unk1 * n + j];\n";
-    s += "        f_out[B.unk2 * n + i] = f_out[B.unk2 * n + j];\n";
+    let _ = writeln!(
+        s,
+        "        f_out[B.unk0 * n + i] = {};",
+        storage_store(storage, &storage_load(storage, "f_out[B.unk0 * n + j]"))
+    );
+    let _ = writeln!(
+        s,
+        "        f_out[B.unk1 * n + i] = {};",
+        storage_store(storage, &storage_load(storage, "f_out[B.unk1 * n + j]"))
+    );
+    let _ = writeln!(
+        s,
+        "        f_out[B.unk2 * n + i] = {};",
+        storage_store(storage, &storage_load(storage, "f_out[B.unk2 * n + j]"))
+    );
     s += "        if (B.unk_count == 5u) {\n";
-    s += "            f_out[B.unk3 * n + i] = f_out[B.unk3 * n + j];\n";
-    s += "            f_out[B.unk4 * n + i] = f_out[B.unk4 * n + j];\n";
+    let _ = writeln!(
+        s,
+        "            f_out[B.unk3 * n + i] = {};",
+        storage_store(storage, &storage_load(storage, "f_out[B.unk3 * n + j]"))
+    );
+    let _ = writeln!(
+        s,
+        "            f_out[B.unk4 * n + i] = {};",
+        storage_store(storage, &storage_load(storage, "f_out[B.unk4 * n + j]"))
+    );
     s += "        }\n";
     s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
@@ -743,20 +956,39 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     for k in 0..5 {
         let _ = writeln!(
             s,
-            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = (f_out[B.unk{k} * n + i] + lam * f_out[B.unk{k} * n + j]) * B.cinv; }}"
+            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = {}; }}",
+            storage_store(
+                storage,
+                &format!(
+                    "({} + lam * {}) * B.cinv",
+                    storage_load(storage, &format!("f_out[B.unk{k} * n + i]")),
+                    storage_load(storage, &format!("f_out[B.unk{k} * n + j]"))
+                )
+            )
         );
     }
     // Mass pinning: rho(edge) := rho(neighbour), deficit spread over the
     // unknowns by weight (convective_face, q-ascending sums).
-    let di: Vec<String> = (0..L::Q).map(|q| format!("f_out[{q}u * n + i]")).collect();
-    let dj: Vec<String> = (0..L::Q).map(|q| format!("f_out[{q}u * n + j]")).collect();
+    let di: Vec<String> = (0..L::Q)
+        .map(|q| storage_load(storage, &format!("f_out[{q}u * n + i]")))
+        .collect();
+    let dj: Vec<String> = (0..L::Q)
+        .map(|q| storage_load(storage, &format!("f_out[{q}u * n + j]")))
+        .collect();
     let _ = writeln!(s, "        let di = {};", di.join(" + "));
     let _ = writeln!(s, "        let dj = {};", dj.join(" + "));
     s += "        let corr = dj - di;\n";
     for k in 0..5 {
         let _ = writeln!(
             s,
-            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = f_out[B.unk{k} * n + i] + corr * B.cw{k} / B.wsum; }}"
+            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = {}; }}",
+            storage_store(
+                storage,
+                &format!(
+                    "{} + corr * B.cw{k} / B.wsum",
+                    storage_load(storage, &format!("f_out[B.unk{k} * n + i]"))
+                )
+            )
         );
     }
     s += "        fix_bc_moments(i, n);\n";
@@ -778,26 +1010,44 @@ mod tests {
     use super::*;
     use crate::lattice::{D2Q9, D3Q19};
 
-    #[test]
-    fn generated_wgsl_parses_and_validates_with_naga() {
-        let source = generate::<D2Q9>();
-        let module = wgpu::naga::front::wgsl::parse_str(&source).expect("WGSL parse failed");
+    fn validate_wgsl(source: &str, capabilities: wgpu::naga::valid::Capabilities) {
+        let module = wgpu::naga::front::wgsl::parse_str(source).expect("WGSL parse failed");
         let mut validator = wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
+            capabilities,
         );
         validator.validate(&module).expect("WGSL validation failed");
     }
 
     #[test]
+    fn f32_storage_generation_matches_default_byte_for_byte() {
+        assert_eq!(
+            generate_with_storage::<D2Q9>(Storage::F32),
+            generate::<D2Q9>()
+        );
+        assert_eq!(
+            generate_with_storage::<D3Q19>(Storage::F32),
+            generate::<D3Q19>()
+        );
+    }
+
+    #[test]
+    fn generated_wgsl_parses_and_validates_with_naga() {
+        let source = generate::<D2Q9>();
+        validate_wgsl(&source, wgpu::naga::valid::Capabilities::empty());
+    }
+
+    #[test]
     fn generated_d3q19_wgsl_parses_and_validates_with_naga() {
         let source = generate::<D3Q19>();
-        let module = wgpu::naga::front::wgsl::parse_str(&source).expect("WGSL parse failed");
-        let mut validator = wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
-        );
-        validator.validate(&module).expect("WGSL validation failed");
+        validate_wgsl(&source, wgpu::naga::valid::Capabilities::empty());
+    }
+
+    #[test]
+    fn generated_f16_wgsl_parses_and_validates_with_naga() {
+        let capabilities = wgpu::naga::valid::Capabilities::SHADER_FLOAT16;
+        validate_wgsl(&generate_with_storage::<D2Q9>(Storage::F16), capabilities);
+        validate_wgsl(&generate_with_storage::<D3Q19>(Storage::F16), capabilities);
     }
 
     #[test]
