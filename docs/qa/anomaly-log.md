@@ -443,3 +443,37 @@ cx/audit-rotor F1/F2/F3 (+ F4 cross-path after both fixes).**
   members (full-step-consistent force sizing).
 - Positive: torque bookkeeping (torque_integral ≡ Σ per-step torque) is
   exact (F5 green); the step-1 impulse scale is correct.
+
+### Cold-review triage (lane 3.1, codex independent derivation, 2026-07-06)
+
+The uncontaminated codex review CONVERGED independently on all three open
+core findings (cumulant velocity-dependent relaxation correction "remove or
+formally derive" = ANOM-P4-008; IBM force sizing vs actual post-step update
+= ANOM-P4-001; compat rotor 2ρχ convention = ANOM-P4-010) — strong
+cross-intelligence confirmation. New items triaged:
+
+**ANOM-P4-011 — cold-review F19/F20 (Bouzidi probe-force correction sign)
+REFUTED by derivation; fragility + coverage gap remain** — S3.
+- The reviewer assumed kernels.rs' q-convention (q = receiving direction,
+  probe accumulates −c_q·ftot) carries into bouzidi.rs; but the Bouzidi
+  module's record q points FLUID→WALL (it writes ftmp[OPP[q]]), so the
+  correct correction there is +c_q·dft — which is what the code does. The
+  wall_term direction (c_OPP[q]·u_w) is likewise consistent with the
+  half-way path's receiving-direction dot product. No engine bug.
+- Real residue: (a) two modules use OPPOSITE q conventions with no comment
+  — a refactor trap (doc comment queued); (b) NO test asserts the
+  curved-wall probed force at qd ≠ 1/2 (a genuine sign bug would be
+  invisible — qd = 1/2 degeneracy hides dft). Kill-case queued into the
+  W2 Bouzidi audit extension: A1-style per-step momentum-ledger closure
+  with Bouzidi links active at mixed qd (exact identity).
+- Calibration note: the derive-before-blaming rule cuts BOTH ways — it
+  caught 9 test-side errors this pass AND now one reviewer-side error.
+
+**Doc/spec routing from the cold review** (S3, to core cc D-track):
+`CollisionKind::Cumulant` implements a central-moment operator with a
+velocity-dependent relaxation patch, not the full Geier cumulant algebra —
+either rename (CentralMoment) or implement true cumulants; the MF-α track
+name "central-moment/cumulant" papers over the difference. Also: particle
+SN validity clamp at Re_p=800 is silent — recommend a debug_assert→warn or
+a documented saturation note at the API surface (matches inventory (B)
+artifact requirements).
