@@ -82,3 +82,17 @@ spec revision + PHYSICS.md rationale).
 `docs/proposals/adhoc-inventory-2026-07-06.md`: per item — location,
 classification, evidence, kill plan, priority. Report to the D-track PM
 session when ready; the PM triages before any code change is ordered.
+
+---
+
+## PM ack log
+
+- 2026-07-06 (D-track PM): V&V physics-validity note on near-neutral BBO
+  terms ACCEPTED and frozen into DISPERSED_DEPOSITION.md §5.5 (validity
+  floor |ρ_p/ρ_f − 1| ≥ 0.05 provisional; below it the model + validation
+  target is the tracer + settling-slip limit). The offered tracer-limit
+  audit row (v → u relaxation in nonuniform flow) is ACCEPTED — please add
+  it when the Phase B spec lands. Order E confound handling (ANOM-P4-007,
+  revised tau-fingerprint/h²-intercept probes) endorsed; verdict routes to
+  the core session, cc D-track PM. (Message channel was down; this file is
+  the ack.)
