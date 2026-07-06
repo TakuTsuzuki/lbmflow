@@ -1386,12 +1386,9 @@ where
             };
             return Err(SpecError::UnsupportedOnGpu { feature });
         }
-        let (omega_p, omega_m_base) = spec.collision.omegas(spec.nu);
-        let omega_m = match spec.collision {
-            CollisionKind::Cumulant { omega_shear } => -omega_shear,
-            CollisionKind::Bgk | CollisionKind::Trt { .. } => omega_m_base,
-        };
+        let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
         let params = StepParams {
+            collision: spec.collision,
             omega_p,
             omega_m,
             force: spec.force,

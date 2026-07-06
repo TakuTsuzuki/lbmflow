@@ -30,6 +30,14 @@ pub enum CollisionKind {
     },
 }
 
+impl Default for CollisionKind {
+    fn default() -> Self {
+        CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        }
+    }
+}
+
 impl CollisionKind {
     /// The standard "magic" value 3/16 (exact half-way walls for Poiseuille).
     pub const MAGIC_STD: f64 = 3.0 / 16.0;
@@ -133,11 +141,11 @@ pub struct FacePatch<T: Real> {
 /// step sees exactly the values V1 computes.
 #[derive(Clone, Debug)]
 pub struct StepParams<T: Real> {
+    /// Collision operator selected by the validated global spec.
+    pub collision: CollisionKind,
     /// Symmetric relaxation rate `1/tau`.
     pub omega_p: f64,
     /// Antisymmetric relaxation rate (TRT); equals `omega_p` for BGK.
-    /// Cumulant stage 2 uses a negative internal sentinel `-omega_shear`
-    /// so existing `StepParams` literals remain source-compatible.
     pub omega_m: f64,
     /// Uniform body force (Guo forcing).
     pub force: [T; 3],
@@ -185,13 +193,12 @@ impl<T: Real> KParams<T> {
             wr[q] = T::r(L::W[q]);
         }
         Self {
-            cumulant: p.omega_m < 0.0,
+            cumulant: matches!(p.collision, CollisionKind::Cumulant { .. }),
             omega_p: T::r(p.omega_p),
             omega_m: T::r(p.omega_m),
-            omega_shear: T::r(if p.omega_m < 0.0 {
-                -p.omega_m
-            } else {
-                p.omega_p
+            omega_shear: T::r(match p.collision {
+                CollisionKind::Cumulant { omega_shear } => omega_shear,
+                CollisionKind::Bgk | CollisionKind::Trt { .. } => p.omega_p,
             }),
             cp: T::r(1.0 - p.omega_p / 2.0),
             cm: T::r(1.0 - p.omega_m / 2.0),

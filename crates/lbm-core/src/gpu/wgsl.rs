@@ -362,6 +362,7 @@ fn emit_step_entry<L: Lattice>(
     allow_cached_moments: bool,
     wale_omega: bool,
     storage: Storage,
+    central_moment: bool,
 ) {
     let (wgx, wgy) = WG;
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
@@ -373,6 +374,10 @@ fn emit_step_entry<L: Lattice>(
     if !allow_cached_moments {
         *s += "    let _keep_moment_bindings = arrayLength(&rho_out) + arrayLength(&ux_out) + arrayLength(&uy_out) + arrayLength(&uz_out);\n";
     }
+    let rest = L::REST;
+    if central_moment {
+        emit_central_moment_collide::<L>(s);
+    } else {
     // Collide (collide_row): equilibria + Guo sources per direction, then
     // TRT pair relaxation. cu/cf per q with V1's seeded-dot association.
     *s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
@@ -405,7 +410,6 @@ fn emit_step_entry<L: Lattice>(
             "    let s{q} = {w} * (3.0f * (cf{q} - uf) + 9.0f * cu{q} * cf{q});"
         );
     }
-    let rest = L::REST;
     let _ = writeln!(
         s,
         "    let fc{rest} = fq{rest} - op * (fq{rest} - e{rest}) + cp * s{rest};"
@@ -427,6 +431,7 @@ fn emit_step_entry<L: Lattice>(
             s,
             "    let fc{b} = fq{b} - rp{a} + rm{a} + cp * sp{a} - cm * sm{a};"
         );
+    }
     }
     // Push (stream_row's scatter dual). Rest population stays home.
     let _ = writeln!(
@@ -544,6 +549,169 @@ fn emit_step_entry<L: Lattice>(
     *s += "}\n\n";
 }
 
+fn central_basis_vec<L: Lattice>() -> Vec<[u8; 3]> {
+    let mut basis = Vec::with_capacity(L::Q);
+    for ax in 0..=2 {
+        for ay in 0..=2 {
+            for az in 0..=2 {
+                if L::D == 2 && az != 0 {
+                    continue;
+                }
+                if L::D == 3 && L::Q == 19 && ax > 0 && ay > 0 && az > 0 {
+                    continue;
+                }
+                if basis.len() < L::Q {
+                    basis.push([ax, ay, az]);
+                }
+            }
+        }
+    }
+    basis
+}
+
+fn phi_expr(c: [i8; 3], exp: [u8; 3]) -> String {
+    let term = |axis: usize, name: &str| -> String {
+        let base = format!("({}.0f - {name})", c[axis]);
+        match exp[axis] {
+            0 => "1.0f".to_string(),
+            1 => base,
+            2 => format!("{base} * {base}"),
+            _ => unreachable!(),
+        }
+    };
+    let mut out = format!("{} * {}", term(0, "ux"), term(1, "uy"));
+    if exp[2] != 0 {
+        out = format!("{out} * {}", term(2, "uz"));
+    }
+    out
+}
+
+fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
+    let n = L::Q;
+    let basis = central_basis_vec::<L>();
+    *s += "    var phys: array<f32, ";
+    let _ = writeln!(s, "{n}>;");
+    *s += "    var source: array<f32, ";
+    let _ = writeln!(s, "{n}>;");
+    *s += "    var feq_phys: array<f32, ";
+    let _ = writeln!(s, "{n}>;");
+    *s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
+    *s += "    let uf = ux * fvx + uy * fvy + uz * fvz;\n";
+    for q in 0..n {
+        let w = lit(L::W[q] as f32);
+        let cu = dot_expr(L::C[q], ["ux", "uy", "uz"]);
+        let cf = dot_expr(L::C[q], ["fvx", "fvy", "fvz"]);
+        let _ = writeln!(s, "    phys[{q}] = fq{q} + {w};");
+        let _ = writeln!(
+            s,
+            "    source[{q}] = {w} * (3.0f * (({cf}) - uf) + 9.0f * ({cu}) * ({cf}));"
+        );
+        let _ = writeln!(
+            s,
+            "    feq_phys[{q}] = {w} * rho * (1.0f + 3.0f * ({cu}) + 4.5f * ({cu}) * ({cu}) - 1.5f * usq);"
+        );
+    }
+    let _ = writeln!(s, "    var mom: array<f32, {n}>;");
+    let _ = writeln!(s, "    var src_mom: array<f32, {n}>;");
+    let _ = writeln!(s, "    var eq: array<f32, {n}>;");
+    for m in 0..n {
+        let _ = writeln!(s, "    mom[{m}] = 0.0f;");
+        let _ = writeln!(s, "    src_mom[{m}] = 0.0f;");
+        let _ = writeln!(s, "    eq[{m}] = 0.0f;");
+        for q in 0..n {
+            let phi = phi_expr(L::C[q], basis[m]);
+            let _ = writeln!(s, "    mom[{m}] += ({phi}) * phys[{q}];");
+            let _ = writeln!(s, "    src_mom[{m}] += ({phi}) * source[{q}];");
+            let _ = writeln!(s, "    eq[{m}] += ({phi}) * feq_phys[{q}];");
+        }
+    }
+    let offset = if L::D == 3 && L::Q == 19 { "0.0025f" } else { "0.0f" };
+    if L::D == 3 {
+        *s += "    let os_base = select(P.omega_shear, omega_out[i], (P.flags & FLAG_WALE) != 0u);\n";
+    } else {
+        *s += "    let os_base = P.omega_shear;\n";
+    }
+    let _ = writeln!(
+        s,
+        "    let os = min(2.0f, os_base * (1.0f + {offset} - 0.16f * usq));"
+    );
+    let _ = writeln!(s, "    var post: array<f32, {n}>;");
+    for (m, e) in basis.iter().enumerate() {
+        let order = e[0] as usize + e[1] as usize + e[2] as usize;
+        let rate = match order {
+            0 | 1 => "0.0f",
+            2 => "os",
+            _ => "1.0f",
+        };
+        let _ = writeln!(
+            s,
+            "    post[{m}] = mom[{m}] - ({rate}) * (mom[{m}] - eq[{m}]) + (1.0f - 0.5f * ({rate})) * src_mom[{m}];"
+        );
+    }
+    let diag: Vec<usize> = (0..L::D)
+        .map(|a| {
+            basis
+                .iter()
+                .position(|e| {
+                    let mut de = [0u8; 3];
+                    de[a] = 2;
+                    *e == de
+                })
+                .expect("missing diagonal central moment")
+        })
+        .collect();
+    let inv_d = lit((1.0 / L::D as f32) as f32);
+    let trace_neq = diag
+        .iter()
+        .map(|idx| format!("(mom[{idx}] - eq[{idx}])"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let trace_src = diag
+        .iter()
+        .map(|idx| format!("src_mom[{idx}]"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let _ = writeln!(s, "    let bulk_neq = ({trace_neq}) * {inv_d};");
+    let _ = writeln!(s, "    let bulk_src = ({trace_src}) * {inv_d};");
+    for idx in diag {
+        let _ = writeln!(
+            s,
+            "    post[{idx}] = eq[{idx}] + (1.0f - os) * (mom[{idx}] - eq[{idx}] - bulk_neq) + 0.5f * bulk_src + (1.0f - 0.5f * os) * (src_mom[{idx}] - bulk_src);"
+        );
+    }
+    let cols = n + 1;
+    let _ = writeln!(s, "    var a: array<array<f32, {cols}>, {n}>;");
+    for m in 0..n {
+        for q in 0..n {
+            let phi = phi_expr(L::C[q], basis[m]);
+            let _ = writeln!(s, "    a[{m}][{q}] = {phi};");
+        }
+        let _ = writeln!(s, "    a[{m}][{n}] = post[{m}];");
+    }
+    let _ = writeln!(s, "    for (var col: u32 = 0u; col < {n}u; col = col + 1u) {{");
+    *s += "        var pivot = col;\n";
+    let _ = writeln!(s, "        for (var row: u32 = col + 1u; row < {n}u; row = row + 1u) {{");
+    *s += "            if (abs(a[row][col]) > abs(a[pivot][col])) { pivot = row; }\n";
+    *s += "        }\n";
+    *s += "        if (pivot != col) {\n";
+    let _ = writeln!(s, "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{");
+    *s += "                let tmp = a[col][j]; a[col][j] = a[pivot][j]; a[pivot][j] = tmp;\n";
+    *s += "            }\n";
+    *s += "        }\n";
+    *s += "        let inv = 1.0f / a[col][col];\n";
+    let _ = writeln!(s, "        for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[col][j] = a[col][j] * inv; }}");
+    let _ = writeln!(s, "        for (var row: u32 = 0u; row < {n}u; row = row + 1u) {{");
+    *s += "            if (row == col) { continue; }\n";
+    *s += "            let factor = a[row][col];\n";
+    let _ = writeln!(s, "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[row][j] = a[row][j] - factor * a[col][j]; }}");
+    *s += "        }\n";
+    *s += "    }\n";
+    for q in 0..n {
+        let w = lit(L::W[q] as f32);
+        let _ = writeln!(s, "    let fc{q} = a[{q}][{n}] - {w};");
+    }
+}
+
 /// Generate the complete shader module for lattice `L` (asserted 2D by the
 /// backend). Everything below `binding(0..13)` is shared by all entry
 /// points; auto pipeline layouts keep each entry point's bind group minimal.
@@ -572,7 +740,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "    omega_p: f32,\n    omega_m: f32,\n";
     s += "    cp: f32,\n    cm: f32,\n";
     s += "    fx: f32,\n    fy: f32,\n    fz: f32,\n";
-    s += "    flags: u32,\n    pad0: u32,\n    pad1: u32,\n";
+    s += "    flags: u32,\n    omega_shear: f32,\n    collision: u32,\n";
     s += "}\n\n";
     s += "struct BcParams {\n";
     for (name, ty) in BC_PARAMS_FIELDS {
@@ -613,6 +781,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "@group(0) @binding(12) var<uniform> B: BcParams;\n";
     s += "@group(0) @binding(13) var<storage, read> profile: array<vec3<f32>>;\n\n";
     let _ = writeln!(s, "const FLAG_FF: u32 = {FLAG_FORCE_FIELD}u;");
+    let _ = writeln!(s, "const FLAG_WALE: u32 = {FLAG_WALE}u;");
     s += "\n";
     // f32 atomic add via compare-exchange (WGSL has no float atomics). The
     // accumulation order is nondeterministic; T14 compares the probe force
@@ -628,10 +797,21 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "}\n\n";
 
     // ------------------------------------------------------------- step
-    emit_step_entry::<L>(&mut s, "step", false, false, storage);
-    emit_step_entry::<L>(&mut s, "step_cached", true, false, storage);
-    emit_step_entry::<L>(&mut s, "step_wale", false, true, storage);
-    emit_step_entry::<L>(&mut s, "step_cached_wale", true, true, storage);
+    emit_step_entry::<L>(&mut s, "step", false, false, storage, false);
+    emit_step_entry::<L>(&mut s, "step_cached", true, false, storage, false);
+    emit_step_entry::<L>(&mut s, "step_wale", false, true, storage, false);
+    emit_step_entry::<L>(&mut s, "step_cached_wale", true, true, storage, false);
+    emit_step_entry::<L>(&mut s, "step_cumulant", false, false, storage, true);
+    emit_step_entry::<L>(&mut s, "step_cached_cumulant", true, false, storage, true);
+    emit_step_entry::<L>(&mut s, "step_wale_cumulant", false, true, storage, true);
+    emit_step_entry::<L>(
+        &mut s,
+        "step_cached_wale_cumulant",
+        true,
+        true,
+        storage,
+        true,
+    );
 
     // ---------------------------------------------------------- moments
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
@@ -1204,7 +1384,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lattice::{D2Q9, D3Q19};
+    use crate::lattice::{D2Q9, D3Q19, D3Q27};
 
     fn validate_wgsl(source: &str, capabilities: wgpu::naga::valid::Capabilities) {
         let module = wgpu::naga::front::wgsl::parse_str(source).expect("WGSL parse failed");
@@ -1244,6 +1424,20 @@ mod tests {
         let capabilities = wgpu::naga::valid::Capabilities::SHADER_FLOAT16;
         validate_wgsl(&generate_with_storage::<D2Q9>(Storage::F16), capabilities);
         validate_wgsl(&generate_with_storage::<D3Q19>(Storage::F16), capabilities);
+        validate_wgsl(&generate_with_storage::<D3Q27>(Storage::F16), capabilities);
+    }
+
+    #[test]
+    fn generated_cumulant_entries_parse_and_validate_with_naga() {
+        for source in [
+            generate_with_storage::<D2Q9>(Storage::F32),
+            generate_with_storage::<D3Q19>(Storage::F32),
+            generate_with_storage::<D3Q27>(Storage::F32),
+        ] {
+            assert!(source.contains("fn step_cumulant("));
+            assert!(source.contains("fn step_cached_cumulant("));
+            validate_wgsl(&source, wgpu::naga::valid::Capabilities::empty());
+        }
     }
 
     #[test]
