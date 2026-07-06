@@ -215,6 +215,248 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
     }
 }
 
+fn central_basis<L: Lattice>() -> [[u8; 3]; Q_MAX] {
+    let mut basis = [[0u8; 3]; Q_MAX];
+    let mut n = 0usize;
+    for ax in 0..=2 {
+        for ay in 0..=2 {
+            for az in 0..=2 {
+                if L::D == 2 && az != 0 {
+                    continue;
+                }
+                if L::D == 3 && L::Q == 19 && ax > 0 && ay > 0 && az > 0 {
+                    continue;
+                }
+                if n < L::Q {
+                    basis[n] = [ax, ay, az];
+                    n += 1;
+                }
+            }
+        }
+    }
+    debug_assert_eq!(n, L::Q);
+    basis
+}
+
+#[inline]
+fn pow_upto2(x: f64, e: u8) -> f64 {
+    match e {
+        0 => 1.0,
+        1 => x,
+        2 => x * x,
+        _ => unreachable!("central basis only uses powers 0..=2"),
+    }
+}
+
+fn central_phi<L: Lattice>(q: usize, exp: [u8; 3], u: [f64; 3]) -> f64 {
+    let c = L::C[q];
+    let mut v = pow_upto2(c[0] as f64 - u[0], exp[0]);
+    v *= pow_upto2(c[1] as f64 - u[1], exp[1]);
+    if L::D == 3 {
+        v *= pow_upto2(c[2] as f64 - u[2], exp[2]);
+    }
+    v
+}
+
+fn central_equilibrium(exp: [u8; 3], rho: f64, d: usize) -> f64 {
+    let mut v = rho;
+    for &e in exp.iter().take(d) {
+        v *= match e {
+            0 => 1.0,
+            1 => 0.0,
+            2 => 1.0 / 3.0,
+            _ => unreachable!("central basis only uses powers 0..=2"),
+        };
+    }
+    v
+}
+
+fn solve_moment_system<L: Lattice>(
+    basis: &[[u8; 3]; Q_MAX],
+    u: [f64; 3],
+    rhs: &[f64; Q_MAX],
+) -> [f64; Q_MAX] {
+    let n = L::Q;
+    let mut a = [[0.0f64; Q_MAX + 1]; Q_MAX];
+    for m in 0..n {
+        for q in 0..n {
+            a[m][q] = central_phi::<L>(q, basis[m], u);
+        }
+        a[m][n] = rhs[m];
+    }
+    for col in 0..n {
+        let mut pivot = col;
+        for row in col + 1..n {
+            if a[row][col].abs() > a[pivot][col].abs() {
+                pivot = row;
+            }
+        }
+        assert!(
+            a[pivot][col].abs() > 1.0e-14,
+            "singular central-moment basis for lattice Q{}",
+            L::Q
+        );
+        if pivot != col {
+            a.swap(pivot, col);
+        }
+        let inv = 1.0 / a[col][col];
+        for j in col..=n {
+            a[col][j] *= inv;
+        }
+        for row in 0..n {
+            if row == col {
+                continue;
+            }
+            let factor = a[row][col];
+            if factor == 0.0 {
+                continue;
+            }
+            for j in col..=n {
+                a[row][j] -= factor * a[col][j];
+            }
+        }
+    }
+    let mut out = [0.0f64; Q_MAX];
+    for i in 0..n {
+        out[i] = a[i][n];
+    }
+    out
+}
+
+/// Cascaded central-moment collision with Guo forcing, one row of core cells.
+///
+/// This is the stage-2 CPU scalar reference for `CollisionKind::Cumulant`.
+/// It is not a logarithmic cumulant implementation: populations are
+/// transformed to central moments, second-order deviatoric moments relax with
+/// the per-cell shear rate, the second-order trace and all higher-order
+/// moments relax at 1.0, and the Guo source is transformed through the same
+/// central-moment basis with `(I - S/2)` prefactors.
+///
+/// # Safety
+/// This call must be the only concurrent writer of this row's cells in `f`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
+    f: RawSlice<T>,
+    np: usize,
+    pb: usize,
+    rho: &[T],
+    ux: &[T],
+    uy: &[T],
+    uz: &[T],
+    solid: &[bool],
+    ff: Option<&[[T; 3]]>,
+    omega: Option<&[T]>,
+    p: &KParams<T>,
+) {
+    let basis = central_basis::<L>();
+    for x in 0..rho.len() {
+        if solid[x] {
+            continue;
+        }
+        let r = rho[x].as_f64();
+        let u = [ux[x].as_f64(), uy[x].as_f64(), uz[x].as_f64()];
+        let fv_t = match ff {
+            Some(field) => [
+                p.force[0] + field[x][0],
+                p.force[1] + field[x][1],
+                p.force[2] + field[x][2],
+            ],
+            None => p.force,
+        };
+        let fv = [fv_t[0].as_f64(), fv_t[1].as_f64(), fv_t[2].as_f64()];
+        let force_on = fv[0] != 0.0 || fv[1] != 0.0 || fv[2] != 0.0;
+        let i = pb + x;
+        let mut phys = [0.0f64; Q_MAX];
+        let mut src = [0.0f64; Q_MAX];
+        let feq_rest = u.iter().take(L::D).all(|&v| v == 0.0) && !force_on;
+        let mut exact_rest_equilibrium = feq_rest;
+        for q in 0..L::Q {
+            // SAFETY: row-disjoint dispatch (see RawSlice contract).
+            let fq = unsafe { f.get(q * np + i) };
+            phys[q] = fq.as_f64() + L::W[q];
+            if exact_rest_equilibrium {
+                let expected = T::r(L::W[q] * (r - 1.0));
+                exact_rest_equilibrium &= fq.as_f64().to_bits() == expected.as_f64().to_bits();
+            }
+        }
+        if exact_rest_equilibrium {
+            continue;
+        }
+        if force_on {
+            let mut uf = u[0] * fv[0];
+            for d in 1..L::D {
+                uf += u[d] * fv[d];
+            }
+            for q in 0..L::Q {
+                let mut cu = L::C[q][0] as f64 * u[0];
+                let mut cf = L::C[q][0] as f64 * fv[0];
+                for d in 1..L::D {
+                    cu += L::C[q][d] as f64 * u[d];
+                    cf += L::C[q][d] as f64 * fv[d];
+                }
+                src[q] = L::W[q] * (3.0 * (cf - uf) + 9.0 * cu * cf);
+            }
+        }
+
+        let mut mom = [0.0f64; Q_MAX];
+        let mut src_mom = [0.0f64; Q_MAX];
+        let mut eq = [0.0f64; Q_MAX];
+        for m in 0..L::Q {
+            eq[m] = central_equilibrium(basis[m], r, L::D);
+            for q in 0..L::Q {
+                let phi = central_phi::<L>(q, basis[m], u);
+                mom[m] += phi * phys[q];
+                src_mom[m] += phi * src[q];
+            }
+        }
+
+        let os = omega.map_or(p.omega_shear.as_f64(), |v| v[x].as_f64());
+        let mut post = [0.0f64; Q_MAX];
+        let mut diag = [usize::MAX; 3];
+        for m in 0..L::Q {
+            let e = basis[m];
+            let order = e[0] as usize + e[1] as usize + e[2] as usize;
+            if order == 2 {
+                for a in 0..L::D {
+                    let mut de = [0u8; 3];
+                    de[a] = 2;
+                    if e == de {
+                        diag[a] = m;
+                    }
+                }
+            }
+            let rate = match order {
+                0 | 1 => 0.0,
+                2 => os,
+                _ => 1.0,
+            };
+            post[m] = mom[m] - rate * (mom[m] - eq[m]) + (1.0 - 0.5 * rate) * src_mom[m];
+        }
+        let inv_d = 1.0 / L::D as f64;
+        let mut trace_neq = 0.0;
+        let mut trace_src = 0.0;
+        for &idx in diag.iter().take(L::D) {
+            debug_assert_ne!(idx, usize::MAX);
+            trace_neq += mom[idx] - eq[idx];
+            trace_src += src_mom[idx];
+        }
+        let bulk_neq = trace_neq * inv_d;
+        let bulk_src = trace_src * inv_d;
+        for &idx in diag.iter().take(L::D) {
+            let dev_neq = mom[idx] - eq[idx] - bulk_neq;
+            let dev_src = src_mom[idx] - bulk_src;
+            post[idx] =
+                eq[idx] + (1.0 - os) * dev_neq + 0.5 * bulk_src + (1.0 - 0.5 * os) * dev_src;
+        }
+
+        let out_phys = solve_moment_system::<L>(&basis, u, &post);
+        for q in 0..L::Q {
+            // SAFETY: row-disjoint dispatch (see RawSlice contract).
+            unsafe { f.set(q * np + i, T::r(out_phys[q] - L::W[q])) };
+        }
+    }
+}
+
 /// Pull-scheme streaming for one destination row segment `x0..x1` (V1
 /// `stream_row`). Returns the momentum-exchange force accumulated over
 /// probed solid links.
@@ -744,7 +986,7 @@ pub(crate) fn convective_face_selected<L: Lattice, T: Real>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lattice::{D2Q9, D3Q19};
+    use crate::lattice::{D2Q9, D3Q19, D3Q27};
     use crate::params::{FaceBC, StepParams};
     use crate::real::Real;
 
@@ -826,5 +1068,193 @@ mod tests {
     fn collide_feq_matches_equilibrium_bitwise_d3q19() {
         collide_fixed_point_on_equilibrium::<D3Q19, f64>();
         collide_fixed_point_on_equilibrium::<D3Q19, f32>();
+    }
+
+    fn cumulant_params<T: Real>() -> KParams<T> {
+        let params = StepParams::<T> {
+            omega_p: 1.25,
+            omega_m: -1.25,
+            force: [T::zero(); 3],
+            faces: [FaceBC::Closed; 6],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
+        };
+        KParams::new::<D3Q19>(&params)
+    }
+
+    fn collide_cumulant_rest_fixed_point<L: Lattice>() {
+        let ncells = 8usize;
+        let params = StepParams::<f64> {
+            omega_p: 1.25,
+            omega_m: -1.25,
+            force: [0.0; 3],
+            faces: [FaceBC::Closed; 6],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
+        };
+        let kp = KParams::new::<L>(&params);
+        let mut f = vec![0.0; L::Q * ncells];
+        let rho = vec![1.0; ncells];
+        let ux = vec![0.0; ncells];
+        let uy = vec![0.0; ncells];
+        let uz = vec![0.0; ncells];
+        let solid = vec![false; ncells];
+        let before = f.clone();
+        let raw = RawSlice::new(&mut f);
+        // SAFETY: single-threaded, sole writer of the row.
+        unsafe {
+            collide_row_central_moment::<L, f64>(
+                raw, ncells, 0, &rho, &ux, &uy, &uz, &solid, None, None, &kp,
+            );
+        }
+        assert_eq!(before, f);
+    }
+
+    #[test]
+    fn cumulant_rest_equilibrium_is_exact_fixed_point() {
+        collide_cumulant_rest_fixed_point::<D3Q19>();
+        collide_cumulant_rest_fixed_point::<D3Q27>();
+    }
+
+    #[test]
+    fn cumulant_uniform_velocity_stays_uniform_after_collide() {
+        let ncells = 16usize;
+        let params = StepParams::<f64> {
+            omega_p: 1.1,
+            omega_m: -1.1,
+            force: [0.0; 3],
+            faces: [FaceBC::Closed; 6],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
+        };
+        let kp = KParams::new::<D3Q19>(&params);
+        let rho = vec![1.03; ncells];
+        let ux = vec![0.04; ncells];
+        let uy = vec![-0.03; ncells];
+        let uz = vec![0.02; ncells];
+        let solid = vec![false; ncells];
+        let feq = equilibrium::<D3Q19, f64>(&kp, rho[0], [ux[0], uy[0], uz[0]]);
+        let mut f = vec![0.0; D3Q19::Q * ncells];
+        for x in 0..ncells {
+            for q in 0..D3Q19::Q {
+                f[q * ncells + x] = feq[q];
+            }
+        }
+        let raw = RawSlice::new(&mut f);
+        // SAFETY: single-threaded, sole writer of the row.
+        unsafe {
+            collide_row_central_moment::<D3Q19, f64>(
+                raw, ncells, 0, &rho, &ux, &uy, &uz, &solid, None, None, &kp,
+            );
+        }
+        for q in 0..D3Q19::Q {
+            let v0 = f[q * ncells];
+            for x in 1..ncells {
+                assert_eq!(v0.to_bits(), f[q * ncells + x].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn cumulant_d3q19_tgv3d_short_run_finite_and_decays() {
+        let n = 8usize;
+        let np = n * n * n;
+        let kp = cumulant_params::<f64>();
+        let mut f = vec![0.0; D3Q19::Q * np];
+        let mut rho = vec![1.0; np];
+        let mut ux = vec![0.0; np];
+        let mut uy = vec![0.0; np];
+        let mut uz = vec![0.0; np];
+        let solid = vec![false; np];
+        for z in 0..n {
+            for y in 0..n {
+                for x in 0..n {
+                    let i = (z * n + y) * n + x;
+                    let sx = (2.0 * std::f64::consts::PI * x as f64 / n as f64).sin();
+                    let cx = (2.0 * std::f64::consts::PI * x as f64 / n as f64).cos();
+                    let sy = (2.0 * std::f64::consts::PI * y as f64 / n as f64).sin();
+                    let cy = (2.0 * std::f64::consts::PI * y as f64 / n as f64).cos();
+                    ux[i] = 0.02 * sx * cy;
+                    uy[i] = -0.02 * cx * sy;
+                    let feq = equilibrium::<D3Q19, f64>(&kp, 1.0, [ux[i], uy[i], 0.0]);
+                    for q in 0..D3Q19::Q {
+                        f[q * np + i] = feq[q];
+                    }
+                }
+            }
+        }
+        let energy = |fx: &[f64]| -> f64 {
+            let mut rho_m = vec![0.0; np];
+            let mut ux_m = vec![0.0; np];
+            let mut uy_m = vec![0.0; np];
+            let mut uz_m = vec![0.0; np];
+            moments_row::<D3Q19, f64>(
+                fx, np, 0, &mut rho_m, &mut ux_m, &mut uy_m, &mut uz_m, &solid, None, &kp,
+            );
+            ux_m.iter()
+                .zip(&uy_m)
+                .zip(&uz_m)
+                .map(|((&a, &b), &c)| a * a + b * b + c * c)
+                .sum::<f64>()
+        };
+        let e0 = energy(&f);
+        for _ in 0..8 {
+            for z in 0..n {
+                for y in 0..n {
+                    let pb = (z * n + y) * n;
+                    let raw = RawSlice::new(&mut f);
+                    // SAFETY: serial row update.
+                    unsafe {
+                        collide_row_central_moment::<D3Q19, f64>(
+                            raw,
+                            np,
+                            pb,
+                            &rho[pb..pb + n],
+                            &ux[pb..pb + n],
+                            &uy[pb..pb + n],
+                            &uz[pb..pb + n],
+                            &solid[pb..pb + n],
+                            None,
+                            None,
+                            &kp,
+                        );
+                    }
+                }
+            }
+            let mut out = vec![0.0; D3Q19::Q * np];
+            for q in 0..D3Q19::Q {
+                let c = D3Q19::C[q];
+                for z in 0..n {
+                    let sz = (z + n - (c[2] as isize).rem_euclid(n as isize) as usize) % n;
+                    for y in 0..n {
+                        let sy = (y + n - (c[1] as isize).rem_euclid(n as isize) as usize) % n;
+                        for x in 0..n {
+                            let sx = (x + n - (c[0] as isize).rem_euclid(n as isize) as usize) % n;
+                            let dst = (z * n + y) * n + x;
+                            let src = (sz * n + sy) * n + sx;
+                            out[q * np + dst] = f[q * np + src];
+                        }
+                    }
+                }
+            }
+            f = out;
+            let mut uz_next = vec![0.0; np];
+            moments_row::<D3Q19, f64>(
+                &f,
+                np,
+                0,
+                &mut rho,
+                &mut ux,
+                &mut uy,
+                &mut uz_next,
+                &solid,
+                None,
+                &kp,
+            );
+            uz = uz_next;
+        }
+        let e1 = energy(&f);
+        assert!(e1.is_finite());
+        assert!(e1 < e0, "TGV kinetic energy did not decay: {e0} -> {e1}");
     }
 }

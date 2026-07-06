@@ -1852,6 +1852,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
+        assert!(
+            p.omega_m >= 0.0,
+            "GPU backend does not yet support cumulant/central-moment collision"
+        );
         self.ensure_params(sub, fields, p);
         let mut st = fields.state.borrow_mut();
         assert!(!st.pending_collide, "collide called twice without stream");

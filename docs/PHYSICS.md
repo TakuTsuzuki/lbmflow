@@ -410,3 +410,38 @@ in-face rectangle; the base face BC applies elsewhere. A Closed base face with
 open patches is legal. CPU scalar and CpuSimd share the same selected-face BC
 implementation; the GPU backend rejects specs using sources or patches until
 matching device kernels are implemented.
+
+## 2026-07-06 cumulant track stage 2: CPU central-moment reference
+
+Stage 2 implements `CollisionKind::Cumulant { omega_shear }` as a cascaded
+central-moment collision, not a logarithmic cumulant collision. This is the
+accepted first operator form for FR-CORE-02 and is named as such in code
+comments. D3Q27 uses the tensor-product central-moment basis with exponents
+`0..=2` in each coordinate. D3Q19 uses the same basis with the eight
+`x*y*z` corner moments omitted, matching the missing body-diagonal
+populations.
+
+For each cell, populations are converted from deviation storage to physical
+populations, transformed to central moments about the physical velocity
+`rho*u = sum_i c_i f_i + F/2`, relaxed, then transformed back to populations
+and stored again as deviations. Conserved density and first moments use
+relaxation rate 0. The second-order deviatoric moments use the configured
+`omega_shear`, including the per-cell WALE/LES omega field when present. The
+second-order trace (bulk) and all third/higher central moments relax to their
+Maxwellian equilibrium values at rate 1.0. No regularization, positivity
+filter, or entropic limiter is active in this stage; validation therefore
+uses the explicit range `0 < omega_shear <= 2`.
+
+Guo forcing uses the same discrete source populations as the BGK/TRT branch,
+but the source vector is transformed into central-moment space before
+application. Moment `m_a` receives `(1 - s_a/2) S_a`, where `s_a` is the
+moment's relaxation rate. For diagonal second-order moments the trace/source
+trace is split from the deviatoric part, so the shear source receives
+`1 - omega_shear/2` and the bulk source receives `1 - 1/2`.
+
+References used for this stage: Geier, Schonherr, Pasquali, and Krafczyk
+(2015), "The cumulant lattice Boltzmann equation in three dimensions"; and
+Geier et al. (2017) central/cumulant LBM stability work. The implemented
+operator is the central-moment/cascaded subset, with the full cumulant
+parameterization left for the later cumulant-specific validation and GPU/SIMD
+stages.

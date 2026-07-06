@@ -22,8 +22,8 @@ use crate::fields::LocalGeom;
 use crate::fields::SoaFields;
 use crate::halo::HaloExchange;
 use crate::kernels::{
-    collide_row, convective_face_selected, moments_row, outflow_face_selected, stream_row,
-    zou_he_face_selected, FaceCellSelection, RawSlice, ZhKind,
+    collide_row, collide_row_central_moment, convective_face_selected, moments_row,
+    outflow_face_selected, stream_row, zou_he_face_selected, FaceCellSelection, RawSlice, ZhKind,
 };
 use crate::lattice::{Face, Lattice};
 use crate::params::{FaceBC, KParams, Reduction, SourceKind, StepParams};
@@ -387,19 +387,35 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
             // SAFETY: each row index r is processed exactly once, and
             // collide_row writes only its own row's cells.
             unsafe {
-                collide_row::<L, T>(
-                    f,
-                    np,
-                    pb,
-                    &rho[c0..c0 + nx],
-                    &ux[c0..c0 + nx],
-                    &uy[c0..c0 + nx],
-                    &uz[c0..c0 + nx],
-                    &solid[pb..pb + nx],
-                    ff.map(|v| &v[c0..c0 + nx]),
-                    omega.map(|v| &v[c0..c0 + nx]),
-                    &kp,
-                )
+                if p.omega_m >= 0.0 {
+                    collide_row::<L, T>(
+                        f,
+                        np,
+                        pb,
+                        &rho[c0..c0 + nx],
+                        &ux[c0..c0 + nx],
+                        &uy[c0..c0 + nx],
+                        &uz[c0..c0 + nx],
+                        &solid[pb..pb + nx],
+                        ff.map(|v| &v[c0..c0 + nx]),
+                        omega.map(|v| &v[c0..c0 + nx]),
+                        &kp,
+                    )
+                } else {
+                    collide_row_central_moment::<L, T>(
+                        f,
+                        np,
+                        pb,
+                        &rho[c0..c0 + nx],
+                        &ux[c0..c0 + nx],
+                        &uy[c0..c0 + nx],
+                        &uz[c0..c0 + nx],
+                        &solid[pb..pb + nx],
+                        ff.map(|v| &v[c0..c0 + nx]),
+                        omega.map(|v| &v[c0..c0 + nx]),
+                        &kp,
+                    )
+                }
             }
         };
         #[cfg(feature = "parallel")]

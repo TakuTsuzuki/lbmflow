@@ -71,7 +71,7 @@ use crate::backend::{
 };
 use crate::fields::{FusedScratch, LocalGeom, SoaFields};
 use crate::halo::HaloExchange;
-use crate::kernels::{for_face_cells, RawSlice};
+use crate::kernels::{collide_row_central_moment, for_face_cells, RawSlice};
 use crate::lattice::{Face, Lattice, Q_MAX};
 use crate::params::{KParams, Reduction, StepParams};
 use crate::real::Real;
@@ -521,6 +521,12 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
 ) {
     // SAFETY: forwarded caller contract.
     unsafe {
+        if kp.cumulant {
+            collide_span_central_moment_fallback::<L, T>(
+                field, omega, src, dst, x0, x1, rho, ux, uy, uz, kp,
+            );
+            return;
+        }
         match (force_on, field) {
             (true, Some(fr)) => collide_span_fused::<L, T, true, true>(
                 src, dst, x0, x1, rho, ux, uy, uz, fr, omega, kp,
@@ -551,6 +557,52 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
                 omega,
                 kp,
             ),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn collide_span_central_moment_fallback<L: Lattice, T: Real>(
+    field: Option<&[[T; 3]]>,
+    omega: Option<&[T]>,
+    src: PlaneView<T>,
+    dst: PlaneView<T>,
+    x0: usize,
+    x1: usize,
+    rho: &[T],
+    ux: &[T],
+    uy: &[T],
+    uz: &[T],
+    kp: &KParams<T>,
+) {
+    for x in x0..x1 {
+        let mut cell = [T::zero(); Q_MAX];
+        for (q, slot) in cell.iter_mut().enumerate().take(L::Q) {
+            // SAFETY: forwarded caller contract.
+            *slot = unsafe { src.planes.get(src.base + q * src.stride + x) };
+        }
+        let solid = [false];
+        let ff = field.map(|v| &v[x..x + 1]);
+        let om = omega.map(|v| &v[x..x + 1]);
+        // SAFETY: the one-cell buffer is stack-local and exclusively owned.
+        unsafe {
+            collide_row_central_moment::<L, T>(
+                RawSlice::new(&mut cell[..L::Q]),
+                1,
+                0,
+                &rho[x..x + 1],
+                &ux[x..x + 1],
+                &uy[x..x + 1],
+                &uz[x..x + 1],
+                &solid,
+                ff,
+                om,
+                kp,
+            );
+        }
+        for (q, &value) in cell.iter().enumerate().take(L::Q) {
+            // SAFETY: forwarded caller contract.
+            unsafe { dst.planes.set(dst.base + q * dst.stride + x, value) };
         }
     }
 }

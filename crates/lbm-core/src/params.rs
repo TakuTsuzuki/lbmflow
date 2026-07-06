@@ -20,6 +20,14 @@ pub enum CollisionKind {
         /// Magic parameter Λ = (1/ω+ − 1/2)(1/ω− − 1/2).
         magic: f64,
     },
+    /// Cascaded central-moment collision. This is the stage-2 CPU reference
+    /// operator for the cumulant track: the shear-rate field controls the
+    /// second-order deviatoric central moments, the second-order trace and
+    /// all higher-order central moments relax to equilibrium at rate 1.0.
+    Cumulant {
+        /// Relaxation rate for second-order shear central moments.
+        omega_shear: f64,
+    },
 }
 
 impl CollisionKind {
@@ -36,8 +44,17 @@ impl CollisionKind {
                 let lam_p = tau - 0.5;
                 1.0 / (magic / lam_p + 0.5)
             }
+            CollisionKind::Cumulant { .. } => omega_p,
         };
         (omega_p, omega_m)
+    }
+
+    /// Uniform shear relaxation rate used by the central-moment branch.
+    pub fn omega_shear(self, nu: f64) -> f64 {
+        match self {
+            CollisionKind::Cumulant { omega_shear } => omega_shear,
+            CollisionKind::Bgk | CollisionKind::Trt { .. } => self.omegas(nu).0,
+        }
     }
 }
 
@@ -119,6 +136,8 @@ pub struct StepParams<T: Real> {
     /// Symmetric relaxation rate `1/tau`.
     pub omega_p: f64,
     /// Antisymmetric relaxation rate (TRT); equals `omega_p` for BGK.
+    /// Cumulant stage 2 uses a negative internal sentinel `-omega_shear`
+    /// so existing `StepParams` literals remain source-compatible.
     pub omega_m: f64,
     /// Uniform body force (Guo forcing).
     pub force: [T; 3],
@@ -134,10 +153,14 @@ pub struct StepParams<T: Real> {
 /// step exactly like V1 `Simulation::params()`.
 #[derive(Clone, Copy)]
 pub struct KParams<T: Real> {
+    /// Whether this step uses the stage-2 central-moment cumulant branch.
+    pub cumulant: bool,
     /// `T::r(omega_p)`.
     pub omega_p: T,
     /// `T::r(omega_m)`.
     pub omega_m: T,
+    /// Cumulant/central-moment shear relaxation rate.
+    pub omega_shear: T,
     /// Guo prefactor `1 - omega_p/2` (computed in f64, then converted).
     pub cp: T,
     /// Guo prefactor `1 - omega_m/2`.
@@ -162,8 +185,14 @@ impl<T: Real> KParams<T> {
             wr[q] = T::r(L::W[q]);
         }
         Self {
+            cumulant: p.omega_m < 0.0,
             omega_p: T::r(p.omega_p),
             omega_m: T::r(p.omega_m),
+            omega_shear: T::r(if p.omega_m < 0.0 {
+                -p.omega_m
+            } else {
+                p.omega_p
+            }),
             cp: T::r(1.0 - p.omega_p / 2.0),
             cm: T::r(1.0 - p.omega_m / 2.0),
             force: p.force,
