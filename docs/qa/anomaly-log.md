@@ -400,3 +400,46 @@ cx/audit-cumulant e2 canary (must pass with |a| <= 2e-3 after removal).**
   in the audit file IS that criterion); decide the u² term by ablation.
 - E4 note: the correction family is orientation-consistent (spread
   2.2e-10) — the defect is provenance/magnitude, not anisotropy.
+
+**ANOM-P4-009 — rotor audit first-pass NaNs were TEST-SIDE (two errors),
+fixed in-worktree** — S3, plus one doc gap:
+- (a) the disc-as-degenerate-rotor construction (r_hub = r_blade = R) makes
+  an EMPTY indicator: `blade_chi_at` excludes r < r_hub (the hub is a HOLE,
+  not solid) and each blade band is restricted to its +arm half-plane. A
+  full disc is n_blades=2, r_hub=0, r_blade=R, blade_thickness=2R.
+- (b) `Rotor::update_force` ADDS into the force field (to compose with
+  gravity/Shan-Chen); the CALLER must `clear_force_field()` each step (as
+  mf_interim.rs and the runner do). Omitting it accumulates force
+  unboundedly (measured torque_integral ~ −7e168 / 400 steps). DOC GAP: the
+  contract is not stated on `update_force` — one doc comment wanted.
+
+**ANOM-P4-010 — compat volume penalization diverges for a solid disc at
+Re 0.09 under the documented calling contract — S1, same root-cause FAMILY
+as ANOM-P4-001. Disposition: core-engine routing; acceptance gate =
+cx/audit-rotor F1/F2/F3 (+ F4 cross-path after both fixes).**
+- Scenario+config: 80×80 periodic compat box, TRT Λ=3/16, nu=1/6, outer
+  solid ring r>30.5, full penalized disc R=10 (n_blades=2/r_hub=0/
+  thickness=2R), chi=1, Ω=1.5e-4 (tip 1.5e-3, Re_r=0.09), per-step
+  clear_force_field → update_force → step.
+- Observed (scratch timeline): step-1 torque −4.8 = correct impulsive
+  transient (2ρΩΣr² ≈ 4.7); then SIGN-FLIPPING growing torque (+9.5 →
+  −60 → +270 by step 100, max|u| 2.7e-3 → 0.47), density catastrophe by
+  step ~120 (max|rho−1| ~ 1e3), e131 by step 400. Slow oscillatory
+  exponential, gain ~1.14/step.
+- Mechanism (derived): F = 2ρχ(u_t − u*) makes the HALF-force physical
+  velocity equal the target at the forcing stage, but the full step injects
+  F, so the BARE velocity mirror-overshoots: u*(n+1) ≈ 2u_t − u*(n) — a
+  marginal oscillator. Thin blades are damped by streaming exchange with
+  un-penalized neighbors (mf_interim 2k steps and the 100k-step stirred
+  observation live in that margin); a solid disc is a coherent region of
+  mirror oscillators and diverges. Same “target the half-force velocity”
+  bookkeeping error family as the IBM ANOM-P4-001 (there: interp(F/2ρ) =
+  slip ⇒ realized 2×slip).
+- Impact: VR-STR-01 torque/Np path; any dense penalized region (hub disks,
+  thick impellers, high solidity). The OLD stirred example’s banned f_cap
+  clamp was load-bearing against exactly this instability; the kill order
+  removing it (inventory 2.1) keeps thin blades only — marginally stable,
+  but the margin is undocumented. One core fix should cover both family
+  members (full-step-consistent force sizing).
+- Positive: torque bookkeeping (torque_integral ≡ Σ per-step torque) is
+  exact (F5 green); the step-1 impulse scale is correct.
