@@ -226,3 +226,94 @@ in-worktree).**
 - **Calibration**: this is one more test-side derivation error on top of the
   6/6 from the accuracy_audit.rs pass; the Skill's P3 discipline (derive
   before blaming) caught it in one pass and saved a wasted engine-fix order.
+
+---
+
+## Pass 4 — 2026-07-06, FSI coupling-surface accuracy audit (V&V session)
+
+Context: goal "FSI simulator V&V from every angle". Audit list:
+session scratchpad `audit-list-fsi.md`; adversarial suites authored by codex
+orders on `cx/audit-probe` (momentum-exchange probe + walls, 5 probes) and
+`cx/audit-ibm` (rotating IBM, 8 probes). Parallel ad-hoc-physics inventory
+delivered in `docs/proposals/adhoc-inventory-2026-07-06.md` (ORDER Task 1).
+
+### Verified-exact results (probe suite 5/5 green after triage)
+
+Momentum-exchange force measurement on the compat 2D path is VERIFIED at
+round-off precision: (a) per-step global momentum ledger
+`dp = N_fluid*F − F_probe(all solid)` closes to ~1e-14 abs over 10
+consecutive steps with an interior obstacle + mixed shear field (probe
+completeness AND pre/post-collision timing are both exact); (b) steady
+Poiseuille wall-friction balance F_top+F_bottom = +g*N_fluid to 2.7e-15
+with exact per-wall split; (c) static-pressure normal push = nx*rho*cs^2
+per wall to 12 digits (O(u^2) equilibrium corrections cancel exactly —
+derivation in test); (d) x-mirror equivariance of probed force at 1e-16;
+(e) Couette probed shear = rho*nu*U/H*nx to ~1e-10 at tau∈{0.6,1.0};
+(f) moving-wall momentum term uses LOCAL density (rho0=1.05 Couette exact,
+linf_rel 1.4e-11 — a rho=1 hardcoding would read 0.952).
+
+### ANOM-P4-001 — time-stepped direct-forcing IBM diverges in legal (incl.
+DEFAULT) configurations — S1 (divergence leak), disposition: **core-engine
+routing** (per the 2026-07-06 V&V routing rule; adversarial suite
+cx/audit-ibm B1–B8 is the acceptance gate)
+
+- Scenario+config: 80×80 periodic D2Q9, TRT Λ=3/16, nu=1/6; IBM circle
+  r_i=10, Ω=1.5e-4 (Re_r=0.09, maximally benign), outer solid rim at r>30.5;
+  per-step pattern `clear_body_force_field(); apply_rotating_ibm(body,cfg);
+  step()` — the pattern used by rotating_ibm.rs itself.
+- Expected: Uhlmann/Wang direct forcing is stable in time-stepped use at
+  relaxation 1.0 (that is the literature's direct-forcing value, and the
+  module DEFAULT: max_iterations=3, relaxation=1.0).
+- Observed (scratch sweep, 2000 steps, torque vs analytic annular-Couette
+  T=4πμΩr_i²r_o²/(r_o²−r_i²)=3.506e-2):
+  - relax=1.0: NaN at n_markers∈{63,160} (ds/h∈{1.0,0.39}), iters 1 or 4
+  - relax=0.5: NaN at n=160; stable at n=63 with T ratio 1.27
+  - relax=0.25, n=160: stable, T ratio 1.075 (+7.5% — consistent with the
+    ±11% diffuse-interface radius ambiguity at r_i=10), slip_max_rel 3.2e-5
+  - empirical stability threshold ≈ relax ≲ 0.5·(ds/h); n=31 (ds=2.0) at
+    relax=1.0 stays finite but T is garbage (ratio 76, boundary leakage)
+  - before NaN the fields are silently wrong: at step 200 torque is 19×
+    steady scale and Ω→−Ω antisymmetry is broken at O(1) (audit B6)
+- Root-cause hypothesis (derived, two compounding terms): (i) the marker
+  force is sized so the interpolated Guo HALF-force velocity increment
+  Σ W·F/(2ρ) equals the sweep slip (comment at solver.rs:2110-2116), but the
+  realized full-step Guo momentum change is F/ρ — a 2× overshoot per apply;
+  (ii) overlapping kernels of neighboring markers (ds<h) amplify the
+  collective gain further (Uhlmann's known spreading-interpolation
+  eigenvalue growth). (i) alone predicts neutral oscillation at relax=1,
+  (i)+(ii) predicts the observed ds-dependent divergence.
+- Impact: any time-stepped IBM use (VR-STR-01 Np/torque, MF-δ rotating
+  boundary) with default or literature-standard config; existing
+  rotating_ibm.rs tests mask it by running relaxation=0.05 with 1 sweep and
+  near-vacuous bands (L2_rel<0.95, Linf/U_i<5.8, torque never asserted).
+- Positive control: at the stable point the steady physics is RIGHT
+  (torque +7.5% of analytic, inside the diffuse-radius ambiguity) — the
+  defect is the temporal coupling loop, not the spatial discretization.
+- Repro: `cx/audit-ibm` branch, tests b1/b2/b5/b6/b8 (currently failing,
+  NaN or asymmetry); scratch sweep preserved in the routing package.
+
+### ANOM-P4-002 — A2 wall-balance sign expectation was wrong in the audit
+row — S3, test-side (P1 derivation error by the PM), **fixed in-worktree**
+- Expected (wrongly): ΣF_probe = −g·N_fluid. Correct: probed_force is the
+  force ON the probed solid, so steady walls absorb +g·N_fluid (Newton pair
+  of the body-force injection). Measured +gN/2 per wall exactly.
+- Also mis-specified: "no normal wall force" — a resting wall in
+  near-equilibrium fluid receives the static-pressure push nx·ρ·cs² (the
+  O(u²) equilibrium corrections cancel in the c_y>0 link sum). Measured
+  exact to 12 digits; the fixed test asserts the derived value.
+
+### ANOM-P4-003 — A1/A5 tolerance floors under-modeled — S3, test-side,
+**fixed in-worktree**
+- A1: band scaled by max(N|F|,|F_probe|) under-floors the cancellation error
+  of differencing O(N)-term sums of magnitude |p| (measured 1.6e-14 abs vs
+  3.8e-15 band). Fixed: denominator |p_t|+N|F|+|F_probe|, factor 1e-11.
+- A5: the API exposes one probe set at a time so the two walls are read on
+  consecutive steps; near the 1e-11 steady criterion the residual drift
+  bounds cancellation at ~3e-10 relative. Fixed: band 1e-8 with the
+  measurement-protocol comment.
+
+### Observation (no anomaly) — IBM force spreading is conservative even
+under domain-edge kernel truncation: a body tangent to a wall rim measured
+momentum_error_rel = 6.2e-15 (audit B3 "conservative surprise" branch) —
+the mobility normalization renormalizes truncated kernels. Recorded as a
+contract observation; the SPEC-GAP candidate is closed as not-a-gap.
