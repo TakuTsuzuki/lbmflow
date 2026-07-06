@@ -162,6 +162,20 @@ Effort sense (assuming parallel agents): R-2 ~1.5 weeks → MF-α–ε parallel 
 The 1e9-lattice class is **cluster-only** per the memory budget table (REQ §7) (the single-machine development line is ≤256³) —
 measurements are consolidated into the cluster plan (CLUSTER_OPTIONS.md, awaiting user decision).
 
+### D-track: dispersed-phase deposition-design tool (established 2026-07-06)
+
+AI-agent-native forward/inverse design of deposited number-density fields
+n(x,y) from a withdraw/eject/agitate/settle protocol. Spec + phasing (P0–P4)
+frozen in [DISPERSED_DEPOSITION.md](DISPERSED_DEPOSITION.md); acceptance =
+VALIDATION.md **T18**. Status: P0/P1/P1.1 done and merged
+(`crates/lbm-cli/examples/dispersed_seeding/`, gentle CV band frozen
+1.05–1.30 at Ma ≤ 0.1); **P2 in progress** — promote the example's
+substitutions to core: CR-1 interior volume source/sink, CR-2 per-cell masked
+face BC, CR-3 deposition-aware particle layer (extends `particles.rs`), each
+with a codex-adversarial acceptance test in a separate worktree. P3 (VOF-on-LBM
+free surface) is evidence-gated, not speculative; P4 = inverse solver
+(discrete-recipe comparison first, then CMA-ES/BO + surrogate).
+
 **Fine-grained scheduling (rev.3)**: the authoritative dependency DAG is
 **REQ_STIRRED_REACTOR.md §11** (W-items; MF-α〜ζ above are the delegation bundles,
 each row maps to its track). Execution shape: after W0 (=MF-α core basis), wave 1
