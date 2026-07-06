@@ -64,9 +64,12 @@ Precision (storage / compute):
 Backend:
 - **CpuSimd** on the CPU path. Auto-vectorized NEON; wins single-thread
   vs OpenLB on Apple Silicon (see `docs/paper/benchmark-results.md`).
-- **Wgpu (Metal / Vulkan / DX12)** for the main GPU path. Preferred
-  whenever a GPU is available — 2 800 MLUPS D3Q19 f32 on M5 Max is
-  ~10× the CPU 3D peak.
+- **Wgpu (Metal / Vulkan / DX12)** for GPU-covered core workloads. Prefer
+  it for large f32 runs when the requested lattice/features are supported:
+  2 800 MLUPS D3Q19 f32 on M5 Max is ~10× the CPU 3D peak. The
+  scenario-runner `compute.backend:"gpu"` product path is narrower than the
+  in-core backend: it is feature-gated and currently dispatches through the
+  2D D2Q9 f32 builder; 3D GPU scenario dispatch is not wired yet.
 - **MPI** (feature `mpi`, off by default) for multi-node. Weak-scaling
   campaign RED pending cluster access.
 
@@ -103,4 +106,4 @@ Backend:
   (y-strip ringing, over-splitting bands) were measured and rejected
   on this machine.
 - **CpuSimd facade switch** (2D compat path): still on hold pending
-  B-1/B-2 synchronization-point contracts.
+  the remaining synchronization-point/facade contract work.
