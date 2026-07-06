@@ -769,10 +769,18 @@ where
     /// mass_deviation)` f64 sums, `MPI_SUM`-combined, then `fluid + m`.
     /// Differs from a single-rank run by f64 reassociation only.
     pub fn total_mass(&self) -> T {
+        T::r(self.total_mass_f64())
+    }
+
+    /// Global total mass as an `f64` diagnostic. The rank partials are the
+    /// same f64 `(fluid_cells, mass_deviation)` sums used by
+    /// [`MpiSolver::total_mass`], but the final scalar is not quantized back
+    /// to `T`.
+    pub fn total_mass_f64(&self) -> f64 {
         let (fluid, m) = self.inner.local_mass_partials();
         let mut out = [0.0f64; 2];
         self.allreduce_sum(&[fluid, m], &mut out);
-        T::r(out[0] + out[1])
+        out[0] + out[1]
     }
 
     /// Global total mass with fixed-order composition. Rank blocks are first

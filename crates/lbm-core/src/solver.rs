@@ -2919,8 +2919,17 @@ where
     /// Total mass over fluid cells (V1 `total_mass`: physical mass =
     /// fluid-cell count + deviation sum, both accumulated in `f64`).
     pub fn total_mass(&self) -> T {
+        T::r(self.total_mass_f64())
+    }
+
+    /// Total mass over fluid cells as an `f64` diagnostic.
+    ///
+    /// Population storage may be `f32`, but the reduction is still performed
+    /// in `f64`; returning `f64` avoids quantizing million-cell diagnostics
+    /// back to the current precision's scalar spacing.
+    pub fn total_mass_f64(&self) -> f64 {
         let (fluid, m) = self.local_mass_partials();
-        T::r(fluid + m)
+        fluid + m
     }
 
     /// Local partial sums behind [`Solver::total_mass`]: `(fluid_cells,

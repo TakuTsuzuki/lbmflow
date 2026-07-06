@@ -491,6 +491,15 @@ impl<T: Real> Simulation<T> {
         self.solver.total_mass()
     }
 
+    /// Total mass over fluid cells as an `f64` diagnostic.
+    ///
+    /// This preserves the f64 accumulator precision even when the simulation
+    /// scalar type is `f32`; [`Simulation::total_mass`] remains for source
+    /// compatibility and casts this value back to `T`.
+    pub fn total_mass_f64(&self) -> f64 {
+        self.solver.total_mass_f64()
+    }
+
     /// Total momentum `[sum rho ux, sum rho uy]` over fluid cells (physical,
     /// includes the half-force correction). Accumulated in `f64` like
     /// [`Simulation::total_mass`].
