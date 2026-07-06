@@ -56,7 +56,7 @@ promises.
 
 | Area | Current limitation | Evidence |
 |---|---|---|
-| Rank scope | Checkpoints are single-rank only. Saving with more than one local rank/part returns `CKPT_UNSUPPORTED`; loading also requires exactly one rank and one local part. | `crates/lbm-core/src/solver.rs:2556-2567`, `crates/lbm-core/src/solver.rs:2786-2790` |
+| Rank scope | Multi-part and multi-rank checkpoints landed 2026-07-07 (format v2): one payload per owned part, per-rank MPI files with a rank-0 manifest. Restart requires the same partition layout and rank count — mismatches fail with `CKPT_DECOMP_MISMATCH` / precise errors, and v1 checkpoints fail with `CKPT_VERSION_MISMATCH` (no silent migration). Native MPI roundtrip PASS at 2 and 4 ranks. | `crates/lbm-core/src/solver.rs` (v2 checkpoint), `crates/lbm-core/src/dist.rs` (`MpiSolver::save/restore`), `crates/lbm-core/examples/mpi_t13.rs` (`checkpoint-roundtrip`) |
 | Serialized state | The checkpoint writes populations, stale stash, moments, solid mask, and optional force field. The manifest explicitly reserves `rng`, `particles`, and `stats` as `false`, so RNG state, particle state, and statistics accumulators are not serialized today. | `crates/lbm-core/src/solver.rs:2575-2600`, `crates/lbm-core/src/solver.rs:2648-2665`, `crates/lbm-core/src/solver.rs:2853-2888` |
 | Distributed restart | Distributed checkpoint/restart is still a solver-improvement item, not the landed checkpoint path. | `docs/SOLVER_IMPROVEMENT_SPEC.md:190-194` |
 

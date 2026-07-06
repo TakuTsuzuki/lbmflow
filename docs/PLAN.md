@@ -146,7 +146,7 @@ particles.rs silent Re>800 clamp → explicit validity-domain error (`cx/re-clam
 | REV-4 | **Clipping+diagnostics DONE 2026-07-07** (explicit config, default off, PHYSICS.md entry). y+ diagnostics + wall treatment remain MF-β scope — design spec landed at docs/proposals/LES_WALL_TREATMENT_SPEC.md (4-order plan, builds on cx/chan180). |
 | REV-5 | D3Q27 open-face kernels + dedicated gates (Zou-He moment exactness, duct in/out, CPU/GPU equivalence, MPI seam) | MF-α follow-on |
 | REV-6 | **DONE 2026-07-07 with FINDING**: holdout suite landed (`cumulant_holdout.rs`); off-Re and D3Q19-vs-D3Q27 pass, but advected TGV3D FAILS Galilean invariance (frame spread 4.2e-3 vs derived band 1.16e-3, error grows systematically with u_frame). Correction reclassified as empirical calibration valid for non-advected decay only (PHYSICS.md). Follow-up routed to core-engine: derive a frame-consistent correction or narrow the product claim. |
-| REV-7 | Distributed checkpoint/restart (per-rank, RNG/particle/statistics state, restart match test) | R-Phase 3 / C-track |
+| REV-7 | **DONE 2026-07-07** (format v2, multi-part + per-rank MPI, layout/version guards; native roundtrip PASS at 2/4 ranks). RNG/particles/stats flags stay `false` — core Solver does not own that state; revisit when particles attach to Solver. |
 
 **P2:** UQ/sensitivity harness (parameter sweeps with CI-band QOIs, calibration/holdout
 separation); absolute-physics GPU gates beyond equivalence (VALIDATION already flags the
