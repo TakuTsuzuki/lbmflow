@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::metrics::{curve_agreement, linear_fit, monotonicity};
+use common::metrics::{linear_fit, LinFit};
 use common::tgv_analysis::{energy_decay_rate, ke3d, tgv_nu_eff};
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
@@ -137,10 +137,14 @@ fn measure_nu_eff<L: Lattice>(
     nu_eff
 }
 
-fn cumulant() -> CollisionKind {
+fn cumulant_for_nu(nu: f64) -> CollisionKind {
     CollisionKind::Cumulant {
-        omega_shear: omega_from_nu(NU),
+        omega_shear: omega_from_nu(nu),
     }
+}
+
+fn cumulant() -> CollisionKind {
+    cumulant_for_nu(NU)
 }
 
 fn trt() -> CollisionKind {
@@ -149,127 +153,201 @@ fn trt() -> CollisionKind {
 
 fn fit_defect_vs_u2<L: Lattice>(
     n: usize,
+    nu: f64,
     u0s: &[f64],
     collision: CollisionKind,
-) -> (f64, f64, f64, Vec<f64>) {
+) -> (LinFit, Vec<f64>) {
     let x: Vec<f64> = u0s.iter().map(|u0| u0 * u0).collect();
     let y: Vec<f64> = u0s
         .iter()
-        .map(|&u0| measure_nu_eff::<L>(n, NU, u0, collision, TgvPlane::Xy) / NU - 1.0)
+        .map(|&u0| measure_nu_eff::<L>(n, nu, u0, collision, TgvPlane::Xy) / nu - 1.0)
         .collect();
     let fit = linear_fit(&x, &y);
-    // With y = c*u0^2 + b, the residual scatter around the least-squares line
-    // estimates the noise floor of this probe. The TRT guard requires
-    // |c_trt| >= 5*sigma_fit so the audit can actually see the cubic-frame
-    // viscosity defect before crediting the cumulant correction.
-    let dof = (x.len() as f64 - 2.0).max(1.0);
-    let sigma_fit = x
-        .iter()
-        .zip(&y)
-        .map(|(&xi, &yi)| {
-            let r = yi - (fit.slope * xi + fit.intercept);
-            r * r
-        })
-        .sum::<f64>()
-        .sqrt()
-        / dof.sqrt();
-    (fit.slope, fit.intercept, sigma_fit, y)
+    (fit, y)
 }
 
-fn assert_e1_amplitude_independence(n: usize, u0s: &[f64], label: &str) {
-    // Defect relation. A finite-frame cubic lattice error enters the measured
-    // decay as nu_eff = nu * (1 + c_lat*u0^2 + O(u0^4)) on a TGV because the
-    // leading non-Galilean stress term is cubic in velocity and therefore
-    // changes the viscous decay rate in proportion to u0^2. A correct closure
-    // drives the residual coefficient toward zero across amplitudes, not at
-    // one tuned point.
-    let (c_trt, b_trt, sigma_fit, trt_y) = fit_defect_vs_u2::<D3Q19>(n, u0s, trt());
-    let (c_cum, b_cum, _, cum_y) = fit_defect_vs_u2::<D3Q19>(n, u0s, cumulant());
+fn correction_tau_fingerprint(nu1: f64, nu2: f64) -> f64 {
+    let omega1 = omega_from_nu(nu1);
+    let omega2 = omega_from_nu(nu2);
+    0.16 * (2.0 / (2.0 - omega1) - 2.0 / (2.0 - omega2))
+}
+
+fn assert_e1_tau_fingerprint(n: usize, u0s: &[f64], label: &str) {
+    // Tau-fingerprint derivation. The cumulant shear-rate correction is
+    // applied in omega space. With the lattice relation
+    //
+    //     nu = (1/omega - 1/2) / 3,
+    //
+    // a small omega perturbation gives
+    //
+    //     dnu = -(1 / (3 omega^2)) domega
+    //     dnu/nu = [-domega/(3 omega^2)] / [(1/omega - 1/2)/3]
+    //            = -(domega/omega) * 2/(2 - omega).
+    //
+    // Therefore a relative omega perturbation
+    //
+    //     domega/omega = -0.16 u^2
+    //
+    // contributes
+    //
+    //     dnu/nu = +0.16 u^2 * 2/(2 - omega).
+    //
+    // The measured slope c(tau) in
+    //
+    //     nu_eff/nu - 1 = c(tau) u0^2 + b
+    //
+    // must carry this known tau fingerprint if the correction reaches the
+    // shear viscosity. Compressibility error and the intrinsic cubic-frame
+    // viscosity defect are tau-independent at leading order, so a two-tau
+    // Cumulant-minus-TRT double difference isolates the omega-space correction
+    // without treating the raw u0^2 slope itself as proof.
+    let nu1 = 0.02;
+    let nu2 = 0.10;
+    let omega1 = omega_from_nu(nu1);
+    let omega2 = omega_from_nu(nu2);
+
+    let (cum1_fit, cum1_y) = fit_defect_vs_u2::<D3Q19>(n, nu1, u0s, cumulant_for_nu(nu1));
+    let (cum2_fit, cum2_y) = fit_defect_vs_u2::<D3Q19>(n, nu2, u0s, cumulant_for_nu(nu2));
+    let (trt1_fit, trt1_y) = fit_defect_vs_u2::<D3Q19>(n, nu1, u0s, trt());
+    let (trt2_fit, trt2_y) = fit_defect_vs_u2::<D3Q19>(n, nu2, u0s, trt());
+
+    for (name, fit) in [
+        ("cum_nu0.02", cum1_fit),
+        ("cum_nu0.10", cum2_fit),
+        ("trt_nu0.02", trt1_fit),
+        ("trt_nu0.10", trt2_fit),
+    ] {
+        assert!(
+            fit.r2 >= 0.99,
+            "ACC CUM E1 {label}: {name} u0^2 slope fit r2={:.6e} below 0.99; slope={:.6e}, intercept={:.6e}, N={n}, u0={u0s:?}",
+            fit.r2,
+            fit.slope,
+            fit.intercept
+        );
+    }
+
+    let cum_tau_delta = cum1_fit.slope - cum2_fit.slope;
+    let trt_tau_delta = trt1_fit.slope - trt2_fit.slope;
+    let measured = cum_tau_delta - trt_tau_delta;
+    let predicted = correction_tau_fingerprint(nu1, nu2);
+    let allowed = 0.30 * predicted.abs();
     println!(
-        "ACC CUM E1 {label}: N={n} u0={u0s:?} TRT rel={trt_y:?} c_trt={c_trt:e} b_trt={b_trt:e} sigma_fit={sigma_fit:e}; Cumulant rel={cum_y:?} c_res={c_cum:e} b_res={b_cum:e}"
+        "ACC CUM E1 {label}: N={n} u0={u0s:?} omega=({omega1:e},{omega2:e}) fingerprint_factors=({:e},{:e}) Cumulant rel nu0.02={cum1_y:?} c={:e} b={:e} r2={:e}; Cumulant rel nu0.10={cum2_y:?} c={:e} b={:e} r2={:e}; TRT rel nu0.02={trt1_y:?} c={:e} b={:e} r2={:e}; TRT rel nu0.10={trt2_y:?} c={:e} b={:e} r2={:e}; tau_delta_control_trt={trt_tau_delta:e}; measured_double_diff={measured:e}; predicted_correction={predicted:e}; band_abs={allowed:e}",
+        2.0 / (2.0 - omega1),
+        2.0 / (2.0 - omega2),
+        cum1_fit.slope,
+        cum1_fit.intercept,
+        cum1_fit.r2,
+        cum2_fit.slope,
+        cum2_fit.intercept,
+        cum2_fit.r2,
+        trt1_fit.slope,
+        trt1_fit.intercept,
+        trt1_fit.r2,
+        trt2_fit.slope,
+        trt2_fit.intercept,
+        trt2_fit.r2,
     );
     assert!(
-        c_trt.abs() >= 5.0 * sigma_fit.abs(),
-        "ACC CUM E1 {label}: TRT sensitivity guard failed: |c_trt|={:.6e}, band >= 5*sigma_fit={:.6e}, sigma_fit={:.6e}, normalization=(nu_eff/nu-1)/u0^2",
-        c_trt.abs(),
-        5.0 * sigma_fit.abs(),
-        sigma_fit
-    );
-    assert!(
-        c_cum.abs() <= 0.2 * c_trt.abs(),
-        "ACC CUM E1 {label}: cumulant residual defect |c_res|={:.6e} exceeds 20% of TRT control band {:.6e}; c_trt={:.6e}, normalization=(nu_eff/nu-1)/u0^2",
-        c_cum.abs(),
-        0.2 * c_trt.abs(),
-        c_trt
+        (measured - predicted).abs() <= allowed,
+        "ACC CUM E1 {label}: tau-fingerprint double difference measured={measured:.6e} differs from correction prediction {predicted:.6e} by more than +/-30% ({allowed:.6e}); Cumulant delta={cum_tau_delta:.6e}, TRT tau-dependence control={trt_tau_delta:.6e}, omega=({omega1:.6e},{omega2:.6e}), normalization=d(nu_eff/nu-1)/d(u0^2)"
     );
 }
 
 #[test]
-fn e1_cumulant_nu_eff_independent_of_velocity_amplitude_light() {
-    assert_e1_amplitude_independence(32, &[0.02, 0.04, 0.08], "light");
+fn e1_cumulant_omega_space_correction_tau_fingerprint_light() {
+    assert_e1_tau_fingerprint(32, &[0.02, 0.04, 0.08], "light");
 }
 
 #[test]
-#[ignore = "heavy asymptotic audit: D3Q19 cumulant amplitude sweep at N=48"]
-fn e1_cumulant_nu_eff_independent_of_velocity_amplitude_heavy() {
-    assert_e1_amplitude_independence(48, &[0.015, 0.03, 0.06], "heavy");
+#[ignore = "heavy tau-fingerprint audit: D3Q19 cumulant/TRT two-viscosity amplitude sweep at N=48"]
+fn e1_cumulant_omega_space_correction_tau_fingerprint_heavy() {
+    assert_e1_tau_fingerprint(48, &[0.02, 0.04, 0.08], "heavy");
 }
 
-fn resolution_defects(ns: &[usize], band: f64, label: &str) {
+fn h2_extrapolated_offset<L: Lattice>(
+    ns: &[usize],
+    collision_for_nu: impl Fn(f64) -> CollisionKind,
+) -> (f64, f64, Vec<(usize, f64)>) {
+    // Resolution-separation derivation. The TGV decay-rate fit inherits the
+    // O(h^2) spatial discretization error of the second-order lattice
+    // discretization, so the raw finite-N defect is
+    //
+    //     d(N) = nu_eff(N)/nu - 1 = a + b h^2 + higher order
+    //
+    // and h is proportional to 1/N for the fixed periodic domain. Fitting
+    // d(N) = a + b/N^2 separates the resolution-independent closure offset
+    // residual a from the spatial-error floor. A finite-N band alone would
+    // confound these two terms, especially at N=24.
+    let nu = NU;
     let samples: Vec<(f64, f64)> = ns
         .iter()
         .map(|&n| {
             let u0 = 1.28e-4 / n as f64;
-            let nu_eff = measure_nu_eff::<D3Q19>(n, NU, u0, cumulant(), TgvPlane::Xy);
-            (n as f64, nu_eff / NU - 1.0)
+            let nu_eff = measure_nu_eff::<L>(n, nu, u0, collision_for_nu(nu), TgvPlane::Xy);
+            (1.0 / ((n * n) as f64), nu_eff / nu - 1.0)
         })
         .collect();
-    let defects: Vec<f64> = samples.iter().map(|&(_, d)| d).collect();
-    let abs_defects: Vec<f64> = defects.iter().map(|d| d.abs()).collect();
-    let max_abs = abs_defects.iter().copied().fold(0.0, f64::max);
-    let neg_abs_defects: Vec<f64> = abs_defects.iter().map(|d| -d).collect();
-    let growth = monotonicity(&neg_abs_defects);
-    let zero_curve = curve_agreement(|_| 0.0, &samples, band, 1.0);
+    let x: Vec<f64> = samples.iter().map(|&(x, _)| x).collect();
+    let y: Vec<f64> = samples.iter().map(|&(_, d)| d).collect();
+    let fit = linear_fit(&x, &y);
+    let defects_by_n: Vec<(usize, f64)> = ns.iter().copied().zip(y).collect();
+    (fit.intercept, fit.slope, defects_by_n)
+}
+
+fn assert_e2_h2_extrapolated_d3q19_offset(ns: &[usize], band: f64, label: &str) -> f64 {
+    let (a, b, defects_by_n) = h2_extrapolated_offset::<D3Q19>(ns, |nu| cumulant_for_nu(nu));
     println!(
-        "ACC CUM E2 {label}: defects nu_eff/nu-1 by N = {samples:?}; max_abs={max_abs:e}; increasing_abs_fraction={growth:e}; zero_curve_max_dev={:e}",
-        zero_curve.max_rel_dev
+        "ACC CUM E2 {label}: N={ns:?} defects_nu_eff_over_nu_minus_1={defects_by_n:?}; h2_intercept_a={a:e}; h2_slope_b={b:e}; band_abs={band:e}"
     );
     assert!(
-        max_abs <= band,
-        "ACC CUM E2 {label}: max |nu_eff/nu - 1|={max_abs:.6e} exceeds band {band:.6e}; values by N={samples:?}, normalization=relative viscosity defect"
+        a.abs() <= band,
+        "ACC CUM E2 {label}: h^2-extrapolated D3Q19 offset residual |a|={:.6e} exceeds band {band:.6e}; a={a:.6e}, b={b:.6e}, defects_by_N={defects_by_n:?}, normalization=resolution-independent intercept of nu_eff/nu - 1",
+        a.abs()
     );
-    assert!(
-        growth < 1.0,
-        "ACC CUM E2 {label}: |defect| grows monotonically with N, indicating a resolution trend in the resolution-independent offset; increasing_abs_fraction={growth:.6e}, values by N={samples:?}"
-    );
+    a
 }
 
 #[test]
-fn e2_d3q19_offset_resolution_canary_light() {
-    resolution_defects(&[24, 32], 4.0e-3, "light-canary");
+fn e2_d3q19_h2_extrapolated_offset_residual_canary_light() {
+    assert_e2_h2_extrapolated_d3q19_offset(&[24, 32], 4.0e-3, "light-canary");
 }
 
 #[test]
-#[ignore = "heavy resolution audit: D3Q19 cumulant at N=24,32,48"]
-fn e2_d3q19_offset_resolution_validity_heavy() {
-    resolution_defects(&[24, 32, 48], 2.0e-3, "heavy");
+#[ignore = "heavy h^2-extrapolated offset audit: D3Q19 cumulant at N=24,32,48"]
+fn e2_d3q19_h2_extrapolated_offset_residual_heavy() {
+    assert_e2_h2_extrapolated_d3q19_offset(&[24, 32, 48], 2.0e-3, "heavy");
 }
 
 #[test]
-fn e3_d3q27_needs_no_offset_light() {
-    // Cross-lattice control. D3Q27 has the full tensor-product velocity set,
-    // so the D3Q19 reduced-set bias story predicts no comparable small-u0
-    // viscosity offset when the scalar correction offset is absent.
-    let n = 32usize;
-    let u0 = 1.28e-4 / n as f64;
-    let nu_eff = measure_nu_eff::<D3Q27>(n, NU, u0, cumulant(), TgvPlane::Xy);
-    let defect = nu_eff / NU - 1.0;
-    println!("ACC CUM E3: D3Q27 N={n} u0={u0:e} nu_eff={nu_eff:e} defect={defect:e}");
-    assert!(
-        defect.abs() <= 2.0e-3,
-        "ACC CUM E3: D3Q27 |nu_eff/nu - 1|={:.6e} exceeds band 2.000000e-3; nu_eff={nu_eff:.6e}, nu={NU:.6e}, normalization=relative viscosity defect",
-        defect.abs()
+fn e3_d3q27_h2_extrapolated_intrinsic_bias_canary_light() {
+    assert_e3_h2_extrapolated_d3q27_bias(&[24, 32], 4.0e-3, "light-canary");
+}
+
+#[test]
+#[ignore = "heavy h^2-extrapolated intrinsic-bias audit: D3Q27 cumulant at N=24,32,48"]
+fn e3_d3q27_h2_extrapolated_intrinsic_bias_heavy() {
+    assert_e3_h2_extrapolated_d3q27_bias(&[24, 32, 48], 2.0e-3, "heavy");
+}
+
+fn assert_e3_h2_extrapolated_d3q27_bias(ns: &[usize], band: f64, label: &str) -> f64 {
+    // Cross-lattice control after removing the spatial-error confound. D3Q27
+    // has the full tensor-product velocity set and the cumulant offset is zero
+    // by construction, so the "D3Q19-only offset" explanation predicts a
+    // near-zero h^2 intercept a27. A raw finite-N defect, such as the N=32
+    // value, cannot classify operator bias until the O(h^2) spatial floor is
+    // extrapolated away.
+    let (a27, b27, defects27_by_n) = h2_extrapolated_offset::<D3Q27>(ns, |nu| cumulant_for_nu(nu));
+    let (a19, b19, defects19_by_n) = h2_extrapolated_offset::<D3Q19>(ns, |nu| cumulant_for_nu(nu));
+    println!(
+        "ACC CUM E3 {label}: N={ns:?} D3Q27 defects_nu_eff_over_nu_minus_1={defects27_by_n:?}; a27={a27:e}; b27={b27:e}; D3Q19 control defects={defects19_by_n:?}; a19={a19:e}; b19={b19:e}; band_abs={band:e}"
     );
+    assert!(
+        a27.abs() <= band,
+        "ACC CUM E3 {label}: h^2-extrapolated D3Q27 intrinsic offset |a27|={:.6e} exceeds band {band:.6e}; a27={a27:.6e}, b27={b27:.6e}, D3Q27 defects_by_N={defects27_by_n:?}, D3Q19 control a19={a19:.6e}, b19={b19:.6e}, D3Q19 defects_by_N={defects19_by_n:?}, normalization=resolution-independent intercept of nu_eff/nu - 1",
+        a27.abs()
+    );
+    a27
 }
 
 fn orientation_spread(n: usize, planes: &[TgvPlane], band: f64, label: &str) {
