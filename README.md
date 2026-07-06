@@ -52,8 +52,10 @@ Licensed under MIT OR Apache-2.0.
   by construction; MKM 1999 channel-flow reference profiles landed for
   Re_τ = 180 characterisation.
 - **Rotating machinery**: rotating immersed-boundary method for impellers and
-  stirred-reactor geometries; dispersed-phase deposition tracking (D-track)
-  with adhesion-capture and resuspension closures.
+  stirred-reactor geometries; rotating-body IBM is prescribed rigid rotation
+  with torque/force diagnostics, not general FSI or structural degrees of
+  freedom; dispersed-phase deposition tracking (D-track) with
+  adhesion-capture and resuspension closures.
 - **Curved walls**: Bouzidi second-order interpolated bounce-back.
 - **Rich boundary catalogue**: periodic, half-way bounce-back (static /
   moving), Zou-He velocity inlet (uniform or `set_inlet_profile`), Zou-He
@@ -128,7 +130,7 @@ D2Q9 / D3Q19 / D3Q27, backend selection) is documented in
 | Axis        | Choices                                                    | Notes |
 |-------------|------------------------------------------------------------|-------|
 | Dimension   | 2D (D2Q9), 3D (D3Q19, D3Q27)                               | Compile-time specialisation over `Lattice`. |
-| Collision   | BGK, TRT (magic Λ=3/16 default), cumulant (central-moment) | TRT for accuracy on Poiseuille and BCs; cumulant for high-Re Galilean invariance. |
+| Collision   | BGK, TRT (magic Λ=3/16 default), cumulant (central-moment) | TRT for accuracy on Poiseuille and BCs; central-moment/cumulant improves high-Re stability and isotropy. The D3Q19 finite-frame Galilean-invariance correction has an open holdout finding (PHYSICS.md) — use TRT/f64 or D3Q27 references for validation-grade frame-shift studies. |
 | Precision   | `f32` (deviation storage, validation-grade), `f64`, `f16`  | `f16` storage doubles capacity at ≈ 2× MLUPS with frozen bands. |
 | Backend     | `CpuScalar`, `CpuSimd` (fused collide+stream+moments), `Wgpu` | `--features gpu` for wgpu; T14 verifies CPU ↔ GPU equivalence. |
 | Parallelism | rayon threads (auto-serial on small grids), MPI ranks      | `--features mpi` for domain-decomposed halo exchange. |

@@ -172,11 +172,13 @@ for the current measurement-status snapshot.
 
 ### M-F: rotating boundary, high-density-ratio two-phase, LES-coupled 3D (REQ-M-F-STR rev.1b)
 
-Confirmed design decisions (decided by the project owner): **scope all-at-once** (implement subsystems simultaneously
+Target design decisions (decided by the project owner — these are M-F targets, NOT current implementation status): **scope all-at-once** (implement subsystems simultaneously
 without staged splitting) / **fidelity defaults** (IBM-inertial, resolved-phasefield, active scalar,
 two-way particles, uniform lattice, f64 near the interface + f32 in the bulk); low-cost approximations (MRF, point-bubble,
 one-way, AMR, aggressive f32) are add-on extensions behind the same trait / physics-conflicting modes are
 mutually exclusive at runtime via configuration validation (extending A-4's `GlobalSpec::validate`).
+
+Current implementation status per subsystem lives in VALIDATION.md T17's status table and docs/LIMITATIONS.md — those are the source of truth; this section records the owner's target fidelity choices only.
 
 Implementation tracks (commissioned in parallel after R-Phase 2 lands. Conventional team structure of worktree separation, implementation by Opus/Sonnet,
 **validation tests created adversarially by codex from REQ/T17**):
