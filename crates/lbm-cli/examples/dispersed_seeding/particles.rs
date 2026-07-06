@@ -87,7 +87,7 @@ pub fn deposit_batch(
     let harshness = (regime.u_jet_si / 0.01).clamp(0.0, 20.0)
         + input.agitation_count() as f64 * 0.15
         + input.fr();
-    let jet_sigma = (0.5 * regime.nozzle_d_m).max(1.25 * input.grid.dx_m);
+    let jet_sigma = (0.5 * regime.nozzle_d_m).max(1.25 * regime.dx);
     for (k, p) in batch.iter_mut().enumerate() {
         let pt = points[k % points.len()];
         p.pos = [

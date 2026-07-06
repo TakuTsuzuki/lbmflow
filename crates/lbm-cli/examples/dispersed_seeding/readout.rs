@@ -49,7 +49,7 @@ pub fn write_outputs(
         write_vtk(
             &outdir.join("tray_velocity.vtk"),
             [input.grid.tray_nx, input.grid.tray_ny, input.grid.tray_nz],
-            input.grid.dx_m,
+            regime.dx,
             tray_velocity,
         )?;
     }

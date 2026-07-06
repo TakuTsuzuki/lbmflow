@@ -50,6 +50,19 @@ combines that sampled LBM field with an example-local impinging wall-jet and
 near-wall dispersion closure because the public face boundary cannot represent
 both localized injection and open top outflow on the same face.
 
+## Regime notes
+
+The tray uses diffusive low-Mach scaling. `grid.dx_m` remains the coarse
+reservoir visualization spacing, while `grid.tray_dx_m` refines only the tray.
+The bundled samples use `tray_dx_m = 1.875e-4 m` and `dt = 4.21875e-4 s`, giving
+`nu* = 0.012`, `tau = 0.536`, and `Ma <= 0.1` for both protocols without
+changing the SI viscosity, jet velocities, gravity, particle settling velocity,
+or other physical inputs.
+
+Current sample gates are recorded in `SPEC_FINDINGS.md`. The low-Mach gentle
+CV band is frozen at `1.05 <= CV <= 1.30`; the previous `0.95 <= CV <= 1.40`
+band was measured at `Ma ~= 0.25` and is retired.
+
 ## Non-goals
 
 This example does not implement free-surface flow, gas-liquid interfaces,

@@ -49,9 +49,9 @@ fn main() -> anyhow::Result<()> {
         .into_iter()
         .map(|u| {
             [
-                u[0] * input.grid.dx_m / regime.dt,
-                u[1] * input.grid.dx_m / regime.dt,
-                u[2] * input.grid.dx_m / regime.dt,
+                u[0] * regime.dx / regime.dt,
+                u[1] * regime.dx / regime.dt,
+                u[2] * regime.dx / regime.dt,
             ]
         })
         .collect::<Vec<_>>();
@@ -104,40 +104,44 @@ fn validate_protocol(input: &ProtocolInput) -> anyhow::Result<()> {
 }
 
 fn validate_grid_counts(input: &ProtocolInput) -> anyhow::Result<()> {
-    let dx = input.grid.dx_m;
-    if dx <= 0.0 {
+    let res_dx = input.grid.dx_m;
+    let tray_dx = input.grid.tray_dx_m.unwrap_or(res_dx);
+    if res_dx <= 0.0 {
         anyhow::bail!("grid.dx_m must be positive");
+    }
+    if tray_dx <= 0.0 {
+        anyhow::bail!("grid.tray_dx_m must be positive");
     }
     let expected = [
         (
             "grid.res_nx",
             input.grid.res_nx,
-            input.reservoir.width_m / dx,
+            input.reservoir.width_m / res_dx,
         ),
         (
             "grid.res_ny",
             input.grid.res_ny,
-            input.reservoir.width_m / dx,
+            input.reservoir.width_m / res_dx,
         ),
         (
             "grid.res_nz",
             input.grid.res_nz,
-            input.reservoir.height_m / dx,
+            input.reservoir.height_m / res_dx,
         ),
         (
             "grid.tray_nx",
             input.grid.tray_nx,
-            input.target.width_m / dx,
+            input.target.width_m / tray_dx,
         ),
         (
             "grid.tray_ny",
             input.grid.tray_ny,
-            input.target.depth_m / dx,
+            input.target.depth_m / tray_dx,
         ),
         (
             "grid.tray_nz",
             input.grid.tray_nz,
-            input.target.height_m / dx,
+            input.target.height_m / tray_dx,
         ),
     ];
     for (name, actual, expected_f) in expected {
@@ -213,8 +217,8 @@ fn build_tray_sim(input: &ProtocolInput, regime: &protocol::Regime) -> Sim3 {
         .unwrap_or_else(|| vec![[0.5, 0.5]]);
     let nozzle_radius_m = 0.5 * regime.nozzle_d_m;
     sim.set_inlet_profile_with(Face::ZPos, |x, y| {
-        let xp = x as f64 * input.grid.dx_m;
-        let yp = y as f64 * input.grid.dx_m;
+        let xp = x as f64 * regime.dx;
+        let yp = y as f64 * regime.dx;
         let mut inside_patch = false;
         for pt in &points {
             let cx = pt[0] * input.target.width_m;

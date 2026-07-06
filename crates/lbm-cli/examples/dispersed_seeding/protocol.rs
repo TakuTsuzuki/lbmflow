@@ -24,6 +24,8 @@ pub struct Grid {
     pub tray_ny: usize,
     pub tray_nz: usize,
     pub dx_m: f64,
+    #[serde(default)]
+    pub tray_dx_m: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -118,7 +120,7 @@ impl ProtocolInput {
     }
 
     pub fn regime(&self) -> anyhow::Result<Regime> {
-        let dx = self.grid.dx_m;
+        let dx = self.grid.tray_dx_m.unwrap_or(self.grid.dx_m);
         let eject = self
             .op("eject")
             .ok_or_else(|| anyhow::anyhow!("protocol requires an eject operation"))?;

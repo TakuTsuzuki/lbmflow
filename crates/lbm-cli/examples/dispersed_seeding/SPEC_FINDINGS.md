@@ -1,6 +1,6 @@
 # SPEC_FINDINGS.md
 
-This is the v2 record for `examples/dispersed_seeding`. The example remains a
+This is the v3 record for `examples/dispersed_seeding`. The example remains a
 small runnable protocol demo; where public core APIs are missing, the
 substitution is implemented locally and listed below as a concrete core
 requirement.
@@ -19,7 +19,10 @@ requirement.
    particles are reported as `n_suspended` and are excluded from the density
    map. `max_particle_steps` aborts rather than silently changing the physics.
 6. SI dimensions are authoritative. Validation fails if supplied grid counts
-   differ from `SI / dx_m` by more than one cell.
+   differ from `SI / dx_m` by more than one cell. The reservoir keeps the
+   coarse visualization spacing `grid.dx_m`; the tray can specify
+   `grid.tray_dx_m` so low-Mach tray injection does not force a costly reservoir
+   refinement.
 7. Unknown `agitate.pattern` values are validation errors.
 8. VTK output is ASCII `STRUCTURED_POINTS` with vector data in grid order.
 9. Multi-point ejection is supported through `points_xy_frac`.
@@ -35,21 +38,38 @@ cargo build --release -p lbm-cli --example dispersed_seeding
 ./target/release/examples/dispersed_seeding crates/lbm-cli/examples/dispersed_seeding/sample_harsh.json
 ```
 
+Low-Mach scaling:
+
+- `grid.tray_dx_m = 1.875e-4 m`, refined from the old shared `dx_m = 5e-4 m`.
+- `dt = 4.21875e-4 s`, computed by diffusive scaling
+  `dt = 0.012 * tray_dx_m^2 / nu_phys`.
+- `nu* = 0.012`, so physical viscosity stays `1.0e-6 m^2/s` and
+  `tau = 3*nu* + 0.5 = 0.536`.
+- Physical inputs are unchanged: gentle jet velocity is
+  `2.387324e-2 m/s`, harsh jet velocity is `2.546479e-2 m/s`, gravity remains
+  `9.80665 m/s^2`, and Stokes settling remains `2.7241e-4 m/s`.
+- Reservoir grid remains `32x32x200` at `dx_m = 5e-4 m`; tray grid is
+  `256x256x64`.
+
 Observed metrics:
 
 | sample | CV | max/mean | empty bins | deposited | suspended | extracted | Re_jet | St | Fr | Ma | tau |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| gentle | 1.1813967529984224 | 5.921259842519685 | 0.0 | 8001 | 1999 | 10000 | 19.098593171027442 | 0.017407571900676055 | 0.0 | 0.24809800293980644 | 0.536 |
-| harsh | 3.2869214834417284 | 18.610323886639677 | 0.7916666666666666 | 15808 | 2192 | 18000 | 127.32395447351631 | 0.002970892271048714 | 0.16519402650242437 | 0.2646378698024603 | 0.536 |
+| gentle | 1.16304946395271 | 5.21606507371632 | 0.0 | 7868 | 2132 | 10000 | 19.098593171027442 | 0.017407571900676055 | 0.0 | 0.09303675110242744 | 0.536 |
+| harsh | 4.14561192539384 | 25.37455651292448 | 0.8333333333333334 | 17757 | 243 | 18000 | 127.32395447351631 | 0.002970892271048714 | 0.16519402650242437 | 0.09923920117592261 | 0.536 |
 
 Acceptance consequences:
 
-- Gentle spreading is achieved: `empty_bin_fraction = 0.0`, below the v2 target
-  of `0.15` and below the v1 value of `0.44`.
-- Trend holds: `CV_gentle = 1.1814 < CV_harsh = 3.2869`.
-- Frozen gentle CV band for this example and sample set: `0.95 <= CV <= 1.40`.
-  The band is intentionally empirical because the example uses an unresolved
-  near-wall dispersion closure.
+- Both samples are in the low-Mach band: gentle `Ma = 0.09304`, harsh
+  `Ma = 0.09924`; both retain `tau = 0.536 >= 0.51`.
+- Gentle spreading is achieved: `empty_bin_fraction = 0.0`, below the target
+  of `0.15`.
+- Trend holds: `CV_gentle = 1.16305 < CV_harsh = 4.14561`.
+- Re-frozen gentle CV band for this low-Mach example and sample set:
+  `1.05 <= CV <= 1.30`. The old `0.95 <= CV <= 1.40` band was measured at
+  `Ma ~= 0.25` in the compressibility-error regime and is retired.
+  The band remains empirical because the example uses an unresolved near-wall
+  dispersion closure.
 
 ## Core requirements represented by substitutions
 
