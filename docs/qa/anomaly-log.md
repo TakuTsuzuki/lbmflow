@@ -213,3 +213,16 @@ orientation (heavy below) diverges by step 400 (max|u| = 4e3,
 rho_min = −6.0) while T12's unstable orientation passes CI. Engine-finding
 candidate: MCMP + per-component gravity, stable stratification divergence.
 Routing package = the rev-3 test + printed trajectory (cx/mp-hard).
+
+### ANOM-P4-008 RESOLVED (core merge 15adfdd; V&V gate verified 2026-07-07)
+Offset removed (CPU/SIMD/WGSL); Cumulant→CentralMoment rename; finite-N
+band re-frozen to uncorrected measurement; e2 h²-intercept canary flipped
+GREEN in the same commit and INDEPENDENTLY re-verified by this session on
+main (3 passed / 5 ignored, 68 s). Remaining: the −0.16|u|² term sits
+behind CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION (default
+active); E1 ablation A/B measurement dispatched (cx/e1-ablation) — verdict
+rule: ON−OFF slope difference vs 0.16·W·2/(2−ω) within 30% at two
+viscosities ⇒ (B), else (C) candidate. Core also CONFIRMED the P4-001/010
+family diagnosis (per-cell gain fix delays 120→1450 steps but a collective
+mode remains; ANOM-P2-001 is the deeper defect) — R2-C re-dispatch in
+flight on the core side; our gates hold.
