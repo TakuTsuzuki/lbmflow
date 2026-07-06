@@ -145,8 +145,10 @@ visual artifacts (PNG series / viewer), behavior-validity review by the PM,
 findings to anomaly-log. Capability tags: RUN-NOW / AFTER-FIX (named) /
 GATED (named track).
 
-- 9.1 **Sparger bubble injection into a liquid pool** — **RUN** (codex
-  cx/vv-sparger in flight) at the
+- 9.1 **Sparger bubble injection** — **GATED (ANOM-P4-020)**: SCMP mass
+  sources have no phase identity — no bubbles form at any rate (visual
+  evidence on cx/vv-sparger). Needs MCMP component sources or MF-γ gas
+  inflow (VR-STR-02). Original plan text: at the
   Shan-Chen achievable density ratio (~15; REAL air-water 1000:1 is GATED
   on MF-γ — say so in every report). 2D column, SC liquid pool + gas
   injected through a bottom masked patch / volume source; observables:

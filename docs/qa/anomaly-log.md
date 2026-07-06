@@ -236,3 +236,17 @@ Galilean-class correction, retained with measured provenance (inventory
 3.1: offset was (C), removed; u²-term is (B), validated). The audit file's
 E1 SPEC-GAP stays as documentation (the toggle is a compile-time const, so
 the A/B cannot live in one test binary); the report is its evidence.
+
+### ANOM-P4-020 — Axis 9.1 sparger: SCMP interior mass source cannot
+express GAS injection — CORE CAPABILITY GAP (by design, not a bug)
+Visual evidence (out/vv_sparger_2d/*/density_030000.png, PM-reviewed): no
+bubbles at any rate; the pool just densifies (rho_max 2.385 super-liquid
+at the source). Mechanism: SC phase identity is local density — a MassFlow
+source inside liquid adds liquid; there is no phase channel to inject.
+All-rate-identical observables (events=3 detector noise, rise 0.1882,
+negative Laplace) are the no-bubble consequence, not an aggregation bug
+(mass ledgers differ per rate and pass at 1e-8). Disposition: Axis 9.1
+re-tagged GATED — needs MCMP per-component sources (capability gap) or
+MF-gamma phase-field gas inflow (VR-STR-02 sparger unit test is the
+planned home). Routing package = branch cx/vv-sparger (example + report +
+PNGs). The STOP-rule/honesty machinery worked as designed.
