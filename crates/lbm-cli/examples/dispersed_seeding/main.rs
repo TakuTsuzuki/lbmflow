@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         })
         .collect::<Vec<_>>();
 
-    deposit_batch(&input, &regime, &mut batch, &tray_velocity);
+    deposit_batch(&input, &regime, &mut batch, &tray_velocity)?;
     let metrics = readout::write_outputs(
         &input,
         &regime,
@@ -66,10 +66,12 @@ fn main() -> anyhow::Result<()> {
         &tray_velocity,
     )?;
     println!(
-        "RESULT CV={:.6} max_over_mean={:.6} n_deposited={} n_extracted={} out={}",
+        "RESULT CV={:.6} max_over_mean={:.6} empty_bin_fraction={:.6} n_deposited={} n_suspended={} n_extracted={} out={}",
         metrics.cv,
         metrics.max_over_mean,
+        metrics.empty_bin_fraction,
         metrics.n_deposited,
+        metrics.n_suspended,
         metrics.n_extracted,
         input.output.dir
     );
@@ -86,11 +88,63 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn validate_protocol(input: &ProtocolInput) -> anyhow::Result<()> {
+    validate_grid_counts(input)?;
     for op in &input.protocol {
         if op.op == "agitate" && op.pattern.as_deref() != Some("translational") {
             anyhow::bail!(
                 "unsupported agitate pattern {:?}; only translational is implemented",
                 op.pattern
+            );
+        }
+        if op.op == "eject" && op.nozzle_diameter_m.is_none() {
+            anyhow::bail!("eject.nozzle_diameter_m is required");
+        }
+    }
+    Ok(())
+}
+
+fn validate_grid_counts(input: &ProtocolInput) -> anyhow::Result<()> {
+    let dx = input.grid.dx_m;
+    if dx <= 0.0 {
+        anyhow::bail!("grid.dx_m must be positive");
+    }
+    let expected = [
+        (
+            "grid.res_nx",
+            input.grid.res_nx,
+            input.reservoir.width_m / dx,
+        ),
+        (
+            "grid.res_ny",
+            input.grid.res_ny,
+            input.reservoir.width_m / dx,
+        ),
+        (
+            "grid.res_nz",
+            input.grid.res_nz,
+            input.reservoir.height_m / dx,
+        ),
+        (
+            "grid.tray_nx",
+            input.grid.tray_nx,
+            input.target.width_m / dx,
+        ),
+        (
+            "grid.tray_ny",
+            input.grid.tray_ny,
+            input.target.depth_m / dx,
+        ),
+        (
+            "grid.tray_nz",
+            input.grid.tray_nz,
+            input.target.height_m / dx,
+        ),
+    ];
+    for (name, actual, expected_f) in expected {
+        let expected_n = expected_f.round();
+        if (actual as f64 - expected_n).abs() > 1.0 {
+            anyhow::bail!(
+                "{name}={actual} disagrees with SI/dx={expected_f:.3} by more than 1 cell"
             );
         }
     }
@@ -157,21 +211,23 @@ fn build_tray_sim(input: &ProtocolInput, regime: &protocol::Regime) -> Sim3 {
         .op("eject")
         .and_then(|op| op.points_xy_frac.clone())
         .unwrap_or_else(|| vec![[0.5, 0.5]]);
-    let sigma = if input.agitation_count() > 0 || regime.u_jet_si > 0.02 {
-        0.055
-    } else {
-        0.28
-    };
+    let nozzle_radius_m = 0.5 * regime.nozzle_d_m;
     sim.set_inlet_profile_with(Face::ZPos, |x, y| {
-        let xf = x as f64 / (dims[0] - 1) as f64;
-        let yf = y as f64 / (dims[1] - 1) as f64;
-        let mut amp = 0.0f64;
+        let xp = x as f64 * input.grid.dx_m;
+        let yp = y as f64 * input.grid.dx_m;
+        let mut inside_patch = false;
         for pt in &points {
-            let dx = xf - pt[0];
-            let dy = yf - pt[1];
-            amp = amp.max((-0.5 * (dx * dx + dy * dy) / (sigma * sigma)).exp());
+            let cx = pt[0] * input.target.width_m;
+            let cy = pt[1] * input.target.depth_m;
+            let dx = xp - cx;
+            let dy = yp - cy;
+            inside_patch |= dx * dx + dy * dy <= nozzle_radius_m * nozzle_radius_m;
         }
-        [0.0, 0.0, -regime.u_jet_lattice.min(0.08) * amp]
+        if inside_patch {
+            [0.0, 0.0, -regime.u_jet_lattice.min(0.17)]
+        } else {
+            [0.0, 0.0, 0.0]
+        }
     });
     sim
 }

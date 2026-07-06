@@ -1,5 +1,5 @@
 {
-  "grid":       { "res_nx": 32, "res_ny": 32, "res_nz": 128,
+  "grid":       { "res_nx": 32, "res_ny": 32, "res_nz": 200,
                   "tray_nx": 96, "tray_ny": 96, "tray_nz": 24, "dx_m": 5e-4 },
   "fluid":      { "nu_m2s": 1.0e-6, "rho_f_kgm3": 1000.0 },
   "particles":  { "rho_p_kgm3": 1050.0, "d_p_m": 100e-6, "d_p_cv": 0.1, "count": 20000, "seed": 1 },
@@ -8,9 +8,10 @@
   "protocol": [
     { "op": "settle",   "duration_s": 30.0 },
     { "op": "withdraw", "volume_frac": 0.5, "rate_uLs": 300.0, "depth_frac": 0.8 },
-    { "op": "eject",    "points_xy_frac": [[0.5,0.5]], "rate_uLs": 179.0, "height_m": 0.008 },
+    { "op": "eject",    "points_xy_frac": [[0.5,0.5],[0.32,0.32],[0.68,0.32],[0.32,0.68],[0.68,0.68]], "rate_uLs": 60.0, "nozzle_diameter_m": 0.0008, "height_m": 0.008 },
     { "op": "agitate",  "pattern": "translational", "count": 0, "speed_mms": 90.0, "amplitude_mm": 5.0 },
-    { "op": "settle",   "duration_s": 20.0 }
+    { "op": "settle",   "duration_s": 3.0 }
   ],
-  "output":     { "dir": "out/dispersed_seeding/gentle", "csv": true, "volume": true }
+  "output":     { "dir": "out/dispersed_seeding/gentle", "csv": true, "volume": true },
+  "max_particle_steps": 12000
 }

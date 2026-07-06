@@ -56,8 +56,7 @@ pub fn make_reservoir_particles(input: &ProtocolInput) -> Vec<Particle> {
         let d = lognormal_diameter(input.particles.d_p_m, input.particles.d_p_cv, &mut rng);
         let x = rng.unit() * input.reservoir.width_m;
         let y = rng.unit() * input.reservoir.width_m;
-        let size_bias = (d / input.particles.d_p_m).clamp(0.5, 2.5);
-        let z_frac = fill * rng.unit().powf(1.0 + 1.8 * size_bias);
+        let z_frac = fill * rng.unit();
         out.push(Particle {
             pos: [x, y, z_frac * input.reservoir.height_m],
             vel: [0.0; 3],
@@ -73,9 +72,9 @@ pub fn deposit_batch(
     regime: &Regime,
     batch: &mut [Particle],
     tray_velocity: &[[f64; 3]],
-) {
+) -> anyhow::Result<()> {
     if batch.is_empty() {
-        return;
+        return Ok(());
     }
     let eject = input.op("eject").expect("eject operation");
     let points = eject
@@ -88,11 +87,7 @@ pub fn deposit_batch(
     let harshness = (regime.u_jet_si / 0.01).clamp(0.0, 20.0)
         + input.agitation_count() as f64 * 0.15
         + input.fr();
-    let jet_sigma = if harshness > 4.0 {
-        0.055 * input.target.width_m.min(input.target.depth_m)
-    } else {
-        0.28 * input.target.width_m.min(input.target.depth_m)
-    };
+    let jet_sigma = (0.5 * regime.nozzle_d_m).max(1.25 * input.grid.dx_m);
     for (k, p) in batch.iter_mut().enumerate() {
         let pt = points[k % points.len()];
         p.pos = [
@@ -113,7 +108,14 @@ pub fn deposit_batch(
         .and_then(|op| op.duration_s)
         .unwrap_or(2.0)
         .max(0.1);
-    let steps = ((max_duration / dt).ceil() as usize).clamp(20, 900);
+    let requested_steps = ((max_duration / dt).ceil() as usize).max(20);
+    let max_particle_steps = input.max_particle_steps.unwrap_or(50_000);
+    if requested_steps > max_particle_steps {
+        anyhow::bail!(
+            "particle integration requires {requested_steps} steps, exceeding max_particle_steps={max_particle_steps}; suspended particles are not added to the density map"
+        );
+    }
+    let steps = requested_steps;
     let omega = {
         let a = input.agitation_amplitude_m();
         let s = input.agitation_speed_m_s();
@@ -149,8 +151,9 @@ pub fn deposit_batch(
             if harshness > 4.0 {
                 p.pos[0] += 0.15 * jet_sigma * (11.0 * t + p.d_m * 1.0e6).sin() * dt;
             } else {
-                p.pos[0] += 0.02 * input.target.width_m * rng.normal() * dt;
-                p.pos[1] += 0.02 * input.target.depth_m * rng.normal() * dt;
+                let step_sigma = (2.0 * 2.5e-5 * dt).sqrt();
+                p.pos[0] += step_sigma * rng.normal();
+                p.pos[1] += step_sigma * rng.normal();
             }
             p.pos[0] = p.pos[0].clamp(0.0, input.target.width_m);
             p.pos[1] = p.pos[1].clamp(0.0, input.target.depth_m);
@@ -167,10 +170,7 @@ pub fn deposit_batch(
             break;
         }
     }
-    for p in batch.iter_mut().filter(|p| !p.deposited) {
-        p.pos[2] = 0.0;
-        p.deposited = true;
-    }
+    Ok(())
 }
 
 fn tray_fluid_velocity(
@@ -189,6 +189,14 @@ fn tray_fluid_velocity(
     let iz = ((pos[2] / input.target.height_m) * (nz as f64 - 1.0)).round() as usize;
     let idx = (iz.min(nz - 1) * ny + iy.min(ny - 1)) * nx + ix.min(nx - 1);
     let mut u = tray_velocity.get(idx).copied().unwrap_or([0.0; 3]);
+    let harshness = (regime.u_jet_si / 0.01).clamp(0.0, 20.0)
+        + input.agitation_count() as f64 * 0.15
+        + input.fr();
+    let wall_jet_len = if harshness > 4.0 {
+        0.10 * input.target.width_m.min(input.target.depth_m)
+    } else {
+        0.42 * input.target.width_m.min(input.target.depth_m)
+    };
     for pt in points {
         let cx = pt[0] * input.target.width_m;
         let cy = pt[1] * input.target.depth_m;
@@ -199,7 +207,9 @@ fn tray_fluid_velocity(
         let z_decay = (pos[2] / input.target.height_m).clamp(0.0, 1.0);
         u[2] += -regime.u_jet_si * g * (0.25 + 0.75 * z_decay);
         let r = r2.sqrt().max(1.0e-9);
-        let radial = 0.12 * regime.u_jet_si * g * (1.0 - z_decay);
+        let wall_jet = (-r / wall_jet_len.max(1.0e-9)).exp();
+        u[2] += -0.35 * regime.u_jet_si * wall_jet * z_decay;
+        let radial = 0.35 * regime.u_jet_si * wall_jet * (1.0 - z_decay).powi(2);
         u[0] += radial * dx / r;
         u[1] += radial * dy / r;
     }

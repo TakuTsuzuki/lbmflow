@@ -10,7 +10,9 @@ pub struct Metrics {
     #[serde(rename = "CV")]
     pub cv: f64,
     pub max_over_mean: f64,
+    pub empty_bin_fraction: f64,
     pub n_deposited: usize,
+    pub n_suspended: usize,
     pub n_extracted: usize,
     #[serde(rename = "Re_jet")]
     pub re_jet: f64,
@@ -64,10 +66,15 @@ pub fn write_outputs(
         / n.max(1.0);
     let cv = if mean > 0.0 { var.sqrt() / mean } else { 0.0 };
     let max = bins.iter().copied().max().unwrap_or(0) as f64;
+    let n_suspended = particles.iter().filter(|p| !p.deposited).count();
+    let empty_bin_fraction =
+        bins.iter().filter(|&&c| c == 0).count() as f64 / bins.len().max(1) as f64;
     let metrics = Metrics {
         cv,
         max_over_mean: if mean > 0.0 { max / mean } else { 0.0 },
+        empty_bin_fraction,
         n_deposited: sum,
+        n_suspended,
         n_extracted,
         re_jet: regime.re_jet,
         st: regime.st,

@@ -11,6 +11,8 @@ pub struct ProtocolInput {
     pub target: TargetSpec,
     pub protocol: Vec<Operation>,
     pub output: OutputSpec,
+    #[serde(default)]
+    pub max_particle_steps: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +67,7 @@ pub struct Operation {
     pub rate_ul_s: Option<f64>,
     pub depth_frac: Option<f64>,
     pub points_xy_frac: Option<Vec<[f64; 2]>>,
+    pub nozzle_diameter_m: Option<f64>,
     pub height_m: Option<f64>,
     pub pattern: Option<String>,
     pub count: Option<usize>,
@@ -120,18 +123,22 @@ impl ProtocolInput {
             .op("eject")
             .ok_or_else(|| anyhow::anyhow!("protocol requires an eject operation"))?;
         let points = eject.points_xy_frac.as_ref().map_or(1, Vec::len).max(1);
+        let nozzle_d_m = eject
+            .nozzle_diameter_m
+            .ok_or_else(|| anyhow::anyhow!("eject.nozzle_diameter_m is required"))?;
+        if nozzle_d_m <= 0.0 {
+            anyhow::bail!("eject.nozzle_diameter_m must be positive");
+        }
         let rate_m3_s = eject.rate_ul_s.unwrap_or(0.0) * 1.0e-9;
-        let patch_radius = (3.0 * dx).max(0.12 * self.target.width_m.min(self.target.depth_m));
-        let patch_area = (std::f64::consts::PI * patch_radius * patch_radius * points as f64)
-            .min(self.target.width_m * self.target.depth_m);
-        let u_jet_si = if patch_area > 0.0 {
+        let patch_area = std::f64::consts::PI * (0.5 * nozzle_d_m).powi(2) * points as f64;
+        let u_jet_si = if rate_m3_s > 0.0 {
             rate_m3_s / patch_area
         } else {
             0.0
         };
         let max_si = u_jet_si.max(self.settling_velocity_m_s());
         let dt_by_ma = if max_si > 0.0 {
-            0.08 * dx / max_si
+            0.16 * dx / max_si
         } else {
             1.0
         };
@@ -142,7 +149,6 @@ impl ProtocolInput {
         let u_jet_lattice = u_jet_si * dt / dx;
         let cs = (1.0 / 3.0f64).sqrt();
         let ma = u_jet_lattice / cs;
-        let nozzle_d_m = (4.0 * patch_area / (std::f64::consts::PI * points as f64)).sqrt();
         let re_jet = if self.fluid.nu_m2s > 0.0 {
             u_jet_si * nozzle_d_m / self.fluid.nu_m2s
         } else {

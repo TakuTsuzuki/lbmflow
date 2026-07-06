@@ -17,8 +17,8 @@ cargo run --release -p lbm-cli --example dispersed_seeding -- \
 Outputs are written under the JSON `output.dir`:
 
 - `density.csv`: `M x N` deposition count and normalized density.
-- `metrics.json`: CV, max/mean, deposited and extracted counts, and regime
-  numbers.
+- `metrics.json`: CV, max/mean, empty-bin fraction, deposited, suspended and
+  extracted counts, and regime numbers.
 - `reservoir_velocity.vtk` and `tray_velocity.vtk`: ASCII VTK 3D velocity
   volumes.
 
@@ -35,18 +35,20 @@ translational agitation acceleration from the protocol. A particle that crosses
 the floor is frozen and counted into the partition bin containing its final
 `x,y` position.
 
-The reservoir phase uses a reduced extraction model. The current public core
-API exposes face boundary conditions, not an internal localized suction outlet
-with a simultaneously open replenishment top. The example therefore runs a
-closed 3D reservoir LBM smoke phase and extracts particles by a
-depth-weighted, concentration-weighted sampling rule. The extracted diameter
-histogram is printed so the substitution remains measurable.
+The reservoir phase uses an explicit 1D settling-column extraction model. The
+current public core API exposes face boundary conditions, not an internal
+localized suction outlet with a simultaneously open replenishment top. The
+example therefore runs a closed 3D reservoir LBM visualization phase and
+extracts particles from the settled column concentration at the requested
+withdraw depth. The extracted diameter histogram is printed so the substitution
+remains measurable.
 
 The tray phase uses a D3Q19 domain with wall sides and floor, plus a localized
-top velocity profile through `set_inlet_profile_with`. The particle integrator
-combines that sampled LBM field with an analytic jet envelope because the public
-face boundary cannot represent both localized injection and open top outflow on
-the same face.
+top velocity profile through `set_inlet_profile_with`. The top face is a
+velocity face with zero velocity outside nozzle disks. The particle integrator
+combines that sampled LBM field with an example-local impinging wall-jet and
+near-wall dispersion closure because the public face boundary cannot represent
+both localized injection and open top outflow on the same face.
 
 ## Non-goals
 
