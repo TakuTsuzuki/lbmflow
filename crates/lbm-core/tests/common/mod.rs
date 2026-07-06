@@ -5,17 +5,10 @@
 
 use lbm_core::compat::prelude::*;
 
-/// Relative L2 norm of the error between `actual` and `reference`.
-pub fn l2_rel(actual: &[f64], reference: &[f64]) -> f64 {
-    assert_eq!(actual.len(), reference.len());
-    let mut num = 0.0;
-    let mut den = 0.0;
-    for (a, r) in actual.iter().zip(reference) {
-        num += (a - r) * (a - r);
-        den += r * r;
-    }
-    (num / den).sqrt()
-}
+pub mod metrics;
+pub mod tgv_analysis;
+#[allow(unused_imports)]
+pub use metrics::l2_rel;
 
 /// Run until the velocity field stops changing: returns `true` once
 /// `max |u - u_prev| <= tol * max |u|` between checks `check_every` steps
