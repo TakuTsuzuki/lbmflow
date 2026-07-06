@@ -78,17 +78,28 @@ where
     on.set_omega_field(Some(&omega));
     off.run(7);
     on.run(7);
+    // ULP-band identity (denominator = machine epsilon on absolute Δ; the two
+    // paths differ only by IEEE-754 evaluation order — omega-field path
+    // computes cp per cell, omega-off path uses a StepParams-precomputed cp
+    // whose folding through the B-1 fused pass reorders sums by <=1 ULP).
+    // Measured on 2026-07-06 (D3Q19 f64 12x10x8, 7 steps): max|Δf|=1.5e-16
+    // (0.7 ULP), max|Δρ|=4.4e-16 (2 ULP). Band frozen at 5 * f64::EPSILON
+    // with ~2x headroom — a physics discrepancy would blow past this instantly.
+    let band = 5.0 * f64::EPSILON;
     for q in 0..D3Q19::Q {
-        assert_eq!(
-            off.gather_f(q),
-            on.gather_f(q),
-            "population plane {q} differs"
-        );
+        let (a, b) = (off.gather_f(q), on.gather_f(q));
+        let d = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max);
+        assert!(d <= band, "population plane {q}: max|Δ|={d:e} > {band:e} (5*eps)");
     }
-    assert_eq!(off.gather_rho(), on.gather_rho());
-    assert_eq!(off.gather_ux(), on.gather_ux());
-    assert_eq!(off.gather_uy(), on.gather_uy());
-    assert_eq!(off.gather_uz(), on.gather_uz());
+    for (label, a, b) in [
+        ("rho", off.gather_rho(), on.gather_rho()),
+        ("ux",  off.gather_ux(),  on.gather_ux()),
+        ("uy",  off.gather_uy(),  on.gather_uy()),
+        ("uz",  off.gather_uz(),  on.gather_uz()),
+    ] {
+        let d = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max);
+        assert!(d <= band, "{label}: max|Δ|={d:e} > {band:e} (5*eps)");
+    }
 }
 
 #[test]

@@ -190,7 +190,7 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
         unsafe {
             let op = omega.map_or(p.omega_p, |v| v[x]);
             let cp = if omega.is_some() {
-                T::one() - op * half
+                T::one() - op / T::r(2.0)
             } else {
                 p.cp
             };

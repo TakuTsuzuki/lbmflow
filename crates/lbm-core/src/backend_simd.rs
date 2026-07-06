@@ -287,7 +287,7 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
     for x in x0..x1 {
         let op = omega.map_or(op0, |v| v[x]);
         let cp = if omega.is_some() {
-            one - op * half
+            one - op / T::r(2.0)
         } else {
             cp0
         };
@@ -441,7 +441,7 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
                 let x = xb + j;
                 let op = omega.map_or(op0, |v| v[x]);
                 let cp = if omega.is_some() {
-                    one - op * half
+                    one - op / T::r(2.0)
                 } else {
                     cp0
                 };
@@ -471,7 +471,7 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
                 let fm = half * (fa - fb);
                 let op = omega.map_or(op0, |v| v[x]);
                 let cp = if omega.is_some() {
-                    one - op * half
+                    one - op / T::r(2.0)
                 } else {
                     cp0
                 };

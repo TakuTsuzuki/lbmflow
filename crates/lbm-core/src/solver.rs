@@ -1467,7 +1467,8 @@ where
         if let Some(values) = omega {
             assert_eq!(values.len(), n, "omega field length must match cell count");
         }
-        for (sub, fields) in self.subs.iter().zip(self.parts.iter_mut()) {
+        self.host_dirty = true;
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
             let g = sub.geom;
             match omega {
                 Some(values) => {
@@ -1767,8 +1768,8 @@ where
             let (i, lx, ly, lz) = self.locate(x, y, z);
             let g = self.subs[i].geom;
             let pi = g.pidx(lx, ly, lz);
-            if self.parts[i].solid[pi] {
-                Some((self.parts[i].wall_u[pi], true))
+            if self.host_parts[i].solid[pi] {
+                Some((self.host_parts[i].wall_u[pi], true))
             } else {
                 let ci = idx(x, y, z);
                 Some(([ux[ci], uy[ci], uz[ci]], false))
