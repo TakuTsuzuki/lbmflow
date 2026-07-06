@@ -121,7 +121,7 @@ pub(crate) fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellR
 ///
 /// One time step, orchestrated by the solver, is:
 /// `collide` → halo exchange → `stream` (interior, then boundary) → `swap`
-/// → `apply_open_faces` → `update_moments`.
+/// → `apply_open_faces` → `update_moments` → `end_step`.
 pub trait Backend<L: Lattice, T: Real> {
     /// Backend-owned field storage.
     ///
@@ -169,6 +169,13 @@ pub trait Backend<L: Lattice, T: Real> {
         true
     }
 
+    /// Whether this backend supports the orchestrator's interior/boundary
+    /// streaming split. Backends that fuse whole-grid kernels can return
+    /// `false` so callers can reject two-pass mode before a run is recorded.
+    fn supports_two_pass(&self) -> bool {
+        true
+    }
+
     /// Exchange post-collision population halos for backend-owned fields.
     ///
     /// CPU backends delegate to the current `HaloExchange<SoaFields>`
@@ -186,37 +193,49 @@ pub trait Backend<L: Lattice, T: Real> {
     /// TRT/BGK collision with Guo forcing over all core cells (in place).
     fn collide(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
 
-    /// Pull-streaming into the out-buffer over `range`. Returns the
-    /// momentum-exchange force accumulated over probed solid links in the
-    /// range (deterministic row-order sum).
+    /// Pull-streaming into the out-buffer over `range`.
+    ///
+    /// Implementations that support force probes add their deterministic
+    /// per-range contribution to backend-owned step state. Call
+    /// [`Backend::read_probed_force`] after [`Backend::end_step`] to read the
+    /// most recent step's force.
     fn stream(
         &mut self,
         sub: &Subdomain,
         fields: &mut Self::Fields,
         p: &StepParams<T>,
         range: CellRange,
-    ) -> [T; 3];
+    );
 
     /// Swap the population ping-pong pair (after all stream ranges ran).
     fn swap(&mut self, fields: &mut Self::Fields);
 
     /// Curved-wall post-stream correction. Default is a no-op for backends
     /// without Bouzidi support; CPU backends override it for `SoaFields`.
-    fn apply_bouzidi(
-        &mut self,
-        _sub: &Subdomain,
-        _fields: &mut Self::Fields,
-        _p: &StepParams<T>,
-    ) -> [T; 3] {
-        [T::zero(); 3]
-    }
+    fn apply_bouzidi(&mut self, _sub: &Subdomain, _fields: &mut Self::Fields, _p: &StepParams<T>) {}
 
     /// Open-face BC pass (Zou–He / outflow / convective) on the faces of
     /// this subdomain that lie on an open global face.
     fn apply_open_faces(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
 
     /// Recompute macroscopic moments from the populations.
+    ///
+    /// Lazy contract: backends may defer or partially elide the recompute when
+    /// their step kernels have already produced moments equivalent to a full
+    /// refresh. Any later [`Backend::read_moments`] must observe up-to-date
+    /// moments for the completed step.
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
+
+    /// Complete a solver step after all phases have been recorded.
+    ///
+    /// CPU backends execute eagerly and use the default no-op. Asynchronous
+    /// backends use this hook for submit boundaries; readback APIs remain the
+    /// only required blocking points.
+    fn end_step(&mut self, _fields: &Self::Fields) {}
+
+    /// Explicit readback of the momentum-exchange force accumulated over
+    /// probed solid links during the most recent completed step.
+    fn read_probed_force(&self, fields: &Self::Fields) -> [T; 3];
 
     /// Record/execute a span of whole steps. The default is exactly the
     /// generic orchestrator step loop; asynchronous backends may override it
@@ -237,11 +256,10 @@ pub trait Backend<L: Lattice, T: Real> {
                 self.collide(&subs[i], &mut fields[i], p);
             }
             self.exchange_f(exchange, subs, fields);
-            let mut pf = [T::zero(); 3];
             for i in 0..fields.len() {
                 let sub = &subs[i];
-                let part_pf = if !two_pass {
-                    self.stream(sub, &mut fields[i], p, CellRange::full(sub))
+                if !two_pass {
+                    self.stream(sub, &mut fields[i], p, CellRange::full(sub));
                 } else {
                     let c = sub.geom.core;
                     let interior = CellRange {
@@ -256,23 +274,18 @@ pub trait Backend<L: Lattice, T: Real> {
                             },
                         ],
                     };
-                    let mut part_pf = self.stream(sub, &mut fields[i], p, interior);
+                    self.stream(sub, &mut fields[i], p, interior);
                     for shell in boundary_shells(sub, interior) {
-                        let p2 = self.stream(sub, &mut fields[i], p, shell);
-                        part_pf = [part_pf[0] + p2[0], part_pf[1] + p2[1], part_pf[2] + p2[2]];
+                        self.stream(sub, &mut fields[i], p, shell);
                     }
-                    part_pf
                 };
-                pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
             }
             for i in 0..fields.len() {
-                let part_pf = self.apply_bouzidi(&subs[i], &mut fields[i], p);
-                pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
+                self.apply_bouzidi(&subs[i], &mut fields[i], p);
             }
             for field in fields.iter_mut() {
                 self.swap(field);
             }
-            *probed_force = pf;
             for i in 0..fields.len() {
                 self.apply_open_faces(&subs[i], &mut fields[i], p);
             }
@@ -282,6 +295,13 @@ pub trait Backend<L: Lattice, T: Real> {
             for i in 0..fields.len() {
                 self.update_moments(&subs[i], &mut fields[i], p);
             }
+            for field in fields.iter() {
+                self.end_step(field);
+            }
+            *probed_force = fields.iter().fold([T::zero(); 3], |a, field| {
+                let b = self.read_probed_force(field);
+                [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+            });
         }
     }
 
@@ -369,6 +389,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        fields.probed_force = [T::zero(); 3];
         let kp = KParams::new::<L>(p);
         let g = fields.geom;
         let np = g.n_padded();
@@ -432,9 +453,9 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
         fields: &mut SoaFields<T>,
         p: &StepParams<T>,
         range: CellRange,
-    ) -> [T; 3] {
+    ) {
         if range.is_empty() {
-            return [T::zero(); 3];
+            return;
         }
         let kp = KParams::new::<L>(p);
         let g = fields.geom;
@@ -480,22 +501,33 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
         #[cfg(feature = "parallel")]
         if self.use_parallel(sub) {
             let partials: Vec<[T; 3]> = (0..rows).into_par_iter().map(body).collect();
-            return fold(partials);
+            let pf = fold(partials);
+            fields.probed_force = [
+                fields.probed_force[0] + pf[0],
+                fields.probed_force[1] + pf[1],
+                fields.probed_force[2] + pf[2],
+            ];
+            return;
         }
-        fold((0..rows).map(body).collect())
+        let pf = fold((0..rows).map(body).collect());
+        fields.probed_force = [
+            fields.probed_force[0] + pf[0],
+            fields.probed_force[1] + pf[1],
+            fields.probed_force[2] + pf[2],
+        ];
     }
 
     fn swap(&mut self, fields: &mut SoaFields<T>) {
         fields.swap_f();
     }
 
-    fn apply_bouzidi(
-        &mut self,
-        _sub: &Subdomain,
-        fields: &mut SoaFields<T>,
-        p: &StepParams<T>,
-    ) -> [T; 3] {
-        crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p)
+    fn apply_bouzidi(&mut self, _sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        let pf = crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p);
+        fields.probed_force = [
+            fields.probed_force[0] + pf[0],
+            fields.probed_force[1] + pf[1],
+            fields.probed_force[2] + pf[2],
+        ];
     }
 
     fn apply_open_faces(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
@@ -527,6 +559,10 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
 
     fn read_moments(&self, fields: &SoaFields<T>, out: &mut HostMoments<T>) {
         read_moments_impl(fields, out);
+    }
+
+    fn read_probed_force(&self, fields: &SoaFields<T>) -> [T; 3] {
+        fields.probed_force
     }
 }
 
@@ -568,8 +604,7 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
             .iter()
             .filter(|patch| patch.face == face.index())
             .filter_map(|patch| {
-                patch_rect_local(sub, face, patch.lo, patch.hi)
-                    .map(|(lo, hi)| (patch.bc, lo, hi))
+                patch_rect_local(sub, face, patch.lo, patch.hi).map(|(lo, hi)| (patch.bc, lo, hi))
             })
             .collect();
         let profiles = &fields.inlet_profiles;

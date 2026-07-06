@@ -15,16 +15,16 @@
 //!   performs collide+push-stream in one pass, preserving the CPU's `S∘C`
 //!   step order — see `wgsl.rs`).
 //! - `stream` — records `clear_probe` (when probing) + the fused dispatch.
-//!   Returns zeros: the probe force accumulates on-device and is fetched
-//!   through [`WgpuBackend::read_probed_force`] (explicit readback), holding
-//!   the most recent step's value like V1 `probed_force`.
+//!   The probe force accumulates on-device and is fetched through
+//!   [`WgpuBackend::read_probed_force`] (explicit readback), holding the most
+//!   recent step's value like V1 `probed_force`.
 //! - `swap` — flips the ping-pong index (bind groups pre-built per parity).
 //! - `apply_open_faces` — records the per-face `bc` dispatches in
 //!   `Face::ALL` order (CPU order).
 //! - `update_moments` — lazy: the fused kernel re-derives the moments it
 //!   needs in-kernel from the same pre-collide state the CPU caches, so the
-//!   device moment buffers are only refreshed by `read_moments`. Doubles as
-//!   the step-end hook for chunked submission.
+//!   device moment buffers are only refreshed by `read_moments`.
+//! - `end_step` — records the step boundary for chunked submission.
 //! - `reduce` — explicit readback of the populations plus the exact V1
 //!   f64 accumulation loop on the host (wgpu has no f64; doing the loop
 //!   host-side keeps the diagnostic convention bit-compatible with
@@ -1924,6 +1924,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         true
     }
 
+    fn supports_two_pass(&self) -> bool {
+        false
+    }
+
     fn exchange_f<H: HaloExchange<f32>>(
         &mut self,
         _exchange: &H,
@@ -1955,7 +1959,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         fields: &mut GpuFields,
         _p: &StepParams<f32>,
         range: CellRange,
-    ) -> [f32; 3] {
+    ) {
         assert_eq!(
             range,
             CellRange::full(sub),
@@ -1986,9 +1990,6 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         });
         st.generation += 1;
         st.f_cache = None;
-        // The probe force accumulates on-device; explicit readback via
-        // read_probed_force (per-step CPU sync is the 9x trap).
-        [0.0; 3]
     }
 
     fn swap(&mut self, fields: &mut GpuFields) {
@@ -2020,12 +2021,18 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             let mut st = fields.state.borrow_mut();
             let cur = st.cur;
             st.ops.push(Op::Moments { bg: cur });
-            st.steps_recorded += 1;
         } else {
             // Lazy: the fused kernel re-derives (rho, u) from the identical
             // pre-collide state, so no device moment refresh is needed.
-            fields.state.borrow_mut().steps_recorded += 1;
         }
+    }
+
+    fn end_step(&mut self, fields: &GpuFields) {
+        fields.state.borrow_mut().steps_recorded += 1;
+    }
+
+    fn read_probed_force(&self, fields: &GpuFields) -> [f32; 3] {
+        WgpuBackend::read_probed_force(self, fields)
     }
 
     fn run_span<H: HaloExchange<f32>>(
@@ -2097,10 +2104,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             }
             st.steps_recorded += 1;
         }
-        // The probe force accumulates on-device and is read explicitly by
-        // GpuSolver::probed_force; the unified scalar slot stays at the same
-        // zero value returned by WgpuBackend::stream.
-        *probed_force = [0.0; 3];
+        let _ = probed_force;
     }
 
     fn run_chunk_size(&self, fields: &[GpuFields]) -> usize {
@@ -2115,10 +2119,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
 
     fn finish_run_chunk(&mut self, fields: &[GpuFields], steps: usize) {
         let start = std::time::Instant::now();
+        let calibrating = !self.submit_chunk_calibrated;
         for field in fields {
+            if field.state.borrow().ops.is_empty() {
+                continue;
+            }
             self.flush(field);
         }
-        let calibrating = !self.submit_chunk_calibrated;
         if calibrating {
             self.ctx.wait_idle();
         }

@@ -190,6 +190,8 @@ pub struct SoaFields<T: Real> {
     pub wall_u: Vec<[T; 3]>,
     /// Momentum-exchange probe mask over solids, padded.
     pub probe: Option<Vec<bool>>,
+    /// Momentum-exchange force accumulated during the most recent step.
+    pub probed_force: [T; 3],
     /// Per-cell body force added to the uniform force, compact core.
     pub force_field: Option<Vec<[T; 3]>>,
     /// Optional per-cell symmetric relaxation rate (`omega_plus = 1/tau`),
@@ -225,6 +227,7 @@ impl<T: Real> SoaFields<T> {
             solid: vec![false; np],
             wall_u: vec![[T::zero(); 3]; np],
             probe: None,
+            probed_force: [T::zero(); 3],
             force_field: None,
             omega_field: None,
             bouzidi: None,

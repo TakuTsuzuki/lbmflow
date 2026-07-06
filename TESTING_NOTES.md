@@ -1417,3 +1417,38 @@ The default positional invocation remains the existing 2D weak-scaling path.
 Verification in this session:
 - `PATH=$HOME/.local/openmpi/bin:$PATH cargo build -p lbm-core --release --features mpi --example bench_mpi`: passed.
 - `./scripts/qa/mpi_local_preflight.sh`: build passed, but `mpirun` could not launch in this sandbox. Open MPI 5.0.9 failed before rank startup with `bind() failed for port 0: Operation not permitted` and `No sockets were able to be opened on the available protocols`. This is a sandbox socket restriction, not a benchmark failure. The script remains the intended local preflight for an unsandboxed M5 Max shell.
+
+## R-Phase 2 B-2 backend synchronization contract (2026-07-07)
+
+Contract change: `Backend::stream` no longer returns probe force. Probe force
+is accumulated in backend-owned step state and read through
+`Backend::read_probed_force`; `Solver::read_probed_force` exposes the explicit
+readback while `Solver::probed_force` remains the cached compatibility getter.
+`Backend::end_step` is the new step-boundary hook, and `update_moments` is
+documented as a lazy moment-refresh contract. GPU two-pass streaming is exposed
+through `supports_two_pass() == false`.
+
+Targeted verification:
+- `cargo test -p lbm-core --release probe_force_bit_repeatable -- --nocapture`
+  passed: `CpuScalar` and `CpuSimd` probe forces bit-match across two runs at
+  the same thread count; cached and explicit readback values also bit-match.
+- `cargo test -p lbm-core --release --features gpu \
+  t14_probe_force_explicit_readback_cpu_gpu -- --nocapture` passed: CPU/GPU
+  explicit probe readbacks matched within the T14 diagnostic tolerance.
+- `cargo test -p lbm-core --release --test backend_simd_equiv -- --nocapture`
+  passed, with `tests/backend_simd_equiv.rs` unchanged.
+- `cargo test -p lbm-core --release --test t13_split_invariance -- --nocapture`
+  passed, with `tests/t13_split_invariance.rs` unchanged.
+
+Full-gate status in this sandbox:
+- `cargo test --workspace --release --no-fail-fast; echo EXIT:$?` passed with
+  `EXIT:0`.
+- `cargo test --workspace --release --features gpu --no-fail-fast; echo EXIT:$?`
+  was attempted after the targeted GPU pass but failed because wgpu adapter
+  acquisition returned `NoAdapter` in existing GPU-required tests
+  (`gpu::backend::tests::cumulant_gpu_matches_cpu_measured_tgv3d_tolerance`,
+  `run_guarded::gpu_run_guarded_detects_nan_and_passes_healthy`,
+  `stream_contract::gpu_stream_honours_open_face_contract`, T14 GPU suites) and
+  the run was later interrupted while continuing through long non-GPU validation
+  tests. A subsequent targeted retry of
+  `t14_probe_force_explicit_readback_cpu_gpu` also failed with `NoAdapter`.

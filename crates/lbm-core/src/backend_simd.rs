@@ -1539,6 +1539,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
     /// other cells stay pre-collide (the fused pass collides them
     /// just-in-time).
     fn collide(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        fields.probed_force = [T::zero(); 3];
         if fields.bouzidi.is_some() {
             fields.fused = None;
             let mut scalar = CpuScalar::default();
@@ -1737,14 +1738,15 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         fields: &mut SoaFields<T>,
         p: &StepParams<T>,
         range: CellRange,
-    ) -> [T; 3] {
+    ) {
         if fields.bouzidi.is_some() {
             fields.fused = None;
             let mut scalar = CpuScalar::default();
-            return <CpuScalar as Backend<L, T>>::stream(&mut scalar, sub, fields, p, range);
+            <CpuScalar as Backend<L, T>>::stream(&mut scalar, sub, fields, p, range);
+            return;
         }
         if range.is_empty() {
-            return [T::zero(); 3];
+            return;
         }
         let g = fields.geom;
         assert_eq!(g.halo, 1, "CpuSimd assumes one-cell halos");
@@ -1867,7 +1869,11 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         scratch.fresh = true;
         drop(ctx);
         fields.fused = Some(scratch);
-        pf
+        fields.probed_force = [
+            fields.probed_force[0] + pf[0],
+            fields.probed_force[1] + pf[1],
+            fields.probed_force[2] + pf[2],
+        ];
     }
 
     /// Swap the population ping-pong pair and the moment double buffers.
@@ -1881,13 +1887,13 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         }
     }
 
-    fn apply_bouzidi(
-        &mut self,
-        _sub: &Subdomain,
-        fields: &mut SoaFields<T>,
-        p: &StepParams<T>,
-    ) -> [T; 3] {
-        crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p)
+    fn apply_bouzidi(&mut self, _sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        let pf = crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p);
+        fields.probed_force = [
+            fields.probed_force[0] + pf[0],
+            fields.probed_force[1] + pf[1],
+            fields.probed_force[2] + pf[2],
+        ];
     }
 
     fn apply_volume_sources(
@@ -1971,6 +1977,10 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
 
     fn read_moments(&self, fields: &SoaFields<T>, out: &mut HostMoments<T>) {
         read_moments_impl(fields, out);
+    }
+
+    fn read_probed_force(&self, fields: &SoaFields<T>) -> [T; 3] {
+        fields.probed_force
     }
 }
 

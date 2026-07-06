@@ -1600,9 +1600,17 @@ where
         self.time += 1;
         self.device_ahead = true;
         self.backend.finish_run_chunk(&self.parts, 1);
+        self.refresh_probed_force();
         self.stage_out_all();
         self.unstage_gravity(gravity_stage);
         self.stage_in_if_dirty();
+    }
+
+    fn refresh_probed_force(&mut self) {
+        self.probed_force = self.parts.iter().fold([T::zero(); 3], |a, field| {
+            let b = self.backend.read_probed_force(field);
+            [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+        });
     }
 
     /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
@@ -1626,6 +1634,7 @@ where
         self.time += 1;
         self.device_ahead = true;
         self.backend.finish_run_chunk(&self.parts, 1);
+        self.refresh_probed_force();
         if !self.backend.handles_single_part_periodic_halo() {
             self.stage_out_all();
         }
@@ -1660,6 +1669,7 @@ where
             self.time += chunk as u64;
             self.device_ahead = true;
             self.backend.finish_run_chunk(&self.parts, chunk);
+            self.refresh_probed_force();
             if !self.backend.handles_single_part_periodic_halo() {
                 self.stage_out_all();
             }
@@ -1705,7 +1715,17 @@ where
 
     /// Toggle the interior/boundary two-pass streaming split.
     pub fn set_two_pass(&mut self, on: bool) {
+        assert!(
+            !on || self.backend.supports_two_pass(),
+            "selected backend does not support two-pass streaming"
+        );
         self.two_pass = on;
+    }
+
+    /// Whether the selected backend supports the interior/boundary streaming
+    /// split used by two-pass overlap experiments.
+    pub fn supports_two_pass(&self) -> bool {
+        self.backend.supports_two_pass()
     }
 
     // ------------------------------------------------------------------
@@ -2896,6 +2916,15 @@ where
     /// step (V1 `probed_force`).
     pub fn probed_force(&self) -> [T; 3] {
         self.probed_force
+    }
+
+    /// Explicit backend readback of the momentum-exchange force on probed
+    /// solids during the most recent completed step.
+    pub fn read_probed_force(&self) -> [T; 3] {
+        self.parts.iter().fold([T::zero(); 3], |a, field| {
+            let b = self.backend.read_probed_force(field);
+            [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+        })
     }
 
     /// Density at a global cell.
