@@ -131,11 +131,14 @@ fn matrix() -> CapabilityMatrix {
 }
 
 fn scenario_collision_names() -> Vec<&'static str> {
-    [CollisionSpec::Bgk, CollisionSpec::Trt]
+    [CollisionSpec::Bgk, CollisionSpec::Trt, CollisionSpec::Cumulant]
         .into_iter()
         .map(|collision| match collision {
             CollisionSpec::Bgk => "bgk",
             CollisionSpec::Trt => "trt",
+            // Honored on the 3D D3Q19 CPU scenario path only; other paths
+            // reject it explicitly (see lbm-scenario CUMULANT_* errors).
+            CollisionSpec::Cumulant => "cumulant",
         })
         .collect()
 }
