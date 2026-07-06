@@ -154,3 +154,29 @@ hypotheses — these are real finding candidates)
   pressure tensor — the lane-1.7 "SC pressure-tensor form" audit row and
   this measurement now referee each other. If confirmed: documented SC
   validity limit (PHYSICS.md), core FYI.
+
+### Pass 5 addendum (cx/mp-dynamics rev 2) — the SC dynamic-limitations cluster
+
+- **ANOM-P4-015 UPDATED**: H1 (SCMP capillary wave, damped-oscillator fit)
+  shows omega +38% / gamma 2.1x at Q ~ 0.8 — same direction as I2's MCMP
+  +29% at kW = 0.5. CROSS-MODEL consistency: diffuse-interface sigma(k)
+  stiffening at kW ≳ 0.25 is a characterization of both SC variants, not a
+  bookkeeping error. kW-sweep (I rev 3) remains the decider.
+- **ANOM-P4-018 — SC near-wall shear artifact (H3)** — S2 candidate: in the
+  stratified two-layer Couette the LIQUID side carries l2 = 0.56 (vapor
+  0.13) with a visible lower-wall density/velocity artifact — the SC wall
+  interaction (psi = 0 solid exclusion) generates a near-wall layer that
+  distorts the sheared profile. Connects to the T11b known wall-scheme
+  limitation; lane 1.7 SC audit takes it.
+- **ANOM-P4-019 — SC contact-line immobility (H4 + I1 unified hypothesis)**
+  — S2 model-validity candidate: H4 (verified contact + curved meniscus at
+  t = 500) STALLS at 5 cells / 6000 steps vs predicted ~38 (Washburn).
+  Unified reading of I1: its columns were initialized FILLED and partially
+  drain — gap16's +3% is then start-near-answer luck, and gap32's collapse
+  is drainage past a pinned contact line. Decisive test (queue into the
+  next mp-hard rev): initialize the gap-16 column at two heights (above and
+  below prediction) — convergence to DIFFERENT plateaus confirms
+  pinning/hysteresis. If confirmed: SC statics (T11/T11c) remain valid;
+  any WICKING/SPREADING dynamics claim is out of the SC validity domain
+  (strengthens the MF-gamma case). PHYSICS.md entry drafted on
+  cx/mp-dynamics (merge with care).
