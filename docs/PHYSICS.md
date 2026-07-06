@@ -707,3 +707,13 @@ sign only to the viscous term — the Reynolds term needs the same fold
 warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
 the equilibrium ceiling, stress residual 34%) — equilibration is delta-
 dependent; 50 Te equilibrates it (measurements above).
+
+---
+
+### 2026-07-07 WALE clipping validation-claim disclosure follow-up
+
+WALE `tau_eff` clipping remains a diagnosed numerical-stability guard, not a
+turbulence-model calibration knob. Any validation claim made with clipping
+active must disclose that clipping was active and report the corresponding
+`clipped_fraction` and `max_nu_t_before_clipping` diagnostics from
+`WaleLesDiagnostics`.
