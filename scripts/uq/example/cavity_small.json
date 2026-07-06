@@ -1,0 +1,58 @@
+{
+  "version": 0,
+  "name": "uq-cavity-small",
+  "grid": {
+    "nx": 33,
+    "ny": 33
+  },
+  "physics": {
+    "nu": 0.02,
+    "collision": {
+      "type": "trt"
+    },
+    "force": [
+      0.0,
+      0.0
+    ],
+    "precision": "f64"
+  },
+  "edges": {
+    "left": {
+      "type": "bounceBack"
+    },
+    "right": {
+      "type": "bounceBack"
+    },
+    "bottom": {
+      "type": "bounceBack"
+    },
+    "top": {
+      "type": "movingWall",
+      "u": [
+        0.1,
+        0.0
+      ]
+    }
+  },
+  "init": {
+    "kind": "rest"
+  },
+  "run": {
+    "steps": 1000
+  },
+  "probes": [
+    {
+      "type": "point",
+      "x": 16,
+      "y": 16,
+      "every": 50
+    }
+  ],
+  "outputs": [
+    {
+      "field": "speed",
+      "format": "csv",
+      "every": 0
+    }
+  ]
+}
