@@ -3,9 +3,7 @@
 //! The shader source is *generated* (not hand-written) so the velocity set,
 //! weights, opposites, TRT pairs and per-face unknown tables can never drift
 //! from `lattice.rs` — the "transcribe the face tables" option of
-//! docs/ARCHITECTURE_V2.md §2.4. The generation is table-driven and therefore
-//! 3D-ready in shape; the cell indexing and face set emitted here are 2D
-//! (D2Q9), which `WgpuBackend::new` asserts.
+//! docs/ARCHITECTURE_V2.md §2.4.
 //!
 //! Four entry points:
 //!
@@ -22,7 +20,7 @@
 //!   BC pass between S and C).
 //! - `bc` — one face's open-boundary pass (Zou–He velocity/pressure,
 //!   outflow, convective), lattice indices delivered via a uniform.
-//! - `moments` — recompute (rho, ux, uy) from the current populations
+//! - `moments` — recompute (rho, ux, uy, uz) from the current populations
 //!   (explicit-readback path; fluid cells only, matching `moments_row`).
 //! - `clear_probe` — zero the probe-force accumulator (dispatched at the
 //!   start of each step that has a probe, inside the same compute pass).
@@ -55,11 +53,11 @@ pub(crate) const WG: (u32, u32) = (256, 1);
 pub(crate) const WG_BC: u32 = 64;
 
 /// Flag bits of `Params.flags` (must match the generated WGSL constants).
-pub(crate) const FLAG_HALO: [u32; 4] = [1, 2, 4, 8];
-pub(crate) const FLAG_FORCE_FIELD: u32 = 16;
-pub(crate) const FLAG_PROBE: u32 = 32;
-pub(crate) const FLAG_OPEN_FACE: [u32; 4] = [64, 128, 256, 512];
-pub(crate) const FLAG_CACHED_MOMENTS: u32 = 1024;
+pub(crate) const FLAG_HALO: [u32; 6] = [1, 2, 4, 8, 16, 32];
+pub(crate) const FLAG_FORCE_FIELD: u32 = 64;
+pub(crate) const FLAG_PROBE: u32 = 128;
+pub(crate) const FLAG_OPEN_FACE: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
+pub(crate) const FLAG_CACHED_MOMENTS: u32 = 16_384;
 
 /// BC kind codes of `BcParams.kind` (0 = inactive face).
 pub(crate) const BC_VELOCITY: u32 = 1;
@@ -105,12 +103,16 @@ pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 32] = [
 
 /// Stash slots per buffer: `sum_faces |unknowns(face)| * extent(face)`,
 /// faces in `Face::index` order (the same order the offsets are generated
-/// in). 2D only.
-pub(crate) fn stash_len<L: Lattice>(nx: usize, ny: usize) -> usize {
+/// in).
+pub(crate) fn stash_len<L: Lattice>(nx: usize, ny: usize, nz: usize) -> usize {
     let mut n = 0;
-    for face in &Face::ALL[..4] {
-        let ext = if face.axis() == 0 { ny } else { nx };
-        n += L::unknowns(*face).len() * ext;
+    for face in Face::ALL {
+        if face.axis() >= L::D {
+            continue;
+        }
+        let (t1, t2) = face.tangents();
+        let ext = [nx, ny, nz][t1] * [nx, ny, nz][t2];
+        n += L::unknowns(face).len() * ext;
     }
     n.max(1)
 }
@@ -129,7 +131,7 @@ fn lit(v: f32) -> String {
 
 /// `Σ coef[a] * var[a]` with V1's left-to-right association and elided zero
 /// terms (`±1` coefficients fold into sign — exact in IEEE-754).
-fn dot_expr(coef: [i8; 2], vars: [&str; 2]) -> String {
+fn dot_expr(coef: [i8; 3], vars: [&str; 3]) -> String {
     let mut s = String::new();
     for (c, v) in coef.iter().zip(vars) {
         match (*c, s.is_empty()) {
@@ -155,7 +157,7 @@ fn dot_expr(coef: [i8; 2], vars: [&str; 2]) -> String {
 }
 
 /// `Σ_q coef(q) * name{q}` over ascending q with elided zero terms
-/// (V1 accumulation order for `dr`, `mx`, `my`).
+/// (V1 accumulation order for `dr`, `mx`, `my`, `mz`).
 fn sum_expr<L: Lattice>(prefix: &str, suffix: &str, coef: impl Fn(usize) -> i8) -> String {
     let mut s = String::new();
     for q in 0..L::Q {
@@ -187,52 +189,67 @@ fn sum_expr<L: Lattice>(prefix: &str, suffix: &str, coef: impl Fn(usize) -> i8) 
 fn emit_cell_prologue<L: Lattice>(s: &mut String, allow_cached_moments: bool) {
     *s += "    let nx = P.nx;\n";
     *s += "    let ny = P.ny;\n";
+    *s += "    let nz = P.nz;\n";
     *s += "    let x = gid.x;\n";
     *s += "    let y = gid.y;\n";
-    *s += "    if (x >= nx || y >= ny) { return; }\n";
-    *s += "    let n = nx * ny;\n";
-    *s += "    let i = y * nx + x;\n";
+    *s += "    let z = gid.z;\n";
+    *s += "    if (x >= nx || y >= ny || z >= nz) { return; }\n";
+    *s += "    let xy = nx * ny;\n";
+    *s += "    let n = xy * nz;\n";
+    *s += "    let i = z * xy + y * nx + x;\n";
     *s += "    if ((mask[i] & 1u) != 0u) { return; }\n";
     for q in 0..L::Q {
         if q == 0 {
-            let _ = writeln!(s, "    let f0 = f_in[i];");
+            let _ = writeln!(s, "    let fq0 = f_in[i];");
         } else {
-            let _ = writeln!(s, "    let f{q} = f_in[{q}u * n + i];");
+            let _ = writeln!(s, "    let fq{q} = f_in[{q}u * n + i];");
         }
     }
     // fv = uniform force + optional per-cell field (V1 collide_row order).
     *s += "    var fvx = P.fx;\n";
     *s += "    var fvy = P.fy;\n";
+    *s += "    var fvz = P.fz;\n";
     *s += "    if ((P.flags & FLAG_FF) != 0u) {\n";
     *s += "        let ffv = force_field[i];\n";
     *s += "        fvx = fvx + ffv.x;\n";
     *s += "        fvy = fvy + ffv.y;\n";
+    *s += "        fvz = fvz + ffv.z;\n";
     *s += "    }\n";
-    let _ = writeln!(s, "    let dr = {};", sum_expr::<L>("f", "", |_| 1));
+    let _ = writeln!(s, "    let dr = {};", sum_expr::<L>("fq", "", |_| 1));
     *s += "    var rho = 1.0f + dr;\n";
     *s += "    var inv = 1.0f / rho;\n";
     let _ = writeln!(
         s,
         "    let mx = {};",
-        sum_expr::<L>("f", "", |q| L::C[q][0])
+        sum_expr::<L>("fq", "", |q| L::C[q][0])
     );
     let _ = writeln!(
         s,
         "    let my = {};",
-        sum_expr::<L>("f", "", |q| L::C[q][1])
+        sum_expr::<L>("fq", "", |q| L::C[q][1])
+    );
+    let _ = writeln!(
+        s,
+        "    let mz = {};",
+        sum_expr::<L>("fq", "", |q| L::C[q][2])
     );
     // moments_row: u = (m + f/2) / rho — this is the value collide reads.
     *s += "    var ux = (mx + 0.5f * fvx) * inv;\n";
     *s += "    var uy = (my + 0.5f * fvy) * inv;\n";
+    *s += "    var uz = (mz + 0.5f * fvz) * inv;\n";
     if allow_cached_moments {
-        *s += "    var use_cached_moments = (P.flags & 1024u) != 0u;\n";
-        for face in &Face::ALL[..4] {
+        *s += "    var use_cached_moments = (P.flags & 16384u) != 0u;\n";
+        for face in Face::ALL {
+            if face.axis() >= L::D {
+                continue;
+            }
             let cond = match face {
                 Face::XNeg => "x == 0u",
                 Face::XPos => "x == nx - 1u",
                 Face::YNeg => "y == 0u",
                 Face::YPos => "y == ny - 1u",
-                _ => unreachable!(),
+                Face::ZNeg => "z == 0u",
+                Face::ZPos => "z == nz - 1u",
             };
             let flag = FLAG_OPEN_FACE[face.index()];
             let _ = writeln!(
@@ -244,6 +261,7 @@ fn emit_cell_prologue<L: Lattice>(s: &mut String, allow_cached_moments: bool) {
         *s += "        rho = rho_out[i];\n";
         *s += "        ux = ux_out[i];\n";
         *s += "        uy = uy_out[i];\n";
+        *s += "        uz = uz_out[i];\n";
         *s += "        inv = 1.0f / rho;\n";
         *s += "    }\n";
     }
@@ -288,22 +306,22 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
     );
     emit_cell_prologue::<L>(s, allow_cached_moments);
     if !allow_cached_moments {
-        *s += "    let _keep_moment_bindings = arrayLength(&rho_out) + arrayLength(&ux_out) + arrayLength(&uy_out);\n";
+        *s += "    let _keep_moment_bindings = arrayLength(&rho_out) + arrayLength(&ux_out) + arrayLength(&uy_out) + arrayLength(&uz_out);\n";
     }
     // Collide (collide_row): equilibria + Guo sources per direction, then
     // TRT pair relaxation. cu/cf per q with V1's seeded-dot association.
-    *s += "    let usq = ux * ux + uy * uy;\n";
-    *s += "    let uf = ux * fvx + uy * fvy;\n";
+    *s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
+    *s += "    let uf = ux * fvx + uy * fvy + uz * fvz;\n";
     *s += "    let drho = rho - 1.0f;\n";
     *s += "    let op = P.omega_p;\n";
     *s += "    let om = P.omega_m;\n";
     *s += "    let cp = P.cp;\n";
     *s += "    let cm = P.cm;\n";
     for q in 0..L::Q {
-        let c = [L::C[q][0], L::C[q][1]];
+        let c = L::C[q];
         let w = lit(L::W[q] as f32);
-        let cu = dot_expr(c, ["ux", "uy"]);
-        let cf = dot_expr(c, ["fvx", "fvy"]);
+        let cu = dot_expr(c, ["ux", "uy", "uz"]);
+        let cf = dot_expr(c, ["fvx", "fvy", "fvz"]);
         let _ = writeln!(s, "    let cu{q} = {cu};");
         let _ = writeln!(s, "    let cf{q} = {cf};");
         let _ = writeln!(
@@ -318,11 +336,11 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
     let rest = L::REST;
     let _ = writeln!(
         s,
-        "    let fc{rest} = f{rest} - op * (f{rest} - e{rest}) + cp * s{rest};"
+        "    let fc{rest} = fq{rest} - op * (fq{rest} - e{rest}) + cp * s{rest};"
     );
     for &(a, b) in L::PAIRS {
-        let _ = writeln!(s, "    let fp{a} = 0.5f * (f{a} + f{b});");
-        let _ = writeln!(s, "    let fm{a} = 0.5f * (f{a} - f{b});");
+        let _ = writeln!(s, "    let fp{a} = 0.5f * (fq{a} + fq{b});");
+        let _ = writeln!(s, "    let fm{a} = 0.5f * (fq{a} - fq{b});");
         let _ = writeln!(s, "    let ep{a} = 0.5f * (e{a} + e{b});");
         let _ = writeln!(s, "    let em{a} = 0.5f * (e{a} - e{b});");
         let _ = writeln!(s, "    let sp{a} = 0.5f * (s{a} + s{b});");
@@ -331,11 +349,11 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         let _ = writeln!(s, "    let rm{a} = om * (fm{a} - em{a});");
         let _ = writeln!(
             s,
-            "    let fc{a} = f{a} - rp{a} - rm{a} + cp * sp{a} + cm * sm{a};"
+            "    let fc{a} = fq{a} - rp{a} - rm{a} + cp * sp{a} + cm * sm{a};"
         );
         let _ = writeln!(
             s,
-            "    let fc{b} = f{b} - rp{a} + rm{a} + cp * sp{a} - cm * sm{a};"
+            "    let fc{b} = fq{b} - rp{a} + rm{a} + cp * sp{a} - cm * sm{a};"
         );
     }
     // Push (stream_row's scatter dual). Rest population stays home.
@@ -351,13 +369,18 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         let twow = lit(2.0f32 * w32);
         // c_opp · wall_u — the pull-form bounce-back term of the receiving
         // (this) cell's opposite direction.
-        let cub = dot_expr([L::C[o][0], L::C[o][1]], ["wu.x", "wu.y"]);
-        let _ = writeln!(s, "    {{ // q = {q}, c = ({}, {}), opp = {o}", c[0], c[1]);
+        let cub = dot_expr(L::C[o], ["wu.x", "wu.y", "wu.z"]);
+        let _ = writeln!(
+            s,
+            "    {{ // q = {q}, c = ({}, {}, {}), opp = {o}",
+            c[0], c[1], c[2]
+        );
         *s += "        var ok = true;\n";
         emit_push_coord(s, 0, c[0], "x", "nx");
         emit_push_coord(s, 1, c[1], "y", "ny");
+        emit_push_coord(s, 2, c[2], "z", "nz");
         *s += "        if (ok) {\n";
-        *s += "            let j = dy * nx + dx;\n";
+        *s += "            let j = dz * xy + dy * nx + dx;\n";
         *s += "            let mj = mask[j];\n";
         *s += "            if ((mj & 1u) != 0u) {\n";
         *s += "                let wu = wall_u[j];\n";
@@ -366,7 +389,7 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
         let _ = writeln!(s, "                f_out[{o}u * n + i] = fin;");
         *s += "                if ((mj & 2u) != 0u) {\n";
         let _ = writeln!(s, "                    let ftot = fc{q} + fin + {twow};");
-        for (axis, &ca) in c.iter().take(2).enumerate() {
+        for (axis, &ca) in c.iter().enumerate() {
             match ca {
                 1 => {
                     let _ = writeln!(s, "                    atomic_add_f32({axis}u, ftot);");
@@ -387,38 +410,39 @@ fn emit_step_entry<L: Lattice>(s: &mut String, name: &str, allow_cached_moments:
     // Edge stash: carry last step's post-collide values into the skipped
     // unknown slots and stash this step's for the next (V1 stale-slot
     // mechanics; see module docs). Offsets in Face::index order.
-    let mut off_ny = 0usize; // accumulated multiples of ny
-    let mut off_nx = 0usize; // accumulated multiples of nx
-    for face in &Face::ALL[..4] {
-        let unk = L::unknowns(*face);
+    let mut offset_terms: Vec<String> = Vec::new();
+    for face in Face::ALL {
+        if face.axis() >= L::D {
+            continue;
+        }
+        let unk = L::unknowns(face);
+        let (t1, t2) = face.tangents();
+        let ext_names = ["nx", "ny", "nz"];
         let (cond, tvar, ext) = match face {
-            Face::XNeg => ("x == 0u", "y", "ny"),
-            Face::XPos => ("x == nx - 1u", "y", "ny"),
-            Face::YNeg => ("y == 0u", "x", "nx"),
-            Face::YPos => ("y == ny - 1u", "x", "nx"),
-            _ => unreachable!(),
+            Face::XNeg => ("x == 0u", format!("z * ny + y"), "ny * nz".to_string()),
+            Face::XPos => ("x == nx - 1u", format!("z * ny + y"), "ny * nz".to_string()),
+            Face::YNeg => ("y == 0u", format!("z * nx + x"), "nx * nz".to_string()),
+            Face::YPos => ("y == ny - 1u", format!("z * nx + x"), "nx * nz".to_string()),
+            Face::ZNeg => ("z == 0u", format!("y * nx + x"), "nx * ny".to_string()),
+            Face::ZPos => ("z == nz - 1u", format!("y * nx + x"), "nx * ny".to_string()),
         };
         let flag = FLAG_HALO[face.index()];
-        let off = match (off_ny, off_nx) {
-            (0, 0) => "0u".to_string(),
-            (a, 0) => format!("{a}u * ny"),
-            (a, b) => format!("{a}u * ny + {b}u * nx"),
+        let off = if offset_terms.is_empty() {
+            "0u".to_string()
+        } else {
+            offset_terms.join(" + ")
         };
         let _ = writeln!(
             s,
             "    if ({cond} && (P.flags & {flag}u) == 0u) {{ // {face:?} edge stash"
         );
         for (k, &u) in unk.iter().enumerate() {
-            let _ = writeln!(s, "        let sl{k} = {off} + {k}u * {ext} + {tvar};");
+            let _ = writeln!(s, "        let sl{k} = {off} + {k}u * ({ext}) + {tvar};");
             let _ = writeln!(s, "        f_out[{u}u * n + i] = stash_in[sl{k}];");
             let _ = writeln!(s, "        stash_out[sl{k}] = fc{u};");
         }
         *s += "    }\n";
-        if face.axis() == 0 {
-            off_ny += unk.len();
-        } else {
-            off_nx += unk.len();
-        }
+        offset_terms.push(format!("{}u * {} * {}", unk.len(), ext_names[t1], ext_names[t2]));
     }
     *s += "}\n\n";
 }
@@ -436,13 +460,13 @@ pub(crate) fn generate<L: Lattice>() -> String {
         L::D,
         L::Q
     );
-    s += "// Deviation-form f32 SoA planes f[q*n + y*nx + x]; push-fused collide+stream.\n\n";
+    s += "// Deviation-form f32 SoA planes f[q*n + z*(nx*ny) + y*nx + x]; push-fused collide+stream.\n\n";
     s += "struct Params {\n";
-    s += "    nx: u32,\n    ny: u32,\n";
+    s += "    nx: u32,\n    ny: u32,\n    nz: u32,\n    pad_dim: u32,\n";
     s += "    omega_p: f32,\n    omega_m: f32,\n";
     s += "    cp: f32,\n    cm: f32,\n";
-    s += "    fx: f32,\n    fy: f32,\n";
-    s += "    flags: u32,\n    pad0: u32,\n    pad1: u32,\n    pad2: u32,\n";
+    s += "    fx: f32,\n    fy: f32,\n    fz: f32,\n";
+    s += "    flags: u32,\n    pad0: u32,\n    pad1: u32,\n";
     s += "}\n\n";
     s += "struct BcParams {\n";
     for (name, ty) in BC_PARAMS_FIELDS {
@@ -453,14 +477,15 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "@group(0) @binding(1) var<storage, read> f_in: array<f32>;\n";
     s += "@group(0) @binding(2) var<storage, read_write> f_out: array<f32>;\n";
     s += "@group(0) @binding(3) var<storage, read> mask: array<u32>;\n";
-    s += "@group(0) @binding(4) var<storage, read> wall_u: array<vec2<f32>>;\n";
-    s += "@group(0) @binding(5) var<storage, read> force_field: array<vec2<f32>>;\n";
+    s += "@group(0) @binding(4) var<storage, read> wall_u: array<vec3<f32>>;\n";
+    s += "@group(0) @binding(5) var<storage, read> force_field: array<vec3<f32>>;\n";
     s += "@group(0) @binding(6) var<storage, read> stash_in: array<f32>;\n";
     s += "@group(0) @binding(7) var<storage, read_write> stash_out: array<f32>;\n";
     s += "@group(0) @binding(8) var<storage, read_write> probe_acc: array<atomic<u32>, 3>;\n";
     s += "@group(0) @binding(9) var<storage, read_write> rho_out: array<f32>;\n";
     s += "@group(0) @binding(10) var<storage, read_write> ux_out: array<f32>;\n";
     s += "@group(0) @binding(11) var<storage, read_write> uy_out: array<f32>;\n";
+    s += "@group(0) @binding(14) var<storage, read_write> uz_out: array<f32>;\n";
     s += "@group(0) @binding(12) var<uniform> B: BcParams;\n";
     s += "@group(0) @binding(13) var<storage, read> profile: array<vec2<f32>>;\n\n";
     let _ = writeln!(s, "const FLAG_FF: u32 = {FLAG_FORCE_FIELD}u;");
@@ -489,6 +514,7 @@ pub(crate) fn generate<L: Lattice>() -> String {
     s += "    rho_out[i] = rho;\n";
     s += "    ux_out[i] = ux;\n";
     s += "    uy_out[i] = uy;\n";
+    s += "    uz_out[i] = uz;\n";
     s += "}\n\n";
 
     // --------------------------------------------- open-face moment fixup
@@ -504,6 +530,14 @@ pub(crate) fn generate<L: Lattice>() -> String {
         .collect();
     let my_terms: Vec<String> = (0..L::Q)
         .filter_map(|q| match L::C[q][1] {
+            1 => Some(format!("f_out[{q}u * n + i]")),
+            -1 => Some(format!("-f_out[{q}u * n + i]")),
+            0 => None,
+            _ => unreachable!(),
+        })
+        .collect();
+    let mz_terms: Vec<String> = (0..L::Q)
+        .filter_map(|q| match L::C[q][2] {
             1 => Some(format!("f_out[{q}u * n + i]")),
             -1 => Some(format!("-f_out[{q}u * n + i]")),
             0 => None,
@@ -529,18 +563,30 @@ pub(crate) fn generate<L: Lattice>() -> String {
             my_terms.join(" + ")
         }
     );
+    let _ = writeln!(
+        s,
+        "    let mz = {};",
+        if mz_terms.is_empty() {
+            "0.0f".to_string()
+        } else {
+            mz_terms.join(" + ")
+        }
+    );
     s += "    var fvx = P.fx;\n";
     s += "    var fvy = P.fy;\n";
+    s += "    var fvz = P.fz;\n";
     s += "    if ((P.flags & FLAG_FF) != 0u) {\n";
     s += "        let ffv = force_field[i];\n";
     s += "        fvx = fvx + ffv.x;\n";
     s += "        fvy = fvy + ffv.y;\n";
+    s += "        fvz = fvz + ffv.z;\n";
     s += "    }\n";
     s += "    let r = 1.0f + dr;\n";
     s += "    let inv = 1.0f / r;\n";
     s += "    rho_out[i] = r;\n";
     s += "    ux_out[i] = (mx + 0.5f * fvx) * inv;\n";
     s += "    uy_out[i] = (my + 0.5f * fvy) * inv;\n";
+    s += "    uz_out[i] = (mz + 0.5f * fvz) * inv;\n";
     s += "}\n\n";
 
     // --------------------------------------------------------------- bc
@@ -647,11 +693,22 @@ pub(crate) fn generate<L: Lattice>() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lattice::D2Q9;
+    use crate::lattice::{D2Q9, D3Q19};
 
     #[test]
     fn generated_wgsl_parses_and_validates_with_naga() {
         let source = generate::<D2Q9>();
+        let module = wgpu::naga::front::wgsl::parse_str(&source).expect("WGSL parse failed");
+        let mut validator = wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        );
+        validator.validate(&module).expect("WGSL validation failed");
+    }
+
+    #[test]
+    fn generated_d3q19_wgsl_parses_and_validates_with_naga() {
+        let source = generate::<D3Q19>();
         let module = wgpu::naga::front::wgsl::parse_str(&source).expect("WGSL parse failed");
         let mut validator = wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
@@ -716,12 +773,12 @@ mod tests {
         }
         // All four faces get stash blocks; offsets: 0, 3ny, 6ny, 6ny+3nx.
         assert!(src.contains("XNeg edge stash"));
-        assert!(src.contains("6u * ny + 3u * nx"));
+        assert!(src.contains("6u * nx * ny"));
     }
 
     #[test]
     fn stash_len_counts_all_face_slots() {
-        assert_eq!(stash_len::<D2Q9>(10, 7), 3 * 7 * 2 + 3 * 10 * 2);
+        assert_eq!(stash_len::<D2Q9>(10, 7, 1), 3 * 7 * 2 + 3 * 10 * 2);
     }
 
     #[test]

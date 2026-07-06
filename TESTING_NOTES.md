@@ -1173,3 +1173,35 @@ purely through arithmetic reassociation (trunk 5/5 green, r2-b1 2/5, same physic
 Changed the assertion denominator to the force-vector L_inf scale, consistent with the
 T14 field-scale-relative convention. This is a denominator fix, not a gate loosening:
 effective absolute limit at this config 4.5e-4, measured deltas have 3 orders headroom.
+
+## ME-1 partial D3Q19 GPU core bring-up (2026-07-06)
+
+This worktree widened the WgpuBackend core path from 2D-only to compact 3D
+addressing for D3Q19 closed/periodic grids: WGSL cell index
+`z*(nx*ny)+y*nx+x`, q-major SoA, D3 force/moment vectors, `uz` readback, 16-byte
+`vec3` wall/force storage, and D3 edge-stash sizing. Direction tables remain
+generated from `Lattice`; no D3Q19 direction table was re-declared in WGSL.
+
+Focused evidence from this session:
+- `cargo test -p lbm-core --release --features gpu --test t14_3d_backend_equiv -- --nocapture`
+  passed. Measured bands:
+  - D3Q19 periodic TGV, 32^3, t=40/80/120:
+    rho rel max 7.148e-7, velocity rel max 2.779e-6, population state rel max
+    3.596e-5.
+  - D3Q19 lid cavity, 24^3, t=40/80/120:
+    rho rel max 7.031e-7, velocity rel max 1.673e-6, population state rel max
+    1.650e-5.
+- `cargo test -p lbm-core --release --features gpu wgsl_parses_and_validates -- --nocapture`
+  passed: D2Q9 and D3Q19 generated WGSL parse and Naga validation.
+- Existing D2 T14 spot-check after the widening:
+  `cargo test -p lbm-core --release --features gpu --test t14_backend_equiv t14_tgv_periodic -- --nocapture`
+  passed; velocity rel max 3.832e-6, rho rel max 5.940e-7.
+- `cargo build -p lbm-core --release --features gpu --example bench_gpu` passed.
+  `cargo run -p lbm-core --release --features gpu --example bench_gpu -- --gpu-only`
+  could not measure MLUPS in this session because adapter acquisition returned
+  `no usable GPU adapter was found`.
+
+Gaps still open for ME-1 acceptance: D3 open-face BC shader/runtime coverage,
+scenario `backend:"gpu"|"auto"` dispatch, 128^3/192^3 MLUPS measurement, and the
+full workspace + full feature-gpu gates. ME-2 FP16 storage/T16 was not started in
+this partial bring-up.
