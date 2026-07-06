@@ -43,6 +43,7 @@
 //! Metal compiler's FMA/reassociation, bounded by T14's tolerance.
 
 use crate::lattice::{Face, Lattice};
+use crate::params;
 use std::fmt::Write;
 
 /// Workgroup size of the full-grid kernels (`step`, `moments`).
@@ -631,20 +632,20 @@ fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
             let _ = writeln!(s, "    eq[{m}] += ({phi}) * feq_phys[{q}];");
         }
     }
-    let offset = if L::D == 3 && L::Q == 19 {
-        "0.0025f"
-    } else {
-        "0.0f"
-    };
     if L::D == 3 {
         *s +=
             "    let os_base = select(P.omega_shear, omega_out[i], (P.flags & FLAG_WALE) != 0u);\n";
     } else {
         *s += "    let os_base = P.omega_shear;\n";
     }
+    let velocity_correction = if params::CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
+        "0.0f"
+    } else {
+        "-0.16f * usq"
+    };
     let _ = writeln!(
         s,
-        "    let os = min(2.0f, os_base * (1.0f + {offset} - 0.16f * usq));"
+        "    let os = min(2.0f, os_base * (1.0f + {velocity_correction}));"
     );
     let _ = writeln!(s, "    var post: array<f32, {n}>;");
     for (m, e) in basis.iter().enumerate() {

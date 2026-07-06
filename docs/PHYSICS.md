@@ -23,14 +23,13 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
   (`smoke_poiseuille.rs::trt_magic_is_exact`), which BGK cannot achieve.
 - **Collision — BGK** available as a lighter alternative. Same convergence
   order as TRT away from walls; loses the Poiseuille exactness.
-- **Collision — cumulant (cascaded central-moment)** for D3Q19/D3Q27,
-  `CollisionKind::Cumulant { omega_shear }`. Implemented as a cascaded
-  central-moment operator (not logarithmic cumulants); the code comment in
-  `solver.rs` names this honestly. D3Q19 uses the D3Q27 tensor-product
-  basis with the eight `x·y·z` corner moments dropped, matching the missing
-  body-diagonal populations. Targets are the DISCRETE second-order Hermite
-  equilibria used by BGK/TRT, not continuous Maxwellian moments (see §2
-  "Cumulant target choice").
+- **Collision — cascaded central-moment** for D3Q19/D3Q27,
+  `CollisionKind::CentralMoment { omega_shear }`. Implemented as a
+  cascaded central-moment operator (not logarithmic cumulants). D3Q19 uses
+  the D3Q27 tensor-product basis with the eight `x·y·z` corner moments
+  dropped, matching the missing body-diagonal populations. Targets are the
+  DISCRETE second-order Hermite equilibria used by BGK/TRT, not continuous
+  Maxwellian moments (see §2 "Cumulant target choice").
 - **Distribution storage — deviation form `f_q − w_q`**. Rest state is the
   zero vector; f32 mantissa is spent on the fluctuation, not on the rest.
   This is what lets f32 hit validation grade (see §2 "Deviation storage").
@@ -145,7 +144,7 @@ with the full provenance and validation package.
 
 ## 2026-07-06 cumulant track stage 2: CPU central-moment reference
 
-Stage 2 implements `CollisionKind::Cumulant { omega_shear }` as a cascaded
+Stage 2 implements `CollisionKind::CentralMoment { omega_shear }` as a cascaded
 central-moment collision, not a logarithmic cumulant collision. This is the
 accepted first operator form for FR-CORE-02 and is named as such in code
 comments. D3Q27 uses the tensor-product central-moment basis with exponents
@@ -173,14 +172,16 @@ The corrected stage-2 operator transforms the same discrete equilibrium
 populations used by BGK/TRT into the central-moment basis and uses those
 moments as the relaxation target. This keeps the reduced D3Q19 transform
 closed on its 19 supported moments and avoids silently importing D3Q27-only
-corner content. A small D3Q19-only shear-rate offset (`+0.0025` relative) is
-applied to compensate the residual reduced-lattice viscosity bias measured by
-the TGV3D decay fit. The finite-frame cubic-velocity viscosity defect is
-cancelled by applying the central-moment shear relaxation as
-`omega_eff = omega_shear * (1 + offset - 0.16 |u|^2)`, clamped to the valid
-range. Here `u` is the same physical velocity used for equilibrium and forcing.
-No regularization, positivity filter, or entropic limiter is active in this
-stage; validation therefore uses the explicit range `0 < omega_shear <= 2`.
+corner content. ANOM-P4-008 later showed that the D3Q19-only `+0.0025`
+shear-rate offset was a banned finite-resolution calibration and removed it.
+The finite-frame cubic-velocity term remains pending as a compile-visible
+ablation target:
+`omega_eff = omega_shear * (1 - 0.16 |u|^2)`, clamped to the valid range,
+unless `CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION` is set for
+the E1 rerun. Here `u` is the same physical velocity used for equilibrium
+and forcing. No regularization, positivity filter, or entropic limiter is
+active in this stage; validation therefore uses the explicit range
+`0 < omega_shear <= 2`.
 
 Guo forcing uses the same discrete source populations as the BGK/TRT branch,
 but the source vector is transformed into central-moment space before
@@ -332,9 +333,10 @@ family at all. Mixing continuous higher targets with the discrete
 equilibrium inflated the advected-TGV Galilean defect and made the D3Q19
 decay rate lattice-dependent. Live implementation transforms the SAME
 discrete equilibrium used by BGK/TRT into the central-moment basis and
-uses those as relaxation targets, plus a D3Q19-only shear-rate offset
-(+0.0025 rel) and a finite-frame cubic-velocity correction
-`ω_eff = ω_shear · (1 + offset − 0.16 |u|²)` calibrated against TGV3D.
+uses those as relaxation targets. The D3Q19-only shear-rate offset
+(+0.0025 rel) once recorded here was removed by ANOM-P4-008 as a banned
+finite-resolution calibration; the remaining finite-frame cubic-velocity
+term `ω_eff = ω_shear · (1 − 0.16 |u|²)` is pending ablation.
 Anyone "cleaning up" this to continuous Maxwellian will regress the T15
 family; this note is the reason not to.
 
@@ -365,18 +367,25 @@ impinging-jet class of scenarios.
 Without these notes, someone re-tightening the bands from "1e-12 looks
 tight" chases physically impossible numbers.
 
-### 2026-07-07 — D3Q19 cumulant shear-rate offset is empirical calibration
-- Form: in the D3Q19 cumulant/central-moment CPU paths only, the configured
-  second-order shear relaxation is adjusted as
-  `omega_eff = omega_shear * (1 + 0.0025 - 0.16 |u|^2)` and clamped to
-  `<= 2`. D3Q27 uses no `+0.0025` lattice offset. The scalar and SIMD CPU
-  implementation sites are `crates/lbm-core/src/kernels.rs` and
-  `crates/lbm-core/src/backend_simd.rs`.
-- Source: empirical calibration, not a first-principles closure. The training
-  benchmark is the existing TGV3D decay-rate fit described above in this file
-  ("small D3Q19-only shear-rate offset" and "calibrated against TGV3D").
-  The coefficient is therefore not a general physics law and must be defended
-  by holdout evidence before any broader claim.
+### 2026-07-07 — ANOM-P4-008: D3Q19 central-moment offset removed
+- Form removed: the D3Q19 central-moment path previously adjusted the
+  configured second-order shear relaxation as
+  `omega_eff = omega_shear * (1 + 0.0025 - 0.16 |u|^2)`, clamped to `<= 2`.
+  The `+0.0025` term was removed from CPU scalar/SIMD and generated GPU WGSL
+  paths. The remaining velocity term is explicitly ablatable via
+  `CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION` and remains
+  pending E1 verdict; normal builds keep it active so the Galilean-defect
+  acceptance stays covered.
+- Source: the removed offset was empirical calibration, not a first-principles
+  closure. The decisive audit in
+  `crates/lbm-core/tests/accuracy_audit_cumulant.rs` separates
+  finite-resolution `O(h^2)` error from continuum bias with
+  `nu_eff/nu - 1 = a + b/N^2`. With the offset removed, the light canary
+  measured D3Q19 defects `(24, 4.009218693e-2)` and
+  `(32, 2.256135694e-2)`, giving `a = 2.171836972e-5`, below the
+  `|a| <= 4e-3` light band and consistent with the heavy acceptance target
+  `|a| <= 2e-3`. The offset's own tau-space footprint matched the poisoned
+  continuum intercept, so it was a banned calibration.
 - Training / holdout split: training = TGV3D decay at the calibration settings
   used to select `+0.0025` and `0.16`; holdout =
   `crates/lbm-core/tests/cumulant_holdout.rs` with (1) advected TGV3D at mean
@@ -402,16 +411,24 @@ tight" chases physically impossible numbers.
     error `3.170276018e-3`; D3Q27 rate `9.299938977e-3`, analytic
     `9.252754126e-3`, relative error `5.099546655e-3`. D3Q19 is not an
     outlier against the D3Q27 error plus the T15 band (`2.509954666e-2`).
-- Validity domain: this correction is currently valid only as an empirical
-  D3Q19 cumulant calibration for non-advected or weakly framed periodic TGV3D
-  decay-rate use cases covered by the passing holdouts above. It must not be
-  cited as evidence of Galilean-invariant finite-frame viscosity for
-  `N=32`, `nu=0.02`, `u0=0.012`, `u_frame <= 0.1`; that domain has a holdout
-  failure and needs a core cumulant follow-up or a narrower product claim.
-- Replaces / interacts with: augments the central-moment/cascaded cumulant
-  collision described in the 2026-07-06 cumulant entries. It does not replace
-  resolved LBM viscosity (`tau = 3 nu + 0.5`) and should not be reused as a
-  generic LES, wall, or stability limiter coefficient.
+- Corrected acceptance: the viscosity gate is resolution-aware h² intercept,
+  not a single N=32 value. The finite-N smoke in
+  `crates/lbm-core/tests/cumulant_acceptance.rs` is re-frozen to the
+  uncorrected D3Q19 N=32 measurement
+  `nu_eff = 2.0454550535750255e-2`, relative error
+  `2.2727526787512733e-2`, with a narrow `2.4e-2` band. D3Q27 remains under
+  the existing `2.0e-2` smoke band with `nu_eff = 2.0187636744471944e-2`,
+  relative error `9.381837223597193e-3`.
+- Validity domain: no D3Q19 lattice-offset closure is live. The remaining
+  `-0.16 |u|^2` central-moment velocity term is not validated as a viscosity
+  correction; E1 remains SPEC-GAP until rerun with the ablation flag. It
+  still has a measured Galilean-defect effect in the current acceptance:
+  D3Q19 BGK `2.570488585e-3` vs CentralMoment `9.996091795e-4`, D3Q27 BGK
+  `2.533062587e-3` vs CentralMoment `1.161446988e-3`.
+- Replaces / interacts with: removes the previous D3Q19 empirical
+  viscosity-offset calibration from the central-moment collision. It does
+  not replace resolved LBM viscosity (`tau = 3 nu + 0.5`) and should not be
+  reused as a generic LES, wall, or stability limiter coefficient.
 
 ### 2026-07-07 behavior review — cumulant holdout integral runs
 Pattern: all reported TGV3D runs had positive decay rates and monotonically
@@ -421,8 +438,9 @@ Mechanism: the Fourier-mode velocity field decays by viscous diffusion, while
 the frame trend indicates residual frame-dependent numerical viscosity after
 the empirical D3Q19 correction.
 Resolved vs closure: viscous decay and periodic streaming are resolved by the
-LBM update; the D3Q19-only `+0.0025` and `-0.16 |u|^2` shear-rate adjustment
-is an active empirical calibration term and controls the reviewed failure.
+LBM update. The reviewed historical run had both the now-removed D3Q19-only
+`+0.0025` offset and the pending `-0.16 |u|^2` shear-rate adjustment active;
+new runs after ANOM-P4-008 retain only the ablatable velocity term.
 Artifacts checked: these are fully periodic integral-metric tests with no
 walls, outlets, clamps, or seams. Per REV-6, no field-visualization artifact
 was produced or expected for these integral metrics; the behavior anchor is

@@ -419,7 +419,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
             // SAFETY: each row index r is processed exactly once, and
             // collide_row writes only its own row's cells.
             unsafe {
-                if kp.cumulant {
+                if kp.central_moment {
                     collide_row_central_moment::<L, T>(
                         f,
                         np,

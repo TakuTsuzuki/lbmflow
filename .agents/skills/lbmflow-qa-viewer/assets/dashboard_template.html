@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Stirred Tank &mdash; Linked Flow Explorer</title>
+<style>
+  :root{--bg:#0a0d12;--panel:rgba(18,24,32,.72);--line:rgba(255,255,255,.09);
+    --ink:#e8edf2;--dim:#9fb0c0;--accent:#2f6df6}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  #app{display:grid;grid-template-columns:1fr 372px;grid-template-rows:auto auto 1fr;
+    gap:10px;padding:10px;height:100vh}
+  #bar,#bar2{grid-column:1/3;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:9px 14px}
+  #bar2{grid-row:2;padding:7px 14px;gap:10px}
+  #bar2 .div{width:1px;height:20px;background:var(--line)}
+  #bar2 button{font-size:11.5px;padding:4px 9px}
+  #bar2 input[type=range]{width:110px}
+  .warn{color:#ffb454;font-weight:600}
+  .ok{color:#5fd6a0}
+  #bar h1{font-size:14px;margin:0;font-weight:650;letter-spacing:.2px;white-space:nowrap}
+  .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);margin-right:5px}
+  .grp{display:flex;align-items:center;gap:6px}
+  .grow{flex:1}
+  .seg{display:flex;gap:4px}
+  button{font:inherit;font-size:12px;color:var(--ink);background:rgba(255,255,255,.06);
+    border:1px solid var(--line);border-radius:8px;padding:5px 10px;cursor:pointer;transition:.13s}
+  button:hover{background:rgba(255,255,255,.13)}
+  button.on{background:var(--accent);border-color:var(--accent)}
+  button:focus-visible{outline:2px solid #7aa2ff;outline-offset:1px}
+  select{font:inherit;font-size:12px;color:var(--ink);background:rgba(255,255,255,.06);
+    border:1px solid var(--line);border-radius:8px;padding:5px 8px;cursor:pointer}
+  select:focus-visible{outline:2px solid #7aa2ff}
+  #cbar{display:flex;align-items:center;gap:7px;min-width:170px}
+  #grad{height:11px;width:118px;border-radius:6px;border:1px solid var(--line)}
+  #cbar .n{font-size:10px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+  #view3d{grid-column:1;grid-row:3;position:relative;border:1px solid var(--line);
+    border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#0b0f15,#080a0e)}
+  #view3d canvas{display:block}
+  #hint{position:absolute;left:12px;bottom:10px;font-size:11px;color:#6f8091}
+  #units{position:absolute;left:12px;right:12px;bottom:28px;font-size:10.5px;color:#7d8ea0;line-height:1.5}
+  #metricNote{position:absolute;left:12px;top:10px;font-size:11.5px;color:var(--dim);
+    background:rgba(10,13,18,.6);padding:4px 8px;border-radius:7px;max-width:60%}
+  #side{grid-column:2;grid-row:3;display:flex;flex-direction:column;gap:10px;min-height:0}
+  .panel{flex:1;display:flex;flex-direction:column;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-height:0}
+  .panel h2{font-size:12.5px;margin:0 0 2px;font-weight:600}
+  .panel .cap{font-size:10.5px;color:var(--dim);margin-bottom:7px}
+  .cv-wrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+  .panel canvas{background:#0a0d12;border-radius:6px;max-width:100%;max-height:100%}
+  .slrow{display:flex;align-items:center;gap:8px;margin-top:7px}
+  .slrow label{font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
+  input[type=range]{flex:1;accent-color:var(--accent)}
+  .rd{font-size:10.5px;color:var(--dim);margin-top:5px;min-height:13px;font-variant-numeric:tabular-nums}
+  @media(max-width:900px){#app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr auto}
+    #view3d{grid-row:3}#side{grid-column:1;grid-row:4;flex-direction:row}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <h1>Stirred Tank</h1>
+    <div class="grp"><span class="lbl">Field</span>
+      <select id="metric">
+        <option value="speed">Speed |u|</option>
+        <option value="shear">Shear stress</option>
+        <option value="vort">Vorticity |&omega;|</option>
+        <option value="q">Q-criterion</option>
+        <option value="axial">Axial velocity u_z</option>
+        <option value="radial">Radial velocity u_r</option>
+        <option value="swirl">Swirl u_&theta;</option>
+        <option value="ke">Kinetic energy</option>
+      </select>
+    </div>
+    <div class="grp"><span class="lbl">Stir speed</span>
+      <div class="seg" id="spd"></div>
+    </div>
+    <span class="grow"></span>
+    <div class="seg"><button id="bTracers" class="on">Tracers</button><button id="bPlanes" class="on">Cut planes</button><button id="bSpin" class="on">Spin</button></div>
+    <div id="cbar"><span class="n" id="lo">0</span><div id="grad"></div><span class="n" id="hi">&mdash;</span></div>
+  </div>
+
+  <div id="bar2">
+    <div class="grp"><span class="lbl">Shear threshold</span>
+      <button id="thrOff" class="on">Off</button>
+      <button id="thrLo">&tau;c 1 Pa</button>
+      <button id="thrHi">&tau;c 1 kPa</button>
+    </div>
+    <div class="grp" id="thrCfg" style="display:none">
+      <span class="lbl">&tau;c</span><input id="thrSl" type="range" min="-1" max="3.7" step="0.02"><span class="n" id="thrVal"></span>
+      <span class="lbl" style="margin-left:8px">N@Med</span><input id="rpmSl" type="range" min="50" max="400" step="10" value="150"><span class="n" id="rpmVal">150 rpm</span>
+    </div>
+    <span class="n" id="thrStat"></span>
+    <span class="grow"></span>
+    <div class="grp"><span class="lbl">Particles</span>
+      <button id="pTrace" class="on">Flow tracers</button>
+      <button id="pCell">Settling particles</button>
+    </div>
+    <div class="grp" id="cellCfg" style="display:none">
+      <span class="lbl">diameter</span>
+      <button id="sz1" class="on">15 µm</button><button id="sz2">120 µm</button><button id="sz3">185 µm</button>
+      <span class="lbl" style="margin-left:6px">gravity</span><input id="gxSl" type="range" min="0" max="4" step="0.05" value="0"><span class="n" id="gxVal">×1</span>
+      <span class="n" id="cellStat"></span>
+    </div>
+  </div>
+
+  <div id="view3d">
+    <div id="metricNote"></div>
+    <div id="units"></div>
+    <div id="hint">drag to orbit &middot; scroll to zoom &middot; pick a field &amp; stir speed above, move the sliders &rarr;</div>
+  </div>
+
+  <div id="side">
+    <div class="panel">
+      <h2>Horizontal cut <span style="color:var(--dim);font-weight:400">(x&ndash;y plane)</span></h2>
+      <div class="cap" id="hCap">normal to the shaft</div>
+      <div class="cv-wrap"><canvas id="cvH"></canvas></div>
+      <div class="slrow"><label id="hLab">z</label><input id="slH" type="range"/></div>
+      <div class="rd" id="rdH">&nbsp;</div>
+    </div>
+    <div class="panel">
+      <h2>Vertical cut <span style="color:var(--dim);font-weight:400">(x&ndash;z plane)</span></h2>
+      <div class="cap" id="vCap">through the shaft</div>
+      <div class="cv-wrap"><canvas id="cvV"></canvas></div>
+      <div class="slrow"><label id="vLab">y</label><input id="slV" type="range"/></div>
+      <div class="rd" id="rdV">&nbsp;</div>
+    </div>
+  </div>
+</div>
+
+<script>/*__THREE__*/</script>
+<script>/*__ORBIT__*/</script>
+<script>
+const BUNDLE=/*__BUNDLE__*/;
+const N=BUNDLE.n, VN=BUNDLE.vn, R=BUNDLE.r_tank, CX=BUNDLE.cx, CY=BUNDLE.cy, S=1/R;
+const H=(N-1)/(VN-1);                       // grid spacing in sim cells
+function b64ToF32(b64){const bin=atob(b64),len=bin.length,by=new Uint8Array(len);
+  for(let i=0;i<len;i++)by[i]=bin.charCodeAt(i);return new Float32Array(by.buffer);}
+const idxV=(i,j,k)=>((k*VN+j)*VN+i);
+
+// decode datasets + precompute vorticity / Q volumes and global metric ranges
+function computeDerived(F){const vort=new Float32Array(VN*VN*VN),q=new Float32Array(VN*VN*VN);
+  const cl=a=>Math.max(1,Math.min(VN-2,a));
+  const g=(i,j,k,c)=>F[idxV(i,j,k)*4+c];
+  for(let k=0;k<VN;k++)for(let j=0;j<VN;j++)for(let i=0;i<VN;i++){
+    const ip=cl(i+1),im=cl(i-1),jp=cl(j+1),jm=cl(j-1),kp=cl(k+1),km=cl(k-1),d=2*H;
+    const ux_x=(g(ip,j,k,0)-g(im,j,k,0))/d,ux_y=(g(i,jp,k,0)-g(i,jm,k,0))/d,ux_z=(g(i,j,kp,0)-g(i,j,km,0))/d;
+    const uy_x=(g(ip,j,k,1)-g(im,j,k,1))/d,uy_y=(g(i,jp,k,1)-g(i,jm,k,1))/d,uy_z=(g(i,j,kp,1)-g(i,j,km,1))/d;
+    const uz_x=(g(ip,j,k,2)-g(im,j,k,2))/d,uz_y=(g(i,jp,k,2)-g(i,jm,k,2))/d,uz_z=(g(i,j,kp,2)-g(i,j,km,2))/d;
+    const wx=uz_y-uy_z,wy=ux_z-uz_x,wz=uy_x-ux_y;
+    vort[idxV(i,j,k)]=Math.hypot(wx,wy,wz);
+    const S12=0.5*(ux_y+uy_x),S13=0.5*(ux_z+uz_x),S23=0.5*(uy_z+uz_y);
+    const O12=0.5*(ux_y-uy_x),O13=0.5*(ux_z-uz_x),O23=0.5*(uy_z-uz_y);
+    const Sn=ux_x*ux_x+uy_y*uy_y+uz_z*uz_z+2*(S12*S12+S13*S13+S23*S23);
+    const On=2*(O12*O12+O13*O13+O23*O23);
+    q[idxV(i,j,k)]=0.5*(On-Sn);
+  }
+  return {vort,q};
+}
+const DS=BUNDLE.datasets.map(d=>{const F=b64ToF32(d.vol);const der=computeDerived(F);
+  return {label:d.label,u_tip:d.u_tip,omega:d.omega,F,vort:der.vort,q:der.q};});
+
+// global metric ranges (shared across stir speeds so faster reads as more intense)
+const RANGE={};
+(function(){let sp=0,sh=0,vo=0,qq=0,ax=0,ra=0,sw=0,ke=0;
+  for(const ds of DS){for(let c=0;c<VN*VN*VN;c++){
+    const vx=ds.F[c*4],vy=ds.F[c*4+1],vz=ds.F[c*4+2],s3=ds.F[c*4+3];
+    const spd=Math.hypot(vx,vy,vz);sp=Math.max(sp,spd);sh=Math.max(sh,s3);
+    ax=Math.max(ax,Math.abs(vz));ke=Math.max(ke,0.5*spd*spd);
+    vo=Math.max(vo,ds.vort[c]);qq=Math.max(qq,Math.abs(ds.q[c]));
+    // radial/swirl need position -> derive from indices
+    const i=c%VN,j=((c/VN)|0)%VN,k=(c/(VN*VN))|0;
+    const sx=i*(N-1)/(VN-1),sy=j*(N-1)/(VN-1);const dx=sx-CX,dy=sy-CY,r=Math.hypot(dx,dy)||1e-9;
+    ra=Math.max(ra,Math.abs((vx*dx+vy*dy)/r));sw=Math.max(sw,Math.abs((-vx*dy+vy*dx)/r));}}
+  RANGE.speed=sp;RANGE.shear=sh;RANGE.vort=vo;RANGE.q=qq;RANGE.axial=ax;
+  RANGE.radial=ra;RANGE.swirl=sw;RANGE.ke=ke;})();
+
+// ---- colormaps ------------------------------------------------------------
+const VIRIDIS=[[68,1,84],[72,26,108],[71,47,125],[65,68,135],[57,86,140],[49,104,142],
+  [42,120,142],[35,136,142],[31,152,139],[34,168,132],[53,183,121],[84,197,104],
+  [122,209,81],[165,219,54],[210,226,27],[253,231,37]];
+const INFERNO=[[0,0,4],[12,8,38],[36,12,79],[66,10,104],[93,18,110],[120,28,109],
+  [147,38,103],[174,48,92],[199,62,76],[220,81,57],[237,105,37],[246,133,17],
+  [251,163,12],[249,195,41],[240,226,96],[252,255,164]];
+const COOLWARM=[[59,76,192],[98,130,234],[141,176,254],[184,208,249],[221,221,221],
+  [246,193,165],[244,154,123],[222,96,77],[180,4,38]];
+function cmap(an,t){t=Math.max(0,Math.min(1,t))*(an.length-1);const i=Math.min(an.length-2,t|0),f=t-i,
+  a=an[i],b=an[i+1];return [a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f];}
+
+// ---- metric config --------------------------------------------------------
+const METRICS={
+  speed:{name:'Speed |u|',unit:'lattice u',map:VIRIDIS,signed:false,note:'flow-speed magnitude'},
+  shear:{name:'Shear stress',unit:'ρν·γ̇',map:INFERNO,signed:false,note:'viscous shear stress (core LBM f_neq strain-rate) — peaks at the blade tips'},
+  vort:{name:'Vorticity |ω|',unit:'1/step',map:VIRIDIS,signed:false,note:'rotation rate of fluid elements — trailing vortices behind blades'},
+  q:{name:'Q-criterion',unit:'1/step²',map:COOLWARM,signed:true,note:'Q>0 (red) marks vortex cores; Q<0 (blue) strain-dominated'},
+  axial:{name:'Axial velocity u_z',unit:'lattice u',map:COOLWARM,signed:true,note:'vertical pumping — up (red) / down (blue)'},
+  radial:{name:'Radial velocity u_r',unit:'lattice u',map:COOLWARM,signed:true,note:'outward (red) radial discharge / inward (blue) return'},
+  swirl:{name:'Swirl u_θ',unit:'lattice u',map:COOLWARM,signed:true,note:'tangential (rotational) velocity about the shaft'},
+  ke:{name:'Kinetic energy',unit:'½|u|²',map:INFERNO,signed:false,note:'kinetic energy density of the flow'},
+};
+let metric='speed', ds=1;                    // default field / medium stir speed
+function curMap(){return METRICS[metric].map;}
+function curMax(){return Math.max(1e-12,RANGE[metric]);}
+// scalar field value at a sim point for the active dataset + metric
+function sampleVec(F,sx,sy,sz){let a=sx*(VN-1)/(N-1),b=sy*(VN-1)/(N-1),c=sz*(VN-1)/(N-1);
+  a=Math.max(0,Math.min(VN-1.001,a));b=Math.max(0,Math.min(VN-1.001,b));c=Math.max(0,Math.min(VN-1.001,c));
+  const i0=a|0,j0=b|0,k0=c|0,fi=a-i0,fj=b-j0,fk=c-k0,o=[0,0,0,0];
+  for(let cp=0;cp<4;cp++){let v=0;for(let dk=0;dk<2;dk++)for(let dj=0;dj<2;dj++)for(let di=0;di<2;di++){
+    const w=(di?fi:1-fi)*(dj?fj:1-fj)*(dk?fk:1-fk);v+=w*F[idxV(i0+di,j0+dj,k0+dk)*4+cp];}o[cp]=v;}return o;}
+function sampleScalar(A,sx,sy,sz){let a=sx*(VN-1)/(N-1),b=sy*(VN-1)/(N-1),c=sz*(VN-1)/(N-1);
+  a=Math.max(0,Math.min(VN-1.001,a));b=Math.max(0,Math.min(VN-1.001,b));c=Math.max(0,Math.min(VN-1.001,c));
+  const i0=a|0,j0=b|0,k0=c|0,fi=a-i0,fj=b-j0,fk=c-k0;let v=0;
+  for(let dk=0;dk<2;dk++)for(let dj=0;dj<2;dj++)for(let di=0;di<2;di++){
+    const w=(di?fi:1-fi)*(dj?fj:1-fj)*(dk?fk:1-fk);v+=w*A[idxV(i0+di,j0+dj,k0+dk)];}return v;}
+const cur=()=>DS[ds];
+function fval(sx,sy,sz){const D=cur();
+  switch(metric){
+    case 'shear':return sampleVec(D.F,sx,sy,sz)[3];
+    case 'vort':return sampleScalar(D.vort,sx,sy,sz);
+    case 'q':return sampleScalar(D.q,sx,sy,sz);
+    default:{const s=sampleVec(D.F,sx,sy,sz);const vx=s[0],vy=s[1],vz=s[2];
+      const dx=sx-CX,dy=sy-CY,r=Math.hypot(dx,dy)||1e-9;
+      if(metric==='speed')return Math.hypot(vx,vy,vz);
+      if(metric==='axial')return vz;
+      if(metric==='radial')return (vx*dx+vy*dy)/r;
+      if(metric==='swirl')return (-vx*dy+vy*dx)/r;
+      if(metric==='ke')return 0.5*(vx*vx+vy*vy+vz*vz);
+      return Math.hypot(vx,vy,vz);}
+  }}
+function colOf(v){const mx=curMax();
+  if(METRICS[metric].signed){return cmap(COOLWARM,0.5+0.5*Math.max(-1,Math.min(1,v/mx)));}
+  const t=Math.sqrt(Math.max(0,Math.min(1,v/mx)));
+  return cmap(curMap(),(curMap()===INFERNO?0.08:0.05)+0.95*t);}
+
+// ---- physical calibration: stirred tank in a Newtonian fluid --------------
+// Match tank Ø (sets dx) and impeller tip speed (sets dt); the lattice
+// viscosity is then an EFFECTIVE (turbulence-augmented) viscosity — the
+// resolved flow is smoother than the real (higher-Re) tank, so shear in Pa is
+// a large-scale estimate (lower bound on true peak stress). Velocities, RPM
+// and geometry are real; particle settling uses the Stokes drag law.
+const PHYS={T:0.13, rho:1000, mu:1.1e-3, g:9.81, Nmed:150}; // Ø(m), ρ(kg/m3), μ(Pa·s), Medium N(rpm)
+const uMed=DS[1].u_tip;                        // Medium lattice tip speed (0.08)
+const Dm=2*BUNDLE.tip_r*(PHYS.T/(2*R));        // impeller Ø in m
+const dx=PHYS.T/(2*R);                          // m per lattice cell
+function vtipMed(){return Math.PI*Dm*PHYS.Nmed/60;} // m/s at Medium
+function dxdt(){return vtipMed()/uMed;}         // m/s per lattice velocity unit
+function dt(){return dx/dxdt();}                // s per step
+function nuEff(){return 0.02*dx*dx/dt();}       // effective kinematic viscosity (m²/s)
+function reEff(){return uMed*(2*BUNDLE.tip_r)/0.02;} // lattice impeller Reynolds (fixed ~99)
+function rpmOf(i){return PHYS.Nmed*DS[i].u_tip/uMed;}
+function Cfac(){return PHYS.rho*Math.pow(dxdt(),2);} // Pa per lattice shear unit
+function peakPa(){return RANGE.shear*Cfac();}
+let thrMode=false, thrPa=1.0;
+// per-metric lattice→SI display conversion
+function pscale(m){const uu=dxdt();switch(m){
+  case 'shear':return{f:Cfac(),u:'Pa'};
+  case 'vort':return{f:1/dt(),u:'1/s'};
+  case 'q':return{f:1/(dt()*dt()),u:'1/s²'};
+  case 'ke':return{f:uu*uu,u:'m²/s²'};
+  default:return{f:uu*100,u:'cm/s'};}}          // speed/axial/radial/swirl
+const HOT=[[255,205,90],[255,150,50],[244,70,40],[200,12,12],[255,242,190]];
+function colThresh(sl){const pa=sl*Cfac(),t=thrPa;
+  if(pa<t){const f=Math.min(1,pa/Math.max(1e-9,t));return [24+26*f,32+30*f,46+42*f];} // dim below τc
+  const over=Math.min(1,(pa-t)/Math.max(1e-9,peakPa()-t));return cmap(HOT,0.15+0.85*over);}
+// settling: Stokes drag law  v_s = (ρp-ρf) g d² / (18 μ)
+const CELLS={sz1:{d:15,dp:1040},sz2:{d:120,dp:1045},sz3:{d:185,dp:1040}}; // diameter (µm), particle density (kg/m³)
+let cellKey='sz1', Gx=1;                        // default: 15 µm particle, real gravity (×1)
+function vsPhys(k){const c=CELLS[k];return Math.max(0,(c.dp-PHYS.rho))*PHYS.g*Math.pow(c.d*1e-6,2)/(18*PHYS.mu);} // m/s
+function vsLat(k){return vsPhys(k)*dt()/dx*Gx;} // lattice velocity units (× exaggeration)
+let partMode='tracer';
+function updateThrStats(){const el=document.getElementById('thrStat');if(!thrMode){el.textContent='';return;}
+  const F=cur().F;let over=0,tot=0,peak=0;
+  for(let k=0;k<VN;k++)for(let j=0;j<VN;j++)for(let i=0;i<VN;i++){
+    const sx=i*(N-1)/(VN-1),sy=j*(N-1)/(VN-1);if((sx-CX)**2+(sy-CY)**2>R*R)continue;
+    const pa=F[idxV(i,j,k)*4+3]*Cfac();tot++;if(pa>peak)peak=pa;if(pa>=thrPa)over++;}
+  const pct=100*over/Math.max(1,tot),sat=pct>55;
+  el.innerHTML=`peak &tau; <b>${peak<10?peak.toFixed(2):Math.round(peak)} Pa</b> &middot; over &tau;c <b class="${sat?'warn':'ok'}">${pct<1?pct.toFixed(2):pct.toFixed(0)}%</b> vol`
+    +(peak<thrPa?' <span class="ok">&mdash; safe everywhere</span>':(sat?' <span class="warn">&mdash; widespread over-shear</span>':''));}
+
+// ---- shared state ---------------------------------------------------------
+let showTracers=true, showPlanes=true, spinning=true;
+let cutZ=Math.round(BUNDLE.zc), cutY=Math.round(CY);
+
+// ---- slice raster (alpha=0 outside vessel) --------------------------------
+function sliceRaster(orient,pos,W,Hh){const d=new Uint8ClampedArray(W*Hh*4);
+  for(let v=0;v<Hh;v++)for(let u=0;u<W;u++){let sx,sy,sz,inside;
+    if(orient==='h'){sx=CX+((u+0.5)/W*2-1)*R;sy=CY+((v+0.5)/Hh*2-1)*R;sz=pos;inside=((sx-CX)**2+(sy-CY)**2)<=R*R;}
+    else{sx=CX+((u+0.5)/W*2-1)*R;sz=(1-(v+0.5)/Hh)*(N-1);sy=pos;const hw=Math.sqrt(Math.max(0,R*R-(pos-CY)**2));inside=Math.abs(sx-CX)<=hw;}
+    const o=(v*W+u)*4;if(!inside){d[o+3]=0;continue;}
+    const c=thrMode?colThresh(sampleVec(cur().F,sx,sy,sz)[3]):colOf(fval(sx,sy,sz));
+    d[o]=c[0];d[o+1]=c[1];d[o+2]=c[2];d[o+3]=255;}
+  return {data:d,W,H:Hh};}
+
+// ==== 3D VIEW ==============================================================
+const host=document.getElementById('view3d');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2,devicePixelRatio));
+host.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x0a0d12);
+const camera=new THREE.PerspectiveCamera(50,1,0.01,100);
+const CAM0=new THREE.Vector3(2.7,1.9,3.0);camera.position.copy(CAM0);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;controls.dampingFactor=0.08;controls.target.set(0,0,0);
+scene.add(new THREE.AmbientLight(0xffffff,0.58));
+const dl=new THREE.DirectionalLight(0xffffff,0.85);dl.position.set(3,5,2);scene.add(dl);
+const dl2=new THREE.DirectionalLight(0x88aaff,0.32);dl2.position.set(-3,-2,-3);scene.add(dl2);
+const tankH=(N-2)*S, impY=(BUNDLE.zc-N/2)*S;
+function w3(sx,sy,sz){return new THREE.Vector3((sx-CX)*S,(sz-N/2)*S,(sy-CY)*S);}
+const wallMat=new THREE.MeshPhongMaterial({color:0x9fd2ff,transparent:true,opacity:0.09,side:THREE.DoubleSide,shininess:80,specular:0x223,depthWrite:false});
+scene.add(new THREE.Mesh(new THREE.CylinderGeometry(1,1,tankH,72,1,true),wallMat));
+const floor=new THREE.Mesh(new THREE.CircleGeometry(1,72),new THREE.MeshPhongMaterial({color:0x16202c,transparent:true,opacity:0.5,side:THREE.DoubleSide,depthWrite:false}));
+floor.rotation.x=-Math.PI/2;floor.position.y=-tankH/2;scene.add(floor);
+const surf=new THREE.Mesh(new THREE.CircleGeometry(1,72),new THREE.MeshPhongMaterial({color:0x2f6df6,transparent:true,opacity:0.12,side:THREE.DoubleSide,depthWrite:false}));
+surf.rotation.x=-Math.PI/2;surf.position.y=tankH/2-0.01;scene.add(surf);
+const baffleMat=new THREE.MeshPhongMaterial({color:0x8a97a6,shininess:30});
+{const bl=BUNDLE.baffle_len*S,bw=BUNDLE.baffle_hw*S;
+ for(let k=0;k<4;k++){const be=k*Math.PI/2;const box=new THREE.Mesh(new THREE.BoxGeometry(bl,tankH,2*bw),baffleMat);
+   box.position.set((1-bl/2)*Math.cos(be),0,(1-bl/2)*Math.sin(be));box.rotation.y=-be;scene.add(box);}}
+const impeller=new THREE.Group();scene.add(impeller);
+const metal=new THREE.MeshPhongMaterial({color:0xd7dde3,shininess:110,specular:0x555});
+{const shaftH=tankH/2-impY;const shaft=new THREE.Mesh(new THREE.CylinderGeometry(BUNDLE.shaft_r*S,BUNDLE.shaft_r*S,shaftH,20),new THREE.MeshPhongMaterial({color:0xb8c0c8,shininess:90}));shaft.position.y=impY+shaftH/2;impeller.add(shaft);
+ const hub=new THREE.Mesh(new THREE.CylinderGeometry(BUNDLE.hub_r*S,BUNDLE.hub_r*S,2*BUNDLE.blade_hh*S,20),metal);hub.position.y=impY;impeller.add(hub);
+ const disk=new THREE.Mesh(new THREE.CylinderGeometry(BUNDLE.disk_r*S,BUNDLE.disk_r*S,2*BUNDLE.disk_hh*S,40),metal);disk.position.y=impY;impeller.add(disk);
+ const di=BUNDLE.disk_r*S,ti=BUNDLE.tip_r*S,nb=BUNDLE.n_blades;
+ for(let b=0;b<nb;b++){const ang=b*2*Math.PI/nb;const bld=new THREE.Mesh(new THREE.BoxGeometry(ti-di,2*BUNDLE.blade_hh*S,Math.max(2*BUNDLE.blade_hw*S,0.02)),metal);
+   const rc=(di+ti)/2;bld.position.set(rc*Math.cos(ang),impY,rc*Math.sin(ang));bld.rotation.y=-ang;impeller.add(bld);}}
+// cut planes
+function makeTex(orient,pos){const R2=112,W=R2,Hh=orient==='h'?R2:Math.round(R2*N/(2*R));
+  const r=sliceRaster(orient,pos,W,Hh);const t=new THREE.DataTexture(r.data,W,Hh,THREE.RGBAFormat);
+  t.needsUpdate=true;t.minFilter=THREE.LinearFilter;t.magFilter=THREE.LinearFilter;t.flipY=true;return t;}
+const planeMatH=new THREE.MeshBasicMaterial({transparent:true,opacity:0.33,side:THREE.DoubleSide,depthWrite:false});
+const planeH=new THREE.Mesh(new THREE.PlaneGeometry(2,2),planeMatH);planeH.rotation.x=-Math.PI/2;scene.add(planeH);
+const planeMatV=new THREE.MeshBasicMaterial({transparent:true,opacity:0.33,side:THREE.DoubleSide,depthWrite:false});
+const planeV=new THREE.Mesh(new THREE.PlaneGeometry(2,tankH+2*S),planeMatV);scene.add(planeV);
+function refreshPlaneH(){planeMatH.map&&planeMatH.map.dispose();planeMatH.map=makeTex('h',cutZ);planeMatH.needsUpdate=true;planeH.position.y=(cutZ-N/2)*S;}
+function refreshPlaneV(){planeMatV.map&&planeMatV.map.dispose();planeMatV.map=makeTex('v',cutY);planeMatV.needsUpdate=true;planeV.position.z=(cutY-CY)*S;}
+function updatePlaneVis(){planeH.visible=planeV.visible=showPlanes;}
+// tracers
+const NT=9000;
+const pos=new Float32Array(NT*3),sim=new Float32Array(NT*3),col=new Float32Array(NT*3),age=new Float32Array(NT),life=new Float32Array(NT);
+const SEED_SP=0.003, DTBASE=6.0, FADE=28;
+function speedAt(sx,sy,sz){const s=sampleVec(cur().F,sx,sy,sz);return Math.hypot(s[0],s[1],s[2]);}
+function seed(i){let sx=CX,sy=CY,sz=N*0.4;for(let t=0;t<8;t++){const rr=Math.sqrt(Math.random())*0.96*R,th=Math.random()*2*Math.PI;
+  sx=CX+rr*Math.cos(th);sy=CY+rr*Math.sin(th);sz=2+Math.random()*(N*0.86-2);if(speedAt(sx,sy,sz)>=SEED_SP)break;}
+  sim[i*3]=sx;sim[i*3+1]=sy;sim[i*3+2]=sz;age[i]=0;life[i]=240+Math.random()*280;}
+for(let i=0;i<NT;i++){seed(i);age[i]=Math.random()*life[i];}
+const pgeo=new THREE.BufferGeometry();
+pgeo.setAttribute('position',new THREE.BufferAttribute(pos,3));pgeo.setAttribute('color',new THREE.BufferAttribute(col,3));
+const points=new THREE.Points(pgeo,new THREE.PointsMaterial({size:0.03,vertexColors:true,transparent:true,opacity:0.95,blending:THREE.AdditiveBlending,depthWrite:false,sizeAttenuation:true}));
+scene.add(points);
+let statTick=0;
+function updateTracers(){const F=cur().F, cell=(partMode==='cell'), vset=vsLat(cellKey);let settled=0;
+  for(let i=0;i<NT;i++){
+    let sx=sim[i*3],sy=sim[i*3+1],sz=sim[i*3+2];const s=sampleVec(F,sx,sy,sz);
+    sx+=s[0]*DTBASE;sy+=s[1]*DTBASE;sz+=s[2]*DTBASE;
+    if(cell){
+      sz-=vset*DTBASE;                                     // Stokes settling in the resolved velocity field
+      let rr=Math.hypot(sx-CX,sy-CY);
+      if(rr>R*0.985){const f=R*0.985/rr;sx=CX+(sx-CX)*f;sy=CY+(sy-CY)*f;}
+      if(sz<1.3)sz=1.3;if(sz>N-1.5)sz=N-1.5;               // rest on floor / cap at surface
+      sim[i*3]=sx;sim[i*3+1]=sy;sim[i*3+2]=sz;
+      const wv=w3(sx,sy,sz);pos[i*3]=wv.x;pos[i*3+1]=wv.y;pos[i*3+2]=wv.z;
+      const hh=Math.min(1,Math.max(0,(sz-1.3)/(0.32*N)));  // amber(settled)->cyan(suspended)
+      col[i*3]=(255*(1-hh)+90*hh)/255;col[i*3+1]=(170*(1-hh)+210*hh)/255;col[i*3+2]=(60*(1-hh)+232*hh)/255;
+      if(sz<0.12*N)settled++;
+    } else {
+      age[i]++;
+      const rr=Math.hypot(sx-CX,sy-CY);
+      if(rr>R*0.99||sz<1.2||sz>N-1.2||age[i]>life[i]){seed(i);}else{sim[i*3]=sx;sim[i*3+1]=sy;sim[i*3+2]=sz;}
+      const wv=w3(sim[i*3],sim[i*3+1],sim[i*3+2]);pos[i*3]=wv.x;pos[i*3+1]=wv.y;pos[i*3+2]=wv.z;
+      let env=Math.max(0,Math.min(1,age[i]/FADE,(life[i]-age[i])/FADE));
+      let c;
+      if(thrMode){c=colThresh(s[3]);}
+      else{const val=fval(sim[i*3],sim[i*3+1],sim[i*3+2]);
+        if(METRICS[metric].signed)env*=Math.min(1,Math.sqrt(Math.abs(val)/curMax())*1.1+0.12);
+        c=colOf(val);}
+      col[i*3]=c[0]/255*env;col[i*3+1]=c[1]/255*env;col[i*3+2]=c[2]/255*env;
+    }
+  }
+  pgeo.attributes.position.needsUpdate=true;pgeo.attributes.color.needsUpdate=true;
+  if(cell&&(++statTick%20===0)){const pct=100*settled/NT;
+    document.getElementById('cellStat').innerHTML=`settled at bottom: <b class="${pct>40?'warn':'ok'}">${pct.toFixed(0)}%</b>`;}}
+function spinRate(){return -Math.min(0.06,Math.max(0.006,cur().omega*40));}
+function resize3d(){const wd=host.clientWidth,ht=host.clientHeight;renderer.setSize(wd,ht);camera.aspect=wd/ht;camera.updateProjectionMatrix();}
+new ResizeObserver(resize3d).observe(host);resize3d();
+function loop(){requestAnimationFrame(loop);if(spinning)impeller.rotation.y+=spinRate();if(showTracers)updateTracers();controls.update();renderer.render(scene,camera);}
+loop();
+
+// ==== 2D PANELS ============================================================
+const off=document.createElement('canvas'),offx=off.getContext('2d');
+function drawPanel(orient){const cv=document.getElementById(orient==='h'?'cvH':'cvV');
+  const wrap=cv.parentElement,availW=wrap.clientWidth,availH=wrap.clientHeight;
+  const ar=orient==='h'?1:(2*R)/N;let cw=availW,ch=cw/ar;if(ch>availH){ch=availH;cw=ch*ar;}
+  cw=Math.max(40,cw|0);ch=Math.max(40,ch|0);cv.width=cw;cv.height=ch;
+  const RES=orient==='h'?190:170,W=RES,Hh=Math.round(RES/ar);
+  const r=sliceRaster(orient,orient==='h'?cutZ:cutY,W,Hh);
+  off.width=W;off.height=Hh;const im=offx.createImageData(W,Hh);im.data.set(r.data);
+  for(let p=0;p<W*Hh;p++){if(im.data[p*4+3]===0){im.data[p*4]=10;im.data[p*4+1]=13;im.data[p*4+2]=18;im.data[p*4+3]=255;}}
+  offx.putImageData(im,0,0);const ctx=cv.getContext('2d');ctx.clearRect(0,0,cw,ch);ctx.imageSmoothingEnabled=true;ctx.drawImage(off,0,0,cw,ch);
+  ctx.strokeStyle='rgba(200,214,228,.6)';ctx.lineWidth=1.3;const pxc=cw/(2*R);
+  if(orient==='h'){ctx.beginPath();ctx.arc(cw/2,ch/2,R*pxc,0,7);ctx.stroke();
+    ctx.beginPath();ctx.arc(cw/2,ch/2,BUNDLE.tip_r*pxc,0,7);ctx.stroke();
+    ctx.strokeStyle='rgba(150,163,176,.9)';ctx.lineWidth=Math.max(3,2*BUNDLE.baffle_hw*pxc);
+    for(let k=0;k<4;k++){const be=k*Math.PI/2;ctx.beginPath();
+      ctx.moveTo(cw/2+(R-BUNDLE.baffle_len)*Math.cos(be)*pxc,ch/2+(R-BUNDLE.baffle_len)*Math.sin(be)*pxc);
+      ctx.lineTo(cw/2+R*Math.cos(be)*pxc,ch/2+R*Math.sin(be)*pxc);ctx.stroke();}
+  }else{const hw=Math.sqrt(Math.max(0,R*R-(cutY-CY)**2));ctx.strokeRect((R-hw)*pxc,1,2*hw*pxc,ch-2);
+    const zPx=z=>ch*(1-z/(N-1));ctx.strokeStyle='rgba(215,221,227,.9)';ctx.lineWidth=Math.max(2,2*BUNDLE.shaft_r*pxc);
+    ctx.beginPath();ctx.moveTo(cw/2,zPx(BUNDLE.zc));ctx.lineTo(cw/2,zPx(N-1));ctx.stroke();ctx.lineWidth=1.2;
+    ctx.strokeRect((R-BUNDLE.tip_r)*pxc,zPx(BUNDLE.zc+BUNDLE.blade_hh),2*BUNDLE.tip_r*pxc,zPx(BUNDLE.zc-BUNDLE.blade_hh)-zPx(BUNDLE.zc+BUNDLE.blade_hh));}}
+
+// ==== controls / linkage ===================================================
+const $=id=>document.getElementById(id);
+function setGrad(){
+  if(thrMode){$('grad').style.background='linear-gradient(90deg,#22303f 0%,#22303f 22%,'
+      +HOT.map((c,i)=>`rgb(${c[0]},${c[1]},${c[2]}) ${22+78*i/(HOT.length-1)}%`).join(',')+')';
+    $('lo').textContent='< τc';$('hi').textContent=peakPa().toPrecision(2)+' Pa';
+    $('metricNote').textContent='Shear threshold — regions where shear stress ≥ τc = '+thrPa.toPrecision(2)
+      +' Pa are highlighted. Absolute Pa uses the operating tip speed; low-Re resolved flow, so the spatial pattern is qualitative.';
+    return;}
+  const M=METRICS[metric],an=M.map,ps=pscale(metric),mx=curMax()*ps.f;
+  $('grad').style.background='linear-gradient(90deg,'+an.map((c,i)=>`rgb(${c[0]|0},${c[1]|0},${c[2]|0}) ${100*i/(an.length-1)}%`).join(',')+')';
+  if(M.signed){$('lo').textContent=(-mx).toPrecision(2);$('hi').textContent='+'+mx.toPrecision(2)+' '+ps.u;}
+  else{$('lo').textContent='0';$('hi').textContent=mx.toPrecision(2)+' '+ps.u;}
+  $('metricNote').textContent=M.name+' — '+M.note;}
+function relabelH(){$('hLab').textContent=`z = ${cutZ}`;$('hCap').textContent='normal to the shaft'+(Math.abs(cutZ-BUNDLE.zc)<1.5?' - impeller plane':'');}
+function relabelV(){$('vLab').textContent=`y = ${cutY}`;$('vCap').textContent='through the shaft'+(Math.abs(cutY-CY)<1.5?' - mid-plane':'');}
+function recolorAll(){setGrad();refreshPlaneH();refreshPlaneV();drawPanel('h');drawPanel('v');updateThrStats();}
+
+$('metric').onchange=e=>{metric=e.target.value;recolorAll();};
+// stir-speed buttons
+const spdWrap=$('spd');
+DS.forEach((d,i)=>{const b=document.createElement('button');b.textContent=d.label;b.dataset.i=i;
+  if(i===ds)b.classList.add('on');b.onclick=()=>{ds=i;[...spdWrap.children].forEach(c=>c.classList.toggle('on',+c.dataset.i===ds));recolorAll();};
+  spdWrap.appendChild(b);});
+
+// damage-threshold controls
+const thrSl=$('thrSl'),thrVal=$('thrVal');
+function setThr(on,pa){thrMode=on;if(pa!=null){thrPa=pa;thrSl.value=Math.log10(pa);}
+  $('thrOff').classList.toggle('on',!on);$('thrLo').classList.toggle('on',on&&Math.abs(thrPa-1)<1e-9);
+  $('thrHi').classList.toggle('on',on&&Math.abs(thrPa-1000)<1e-9);
+  $('thrCfg').style.display=on?'flex':'none';thrVal.textContent=thrPa.toPrecision(2)+' Pa';recolorAll();}
+$('thrOff').onclick=()=>setThr(false);
+$('thrLo').onclick=()=>setThr(true,1);
+$('thrHi').onclick=()=>setThr(true,1000);
+thrSl.oninput=()=>{thrPa=Math.pow(10,+thrSl.value);thrVal.textContent=(thrPa<10?thrPa.toPrecision(2):Math.round(thrPa))+' Pa';
+  $('thrLo').classList.remove('on');$('thrHi').classList.remove('on');recolorAll();};
+$('rpmSl').oninput=e=>{PHYS.Nmed=+e.target.value;$('rpmVal').textContent=PHYS.Nmed+' rpm';recolorAll();updateUnits();};
+
+// physical-units + cell info line
+function fmtVs(vs){return vs>=1e-4?(vs*1e3).toFixed(2)+' mm/s':(vs*1e6).toFixed(1)+' µm/s';}
+function updateUnits(){const el=$('units');if(!el)return;
+  let s=`Ø${(PHYS.T*100).toFixed(0)} cm · fluid ρ${PHYS.rho} μ${(PHYS.mu*1e3).toFixed(1)} mPa·s · Slow/Med/Fast `
+    +`${Math.round(rpmOf(0))}/${Math.round(rpmOf(1))}/${Math.round(rpmOf(2))} rpm · Δx ${(dx*1e3).toFixed(2)} mm · Δt ${(dt()*1e3).toFixed(2)} ms · ν_eff ${(nuEff()/1e-4).toFixed(1)}e-4 m²/s (effective)`;
+  if(partMode==='cell'){const c=CELLS[cellKey];s+=`  |  ${c.d} µm particle, Δρ ${c.dp-PHYS.rho} kg/m³ → Stokes v_s ${fmtVs(vsPhys(cellKey))}`
+    +(Gx>1?` (shown ×${Math.round(Gx)})`:' — negligible vs flow, stays suspended');}
+  el.innerHTML=s;}
+
+// settling-particle controls
+function seedCell(i){const rr=Math.sqrt(Math.random())*0.95*R,th=Math.random()*2*Math.PI;
+  sim[i*3]=CX+rr*Math.cos(th);sim[i*3+1]=CY+rr*Math.sin(th);sim[i*3+2]=1.6+Math.random()*(N-3.2);age[i]=0;}
+function reseedAll(){for(let i=0;i<NT;i++){if(partMode==='cell')seedCell(i);else{seed(i);age[i]=Math.random()*life[i];}}}
+function setPart(mode){partMode=mode;$('pTrace').classList.toggle('on',mode==='tracer');$('pCell').classList.toggle('on',mode==='cell');
+  $('cellCfg').style.display=mode==='cell'?'flex':'none';if(mode!=='cell')$('cellStat').textContent='';reseedAll();updateUnits();}
+$('pTrace').onclick=()=>setPart('tracer');
+$('pCell').onclick=()=>setPart('cell');
+['sz1','sz2','sz3'].forEach(id=>$(id).onclick=()=>{cellKey=id;['sz1','sz2','sz3'].forEach(x=>$(x).classList.toggle('on',x===id));reseedAll();updateUnits();});
+$('gxSl').oninput=e=>{Gx=Math.pow(10,+e.target.value);$('gxVal').textContent='×'+(Gx<10?Gx.toFixed(1):Math.round(Gx));updateUnits();};
+$('bTracers').onclick=()=>{showTracers=!showTracers;points.visible=showTracers;$('bTracers').classList.toggle('on',showTracers);};
+$('bPlanes').onclick=()=>{showPlanes=!showPlanes;updatePlaneVis();$('bPlanes').classList.toggle('on',showPlanes);};
+$('bSpin').onclick=()=>{spinning=!spinning;$('bSpin').classList.toggle('on',spinning);};
+const slH=$('slH');slH.min=1;slH.max=N-2;slH.value=cutZ;slH.oninput=()=>{cutZ=+slH.value;relabelH();refreshPlaneH();drawPanel('h');};
+const slV=$('slV');slV.min=1;slV.max=N-2;slV.value=cutY;slV.oninput=()=>{cutY=+slV.value;relabelV();refreshPlaneV();drawPanel('v');};
+function hover(orient,ev){const cv=document.getElementById(orient==='h'?'cvH':'cvV');const b=cv.getBoundingClientRect();
+  const u=(ev.clientX-b.left)/b.width,v=(ev.clientY-b.top)/b.height;let sx,sy,sz,ok;
+  if(orient==='h'){sx=CX+(u*2-1)*R;sy=CY+(v*2-1)*R;sz=cutZ;ok=((sx-CX)**2+(sy-CY)**2)<=R*R;}
+  else{sx=CX+(u*2-1)*R;sz=(1-v)*(N-1);sy=cutY;const hw=Math.sqrt(Math.max(0,R*R-(cutY-CY)**2));ok=Math.abs(sx-CX)<=hw;}
+  const rd=$(orient==='h'?'rdH':'rdV');if(!ok){rd.innerHTML='&nbsp;';return;}
+  const ps=pscale(metric),val=fval(sx,sy,sz)*ps.f;
+  rd.textContent=`${METRICS[metric].name} = ${Math.abs(val)>=0.01&&Math.abs(val)<1e4?val.toPrecision(3):val.toExponential(2)} ${ps.u}`;}
+$('cvH').addEventListener('mousemove',e=>hover('h',e));$('cvV').addEventListener('mousemove',e=>hover('v',e));
+
+setGrad();relabelH();relabelV();refreshPlaneH();refreshPlaneV();updatePlaneVis();updateUnits();
+new ResizeObserver(()=>{drawPanel('h');drawPanel('v');}).observe($('side'));
+drawPanel('h');drawPanel('v');
+</script>
+</body>
+</html>

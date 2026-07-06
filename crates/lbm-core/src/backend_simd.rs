@@ -73,7 +73,9 @@ use crate::fields::{FusedScratch, LocalGeom, SoaFields};
 use crate::halo::HaloExchange;
 use crate::kernels::{central_basis, central_phi, for_face_cells, solve_moment_system, RawSlice};
 use crate::lattice::{Face, Lattice, Q_MAX};
-use crate::params::{KParams, Reduction, StepParams};
+use crate::params::{
+    KParams, Reduction, StepParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION,
+};
 use crate::real::Real;
 use crate::subdomain::Subdomain;
 
@@ -505,7 +507,7 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
 ) {
     // SAFETY: forwarded caller contract.
     unsafe {
-        if kp.cumulant {
+        if kp.central_moment {
             collide_span_central_moment::<L, T>(
                 field, omega, src, dst, x0, x1, rho, ux, uy, uz, kp,
             );
@@ -630,9 +632,13 @@ unsafe fn collide_span_central_moment<L: Lattice, T: Real>(
             }
         }
         let os_base = omega.map_or(kp.omega_shear.as_f64(), |v| v[x].as_f64());
-        let usq_full = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-        let d3q19_lattice_viscosity_offset = if L::D == 3 && L::Q == 19 { 0.0025 } else { 0.0 };
-        let os = (os_base * (1.0 + d3q19_lattice_viscosity_offset - 0.16 * usq_full)).min(2.0);
+        let velocity_correction = if CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
+            0.0
+        } else {
+            let usq_full = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+            -0.16 * usq_full
+        };
+        let os = (os_base * (1.0 + velocity_correction)).min(2.0);
         let mut post = [0.0f64; Q_MAX];
         let mut diag = [usize::MAX; 3];
         for m in 0..L::Q {
@@ -2110,7 +2116,7 @@ mod tests {
         let spec = GlobalSpec {
             dims: [n, n, n],
             nu,
-            collision: CollisionKind::Cumulant {
+            collision: CollisionKind::CentralMoment {
                 omega_shear: omega_from_nu(nu),
             },
             periodic: [true, true, true],
