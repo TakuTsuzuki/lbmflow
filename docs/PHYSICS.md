@@ -473,6 +473,52 @@ diagnosed numerical-stability limiter on that closure output.
 Artifacts checked: no field-visualization artifact was produced because this
 was a code+unit-test order, not an experiment/demo run; the behavior anchor is
 the exact cell-by-cell clipped-set assertion.
+
+### 2026-07-07 Backend-side gravity body-force composition (`StepParams::gravity`)
+- Form: `F_total(x,t) = F_uniform + F_cell(x,t) + rho(x,t) * g`, composed in
+  the backend collide/moment force path and entering the existing Guo source
+  term. For a caller-owned per-cell force field, arithmetic grouping preserves
+  the old staged overlay: `F_uniform + (F_cell + rho*g)`.
+- Source: resolved from the existing per-mass gravity model and Guo forcing
+  invariant recorded above; no new physics term, closure, or constant.
+- Validity domain: same as the existing single-phase gravity path and Guo
+  forcing path. Solid cells are skipped through the existing collide/moment
+  masks. Future VOF/AGG work must replace only the density factor at this
+  composition point, not the forcing scheme.
+- Validation: `cargo test -p lbm-core gravity --release` passed
+  `gravity.rs::closed_box_gravity_forms_stable_hydrostatic_stratification`,
+  `gravity.rs::gravity_channel_is_bit_identical_to_raw_rho_g_force_field`,
+  `gravity.rs::vr_str_06_static_stratification_quiescent_all_lattices_and_precisions`,
+  and `gravity.rs::shan_chen_gravity_composes_with_force_overwrite_and_creates_buoyancy`.
+  `cargo test -p lbm-core --test backend_simd_equiv --release`,
+  `cargo test -p lbm-core --test t13_split_invariance --release`,
+  `cargo test -p lbm-core --test t13_adversarial --release`, and
+  `cargo test --workspace --release` passed. GPU build gate
+  `cargo build -p lbm-core --release --features gpu` passed. Runtime GPU
+  equivalence is covered by ignored T14 test
+  `t14_backend_equiv::t14_gravity_body_force_device_resident` and is
+  BENCH-PENDING on a native GPU adapter.
+- Replaces / interacts with: replaces the host staging overlay used by
+  `Solver::stage_gravity` on capable backends. The staged overlay remains as
+  fallback for backends that do not advertise backend-side gravity. Shan-Chen,
+  IBM, uniform force, and explicit per-cell force fields still combine through
+  the same Guo force path.
+
+### 2026-07-07 behavior review — backend-side gravity composition tests
+Pattern: hydrostatic closed boxes stayed quiescent within the existing
+machine-level/static-stratification bands; dense phase moved in the `-g`
+direction and light phase rose in the Shan-Chen buoyancy sign test.
+Mechanism: the backend composes the same `rho*g` body-force density into the
+same Guo source term, so pressure/gravity balance and buoyancy signs are
+unchanged while avoiding per-step host staging.
+Resolved vs closure: gravity and Guo forcing are resolved engine terms; the
+Shan-Chen cohesion used by the buoyancy sign test is the existing documented
+multiphase closure and was not changed here.
+Artifacts checked: no clamp, wall, seam, or outlet accumulation artifact was
+introduced; T13 split invariance stayed green and the bit-identical
+gravity-vs-raw-force-field test stayed green. No field-visualization artifact
+is expected for this code-and-test order; the evidence is scalar assertions
+from the named validation tests.
 Verdict: PHYSICAL.
 Routing: none.
 

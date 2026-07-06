@@ -450,6 +450,50 @@ fn t14_cell_force_bgk() {
 }
 
 // ---------------------------------------------------------------------------
+// Gravity body force: device-resident `rho(x) * g` composed with the existing
+// Guo force path. Ignored here because the Codex sandbox has no Metal adapter;
+// PM/GPU hosts run it with `--features gpu -- --ignored`.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "BENCH-PENDING: requires a native GPU adapter"]
+fn t14_gravity_body_force_device_resident() {
+    let n = 96usize;
+    let spec = GlobalSpec::<f32> {
+        dims: [n, n, 1],
+        nu: 0.04,
+        periodic: [true, true, false],
+        force: [2e-6, 0.0, 0.0],
+        ..Default::default()
+    };
+    let mut pair = Pair::new(&spec, &WallSpec::default(), 0.03);
+    let k = 2.0 * std::f64::consts::PI / n as f64;
+    pair.init(move |x, y| {
+        let (xf, yf) = (k * x as f64, k * y as f64);
+        let rho = 1.0 + 0.02 * (xf.sin() * yf.cos());
+        (
+            rho as f32,
+            [(0.01 * yf.sin()) as f32, (-0.01 * xf.cos()) as f32, 0.0],
+        )
+    });
+    let field: Vec<[f32; 3]> = (0..n * n)
+        .map(|i| {
+            let (x, y) = (i % n, i / n);
+            let (xf, yf) = (k * x as f64, k * y as f64);
+            [(3e-6 * yf.cos()) as f32, (2e-6 * xf.sin()) as f32, 0.0]
+        })
+        .collect();
+    pair.cpu.set_body_force_field_values(&field);
+    pair.gpu.set_force_field(field);
+    pair.cpu.set_gravity([0.0, -4e-6, 0.0]);
+    pair.gpu.set_gravity([0.0, -4e-6, 0.0]);
+    for _ in 0..3 {
+        pair.run(100);
+        pair.check("gravity-body-force");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 6. ConvectiveOutflow: previous-value convention + mass pinning (the edge
 //    stash path — the one place the push-fused kernel must reproduce V1's
 //    stale-slot mechanics; see gpu/wgsl.rs module docs).

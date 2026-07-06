@@ -100,6 +100,11 @@ impl<L: Lattice> GpuSolver<L> {
         self.inner.backend().cache_next_upload_moments_once();
     }
 
+    /// Per-mass gravity composed on device as `rho(x) * g`.
+    pub fn set_gravity(&mut self, g: [f32; 3]) {
+        self.inner.set_gravity(g);
+    }
+
     /// Advance `steps` steps on the GPU through the unified solver.
     pub fn run(&mut self, steps: usize) {
         self.inner.run(steps);

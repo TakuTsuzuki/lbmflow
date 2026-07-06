@@ -1392,6 +1392,7 @@ where
             omega_p,
             omega_m,
             force: spec.force,
+            gravity: None,
             faces: spec.faces,
             sources: spec.sources.clone(),
             face_patches: spec.face_patches.clone(),
@@ -1613,20 +1614,32 @@ where
         });
     }
 
+    fn params_with_backend_gravity(&self) -> StepParams<T> {
+        let mut params = self.params.clone();
+        params.gravity = self.gravity;
+        params
+    }
+
     /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
     /// open faces → moments).
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
-        if self.gravity.is_some() {
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        if self.gravity.is_some() && !backend_gravity {
             self.run_staged_step();
             return;
         }
         self.stage_in_if_dirty();
+        let params = if backend_gravity {
+            self.params_with_backend_gravity()
+        } else {
+            self.params.clone()
+        };
         self.backend.run_span(
             &self.exchange,
             &self.subs,
             &mut self.parts,
-            &self.params,
+            &params,
             self.two_pass,
             &mut self.probed_force,
             1,
@@ -1642,7 +1655,8 @@ where
 
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
-        if self.gravity.is_some() {
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        if self.gravity.is_some() && !backend_gravity {
             for _ in 0..steps {
                 self.step();
             }
@@ -1650,6 +1664,11 @@ where
         }
         self.sync_masks_if_dirty();
         self.stage_in_if_dirty();
+        let params = if backend_gravity {
+            self.params_with_backend_gravity()
+        } else {
+            self.params.clone()
+        };
         let mut remaining = steps;
         while remaining > 0 {
             let chunk = self
@@ -1661,7 +1680,7 @@ where
                 &self.exchange,
                 &self.subs,
                 &mut self.parts,
-                &self.params,
+                &params,
                 self.two_pass,
                 &mut self.probed_force,
                 chunk,
@@ -2082,6 +2101,11 @@ where
                         if let Some(ff) = fields.force_field.as_ref() {
                             for (a, fa) in force.iter_mut().enumerate() {
                                 *fa += ff[c][a].as_f64();
+                            }
+                        }
+                        if let Some(gvec) = self.gravity {
+                            for (a, fa) in force.iter_mut().enumerate() {
+                                *fa += rho[gi].as_f64() * gvec[a].as_f64();
                             }
                         }
                         let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
@@ -2561,10 +2585,9 @@ where
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
-                        let gi =
-                            ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
-                                * self.dims[0]
-                                + (sub.origin[0] + x);
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
                         buf[g.cidx(x, y, z)] = values[gi];
                     }
                 }
@@ -2993,27 +3016,37 @@ where
     /// Local partial sums behind [`Solver::total_momentum`] (see
     /// [`Solver::local_mass_partials`] for the distributed contract).
     pub fn local_momentum_partials(&self) -> [f64; 3] {
+        let params_with_gravity;
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        let params = if backend_gravity {
+            params_with_gravity = self.params_with_backend_gravity();
+            &params_with_gravity
+        } else {
+            &self.params
+        };
         let mut p = [0.0f64; 3];
         for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
             for (a, pa) in p.iter_mut().enumerate() {
                 *pa += self
                     .backend
-                    .reduce(sub, fields, &self.params, Reduction::Momentum(a));
+                    .reduce(sub, fields, params, Reduction::Momentum(a));
             }
         }
-        if let Some(g) = self.gravity {
-            for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
-                let geo = sub.geom;
-                for z in 0..geo.core[2] {
-                    for y in 0..geo.core[1] {
-                        for x in 0..geo.core[0] {
-                            let pi = geo.pidx(x, y, z);
-                            if fields.solid[pi] {
-                                continue;
-                            }
-                            let rho = fields.rho[geo.cidx(x, y, z)].as_f64();
-                            for a in 0..3 {
-                                p[a] += 0.5 * rho * g[a].as_f64();
+        if !backend_gravity {
+            if let Some(g) = self.gravity {
+                for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+                    let geo = sub.geom;
+                    for z in 0..geo.core[2] {
+                        for y in 0..geo.core[1] {
+                            for x in 0..geo.core[0] {
+                                let pi = geo.pidx(x, y, z);
+                                if fields.solid[pi] {
+                                    continue;
+                                }
+                                let rho = fields.rho[geo.cidx(x, y, z)].as_f64();
+                                for a in 0..3 {
+                                    p[a] += 0.5 * rho * g[a].as_f64();
+                                }
                             }
                         }
                     }
@@ -3104,7 +3137,14 @@ where
         let c = g.cidx(x, y, z);
         let r = fields.rho[c];
         let u = [fields.ux[c], fields.uy[c], fields.uz[c]];
-        let kp = KParams::new::<L>(&self.params);
+        let params_with_gravity;
+        let params = if self.gravity.is_some() {
+            params_with_gravity = self.params_with_backend_gravity();
+            &params_with_gravity
+        } else {
+            &self.params
+        };
+        let kp = KParams::new::<L>(params);
         let feq = equilibrium::<L, T>(&kp, r, u);
         let np = g.n_padded();
         let mut pi_neq = [T::zero(); 6];
@@ -3120,14 +3160,7 @@ where
             pi_neq[4] = pi_neq[4] + cx * cz * fneq;
             pi_neq[5] = pi_neq[5] + cy * cz * fneq;
         }
-        let force = match fields.force_field.as_ref() {
-            Some(ff) => [
-                self.params.force[0] + ff[c][0],
-                self.params.force[1] + ff[c][1],
-                self.params.force[2] + ff[c][2],
-            ],
-            None => self.params.force,
-        };
+        let force = kp.force_at(fields.force_field.as_deref(), c, r);
         let half = T::r(0.5);
         // FR-STRESS-01 rev.4: Pi_force = -(dt/2)(uF + Fu), dt=1, so
         // Pi_neq_corr = Pi_neq_raw - Pi_force = Pi_neq_raw + 0.5(uF + Fu).
