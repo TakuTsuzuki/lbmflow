@@ -98,7 +98,7 @@ fn matrix() -> CapabilityMatrix {
             },
         ],
         collisions: CollisionCapabilities {
-            core: vec!["bgk", "trt", "cumulant"],
+            core: vec!["bgk", "trt", "central_moment"],
             scenario_path: scenario_collision_names(),
         },
         precisions: PrecisionCapabilities {
@@ -131,16 +131,20 @@ fn matrix() -> CapabilityMatrix {
 }
 
 fn scenario_collision_names() -> Vec<&'static str> {
-    [CollisionSpec::Bgk, CollisionSpec::Trt, CollisionSpec::Cumulant]
-        .into_iter()
-        .map(|collision| match collision {
-            CollisionSpec::Bgk => "bgk",
-            CollisionSpec::Trt => "trt",
-            // Honored on the 3D D3Q19 CPU scenario path only; other paths
-            // reject it explicitly (see lbm-scenario CUMULANT_* errors).
-            CollisionSpec::Cumulant => "cumulant",
-        })
-        .collect()
+    [
+        CollisionSpec::Bgk,
+        CollisionSpec::Trt,
+        CollisionSpec::CentralMoment,
+    ]
+    .into_iter()
+    .map(|collision| match collision {
+        CollisionSpec::Bgk => "bgk",
+        CollisionSpec::Trt => "trt",
+        // Honored on the 3D D3Q19 CPU scenario path only; other paths
+        // reject it explicitly.
+        CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => "central_moment",
+    })
+    .collect()
 }
 
 fn print_human(matrix: &CapabilityMatrix) {

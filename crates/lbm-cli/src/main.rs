@@ -253,8 +253,8 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
                                            //   (omitted or 1 = 2D; 3D restrictions at the end)
   "physics": {
     "nu": 0.02,                            // kinematic viscosity (lattice units); tau = 3*nu + 0.5
-    "collision": { "type": "trt" },        // "trt" (recommended) | "bgk" | "cumulant"
-                                           //   cumulant is currently exposed only on 3D D3Q19 CPU
+    "collision": { "type": "trt" },        // "trt" (recommended) | "bgk" | "central_moment"
+                                           //   central_moment is currently exposed only on 3D D3Q19 CPU
     "force": [0.0, 0.0],                   // uniform body force (e.g. gravity; z component 0 in 3D)
     "precision": "f64"                     // "f32" | "f64"
   },
@@ -320,7 +320,7 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
 
 3D (nz > 1) restrictions: single-phase only (no multiphase), init must be rest.
 compute.backend must be cpu/auto in the current CLI runner. Engine is the V2 core (D3Q19).
-Cumulant collision is exposed on this 3D D3Q19 CPU path.
+CentralMoment collision is exposed on this 3D D3Q19 CPU path.
 compute.storage f16 is GPU-storage-only and is rejected for CPU, 3D, and no-gpu-feature builds.
 
 Results: <out>/manifest.json (status/steps/mlups/diagnostics/provenance/warnings/units/file list)

@@ -1,12 +1,11 @@
 //! REV-6 holdout validation for the D3Q19-only cumulant shear-rate correction.
 //!
 //! Calibration provenance:
-//! - `docs/PHYSICS.md` classifies the live correction as a D3Q19 shear-rate
-//!   offset (`+0.0025` relative) plus finite-frame cubic-velocity correction
-//!   `omega_eff = omega_shear * (1 + offset - 0.16 |u|^2)`, calibrated on
-//!   TGV3D.
-//! - CPU implementation sites: `kernels.rs` and `backend_simd.rs` apply the
-//!   constants only when `L::D == 3 && L::Q == 19`.
+//! - `docs/PHYSICS.md` records ANOM-P4-008: the former D3Q19 shear-rate
+//!   offset (`+0.0025` relative) was removed as banned calibration.
+//! - The remaining finite-frame cubic-velocity term is
+//!   `omega_eff = omega_shear * (1 - 0.16 |u|^2)` unless the compile-time
+//!   central-moment ablation flag disables it for E1.
 //!
 //! These tests are adversarial holdouts, not calibration tests. Bands are
 //! derived from the existing T15 second-order decay-rate class or from the
@@ -35,7 +34,7 @@ fn omega_from_nu(nu: f64) -> f64 {
 }
 
 fn cumulant(nu: f64) -> CollisionKind {
-    CollisionKind::Cumulant {
+    CollisionKind::CentralMoment {
         omega_shear: omega_from_nu(nu),
     }
 }

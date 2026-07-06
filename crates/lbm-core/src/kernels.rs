@@ -23,7 +23,7 @@
 
 use crate::fields::LocalGeom;
 use crate::lattice::{Face, Lattice, Q_MAX};
-use crate::params::KParams;
+use crate::params::{KParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION};
 use crate::real::Real;
 
 /// Unsafely shareable mutable view for row-parallel kernels.
@@ -312,7 +312,7 @@ pub(crate) fn solve_moment_system<L: Lattice>(
 
 /// Cascaded central-moment collision with Guo forcing, one row of core cells.
 ///
-/// This is the stage-2 CPU scalar reference for `CollisionKind::Cumulant`.
+/// This is the stage-2 CPU scalar reference for `CollisionKind::CentralMoment`.
 /// It is not a logarithmic cumulant implementation: populations are
 /// transformed to central moments, second-order deviatoric moments relax with
 /// the per-cell shear rate, the second-order trace and all higher-order
@@ -411,9 +411,13 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
         }
 
         let os_base = omega.map_or(p.omega_shear.as_f64(), |v| v[x].as_f64());
-        let usq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-        let d3q19_lattice_viscosity_offset = if L::D == 3 && L::Q == 19 { 0.0025 } else { 0.0 };
-        let os = (os_base * (1.0 + d3q19_lattice_viscosity_offset - 0.16 * usq)).min(2.0);
+        let velocity_correction = if CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
+            0.0
+        } else {
+            let usq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+            -0.16 * usq
+        };
+        let os = (os_base * (1.0 + velocity_correction)).min(2.0);
         let mut post = [0.0f64; Q_MAX];
         let mut diag = [usize::MAX; 3];
         for m in 0..L::Q {
@@ -1075,7 +1079,7 @@ mod tests {
 
     fn cumulant_params<T: Real>() -> KParams<T> {
         let params = StepParams::<T> {
-            collision: CollisionKind::Cumulant { omega_shear: 1.25 },
+            collision: CollisionKind::CentralMoment { omega_shear: 1.25 },
             omega_p: 1.25,
             omega_m: 1.25,
             force: [T::zero(); 3],
@@ -1089,7 +1093,7 @@ mod tests {
     fn collide_cumulant_rest_fixed_point<L: Lattice>() {
         let ncells = 8usize;
         let params = StepParams::<f64> {
-            collision: CollisionKind::Cumulant { omega_shear: 1.25 },
+            collision: CollisionKind::CentralMoment { omega_shear: 1.25 },
             omega_p: 1.25,
             omega_m: 1.25,
             force: [0.0; 3],
@@ -1125,7 +1129,7 @@ mod tests {
     fn cumulant_uniform_velocity_stays_uniform_after_collide() {
         let ncells = 16usize;
         let params = StepParams::<f64> {
-            collision: CollisionKind::Cumulant { omega_shear: 1.1 },
+            collision: CollisionKind::CentralMoment { omega_shear: 1.1 },
             omega_p: 1.1,
             omega_m: 1.1,
             force: [0.0; 3],

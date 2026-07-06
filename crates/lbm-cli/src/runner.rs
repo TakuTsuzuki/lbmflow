@@ -75,10 +75,11 @@ fn provenance(
             magic: Some(lbm_core::params::CollisionKind::MAGIC_STD),
             omega_shear: None,
         },
-        lbm_scenario::CollisionSpec::Cumulant => CollisionProvenance {
-            kind: "cumulant".to_string(),
+        lbm_scenario::CollisionSpec::CentralMoment
+        | lbm_scenario::CollisionSpec::DeprecatedCumulantAlias => CollisionProvenance {
+            kind: "central_moment".to_string(),
             magic: None,
-            omega_shear: Some(lbm_scenario::cumulant_omega_shear(sc.physics.nu)),
+            omega_shear: Some(lbm_scenario::central_moment_omega_shear(sc.physics.nu)),
         },
     };
     Provenance {
@@ -1195,7 +1196,7 @@ mod tests {
                 "grid": { "nx": 10, "ny": 8, "nz": 6 },
                 "physics": {
                     "nu": 0.02,
-                    "collision": { "type": "cumulant" },
+                    "collision": { "type": "central_moment" },
                     "precision": "f64"
                 },
                 "compute": { "backend": "cpu" },
@@ -1218,10 +1219,10 @@ mod tests {
             lbm_scenario::BackendChoice::Cpu
         );
         assert_eq!(manifest.provenance.lattice, "D3Q19");
-        assert_eq!(manifest.provenance.collision.kind, "cumulant");
+        assert_eq!(manifest.provenance.collision.kind, "central_moment");
         assert_eq!(
             manifest.provenance.collision.omega_shear,
-            Some(lbm_scenario::cumulant_omega_shear(sc.physics.nu))
+            Some(lbm_scenario::central_moment_omega_shear(sc.physics.nu))
         );
         assert_eq!(manifest.provenance.precision, lbm_scenario::Precision::F64);
         assert_eq!(manifest.provenance.storage, lbm_scenario::StorageSpec::F32);
@@ -1229,7 +1230,7 @@ mod tests {
         let text = fs::read_to_string(dir.join("manifest.json")).unwrap();
         assert!(text.contains("\"provenance\""), "{text}");
         assert!(text.contains("\"lattice\": \"D3Q19\""), "{text}");
-        assert!(text.contains("\"kind\": \"cumulant\""), "{text}");
+        assert!(text.contains("\"kind\": \"central_moment\""), "{text}");
         fs::remove_dir_all(&dir).ok();
     }
 }

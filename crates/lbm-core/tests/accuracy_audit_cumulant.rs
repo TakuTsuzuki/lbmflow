@@ -138,7 +138,7 @@ fn measure_nu_eff<L: Lattice>(
 }
 
 fn cumulant_for_nu(nu: f64) -> CollisionKind {
-    CollisionKind::Cumulant {
+    CollisionKind::CentralMoment {
         omega_shear: omega_from_nu(nu),
     }
 }

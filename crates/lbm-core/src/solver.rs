@@ -176,8 +176,8 @@ pub enum SpecError {
         /// Offending value.
         magic: f64,
     },
-    /// Cumulant/central-moment shear relaxation must be finite and in range.
-    InvalidCumulantRate {
+    /// Central-moment shear relaxation must be finite and in range.
+    InvalidCentralMomentRate {
         /// Offending value.
         omega_shear: f64,
     },
@@ -307,9 +307,9 @@ impl std::fmt::Display for SpecError {
             SpecError::InvalidMagic { magic } => {
                 write!(f, "TRT magic must be finite and > 0 (got {magic})")
             }
-            SpecError::InvalidCumulantRate { omega_shear } => write!(
+            SpecError::InvalidCentralMomentRate { omega_shear } => write!(
                 f,
-                "cumulant omega_shear must be finite and in (0, 2] (got {omega_shear})"
+                "central_moment omega_shear must be finite and in (0, 2] (got {omega_shear})"
             ),
             SpecError::DomainTooSmall { dims } => write!(
                 f,
@@ -429,9 +429,9 @@ impl<T: Real> GlobalSpec<T> {
                     return Err(SpecError::InvalidMagic { magic });
                 }
             }
-            CollisionKind::Cumulant { omega_shear } => {
+            CollisionKind::CentralMoment { omega_shear } => {
                 if !omega_shear.is_finite() || !(omega_shear > 0.0 && omega_shear <= 2.0) {
-                    return Err(SpecError::InvalidCumulantRate { omega_shear });
+                    return Err(SpecError::InvalidCentralMomentRate { omega_shear });
                 }
             }
             CollisionKind::Bgk => {}
@@ -793,7 +793,7 @@ fn spec_hash<T: Real, L: Lattice>(
             hash_u64(&mut h, 2);
             hash_f64(&mut h, magic);
         }
-        CollisionKind::Cumulant { omega_shear } => {
+        CollisionKind::CentralMoment { omega_shear } => {
             hash_u64(&mut h, 3);
             hash_f64(&mut h, omega_shear);
         }
@@ -2561,10 +2561,9 @@ where
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
-                        let gi =
-                            ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
-                                * self.dims[0]
-                                + (sub.origin[0] + x);
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
                         buf[g.cidx(x, y, z)] = values[gi];
                     }
                 }

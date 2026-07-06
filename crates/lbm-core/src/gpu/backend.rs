@@ -1015,7 +1015,7 @@ impl<L: Lattice> WgpuBackend<L> {
         let collision_code = match p.collision {
             CollisionKind::Bgk => 0u32,
             CollisionKind::Trt { .. } => 1u32,
-            CollisionKind::Cumulant { .. } => 2u32,
+            CollisionKind::CentralMoment { .. } => 2u32,
         };
         let words: [u32; 16] = [
             fields.nx,
@@ -1977,7 +1977,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         let cur = st.cur;
         let cached = st.use_cached_moments_once || has_open_faces::<L>(sub, _p);
         let wale = fields.wale.is_some();
-        let cumulant = matches!(_p.collision, CollisionKind::Cumulant { .. });
+        let cumulant = matches!(_p.collision, CollisionKind::CentralMoment { .. });
         if wale {
             st.ops.push(Op::Moments { bg: cur });
             st.ops.push(Op::WaleOmega { bg: cur });
@@ -2082,7 +2082,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             let cur = st.cur;
             let cached = st.use_cached_moments_once || open_faces.iter().any(|&is_open| is_open);
             let wale = field.wale.is_some();
-            let cumulant = matches!(p.collision, CollisionKind::Cumulant { .. });
+            let cumulant = matches!(p.collision, CollisionKind::CentralMoment { .. });
             if wale {
                 st.ops.push(Op::Moments { bg: cur });
                 st.ops.push(Op::WaleOmega { bg: cur });
@@ -2415,7 +2415,7 @@ mod tests {
         GlobalSpec {
             dims: [n, n, n],
             nu,
-            collision: CollisionKind::Cumulant {
+            collision: CollisionKind::CentralMoment {
                 omega_shear: omega_from_nu(nu),
             },
             periodic: [true, true, true],

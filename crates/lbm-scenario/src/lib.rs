@@ -6,7 +6,8 @@
 
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 mod units;
 pub use units::{
@@ -132,8 +133,8 @@ const GPU_F64_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for 
 const GPU_3D_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for this 3D scenario: unsupported 3D GPU scenario combinations are f64 precision, multiphase, rotor, particles, non-rest init, force probes, and non-f32 storage. Use compute.backend \"cpu\" or simplify the scenario.";
 const GPU_F16_CPU_UNSUPPORTED: &str = "requested compute.storage \"f16\" is unsupported for compute.backend \"cpu\"; f16 distribution storage requires the GPU backend.";
 const GPU_F16_3D_UNSUPPORTED: &str = "requested compute.storage \"f16\" is unsupported for the 3D scenario path: GPU storage selection is currently wired only for 2D D2Q9 GPU scenarios.";
-const CUMULANT_2D_UNSUPPORTED: &str = "requested collision \"cumulant\" is unsupported for the 2D D2Q9 compat scenario path; cumulant is exposed only on the 3D D3Q19 native CPU scenario path.";
-const CUMULANT_GPU2D_UNSUPPORTED: &str = "requested collision \"cumulant\" is unsupported for the 2D D2Q9 GPU scenario path; cumulant scenario exposure is limited to 3D D3Q19 CPU.";
+const CENTRAL_MOMENT_2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 compat scenario path; central_moment is exposed only on the 3D D3Q19 native CPU scenario path.";
+const CENTRAL_MOMENT_GPU2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 GPU scenario path; central_moment scenario exposure is limited to 3D D3Q19 CPU.";
 
 /// Backend selected after applying explicit/auto policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -205,11 +206,11 @@ pub fn strict_capability_error(sc: &Scenario) -> Option<&'static str> {
     if requested_backend(sc) == BackendSpec::Cpu && requested_storage(sc) == StorageSpec::F16 {
         return Some(GPU_F16_CPU_UNSUPPORTED);
     }
-    if !sc.is_3d() && matches!(sc.physics.collision, CollisionSpec::Cumulant) {
+    if !sc.is_3d() && sc.physics.collision.is_central_moment() {
         if selected_backend(sc) == BackendChoice::Gpu {
-            return Some(CUMULANT_GPU2D_UNSUPPORTED);
+            return Some(CENTRAL_MOMENT_GPU2D_UNSUPPORTED);
         }
-        return Some(CUMULANT_2D_UNSUPPORTED);
+        return Some(CENTRAL_MOMENT_2D_UNSUPPORTED);
     }
     None
 }
@@ -234,29 +235,82 @@ pub struct Physics {
     pub precision: Precision,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollisionSpec {
     Bgk,
-    #[default]
-    #[serde(rename_all = "camelCase")]
     Trt,
-    Cumulant,
+    CentralMoment,
+    DeprecatedCumulantAlias,
+}
+
+impl Default for CollisionSpec {
+    fn default() -> Self {
+        Self::Trt
+    }
+}
+
+impl Serialize for CollisionSpec {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut st = serializer.serialize_struct("CollisionSpec", 1)?;
+        let kind = match self {
+            CollisionSpec::Bgk => "bgk",
+            CollisionSpec::Trt => "trt",
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                "central_moment"
+            }
+        };
+        st.serialize_field("type", kind)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CollisionSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Tagged {
+            #[serde(rename = "type")]
+            kind: String,
+        }
+
+        let tagged = Tagged::deserialize(deserializer)?;
+        match tagged.kind.as_str() {
+            "bgk" => Ok(CollisionSpec::Bgk),
+            "trt" => Ok(CollisionSpec::Trt),
+            "central_moment" => Ok(CollisionSpec::CentralMoment),
+            "cumulant" => Ok(CollisionSpec::DeprecatedCumulantAlias),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["bgk", "trt", "central_moment", "cumulant"],
+            )),
+        }
+    }
 }
 
 impl CollisionSpec {
+    pub fn is_central_moment(self) -> bool {
+        matches!(
+            self,
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias
+        )
+    }
+
+    pub fn used_deprecated_cumulant_alias(self) -> bool {
+        matches!(self, CollisionSpec::DeprecatedCumulantAlias)
+    }
+
     pub fn to_core(self) -> Collision {
         match self {
             CollisionSpec::Bgk => Collision::Bgk,
             CollisionSpec::Trt => Collision::default(),
-            CollisionSpec::Cumulant => {
-                panic!("2D compat Collision does not support cumulant")
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                panic!("2D compat Collision does not support central_moment")
             }
         }
     }
 }
 
-pub fn cumulant_omega_shear(nu: f64) -> f64 {
+pub fn central_moment_omega_shear(nu: f64) -> f64 {
     lbm_core::params::CollisionKind::Bgk.omegas(nu).0
 }
 
@@ -573,6 +627,13 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
             message,
         });
     };
+    if sc.physics.collision.used_deprecated_cumulant_alias() {
+        warn(
+            "physics.collision",
+            "collision type \"cumulant\" is deprecated; use canonical type \"central_moment\""
+                .to_string(),
+        );
+    }
     let tau = 3.0 * sc.physics.nu + 0.5;
     if tau < TAU_LOW_WARN_THRESHOLD {
         warn(
@@ -1063,9 +1124,11 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
             CollisionSpec::Trt => CollisionKind::Trt {
                 magic: CollisionKind::MAGIC_STD,
             },
-            CollisionSpec::Cumulant => CollisionKind::Cumulant {
-                omega_shear: cumulant_omega_shear(sc.physics.nu),
-            },
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                CollisionKind::CentralMoment {
+                    omega_shear: central_moment_omega_shear(sc.physics.nu),
+                }
+            }
         },
         periodic,
         faces,
@@ -1482,9 +1545,11 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
             CollisionSpec::Trt => CollisionKind::Trt {
                 magic: CollisionKind::MAGIC_STD,
             },
-            CollisionSpec::Cumulant => CollisionKind::Cumulant {
-                omega_shear: cumulant_omega_shear(sc.physics.nu),
-            },
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                CollisionKind::CentralMoment {
+                    omega_shear: central_moment_omega_shear(sc.physics.nu),
+                }
+            }
         },
         periodic,
         faces,
@@ -2078,13 +2143,13 @@ mod tests {
     }
 
     #[test]
-    fn cumulant_and_f16_schema_roundtrip() {
+    fn central_moment_and_f16_schema_roundtrip() {
         let text = r#"{
             "name": "new-surface",
             "grid": { "nx": 12, "ny": 10, "nz": 8 },
             "physics": {
                 "nu": 0.02,
-                "collision": { "type": "cumulant" },
+                "collision": { "type": "central_moment" },
                 "precision": "f32"
             },
             "compute": { "backend": "gpu", "storage": "f16" },
@@ -2096,33 +2161,66 @@ mod tests {
             "run": { "steps": 1 }
         }"#;
         let sc: Scenario = serde_json::from_str(text).unwrap();
-        assert!(matches!(sc.physics.collision, CollisionSpec::Cumulant));
+        assert!(matches!(sc.physics.collision, CollisionSpec::CentralMoment));
         assert_eq!(requested_storage(&sc), StorageSpec::F16);
         let json = serde_json::to_string(&sc).unwrap();
-        assert!(json.contains("\"type\":\"cumulant\""), "{json}");
+        assert!(json.contains("\"type\":\"central_moment\""), "{json}");
         assert!(json.contains("\"storage\":\"f16\""), "{json}");
         let back: Scenario = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back.physics.collision, CollisionSpec::Cumulant));
+        assert!(matches!(
+            back.physics.collision,
+            CollisionSpec::CentralMoment
+        ));
         assert_eq!(requested_storage(&back), StorageSpec::F16);
     }
 
     #[test]
-    fn unsupported_cumulant_paths_are_rejected_precisely() {
+    fn deprecated_cumulant_alias_maps_to_central_moment_with_warning() {
+        let text = r#"{
+            "name": "old-surface",
+            "grid": { "nx": 12, "ny": 10, "nz": 8 },
+            "physics": {
+                "nu": 0.02,
+                "collision": { "type": "cumulant" }
+            },
+            "edges": {
+                "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+            },
+            "run": { "steps": 1 }
+        }"#;
+        let sc: Scenario = serde_json::from_str(text).unwrap();
+        assert!(sc.physics.collision.is_central_moment());
+        assert!(sc.physics.collision.used_deprecated_cumulant_alias());
+        let warnings = validate(&sc);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.field == "physics.collision" && w.message.contains("deprecated")),
+            "{warnings:?}"
+        );
+        let json = serde_json::to_string(&sc).unwrap();
+        assert!(json.contains("\"type\":\"central_moment\""), "{json}");
+    }
+
+    #[test]
+    fn unsupported_central_moment_paths_are_rejected_precisely() {
         let mut cpu2d = preset("cavity");
-        cpu2d.physics.collision = CollisionSpec::Cumulant;
+        cpu2d.physics.collision = CollisionSpec::CentralMoment;
         let err = build_check(&cpu2d).unwrap_err();
-        assert!(err.contains("cumulant"), "{err}");
+        assert!(err.contains("central_moment"), "{err}");
         assert!(err.contains("2D D2Q9 compat"), "{err}");
 
         let mut gpu2d = preset("cavity");
         gpu2d.physics.precision = Precision::F32;
-        gpu2d.physics.collision = CollisionSpec::Cumulant;
+        gpu2d.physics.collision = CollisionSpec::CentralMoment;
         gpu2d.compute = Some(ComputeSpec {
             backend: BackendSpec::Gpu,
             storage: StorageSpec::F32,
         });
         let err = build_check(&gpu2d).unwrap_err();
-        assert!(err.contains("cumulant"), "{err}");
+        assert!(err.contains("central_moment"), "{err}");
         assert!(err.contains("2D D2Q9 GPU"), "{err}");
     }
 
@@ -2154,14 +2252,14 @@ mod tests {
     }
 
     #[test]
-    fn cumulant_3d_cpu_smoke_uses_core_cumulant_rate() {
+    fn central_moment_3d_cpu_smoke_uses_core_central_moment_rate() {
         let mut sc: Scenario = serde_json::from_str(
             r#"{
-                "name": "cumulant3d-smoke",
+                "name": "central_moment3d-smoke",
                 "grid": { "nx": 4, "ny": 4, "nz": 4 },
                 "physics": {
                     "nu": 0.02,
-                    "collision": { "type": "cumulant" }
+                    "collision": { "type": "central_moment" }
                 },
                 "compute": { "backend": "cpu" },
                 "edges": {
@@ -2173,14 +2271,14 @@ mod tests {
             }"#,
         )
         .unwrap();
-        sc.physics.collision = CollisionSpec::Cumulant;
+        sc.physics.collision = CollisionSpec::CentralMoment;
         match build3d(&sc).unwrap() {
             Sim3Handle::F64(mut s) => {
                 s.run(sc.run.steps);
                 assert_eq!(s.time(), 1);
                 assert!(s.u(2, 2, 2)[0].is_finite());
                 let expected = 1.0 / s.tau();
-                assert_eq!(cumulant_omega_shear(sc.physics.nu), expected);
+                assert_eq!(central_moment_omega_shear(sc.physics.nu), expected);
             }
             _ => panic!("expected f64"),
         }

@@ -43,6 +43,7 @@
 //! Metal compiler's FMA/reassociation, bounded by T14's tolerance.
 
 use crate::lattice::{Face, Lattice};
+use crate::params;
 use std::fmt::Write;
 
 /// Workgroup size of the full-grid kernels (`step`, `moments`).
@@ -378,60 +379,60 @@ fn emit_step_entry<L: Lattice>(
     if central_moment {
         emit_central_moment_collide::<L>(s);
     } else {
-    // Collide (collide_row): equilibria + Guo sources per direction, then
-    // TRT pair relaxation. cu/cf per q with V1's seeded-dot association.
-    *s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
-    *s += "    let uf = ux * fvx + uy * fvy + uz * fvz;\n";
-    *s += "    let drho = rho - 1.0f;\n";
-    if wale_omega {
-        *s += "    let op = omega_out[i];\n";
-        *s += "    let cp = 1.0f - 0.5f * op;\n";
-        *s += "    let om = P.omega_m;\n";
-        *s += "    let cm = P.cm;\n";
-    } else {
-        *s += "    let op = P.omega_p;\n";
-        *s += "    let om = P.omega_m;\n";
-        *s += "    let cp = P.cp;\n";
-        *s += "    let cm = P.cm;\n";
-    }
-    for q in 0..L::Q {
-        let c = L::C[q];
-        let w = lit(L::W[q] as f32);
-        let cu = dot_expr(c, ["ux", "uy", "uz"]);
-        let cf = dot_expr(c, ["fvx", "fvy", "fvz"]);
-        let _ = writeln!(s, "    let cu{q} = {cu};");
-        let _ = writeln!(s, "    let cf{q} = {cf};");
-        let _ = writeln!(
+        // Collide (collide_row): equilibria + Guo sources per direction, then
+        // TRT pair relaxation. cu/cf per q with V1's seeded-dot association.
+        *s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
+        *s += "    let uf = ux * fvx + uy * fvy + uz * fvz;\n";
+        *s += "    let drho = rho - 1.0f;\n";
+        if wale_omega {
+            *s += "    let op = omega_out[i];\n";
+            *s += "    let cp = 1.0f - 0.5f * op;\n";
+            *s += "    let om = P.omega_m;\n";
+            *s += "    let cm = P.cm;\n";
+        } else {
+            *s += "    let op = P.omega_p;\n";
+            *s += "    let om = P.omega_m;\n";
+            *s += "    let cp = P.cp;\n";
+            *s += "    let cm = P.cm;\n";
+        }
+        for q in 0..L::Q {
+            let c = L::C[q];
+            let w = lit(L::W[q] as f32);
+            let cu = dot_expr(c, ["ux", "uy", "uz"]);
+            let cf = dot_expr(c, ["fvx", "fvy", "fvz"]);
+            let _ = writeln!(s, "    let cu{q} = {cu};");
+            let _ = writeln!(s, "    let cf{q} = {cf};");
+            let _ = writeln!(
             s,
             "    let e{q} = {w} * (drho + rho * (3.0f * cu{q} + 4.5f * cu{q} * cu{q} - 1.5f * usq));"
         );
+            let _ = writeln!(
+                s,
+                "    let s{q} = {w} * (3.0f * (cf{q} - uf) + 9.0f * cu{q} * cf{q});"
+            );
+        }
         let _ = writeln!(
             s,
-            "    let s{q} = {w} * (3.0f * (cf{q} - uf) + 9.0f * cu{q} * cf{q});"
+            "    let fc{rest} = fq{rest} - op * (fq{rest} - e{rest}) + cp * s{rest};"
         );
-    }
-    let _ = writeln!(
-        s,
-        "    let fc{rest} = fq{rest} - op * (fq{rest} - e{rest}) + cp * s{rest};"
-    );
-    for &(a, b) in L::PAIRS {
-        let _ = writeln!(s, "    let fp{a} = 0.5f * (fq{a} + fq{b});");
-        let _ = writeln!(s, "    let fm{a} = 0.5f * (fq{a} - fq{b});");
-        let _ = writeln!(s, "    let ep{a} = 0.5f * (e{a} + e{b});");
-        let _ = writeln!(s, "    let em{a} = 0.5f * (e{a} - e{b});");
-        let _ = writeln!(s, "    let sp{a} = 0.5f * (s{a} + s{b});");
-        let _ = writeln!(s, "    let sm{a} = 0.5f * (s{a} - s{b});");
-        let _ = writeln!(s, "    let rp{a} = op * (fp{a} - ep{a});");
-        let _ = writeln!(s, "    let rm{a} = om * (fm{a} - em{a});");
-        let _ = writeln!(
-            s,
-            "    let fc{a} = fq{a} - rp{a} - rm{a} + cp * sp{a} + cm * sm{a};"
-        );
-        let _ = writeln!(
-            s,
-            "    let fc{b} = fq{b} - rp{a} + rm{a} + cp * sp{a} - cm * sm{a};"
-        );
-    }
+        for &(a, b) in L::PAIRS {
+            let _ = writeln!(s, "    let fp{a} = 0.5f * (fq{a} + fq{b});");
+            let _ = writeln!(s, "    let fm{a} = 0.5f * (fq{a} - fq{b});");
+            let _ = writeln!(s, "    let ep{a} = 0.5f * (e{a} + e{b});");
+            let _ = writeln!(s, "    let em{a} = 0.5f * (e{a} - e{b});");
+            let _ = writeln!(s, "    let sp{a} = 0.5f * (s{a} + s{b});");
+            let _ = writeln!(s, "    let sm{a} = 0.5f * (s{a} - s{b});");
+            let _ = writeln!(s, "    let rp{a} = op * (fp{a} - ep{a});");
+            let _ = writeln!(s, "    let rm{a} = om * (fm{a} - em{a});");
+            let _ = writeln!(
+                s,
+                "    let fc{a} = fq{a} - rp{a} - rm{a} + cp * sp{a} + cm * sm{a};"
+            );
+            let _ = writeln!(
+                s,
+                "    let fc{b} = fq{b} - rp{a} + rm{a} + cp * sp{a} - cm * sm{a};"
+            );
+        }
     }
     // Push (stream_row's scatter dual). Rest population stays home.
     let _ = writeln!(
@@ -625,15 +626,20 @@ fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
             let _ = writeln!(s, "    eq[{m}] += ({phi}) * feq_phys[{q}];");
         }
     }
-    let offset = if L::D == 3 && L::Q == 19 { "0.0025f" } else { "0.0f" };
     if L::D == 3 {
-        *s += "    let os_base = select(P.omega_shear, omega_out[i], (P.flags & FLAG_WALE) != 0u);\n";
+        *s +=
+            "    let os_base = select(P.omega_shear, omega_out[i], (P.flags & FLAG_WALE) != 0u);\n";
     } else {
         *s += "    let os_base = P.omega_shear;\n";
     }
+    let velocity_correction = if params::CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
+        "0.0f"
+    } else {
+        "-0.16f * usq"
+    };
     let _ = writeln!(
         s,
-        "    let os = min(2.0f, os_base * (1.0f + {offset} - 0.16f * usq));"
+        "    let os = min(2.0f, os_base * (1.0f + {velocity_correction}));"
     );
     let _ = writeln!(s, "    var post: array<f32, {n}>;");
     for (m, e) in basis.iter().enumerate() {
@@ -688,19 +694,34 @@ fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
         }
         let _ = writeln!(s, "    a[{m}][{n}] = post[{m}];");
     }
-    let _ = writeln!(s, "    for (var col: u32 = 0u; col < {n}u; col = col + 1u) {{");
+    let _ = writeln!(
+        s,
+        "    for (var col: u32 = 0u; col < {n}u; col = col + 1u) {{"
+    );
     *s += "        var pivot = col;\n";
-    let _ = writeln!(s, "        for (var row: u32 = col + 1u; row < {n}u; row = row + 1u) {{");
+    let _ = writeln!(
+        s,
+        "        for (var row: u32 = col + 1u; row < {n}u; row = row + 1u) {{"
+    );
     *s += "            if (abs(a[row][col]) > abs(a[pivot][col])) { pivot = row; }\n";
     *s += "        }\n";
     *s += "        if (pivot != col) {\n";
-    let _ = writeln!(s, "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{");
+    let _ = writeln!(
+        s,
+        "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{"
+    );
     *s += "                let tmp = a[col][j]; a[col][j] = a[pivot][j]; a[pivot][j] = tmp;\n";
     *s += "            }\n";
     *s += "        }\n";
     *s += "        let inv = 1.0f / a[col][col];\n";
-    let _ = writeln!(s, "        for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[col][j] = a[col][j] * inv; }}");
-    let _ = writeln!(s, "        for (var row: u32 = 0u; row < {n}u; row = row + 1u) {{");
+    let _ = writeln!(
+        s,
+        "        for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[col][j] = a[col][j] * inv; }}"
+    );
+    let _ = writeln!(
+        s,
+        "        for (var row: u32 = 0u; row < {n}u; row = row + 1u) {{"
+    );
     *s += "            if (row == col) { continue; }\n";
     *s += "            let factor = a[row][col];\n";
     let _ = writeln!(s, "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[row][j] = a[row][j] - factor * a[col][j]; }}");
