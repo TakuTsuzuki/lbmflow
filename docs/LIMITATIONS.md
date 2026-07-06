@@ -34,7 +34,7 @@ promises.
 | Area | Current limitation | Evidence |
 |---|---|---|
 | Coupling model | Particles are one-way Lagrangian particles. They feel sampled velocity, buoyancy-reduced gravity, and Schiller-Naumann drag, but they do not apply reaction forces to the fluid. Two-way/four-way coupling, Saffman, Basset, Faxen, collision models, and stochastic LES dispersion are not implemented. | `crates/lbm-core/src/particles.rs:1-15` |
-| Schiller-Naumann range | The implementation asserts in debug when `Re_p >= 800`, then clamps the Reynolds number used by the drag correction to 800 in all builds. | `crates/lbm-core/src/particles.rs:198-206` |
+| Schiller-Naumann range | Drag correction is valid for `Re_p <= 800`; exceeding it returns a `ParticleError` (particle index + offending Re) — runs do not silently continue outside the correlation's validity domain. | `crates/lbm-core/src/particles.rs` (`SCHILLER_NAUMANN_RE_MAX`), PHYSICS.md 2026-07-07 entry |
 | Near-wall sampling | `sample_grid` clamps sample positions to grid bounds, uses solid-neighbor velocity as zero, and returns the solid flag of the clamped lower node. Near-wall and out-of-domain particle samples therefore need interpretation as clamped grid samples, not extrapolated wall-resolved velocities. | `crates/lbm-core/src/particles.rs:276-285`, `crates/lbm-core/src/particles.rs:302-321`, `crates/lbm-core/src/particles.rs:324-331` |
 
 ## 5. LES
