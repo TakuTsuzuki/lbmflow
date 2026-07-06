@@ -66,6 +66,7 @@ pub(crate) const FLAG_FORCE_FIELD: u32 = 64;
 pub(crate) const FLAG_PROBE: u32 = 128;
 pub(crate) const FLAG_OPEN_FACE: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 pub(crate) const FLAG_CACHED_MOMENTS: u32 = 16_384;
+pub(crate) const FLAG_WALE: u32 = 32_768;
 
 /// BC kind codes of `BcParams.kind` (0 = inactive face).
 pub(crate) const BC_VELOCITY: u32 = 1;
@@ -359,6 +360,7 @@ fn emit_step_entry<L: Lattice>(
     s: &mut String,
     name: &str,
     allow_cached_moments: bool,
+    wale_omega: bool,
     storage: Storage,
 ) {
     let (wgx, wgy) = WG;
@@ -376,10 +378,17 @@ fn emit_step_entry<L: Lattice>(
     *s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
     *s += "    let uf = ux * fvx + uy * fvy + uz * fvz;\n";
     *s += "    let drho = rho - 1.0f;\n";
-    *s += "    let op = P.omega_p;\n";
-    *s += "    let om = P.omega_m;\n";
-    *s += "    let cp = P.cp;\n";
-    *s += "    let cm = P.cm;\n";
+    if wale_omega {
+        *s += "    let op = omega_out[i];\n";
+        *s += "    let cp = 1.0f - 0.5f * op;\n";
+        *s += "    let om = P.omega_m;\n";
+        *s += "    let cm = P.cm;\n";
+    } else {
+        *s += "    let op = P.omega_p;\n";
+        *s += "    let om = P.omega_m;\n";
+        *s += "    let cp = P.cp;\n";
+        *s += "    let cm = P.cm;\n";
+    }
     for q in 0..L::Q {
         let c = L::C[q];
         let w = lit(L::W[q] as f32);
@@ -600,6 +609,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "@group(0) @binding(10) var<storage, read_write> ux_out: array<f32>;\n";
     s += "@group(0) @binding(11) var<storage, read_write> uy_out: array<f32>;\n";
     s += "@group(0) @binding(14) var<storage, read_write> uz_out: array<f32>;\n";
+    s += "@group(0) @binding(15) var<storage, read_write> omega_out: array<f32>;\n";
     s += "@group(0) @binding(12) var<uniform> B: BcParams;\n";
     s += "@group(0) @binding(13) var<storage, read> profile: array<vec3<f32>>;\n\n";
     let _ = writeln!(s, "const FLAG_FF: u32 = {FLAG_FORCE_FIELD}u;");
@@ -618,8 +628,10 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "}\n\n";
 
     // ------------------------------------------------------------- step
-    emit_step_entry::<L>(&mut s, "step", false, storage);
-    emit_step_entry::<L>(&mut s, "step_cached", true, storage);
+    emit_step_entry::<L>(&mut s, "step", false, false, storage);
+    emit_step_entry::<L>(&mut s, "step_cached", true, false, storage);
+    emit_step_entry::<L>(&mut s, "step_wale", false, true, storage);
+    emit_step_entry::<L>(&mut s, "step_cached_wale", true, true, storage);
 
     // ---------------------------------------------------------- moments
     let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
@@ -629,6 +641,190 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "    ux_out[i] = ux;\n";
     s += "    uy_out[i] = uy;\n";
     s += "    uz_out[i] = uz;\n";
+    s += "}\n\n";
+
+    // ---------------------------------------------------------- wale_omega
+    s += "struct CellVel { v: vec3<f32>, solid: bool, valid: bool }\n\n";
+    s += "fn cell_vel(j: u32) -> CellVel {\n";
+    s += "    if ((mask[j] & 1u) != 0u) { return CellVel(wall_u[j].xyz, true, true); }\n";
+    s += "    return CellVel(vec3<f32>(ux_out[j], uy_out[j], uz_out[j]), false, true);\n";
+    s += "}\n\n";
+    s += "fn neighbor_vel(x: u32, y: u32, z: u32, axis: u32, positive: bool) -> CellVel {\n";
+    s += "    var p = vec3<i32>(i32(x), i32(y), i32(z));\n";
+    s += "    let dims = vec3<i32>(i32(P.nx), i32(P.ny), i32(P.nz));\n";
+    s += "    let da = select(-1, 1, positive);\n";
+    s += "    p[axis] = p[axis] + da;\n";
+    s += "    if (p[axis] < 0 || p[axis] >= dims[axis]) {\n";
+    s += "        var periodic = false;\n";
+    s += "        if (axis == 0u) { periodic = ((P.flags & 1u) != 0u) || ((P.flags & 2u) != 0u); }\n";
+    s += "        if (axis == 1u) { periodic = ((P.flags & 4u) != 0u) || ((P.flags & 8u) != 0u); }\n";
+    s += "        if (axis == 2u) { periodic = ((P.flags & 16u) != 0u) || ((P.flags & 32u) != 0u); }\n";
+    s += "        if (!periodic) { return CellVel(vec3<f32>(0.0f), false, false); }\n";
+    s += "        p[axis] = (p[axis] + dims[axis]) % dims[axis];\n";
+    s += "    }\n";
+    s += "    let j = u32(p.z) * P.nx * P.ny + u32(p.y) * P.nx + u32(p.x);\n";
+    s += "    return cell_vel(j);\n";
+    s += "}\n\n";
+    s += "fn fd_comp(own: f32, plus: CellVel, minus: CellVel, comp: u32) -> f32 {\n";
+    s += "    if (plus.valid && !plus.solid && minus.valid && !minus.solid) { return 0.5f * (plus.v[comp] - minus.v[comp]); }\n";
+    s += "    if (plus.valid && !plus.solid && minus.valid && minus.solid) { return -1.3333333333333333f * minus.v[comp] + own + 0.3333333333333333f * plus.v[comp]; }\n";
+    s += "    if (plus.valid && plus.solid && minus.valid && !minus.solid) { return 1.3333333333333333f * plus.v[comp] - own - 0.3333333333333333f * minus.v[comp]; }\n";
+    s += "    if (plus.valid && !plus.solid && !minus.valid) { return plus.v[comp] - own; }\n";
+    s += "    if (!plus.valid && minus.valid && !minus.solid) { return own - minus.v[comp]; }\n";
+    s += "    return 0.0f;\n";
+    s += "}\n\n";
+    let _ = writeln!(s, "@compute @workgroup_size({wgx}, {wgy}, 1)");
+    s += "fn wale_omega(@builtin(global_invocation_id) gid: vec3<u32>) {\n";
+    s += "    let nx = P.nx;\n";
+    s += "    let ny = P.ny;\n";
+    s += "    let nz = P.nz;\n";
+    s += "    let x = gid.x;\n";
+    s += "    let y = gid.y;\n";
+    s += "    let z = gid.z;\n";
+    s += "    if (x >= nx || y >= ny || z >= nz) { return; }\n";
+    s += "    let xy = nx * ny;\n";
+    s += "    let n = xy * nz;\n";
+    s += "    let i = z * xy + y * nx + x;\n";
+    s += "    let base_omega = P.omega_p;\n";
+    s += "    if ((mask[i] & 1u) != 0u) { omega_out[i] = base_omega; return; }\n";
+    s += "    let rho = rho_out[i];\n";
+    s += "    let ux = ux_out[i];\n";
+    s += "    let uy = uy_out[i];\n";
+    s += "    let uz = uz_out[i];\n";
+    s += "    var fvx = P.fx;\n";
+    s += "    var fvy = P.fy;\n";
+    s += "    var fvz = P.fz;\n";
+    s += "    if ((P.flags & FLAG_FF) != 0u) {\n";
+    s += "        let ffv = force_field[i];\n";
+    s += "        fvx = fvx + ffv.x;\n";
+    s += "        fvy = fvy + ffv.y;\n";
+    s += "        fvz = fvz + ffv.z;\n";
+    s += "    }\n";
+    s += "    let usq = ux * ux + uy * uy + uz * uz;\n";
+    s += "    let drho = rho - 1.0f;\n";
+    s += "    var pxx = 0.0f;\n";
+    s += "    var pyy = 0.0f;\n";
+    s += "    var pzz = 0.0f;\n";
+    s += "    var pxy = 0.0f;\n";
+    s += "    var pxz = 0.0f;\n";
+    s += "    var pyz = 0.0f;\n";
+    for q in 0..L::Q {
+        let c = L::C[q];
+        let w = lit(L::W[q] as f32);
+        let cu = dot_expr(c, ["ux", "uy", "uz"]);
+        let _ = writeln!(s, "    let wq{q} = {w};");
+        let _ = writeln!(s, "    let cuw{q} = {cu};");
+        let _ = writeln!(
+            s,
+            "    let feq_w{q} = wq{q} * (drho + rho * (3.0f * cuw{q} + 4.5f * cuw{q} * cuw{q} - 1.5f * usq));"
+        );
+        let _ = writeln!(
+            s,
+            "    let fnq{q} = {} - feq_w{q};",
+            storage_load(storage, &format!("f_in[{q}u * n + i]"))
+        );
+        if c[0] != 0 {
+            let _ = writeln!(s, "    pxx = pxx + fnq{q};");
+        }
+        if c[1] != 0 {
+            let _ = writeln!(s, "    pyy = pyy + fnq{q};");
+        }
+        if c[2] != 0 {
+            let _ = writeln!(s, "    pzz = pzz + fnq{q};");
+        }
+        match c[0] * c[1] {
+            1 => {
+                let _ = writeln!(s, "    pxy = pxy + fnq{q};");
+            }
+            -1 => {
+                let _ = writeln!(s, "    pxy = pxy - fnq{q};");
+            }
+            _ => {}
+        }
+        match c[0] * c[2] {
+            1 => {
+                let _ = writeln!(s, "    pxz = pxz + fnq{q};");
+            }
+            -1 => {
+                let _ = writeln!(s, "    pxz = pxz - fnq{q};");
+            }
+            _ => {}
+        }
+        match c[1] * c[2] {
+            1 => {
+                let _ = writeln!(s, "    pyz = pyz + fnq{q};");
+            }
+            -1 => {
+                let _ = writeln!(s, "    pyz = pyz - fnq{q};");
+            }
+            _ => {}
+        }
+    }
+    s += "    pxx = pxx + ux * fvx;\n";
+    s += "    pyy = pyy + uy * fvy;\n";
+    s += "    pzz = pzz + uz * fvz;\n";
+    s += "    pxy = pxy + 0.5f * (ux * fvy + uy * fvx);\n";
+    s += "    pxz = pxz + 0.5f * (ux * fvz + uz * fvx);\n";
+    s += "    pyz = pyz + 0.5f * (uy * fvz + uz * fvy);\n";
+    s += "    let stress_scale = -1.5f * P.omega_p / rho;\n";
+    s += "    var sxx = pxx * stress_scale;\n";
+    s += "    var syy = pyy * stress_scale;\n";
+    s += "    var szz = pzz * stress_scale;\n";
+    s += "    var sxy = pxy * stress_scale;\n";
+    s += "    var sxz = pxz * stress_scale;\n";
+    s += "    var syz = pyz * stress_scale;\n";
+    if L::D == 2 {
+        s += "    szz = 0.0f; sxz = 0.0f; syz = 0.0f;\n";
+    }
+    s += "    let own = vec3<f32>(ux, uy, uz);\n";
+    s += "    let xp = neighbor_vel(x, y, z, 0u, true);\n";
+    s += "    let xm = neighbor_vel(x, y, z, 0u, false);\n";
+    s += "    let yp = neighbor_vel(x, y, z, 1u, true);\n";
+    s += "    let ym = neighbor_vel(x, y, z, 1u, false);\n";
+    s += "    let zp = neighbor_vel(x, y, z, 2u, true);\n";
+    s += "    let zm = neighbor_vel(x, y, z, 2u, false);\n";
+    s += "    let f00 = fd_comp(own.x, xp, xm, 0u);\n";
+    s += "    let f01 = fd_comp(own.x, yp, ym, 0u);\n";
+    s += "    let f02 = fd_comp(own.x, zp, zm, 0u);\n";
+    s += "    let f10 = fd_comp(own.y, xp, xm, 1u);\n";
+    s += "    let f11 = fd_comp(own.y, yp, ym, 1u);\n";
+    s += "    let f12 = fd_comp(own.y, zp, zm, 1u);\n";
+    s += "    let f20 = fd_comp(own.z, xp, xm, 2u);\n";
+    s += "    let f21 = fd_comp(own.z, yp, ym, 2u);\n";
+    s += "    let f22 = fd_comp(own.z, zp, zm, 2u);\n";
+    s += "    let g00 = f00;\n";
+    s += "    let g11 = f11;\n";
+    s += "    let g22 = f22;\n";
+    s += "    let g01 = sxy + 0.5f * (f01 - f10);\n";
+    s += "    let g10 = sxy + 0.5f * (f10 - f01);\n";
+    s += "    let g02 = sxz + 0.5f * (f02 - f20);\n";
+    s += "    let g20 = sxz + 0.5f * (f20 - f02);\n";
+    s += "    let g12 = syz + 0.5f * (f12 - f21);\n";
+    s += "    let g21 = syz + 0.5f * (f21 - f12);\n";
+    s += "    let ss = g00 * g00 + g11 * g11 + g22 * g22 + 2.0f * (sxy * sxy + sxz * sxz + syz * syz);\n";
+    s += "    let g200 = g00 * g00 + g01 * g10 + g02 * g20;\n";
+    s += "    let g201 = g00 * g01 + g01 * g11 + g02 * g21;\n";
+    s += "    let g202 = g00 * g02 + g01 * g12 + g02 * g22;\n";
+    s += "    let g210 = g10 * g00 + g11 * g10 + g12 * g20;\n";
+    s += "    let g211 = g10 * g01 + g11 * g11 + g12 * g21;\n";
+    s += "    let g212 = g10 * g02 + g11 * g12 + g12 * g22;\n";
+    s += "    let g220 = g20 * g00 + g21 * g10 + g22 * g20;\n";
+    s += "    let g221 = g20 * g01 + g21 * g11 + g22 * g21;\n";
+    s += "    let g222 = g20 * g02 + g21 * g12 + g22 * g22;\n";
+    s += "    let tr = g200 + g211 + g222;\n";
+    s += "    let sd00 = g200 - tr / 3.0f;\n";
+    s += "    let sd11 = g211 - tr / 3.0f;\n";
+    s += "    let sd22 = g222 - tr / 3.0f;\n";
+    s += "    let sd01 = 0.5f * (g201 + g210);\n";
+    s += "    let sd02 = 0.5f * (g202 + g220);\n";
+    s += "    let sd12 = 0.5f * (g212 + g221);\n";
+    s += "    let sdsd = sd00 * sd00 + sd11 * sd11 + sd22 * sd22 + 2.0f * (sd01 * sd01 + sd02 * sd02 + sd12 * sd12);\n";
+    s += "    let denom = pow(ss, 2.5f) + pow(sdsd, 1.25f);\n";
+    s += "    var nut = 0.0f;\n";
+    s += "    if (denom <= 1.0e-30f) { omega_out[i] = base_omega; return; }\n";
+    s += "    nut = 0.105625f * pow(sdsd, 1.5f) / denom;\n";
+    s += "    let nu0 = (1.0f / base_omega - 0.5f) / 3.0f;\n";
+    s += "    omega_out[i] = 1.0f / (3.0f * (nu0 + nut) + 0.5f);\n";
     s += "}\n\n";
 
     // --------------------------------------------- open-face moment fixup

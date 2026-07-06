@@ -2074,6 +2074,10 @@ where
     pub fn backend_fields(&self, i: usize) -> &B::Fields {
         &self.parts[i]
     }
+    /// Mutable backend-owned fields of part `i` for backend-specific shims.
+    pub fn backend_fields_mut(&mut self, i: usize) -> &mut B::Fields {
+        &mut self.parts[i]
+    }
     /// Subdomain descriptor `i`.
     pub fn sub(&self, i: usize) -> &Subdomain {
         &self.subs[i]

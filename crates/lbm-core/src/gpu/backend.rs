@@ -487,6 +487,9 @@ impl GpuContext {
 struct Pipelines {
     step: wgpu::ComputePipeline,
     step_cached: wgpu::ComputePipeline,
+    step_wale: wgpu::ComputePipeline,
+    step_cached_wale: wgpu::ComputePipeline,
+    wale_omega: wgpu::ComputePipeline,
     moments: wgpu::ComputePipeline,
     bc: wgpu::ComputePipeline,
     clear_probe: wgpu::ComputePipeline,
@@ -500,6 +503,11 @@ enum Op {
     Fused {
         bg: usize,
         cached: bool,
+        wale: bool,
+    },
+    /// WALE omega refresh from pre-step moments and populations.
+    WaleOmega {
+        bg: usize,
     },
     /// Open-face BC on `face`, operating on buffer parity `bg`.
     Bc {
@@ -534,6 +542,13 @@ struct StagingBuffer {
     size: u64,
 }
 
+struct WaleBuffers {
+    omega: wgpu::Buffer,
+    fused_bg: [wgpu::BindGroup; 2],
+    fused_cached_bg: [wgpu::BindGroup; 2],
+    wale_bg: [wgpu::BindGroup; 2],
+}
+
 /// Device-resident fields of one (monolithic) subdomain.
 pub struct GpuFields {
     nx: u32,
@@ -562,6 +577,7 @@ pub struct GpuFields {
     moments_bg: [wgpu::BindGroup; 2],
     bc_bg: [[wgpu::BindGroup; 2]; 6],
     clear_bg: wgpu::BindGroup,
+    wale: Option<WaleBuffers>,
     state: RefCell<RecState>,
     // Host-side copies for `reduce` (set by the upload path).
     pub(crate) host_solid: Vec<bool>,
@@ -637,6 +653,9 @@ impl<L: Lattice> WgpuBackend<L> {
         let pipelines = Arc::new(Pipelines {
             step: mk("step"),
             step_cached: mk("step_cached"),
+            step_wale: mk("step_wale"),
+            step_cached_wale: mk("step_cached_wale"),
+            wale_omega: mk("wale_omega"),
             moments: mk("moments"),
             bc: mk("bc"),
             clear_probe: mk("clear_probe"),
@@ -731,18 +750,39 @@ impl<L: Lattice> WgpuBackend<L> {
                         pass.set_bind_group(0, &fields.clear_bg, &[]);
                         pass.dispatch_workgroups(1, 1, 1);
                     }
-                    Op::Fused { bg, cached } => {
-                        pass.set_pipeline(if cached {
-                            &self.pipelines.step_cached
+                    Op::Fused { bg, cached, wale } => {
+                        if wale {
+                            let wb = fields.wale.as_ref().expect("WALE op without WALE buffers");
+                            pass.set_pipeline(if cached {
+                                &self.pipelines.step_cached_wale
+                            } else {
+                                &self.pipelines.step_wale
+                            });
+                            let bind_group = if cached {
+                                &wb.fused_cached_bg[bg]
+                            } else {
+                                &wb.fused_bg[bg]
+                            };
+                            pass.set_bind_group(0, bind_group, &[]);
                         } else {
-                            &self.pipelines.step
-                        });
-                        let bind_group = if cached {
-                            &fields.fused_cached_bg[bg]
-                        } else {
-                            &fields.fused_bg[bg]
-                        };
-                        pass.set_bind_group(0, bind_group, &[]);
+                            pass.set_pipeline(if cached {
+                                &self.pipelines.step_cached
+                            } else {
+                                &self.pipelines.step
+                            });
+                            let bind_group = if cached {
+                                &fields.fused_cached_bg[bg]
+                            } else {
+                                &fields.fused_bg[bg]
+                            };
+                            pass.set_bind_group(0, bind_group, &[]);
+                        }
+                        pass.dispatch_workgroups(gx, gy, gz);
+                    }
+                    Op::WaleOmega { bg } => {
+                        let wb = fields.wale.as_ref().expect("WALE op without WALE buffers");
+                        pass.set_pipeline(&self.pipelines.wale_omega);
+                        pass.set_bind_group(0, &wb.wale_bg[bg], &[]);
                         pass.dispatch_workgroups(gx, gy, gz);
                     }
                     Op::Bc { face, bg } => {
@@ -918,6 +958,9 @@ impl<L: Lattice> WgpuBackend<L> {
                 }
                 if use_cached_moments {
                     flags |= wgsl::FLAG_CACHED_MOMENTS;
+                }
+                if fields.wale.is_some() {
+                    flags |= wgsl::FLAG_WALE;
                 }
                 for face in Face::ALL {
                     if face.axis() >= L::D {
@@ -1231,6 +1274,124 @@ impl<L: Lattice> WgpuBackend<L> {
                 })
             })
         });
+        if fields.wale.is_some() {
+            let omega = fields
+                .wale
+                .as_ref()
+                .expect("WALE buffer exists")
+                .omega
+                .clone();
+            fields.wale = Some(self.create_wale_bind_groups(fields, &omega));
+        }
+    }
+
+    fn create_wale_bind_groups(&self, fields: &GpuFields, omega: &wgpu::Buffer) -> WaleBuffers {
+        fn e(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: b.as_entire_binding(),
+            }
+        }
+        let device = &self.ctx.device;
+        let step_layout = self.pipelines.step_wale.get_bind_group_layout(0);
+        let step_cached_layout = self.pipelines.step_cached_wale.get_bind_group_layout(0);
+        let fused_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fused-wale"),
+                layout: &step_layout,
+                entries: &[
+                    e(0, &fields.params_ub),
+                    e(1, &fields.f[p]),
+                    e(2, &fields.f[1 - p]),
+                    e(3, &fields.mask),
+                    e(4, &fields.wall_u),
+                    e(5, &fields.force_field),
+                    e(6, &fields.stash[p]),
+                    e(7, &fields.stash[1 - p]),
+                    e(8, &fields.probe_acc),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
+                    e(14, &fields.uz),
+                    e(15, omega),
+                ],
+            })
+        });
+        let fused_cached_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fused-cached-wale"),
+                layout: &step_cached_layout,
+                entries: &[
+                    e(0, &fields.params_ub),
+                    e(1, &fields.f[p]),
+                    e(2, &fields.f[1 - p]),
+                    e(3, &fields.mask),
+                    e(4, &fields.wall_u),
+                    e(5, &fields.force_field),
+                    e(6, &fields.stash[p]),
+                    e(7, &fields.stash[1 - p]),
+                    e(8, &fields.probe_acc),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
+                    e(14, &fields.uz),
+                    e(15, omega),
+                ],
+            })
+        });
+        let wale_layout = self.pipelines.wale_omega.get_bind_group_layout(0);
+        let wale_bg = [0usize, 1].map(|p| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wale-omega"),
+                layout: &wale_layout,
+                entries: &[
+                    e(0, &fields.params_ub),
+                    e(1, &fields.f[p]),
+                    e(3, &fields.mask),
+                    e(4, &fields.wall_u),
+                    e(5, &fields.force_field),
+                    e(9, &fields.rho),
+                    e(10, &fields.ux),
+                    e(11, &fields.uy),
+                    e(14, &fields.uz),
+                    e(15, omega),
+                ],
+            })
+        });
+        WaleBuffers {
+            omega: omega.clone(),
+            fused_bg,
+            fused_cached_bg,
+            wale_bg,
+        }
+    }
+
+    /// Enable or disable on-device WALE omega generation for these fields.
+    pub fn set_wale_enabled(&self, fields: &mut GpuFields, enabled: bool, base_omega: f32) {
+        self.flush(fields);
+        if enabled {
+            if fields.wale.is_none() {
+                let omega = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("wale_omega"),
+                    size: ((fields.n * 4) as u64).max(8),
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                self.ctx.queue.write_buffer(
+                    &omega,
+                    0,
+                    bytemuck::cast_slice(&vec![base_omega; fields.n]),
+                );
+                fields.wale = Some(self.create_wale_bind_groups(fields, &omega));
+            }
+        } else {
+            fields.wale = None;
+        }
+        let mut st = fields.state.borrow_mut();
+        st.params_words = None;
+        st.f_cache = None;
     }
 
     /// Upload host-staged fields (populations, masks, moments, profiles)
@@ -1610,6 +1771,7 @@ impl<L: Lattice> WgpuBackend<L> {
             moments_bg,
             bc_bg,
             clear_bg,
+            wale: None,
             state: RefCell::new(RecState {
                 cur: 0,
                 ops: Vec::new(),
@@ -1715,7 +1877,16 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         }
         let cur = st.cur;
         let cached = st.use_cached_moments_once || has_open_faces::<L>(sub, _p);
-        st.ops.push(Op::Fused { bg: cur, cached });
+        let wale = fields.wale.is_some();
+        if wale {
+            st.ops.push(Op::Moments { bg: cur });
+            st.ops.push(Op::WaleOmega { bg: cur });
+        }
+        st.ops.push(Op::Fused {
+            bg: cur,
+            cached,
+            wale,
+        });
         st.generation += 1;
         st.f_cache = None;
         // The probe force accumulates on-device; explicit readback via
@@ -1806,7 +1977,16 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             }
             let cur = st.cur;
             let cached = st.use_cached_moments_once || open_faces.iter().any(|&is_open| is_open);
-            st.ops.push(Op::Fused { bg: cur, cached });
+            let wale = field.wale.is_some();
+            if wale {
+                st.ops.push(Op::Moments { bg: cur });
+                st.ops.push(Op::WaleOmega { bg: cur });
+            }
+            st.ops.push(Op::Fused {
+                bg: cur,
+                cached,
+                wale,
+            });
             st.generation += 1;
             st.f_cache = None;
             st.cur ^= 1;
@@ -1960,6 +2140,33 @@ impl<L: Lattice> WgpuBackend<L> {
         Ok(())
     }
 
+    /// Read the current WALE omega field. If WALE is disabled, returns the
+    /// uniform base relaxation field for diagnostics.
+    pub fn try_read_wale_omega(
+        &self,
+        fields: &GpuFields,
+        base_omega: f32,
+    ) -> Result<Vec<f32>, GpuError> {
+        self.try_flush(fields)?;
+        let Some(wale) = &fields.wale else {
+            return Ok(vec![base_omega; fields.n]);
+        };
+        let bytes = (fields.n * 4) as u64;
+        self.ensure_staging(fields, bytes);
+        let staging_ref = fields.staging.borrow();
+        let staging = &staging_ref.as_ref().expect("staging buffer exists").buffer;
+        let mut enc = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("read-wale-omega"),
+            });
+        enc.copy_buffer_to_buffer(&wale.omega, 0, staging, 0, bytes);
+        self.submit(enc.finish());
+        let raw = self.map_staging(staging, bytes)?;
+        Ok(bytemuck::cast_slice(&raw).to_vec())
+    }
+
     /// Read populations, moments, and probe force through one copy encoder
     /// and one staging-buffer map for `GpuSolver::sync`.
     pub fn try_read_sync(
@@ -2000,10 +2207,7 @@ impl<L: Lattice> WgpuBackend<L> {
         let raw = self.map_staging(staging, bytes)?;
 
         let f_count = L::Q * n;
-        let f = Arc::new(decode_storage(
-            self.cfg.storage,
-            &raw[..fbytes as usize],
-        ));
+        let f = Arc::new(decode_storage(self.cfg.storage, &raw[..fbytes as usize]));
         let moments: &[f32] =
             bytemuck::cast_slice(&raw[moments_offset as usize..probe_offset as usize]);
         out.rho.clear();

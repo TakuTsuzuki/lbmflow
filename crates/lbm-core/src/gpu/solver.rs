@@ -56,6 +56,20 @@ impl<L: Lattice> GpuSolver<L> {
         self.inner.backend().submissions()
     }
 
+    /// Enable or disable on-device WALE LES omega generation.
+    ///
+    /// Default is disabled. When enabled, each GPU step refreshes the
+    /// pre-collision moments, computes a per-cell `omega_plus` field on the
+    /// device, then collides with that field.
+    pub fn set_wale(&mut self, enabled: bool) {
+        let base_omega = (1.0 / self.inner.tau()) as f32;
+        let backend = self.inner.backend() as *const WgpuBackend<L>;
+        let fields = self.inner.backend_fields_mut(0);
+        // SAFETY: `backend` and `fields` are disjoint fields inside `Solver`.
+        // The backend method flushes queued work before replacing WALE buffers.
+        unsafe { (&*backend).set_wale_enabled(fields, enabled, base_omega) };
+    }
+
     /// Second-order consistent initialisation.
     pub fn init_with(&mut self, init: impl Fn(usize, usize, usize) -> (f32, [f32; 3])) {
         self.inner.backend().clear_cached_moment_upload_marker();
@@ -196,6 +210,15 @@ impl<L: Lattice> GpuSolver<L> {
     pub fn gather_shear_rate(&mut self) -> Vec<f32> {
         self.sync();
         self.inner.gather_shear_rate()
+    }
+
+    /// Current on-device WALE `omega_plus` field in compact global order.
+    pub fn gather_wale_omega(&mut self) -> Vec<f32> {
+        let base_omega = (1.0 / self.inner.tau()) as f32;
+        self.inner
+            .backend()
+            .try_read_wale_omega(self.inner.backend_fields(0), base_omega)
+            .expect("GPU WALE omega readback failed")
     }
 
     /// Global deviation-population plane `q`.
