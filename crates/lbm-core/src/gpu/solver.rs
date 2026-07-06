@@ -96,7 +96,7 @@ impl<L: Lattice> GpuSolver<L> {
     pub fn set_force_field(&mut self, field: Vec<[f32; 3]>) {
         let n = self.inner.dims().iter().product::<usize>();
         assert_eq!(field.len(), n, "force field must cover the whole grid");
-        self.inner.fields_mut(0).force_field = Some(field);
+        self.inner.set_body_force_field_values(&field);
         self.inner.backend().cache_next_upload_moments_once();
     }
 
