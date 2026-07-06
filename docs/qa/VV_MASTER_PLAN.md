@@ -62,13 +62,12 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 
 ## Axis 4 — Literature & community bad-practice sweep (web)
 
-- 4.1 **LBM pitfall compendium** — **W1**: forcing-scheme inconsistencies,
-  non-eq initialization, corner/edge BC, checkerboard modes, tau→0.5
-  oscillations, viscosity-dependent BB slip, momentum-exchange Galilean
-  (Wen et al.), interpolated-BB mass leakage, Shan-Chen thermodynamic
-  inconsistency, LES wall, cumulant Galilean claims, Ma² contamination,
-  staircase artifacts. Map every item → {covered / gap / N-A}.
-  Deliverable: `docs/qa/pitfall-checklist.md`; gaps become audit rows.
+- 4.1 LBM pitfall compendium — **DONE** (commit f1d9eb2,
+  `docs/qa/pitfall-checklist.md`): 27 pitfalls mapped, 16 COVERED /
+  8 PARTIAL / 1 GAP (checkerboard modes) / 1 N/A; 9 kill-cases queued in
+  priority order → fold into lane 1.7 W2 orders (top 4: checkerboard-mode
+  decay, co-moving-frame zero wall force (Wen-2014 decider), WALE
+  pure-shear nu_t field check, single-delta streaming + OPP[] table test).
 - 4.2 Benchmark-matrix expansion — **DONE** (commit 4eac49e); outstanding
   queue in `docs/qa/benchmark-backlog.md`. Kovasznay / Sangani-Acrivos /
   Womersley landed in 2c78d85.
