@@ -7,7 +7,7 @@ use serde::Serialize;
 pub const STATIC_FACTS: StaticFacts = StaticFacts {
     d3q27_open_face_restriction:
         "D3Q27 supports periodic, closed-wall, velocity-inlet, and pressure-outlet cases on CPU (NEBB closure, landed 2026-07-07); outflow/convective faces and GPU open faces are rejected explicitly",
-    checkpoint_scope: "multi-part and multi-rank",
+    checkpoint_scope: "multi-part and per-rank",
     particle_coupling: "one-way",
 };
 
