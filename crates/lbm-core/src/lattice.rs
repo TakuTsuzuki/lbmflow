@@ -1,4 +1,4 @@
-//! Lattice definitions (D2Q9, D3Q19) behind a compile-time `Lattice` trait.
+//! Lattice definitions (D2Q9, D3Q19, D3Q27) behind a compile-time `Lattice` trait.
 //!
 //! The direction ordering of each lattice is the single source of truth for
 //! the whole project (V1 principle, now per-lattice). Derived tables — the
@@ -109,7 +109,8 @@ impl Face {
 /// - `unknowns(face)` is `{ q : c_q · n_in(face) > 0 }` in ascending order —
 ///   the populations entering the domain through that face, i.e. the ones a
 ///   boundary condition must reconstruct after streaming (3 per face for
-///   D2Q9, 5 for D3Q19) and the ones a halo exchange must transfer.
+///   D2Q9, 5 for D3Q19, 9 for D3Q27) and the ones a halo exchange must
+///   transfer.
 /// - For every face: `Σ_{c·n=0} w + 2 Σ_{c·n<0} w == 1` exactly — the
 ///   closure constant that lets deviation-form Zou–He add `+1` instead of
 ///   summing weights (V1 convention, generalises to D3Q19).
@@ -361,6 +362,111 @@ impl Lattice for D3Q19 {
     ];
 }
 
+// ---------------------------------------------------------------------------
+// D3Q27
+// ---------------------------------------------------------------------------
+
+/// D3Q27 lattice. The first 19 directions are exactly [`D3Q19`]; the eight
+/// body-diagonal corner directions are appended as adjacent opposite pairs:
+///
+/// ```text
+/// q: 19   20   21   22   23   24   25   26
+/// c: +++  ---  ++-  --+  +-+  -+-  +--  -++
+/// ```
+///
+/// This preserves the project-wide `OPP[q] == q±1` convention for every
+/// moving direction while adding the corner links used by the full tensor
+/// product quadrature. Halo exchange forwards those corner populations through
+/// the existing extended face layers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct D3Q27;
+
+const D3Q27_C: [[i8; 3]; 27] = [
+    [0, 0, 0],
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+    [1, 1, 0],
+    [-1, -1, 0],
+    [1, 0, 1],
+    [-1, 0, -1],
+    [0, 1, 1],
+    [0, -1, -1],
+    [1, -1, 0],
+    [-1, 1, 0],
+    [1, 0, -1],
+    [-1, 0, 1],
+    [0, 1, -1],
+    [0, -1, 1],
+    [1, 1, 1],
+    [-1, -1, -1],
+    [1, 1, -1],
+    [-1, -1, 1],
+    [1, -1, 1],
+    [-1, 1, -1],
+    [1, -1, -1],
+    [-1, 1, 1],
+];
+
+const D3Q27_W: [f64; 27] = [
+    8.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+];
+
+const D3Q27_OPP: [usize; 27] = opp_table(&D3Q27_C);
+const D3Q27_PAIRS: [(usize, usize); 13] = pairs_table(&D3Q27_OPP, 0);
+const D3Q27_UNK_XN: [usize; 9] = face_unknowns(&D3Q27_C, [1, 0, 0]);
+const D3Q27_UNK_XP: [usize; 9] = face_unknowns(&D3Q27_C, [-1, 0, 0]);
+const D3Q27_UNK_YN: [usize; 9] = face_unknowns(&D3Q27_C, [0, 1, 0]);
+const D3Q27_UNK_YP: [usize; 9] = face_unknowns(&D3Q27_C, [0, -1, 0]);
+const D3Q27_UNK_ZN: [usize; 9] = face_unknowns(&D3Q27_C, [0, 0, 1]);
+const D3Q27_UNK_ZP: [usize; 9] = face_unknowns(&D3Q27_C, [0, 0, -1]);
+
+impl Lattice for D3Q27 {
+    const D: usize = 3;
+    const Q: usize = 27;
+    const C: &'static [[i8; 3]] = &D3Q27_C;
+    const W: &'static [f64] = &D3Q27_W;
+    const OPP: &'static [usize] = &D3Q27_OPP;
+    const PAIRS: &'static [(usize, usize)] = &D3Q27_PAIRS;
+    const FACE_UNKNOWNS: [&'static [usize]; 6] = [
+        &D3Q27_UNK_XN,
+        &D3Q27_UNK_XP,
+        &D3Q27_UNK_YN,
+        &D3Q27_UNK_YP,
+        &D3Q27_UNK_ZN,
+        &D3Q27_UNK_ZP,
+    ];
+}
+
 /// Maximum `Q` over the supported lattices; kernel-local scratch arrays are
 /// sized with this so they never allocate.
 pub const Q_MAX: usize = 27;
@@ -368,6 +474,12 @@ pub const Q_MAX: usize = 27;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::CpuScalar;
+    use crate::backend_simd::CpuSimd;
+    use crate::halo::LocalPeriodic;
+    use crate::params::CollisionKind;
+    use crate::solver::{GlobalSpec, Solver};
+    use std::f64::consts::PI;
 
     fn check_basic_invariants<L: Lattice>() {
         assert_eq!(L::C.len(), L::Q);
@@ -470,7 +582,9 @@ mod tests {
                 assert!(unk.is_empty());
                 continue;
             }
-            let expected_count = if L::D == 2 { 3 } else { 5 };
+            let expected_count = (0..L::Q)
+                .filter(|&q| (0..3).map(|a| L::C[q][a] as i32 * n[a] as i32).sum::<i32>() > 0)
+                .count();
             assert_eq!(unk.len(), expected_count, "{face:?}");
             let mut last = 0;
             for &q in unk {
@@ -494,6 +608,32 @@ mod tests {
         }
     }
 
+    fn moment2<L: Lattice>(a: usize, b: usize, c: usize) -> f64 {
+        (0..L::Q)
+            .map(|q| {
+                L::W[q]
+                    * (L::C[q][a] as i32
+                        * L::C[q][a] as i32
+                        * L::C[q][b] as i32
+                        * L::C[q][b] as i32
+                        * L::C[q][c] as i32
+                        * L::C[q][c] as i32) as f64
+            })
+            .sum()
+    }
+
+    fn moment_pow<L: Lattice>(powers: [u32; 3]) -> f64 {
+        (0..L::Q)
+            .map(|q| {
+                let mut p = 1.0;
+                for (a, pow) in powers.into_iter().enumerate() {
+                    p *= (L::C[q][a] as f64).powi(pow as i32);
+                }
+                L::W[q] * p
+            })
+            .sum()
+    }
+
     #[test]
     fn d2q9_invariants() {
         check_basic_invariants::<D2Q9>();
@@ -508,6 +648,79 @@ mod tests {
         check_moments::<D3Q19>();
         check_isotropy::<D3Q19>();
         check_face_unknowns::<D3Q19>();
+    }
+
+    #[test]
+    fn d3q27_invariants() {
+        check_basic_invariants::<D3Q27>();
+        check_moments::<D3Q27>();
+        check_isotropy::<D3Q27>();
+        check_face_unknowns::<D3Q27>();
+    }
+
+    #[test]
+    fn d3q27_opposites_are_adjacent_and_d3q19_is_prefix() {
+        for q in 0..D3Q19::Q {
+            assert_eq!(D3Q27::C[q], D3Q19::C[q]);
+        }
+        for q in (1..27).step_by(2) {
+            assert_eq!(D3Q27::OPP[q], q + 1);
+            assert_eq!(D3Q27::OPP[q + 1], q);
+        }
+    }
+
+    #[test]
+    fn d3q27_corner_moments_distinguish_from_d3q19() {
+        let cs6 = D3Q27::CS2 * D3Q27::CS2 * D3Q27::CS2;
+
+        // D3Q27's tensor-product corners restore the diagonal xyz identity
+        // Σ w cx² cy² cz² = cs^6. D3Q19 has no body diagonals, so this moment
+        // is exactly zero there.
+        assert!((moment2::<D3Q27>(0, 1, 2) - cs6).abs() < 1e-15);
+        assert_eq!(moment2::<D3Q19>(0, 1, 2), 0.0);
+
+        // Sixth-order isotropy at the diagonal-discrete level has the tensor
+        // ratio <x^6>:<x^4 y^2>:<x^2 y^2 z^2> = 9:3:1. D3Q19 matches the
+        // first two levels but fails the third because the corners are absent.
+        assert!((moment_pow::<D3Q27>([6, 0, 0]) - 9.0 * cs6).abs() < 1e-15);
+        assert!((moment_pow::<D3Q27>([4, 2, 0]) - 3.0 * cs6).abs() < 1e-15);
+        assert!((moment_pow::<D3Q27>([2, 2, 2]) - cs6).abs() < 1e-15);
+        assert_eq!(moment_pow::<D3Q19>([2, 2, 2]), 0.0);
+    }
+
+    fn run_d3q27_periodic_tgv<B>(backend: B)
+    where
+        B: crate::backend::Backend<D3Q27, f64>,
+    {
+        let dims = [12, 12, 12];
+        let spec = GlobalSpec::<f64> {
+            dims,
+            nu: 1.0 / 30.0,
+            collision: CollisionKind::Trt {
+                magic: CollisionKind::MAGIC_STD,
+            },
+            periodic: [true, true, true],
+            ..Default::default()
+        };
+        let mut solver: Solver<D3Q27, f64, B, LocalPeriodic> =
+            Solver::new(&spec, &[], &[], [1, 1, 1], backend, LocalPeriodic);
+        solver.init_with(|x, y, z| {
+            let sx = (2.0 * PI * x as f64 / dims[0] as f64).sin();
+            let cx = (2.0 * PI * x as f64 / dims[0] as f64).cos();
+            let sy = (2.0 * PI * y as f64 / dims[1] as f64).sin();
+            let cy = (2.0 * PI * y as f64 / dims[1] as f64).cos();
+            let cz = (2.0 * PI * z as f64 / dims[2] as f64).cos();
+            let amp = 0.02;
+            (1.0, [amp * sx * cy * cz, -amp * cx * sy * cz, 0.0])
+        });
+        solver.run_guarded(240, 40).unwrap();
+        assert!(solver.total_mass().is_finite());
+    }
+
+    #[test]
+    fn d3q27_periodic_tgv_runs_cpu_scalar_and_simd() {
+        run_d3q27_periodic_tgv(CpuScalar::default());
+        run_d3q27_periodic_tgv(CpuSimd::default());
     }
 
     /// Lock the D2Q9 tables to the retired V1 engine's (`lbm_core::lattice`,
@@ -556,6 +769,9 @@ mod tests {
         }
         for q in 0..D3Q19::Q {
             assert_eq!(D3Q19::dir_index(D3Q19::C[q]), q);
+        }
+        for q in 0..D3Q27::Q {
+            assert_eq!(D3Q27::dir_index(D3Q27::C[q]), q);
         }
     }
 

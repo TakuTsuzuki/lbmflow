@@ -4,16 +4,18 @@
 //! from the neighbouring parts after collision, before streaming:
 //!
 //! - **populations**: per face only the directions *entering* through it
-//!   (`L::unknowns(face)`: 3 for D2Q9, 5 for D3Q19) need transferring;
+//!   (`L::unknowns(face)`: 3 for D2Q9, 5 for D3Q19, 9 for D3Q27) need
+//!   transferring;
 //! - **masks** (`solid` / `wall_u` / `probe`): exchanged when geometry
 //!   changes (bounce-back reads the wall data of halo cells);
 //! - **scalar planes** (multiphase ψ): full-value exchange for force stencils.
 //!
 //! Corner/edge halo cells are *forwarded*, not exchanged diagonally: phases
 //! run x → y → z, and each later phase transfers layers extended over the
-//! earlier axes' halos (the standard two-phase trick). A corner value thus
-//! hops through the face neighbour, and only 6 face links exist — the same
-//! plan an MPI implementation uses.
+//! earlier axes' halos (the standard two-phase trick). D3Q27 corner
+//! populations ride those same extended layers. A corner value thus hops
+//! through the face neighbour, and only 6 face links exist — the same plan an
+//! MPI implementation uses.
 //!
 //! The transfer itself is pack → unpack through a contiguous buffer, i.e.
 //! exactly message-shaped: the future `Mpi` implementation replaces the
