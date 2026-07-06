@@ -112,6 +112,36 @@ items reflected, acceptance is VALIDATION.md **T17**).
   C-12–C-16, D-8–D-10.
 - **M-E is premised on completion of B-1/B-2/C-9/C-12/C-13/D-9** (dependency relations in §4 of the spec).
 
+### External review response (2026-07-07) — claim hygiene + product-path gaps
+
+An external review (static cross-check of docs vs implementation) was triaged by the PM.
+Verdict: core findings confirmed; the FSI-overclaim and "supercomputer-class claim" points
+were rejected (the repo never claims FSI; multi-node is already RED in the claims table and
+"supercomputer-scale" appears only as a roadmap mandate in this file).
+
+**P0 — dispatched 2026-07-07 as 7 parallel codex orders (branches `cx/*`):**
+ci.yml nightly schedule + dispatch + artifacts (`cx/ci-schedule`); VALIDATION T16/T17
+status sync + D3Q27 open-face note (`cx/validation-sync`); REQ particle status tags
+(`cx/req-sync`); README capability matrix (`cx/readme-cap`); docs/LIMITATIONS.md
+(`cx/limitations`); SOLVER_IMPROVEMENT_SPEC resolved/open audit (`cx/sis-audit`);
+particles.rs silent Re>800 clamp → explicit validity-domain error (`cx/re-clamp`).
+
+**P1 — queued (new items; overlapping ones fold into existing tracks):**
+
+| Item | Content | Folds into |
+|---|---|---|
+| REV-1 | Scenario schema exposure: `collision: cumulant`, `storage: f16`, `backend: auto\|cpu\|gpu`, lattice selection; unsupported-combination errors; manifest records actual backend/lattice/collision/storage | new (agent-native product path) |
+| REV-2 | `lbm verify --tier quick/full/gpu/mpi` + `lbm capabilities` (machine-readable capability/limitation output) | SOLVER_IMPROVEMENT_SPEC open item |
+| REV-3 | Gravity force composition device-side (kill per-step host staging in `run()`; prerequisite for GPU VOF/buoyancy performance claims) | B-2 sync-point contract territory |
+| REV-4 | LES tau_eff upper clipping + diagnostics, y+ output, wall treatment | MF-β scope (REQ W-LES already requires it) |
+| REV-5 | D3Q27 open-face kernels + dedicated gates (Zou-He moment exactness, duct in/out, CPU/GPU equivalence, MPI seam) | MF-α follow-on |
+| REV-6 | Cumulant D3Q19 shear-rate offset: classify as empirical calibration; holdout validation set (advected TGV at multiple frame velocities, rotating shear, channel, Ma sweep, D3Q19 vs D3Q27) | physics-discipline follow-up, PHYSICS.md |
+| REV-7 | Distributed checkpoint/restart (per-rank, RNG/particle/statistics state, restart match test) | R-Phase 3 / C-track |
+
+**P2:** UQ/sensitivity harness (parameter sweeps with CI-band QOIs, calibration/holdout
+separation); absolute-physics GPU gates beyond equivalence (VALIDATION already flags the
+blind spot); geometry ingestion (STL/voxelization) — deferred, not currently claimed.
+
 ### Performance roadmap — ALL FOUR gaps are committed implementation items (user directive 2026-07-05: "implement all of these; at minimum put them on the roadmap")
 
 The four gaps identified by the sales-paper analysis (vs FluidX3D / waLBerla / OpenLB /
