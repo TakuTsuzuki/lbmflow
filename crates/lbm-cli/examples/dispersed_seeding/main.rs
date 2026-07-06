@@ -41,7 +41,8 @@ fn main() -> anyhow::Result<()> {
 
     let reservoir_particles = make_reservoir_particles(&input);
     let extraction = extract_by_depth(&input, &reservoir_particles);
-    let mut batch = extraction.batch;
+    let batch = extraction.batch;
+    let n_extracted = batch.len();
 
     let mut tray_sim = build_tray_sim(&input, &regime);
     run_lbm_steps(&mut tray_sim, 90);
@@ -56,12 +57,13 @@ fn main() -> anyhow::Result<()> {
         })
         .collect::<Vec<_>>();
 
-    deposit_batch(&input, &regime, &mut batch, &tray_velocity)?;
+    let (suspended, deposits) = deposit_batch(&input, &regime, batch, &tray_velocity)?;
     let metrics = readout::write_outputs(
         &input,
         &regime,
-        &batch,
-        batch.len(),
+        &deposits,
+        suspended.particles.len(),
+        n_extracted,
         &reservoir_velocity,
         &tray_velocity,
     )?;
@@ -188,52 +190,84 @@ fn build_tray_sim(input: &ProtocolInput, regime: &protocol::Regime) -> Sim3 {
     for face in [Face::XNeg, Face::XPos, Face::YNeg, Face::YPos, Face::ZNeg] {
         walls.is_wall[face.index()] = true;
     }
-    let mut faces = [FaceBC::Closed; 6];
-    faces[Face::ZPos.index()] = FaceBC::Velocity {
-        u: [0.0, 0.0, -regime.u_jet_lattice.min(0.08)],
-    };
+    let faces = [FaceBC::Closed; 6];
+    let face_patches = nozzle_face_patches(input, regime);
     let spec = GlobalSpec::<f64> {
         dims,
         nu: regime.nu_lattice,
         periodic: [false, false, false],
         faces,
+        face_patches,
         collision: CollisionKind::Trt {
             magic: CollisionKind::MAGIC_STD,
         },
         ..Default::default()
     };
     let (solid, wall_u) = build_wall_rims(3, dims, &walls);
-    let mut sim = Sim3::new(
+    Sim3::new(
         &spec,
         &solid,
         &wall_u,
         [1, 1, 1],
         CpuScalar::default(),
         LocalPeriodic,
-    );
+    )
+}
+
+fn nozzle_face_patches(input: &ProtocolInput, regime: &protocol::Regime) -> Vec<FacePatch<f64>> {
     let points = input
         .op("eject")
         .and_then(|op| op.points_xy_frac.clone())
         .unwrap_or_else(|| vec![[0.5, 0.5]]);
     let nozzle_radius_m = 0.5 * regime.nozzle_d_m;
-    sim.set_inlet_profile_with(Face::ZPos, |x, y| {
-        let xp = x as f64 * regime.dx;
-        let yp = y as f64 * regime.dx;
-        let mut inside_patch = false;
-        for pt in &points {
-            let cx = pt[0] * input.target.width_m;
-            let cy = pt[1] * input.target.depth_m;
-            let dx = xp - cx;
-            let dy = yp - cy;
-            inside_patch |= dx * dx + dy * dy <= nozzle_radius_m * nozzle_radius_m;
+    let nx = input.grid.tray_nx;
+    let ny = input.grid.tray_ny;
+    let mut patches = Vec::new();
+    for y in 0..ny {
+        let mut x = 0usize;
+        while x < nx {
+            while x < nx && !inside_any_nozzle(input, regime, &points, nozzle_radius_m, x, y) {
+                x += 1;
+            }
+            if x == nx {
+                break;
+            }
+            let lo_x = x;
+            while x + 1 < nx && inside_any_nozzle(input, regime, &points, nozzle_radius_m, x + 1, y)
+            {
+                x += 1;
+            }
+            patches.push(FacePatch {
+                face: Face::ZPos.index(),
+                lo: [lo_x, y],
+                hi: [x, y],
+                bc: FaceBC::Velocity {
+                    u: [0.0, 0.0, -regime.u_jet_lattice.min(0.17)],
+                },
+            });
+            x += 1;
         }
-        if inside_patch {
-            [0.0, 0.0, -regime.u_jet_lattice.min(0.17)]
-        } else {
-            [0.0, 0.0, 0.0]
-        }
-    });
-    sim
+    }
+    patches
+}
+
+fn inside_any_nozzle(
+    input: &ProtocolInput,
+    regime: &protocol::Regime,
+    points: &[[f64; 2]],
+    radius_m: f64,
+    x: usize,
+    y: usize,
+) -> bool {
+    let xp = x as f64 * regime.dx;
+    let yp = y as f64 * regime.dx;
+    points.iter().any(|pt| {
+        let cx = pt[0] * input.target.width_m;
+        let cy = pt[1] * input.target.depth_m;
+        let dx = xp - cx;
+        let dy = yp - cy;
+        dx * dx + dy * dy <= radius_m * radius_m
+    })
 }
 
 fn run_lbm_steps(sim: &mut Sim3, steps: usize) {

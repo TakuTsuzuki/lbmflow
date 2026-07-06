@@ -1,13 +1,14 @@
 use crate::protocol::{ProtocolInput, Regime};
+use lbm_core::particles::{
+    DepositEvent, Particle as CoreParticle, ParticleSet, Sample as CoreSample,
+};
 
 const G: f64 = 9.80665;
 
 #[derive(Clone, Debug)]
 pub struct Particle {
     pub pos: [f64; 3],
-    pub vel: [f64; 3],
     pub d_m: f64,
-    pub deposited: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -59,9 +60,7 @@ pub fn make_reservoir_particles(input: &ProtocolInput) -> Vec<Particle> {
         let z_frac = fill * rng.unit();
         out.push(Particle {
             pos: [x, y, z_frac * input.reservoir.height_m],
-            vel: [0.0; 3],
             d_m: d,
-            deposited: false,
         });
     }
     out
@@ -70,11 +69,11 @@ pub fn make_reservoir_particles(input: &ProtocolInput) -> Vec<Particle> {
 pub fn deposit_batch(
     input: &ProtocolInput,
     regime: &Regime,
-    batch: &mut [Particle],
+    batch: Vec<Particle>,
     tray_velocity: &[[f64; 3]],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(ParticleSet, Vec<DepositEvent>)> {
     if batch.is_empty() {
-        return Ok(());
+        return Ok((ParticleSet::default(), Vec::new()));
     }
     let eject = input.op("eject").expect("eject operation");
     let points = eject
@@ -84,23 +83,62 @@ pub fn deposit_batch(
         .unwrap_or_else(|| vec![[0.5, 0.5]]);
     let h0 = eject.height_m.unwrap_or(input.target.height_m);
     let mut rng = Rng::new(input.particles.seed ^ 0x9e37_79b9_7f4a_7c15);
-    let harshness = (regime.u_jet_si / 0.01).clamp(0.0, 20.0)
-        + input.agitation_count() as f64 * 0.15
-        + input.fr();
     let jet_sigma = (0.5 * regime.nozzle_d_m).max(1.25 * regime.dx);
-    for (k, p) in batch.iter_mut().enumerate() {
-        let pt = points[k % points.len()];
-        p.pos = [
-            (pt[0] * input.target.width_m + jet_sigma * 0.35 * rng.normal())
-                .clamp(0.0, input.target.width_m),
-            (pt[1] * input.target.depth_m + jet_sigma * 0.35 * rng.normal())
-                .clamp(0.0, input.target.depth_m),
-            h0.clamp(0.0, input.target.height_m),
-        ];
-        p.vel = [0.0, 0.0, -regime.u_jet_si];
-        p.deposited = false;
-    }
+    let particles = batch
+        .iter()
+        .enumerate()
+        .map(|(k, p)| {
+            let pt = points[k % points.len()];
+            let pos_m = [
+                (pt[0] * input.target.width_m + jet_sigma * 0.35 * rng.normal())
+                    .clamp(0.0, input.target.width_m),
+                (pt[1] * input.target.depth_m + jet_sigma * 0.35 * rng.normal())
+                    .clamp(0.0, input.target.depth_m),
+                h0.clamp(0.0, input.target.height_m),
+            ];
+            CoreParticle {
+                pos: [
+                    pos_m[0] / regime.dx,
+                    pos_m[1] / regime.dx,
+                    pos_m[2] / regime.dx,
+                ],
+                vel: [0.0, 0.0, -regime.u_jet_lattice],
+                d: p.d_m / regime.dx,
+                rho_p: input.particles.rho_p_kgm3,
+                exposure: 0.0,
+            }
+        })
+        .collect::<Vec<_>>();
 
+    let g_lu = G * regime.dt * regime.dt / regime.dx;
+    let mut set = ParticleSet::new(
+        particles,
+        input.fluid.rho_f_kgm3,
+        regime.nu_lattice,
+        [0.0, 0.0, -g_lu],
+    );
+
+    let deposits = step_particles_to_deposition(
+        input,
+        regime,
+        &points,
+        jet_sigma,
+        tray_velocity,
+        &mut set,
+        rng,
+    )?;
+    Ok((set, deposits))
+}
+
+fn step_particles_to_deposition(
+    input: &ProtocolInput,
+    regime: &Regime,
+    points: &[[f64; 2]],
+    jet_sigma: f64,
+    tray_velocity: &[[f64; 3]],
+    set: &mut ParticleSet,
+    mut rng: Rng,
+) -> anyhow::Result<Vec<DepositEvent>> {
     let dt = regime.dt;
     let max_duration = input
         .ops("settle")
@@ -130,7 +168,12 @@ pub fn deposit_batch(
     } else {
         0
     };
-    let mu = input.fluid.rho_f_kgm3 * input.fluid.nu_m2s;
+    let buoyancy = 1.0 - input.fluid.rho_f_kgm3 / input.particles.rho_p_kgm3;
+    let harshness = (regime.u_jet_si / 0.01).clamp(0.0, 20.0)
+        + input.agitation_count() as f64 * 0.15
+        + input.fr();
+    let gentle_k = (2.0 * 2.5e-5 * regime.dt).sqrt() / regime.dx;
+    let mut deposits = Vec::new();
     for step in 0..steps {
         let t = step as f64 * dt;
         let ac = if step < agitation_steps {
@@ -138,49 +181,68 @@ pub fn deposit_batch(
         } else {
             0.0
         };
-        for p in batch.iter_mut().filter(|p| !p.deposited) {
-            let uf = tray_fluid_velocity(input, regime, p.pos, &points, jet_sigma, tray_velocity);
-            let tau_p = input.particles.rho_p_kgm3 * p.d_m * p.d_m / (18.0 * mu);
-            let settle_acc = (1.0 - input.fluid.rho_f_kgm3 / input.particles.rho_p_kgm3) * -G;
-            let target = [uf[0] - ac * tau_p, uf[1], uf[2] + settle_acc * tau_p];
-            let e = (-dt / tau_p.max(1.0e-9)).exp();
-            for a in 0..3 {
-                p.vel[a] = target[a] + (p.vel[a] - target[a]) * e;
-                p.pos[a] += p.vel[a] * dt;
-            }
-            if harshness > 4.0 {
-                p.pos[0] += 0.15 * jet_sigma * (11.0 * t + p.d_m * 1.0e6).sin() * dt;
+        set.g = [
+            if buoyancy > 0.0 {
+                -ac * regime.dt * regime.dt / regime.dx / buoyancy
             } else {
-                let step_sigma = (2.0 * 2.5e-5 * dt).sqrt();
-                p.pos[0] += step_sigma * rng.normal();
-                p.pos[1] += step_sigma * rng.normal();
+                0.0
+            },
+            0.0,
+            -G * regime.dt * regime.dt / regime.dx,
+        ];
+        set.step_depositing(
+            |pos| {
+                sample_tray(
+                    input,
+                    regime,
+                    pos,
+                    points,
+                    jet_sigma,
+                    tray_velocity,
+                    harshness,
+                )
+            },
+            None::<fn([f64; 3]) -> f64>,
+            0.0,
+            &mut deposits,
+        );
+        for p in &mut set.particles {
+            if harshness > 4.0 {
+                let p_d_m = p.d * regime.dx;
+                p.pos[0] +=
+                    0.15 * jet_sigma * (11.0 * t + p_d_m * 1.0e6).sin() * regime.dt / regime.dx;
+            } else {
+                p.pos[0] += gentle_k * rng.normal();
+                p.pos[1] += gentle_k * rng.normal();
             }
-            p.pos[0] = p.pos[0].clamp(0.0, input.target.width_m);
-            p.pos[1] = p.pos[1].clamp(0.0, input.target.depth_m);
-            if p.pos[2] <= 0.0 {
-                p.pos[2] = 0.0;
-                p.vel = [0.0; 3];
-                p.deposited = true;
-            } else if p.pos[2] > input.target.height_m {
-                p.pos[2] = input.target.height_m;
+            p.pos[0] = p.pos[0].clamp(0.0, input.target.width_m / regime.dx);
+            p.pos[1] = p.pos[1].clamp(0.0, input.target.depth_m / regime.dx);
+            if p.pos[2] > input.target.height_m / regime.dx {
+                p.pos[2] = input.target.height_m / regime.dx;
                 p.vel[2] = p.vel[2].min(0.0);
             }
         }
-        if batch.iter().all(|p| p.deposited) {
+        if set.particles.is_empty() {
             break;
         }
     }
-    Ok(())
+    Ok(deposits)
 }
 
-fn tray_fluid_velocity(
+fn sample_tray(
     input: &ProtocolInput,
     regime: &Regime,
-    pos: [f64; 3],
+    pos_lu: [f64; 3],
     points: &[[f64; 2]],
     sigma: f64,
     tray_velocity: &[[f64; 3]],
-) -> [f64; 3] {
+    harshness: f64,
+) -> CoreSample {
+    let pos = [
+        pos_lu[0] * regime.dx,
+        pos_lu[1] * regime.dx,
+        pos_lu[2] * regime.dx,
+    ];
     let nx = input.grid.tray_nx;
     let ny = input.grid.tray_ny;
     let nz = input.grid.tray_nz;
@@ -189,9 +251,6 @@ fn tray_fluid_velocity(
     let iz = ((pos[2] / input.target.height_m) * (nz as f64 - 1.0)).round() as usize;
     let idx = (iz.min(nz - 1) * ny + iy.min(ny - 1)) * nx + ix.min(nx - 1);
     let mut u = tray_velocity.get(idx).copied().unwrap_or([0.0; 3]);
-    let harshness = (regime.u_jet_si / 0.01).clamp(0.0, 20.0)
-        + input.agitation_count() as f64 * 0.15
-        + input.fr();
     let wall_jet_len = if harshness > 4.0 {
         0.10 * input.target.width_m.min(input.target.depth_m)
     } else {
@@ -213,5 +272,12 @@ fn tray_fluid_velocity(
         u[0] += radial * dx / r;
         u[1] += radial * dy / r;
     }
-    u
+    CoreSample {
+        u: [
+            u[0] * regime.dt / regime.dx,
+            u[1] * regime.dt / regime.dx,
+            u[2] * regime.dt / regime.dx,
+        ],
+        solid: false,
+    }
 }
