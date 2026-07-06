@@ -23,6 +23,10 @@ jobs:
       # LBM is ~50x slower in debug. CI must also use --release (CLAUDE.md)
       - name: Test (default features)
         run: cargo test --workspace --release
+      - name: CLI quick verification smoke
+        run: |
+          cargo build -p lbm-cli --release
+          ./target/release/lbm verify --tier quick
       - name: Build (gpu feature, compile-only — no GPU on runners)
         run: cargo build -p lbm-core --release --features gpu || cargo build -p lbm-core2 --release --features gpu
       - name: MPI feature
