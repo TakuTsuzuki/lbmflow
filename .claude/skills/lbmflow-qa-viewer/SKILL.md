@@ -53,7 +53,10 @@ Assets live in `assets/` next to this file:
   `/*__THREE__*/ /*__ORBIT__*/ /*__META__*/ /*__DATA__*/`).
 - `tray_template.html` / `convert_tray.py` / `build_tray_viewer.py` — the
   dispersed-deposition (D-track) variant: rectangular tray instead of tank
-  geometry. Converter streams the example's ASCII STRUCTURED_POINTS
+  geometry. **D-track visualization is 2D-FIRST (user directive 2026-07-06):
+  the information lives in the n(x,y) density map, the XY/XZ slices, and
+  time series — deliver those; the orbiting 3D scene adds nothing for a
+  thin-tray deposition problem and is omitted unless specifically asked.** Converter streams the example's ASCII STRUCTURED_POINTS
   `tray_velocity.vtk` + `density.csv` + `metrics.json` into `vel.bin`/`meta.json`
   (block-average downsample, ×2 local / ×4 Artifact); template shows the 3D
   point cloud over a deposition-heatmap floor, XY/XZ slices, 12×12 density
