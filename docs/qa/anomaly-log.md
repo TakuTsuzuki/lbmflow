@@ -180,3 +180,17 @@ hypotheses — these are real finding candidates)
   any WICKING/SPREADING dynamics claim is out of the SC validity domain
   (strengthens the MF-gamma case). PHYSICS.md entry drafted on
   cx/mp-dynamics (merge with care).
+
+### ANOM-P4-013 VERDICT (Kovasznay, cx/exact-benchmarks 0257e65)
+Wet-node Zou-He velocity faces with tangentially-varying profiles carry an
+O(h) boundary error dominating the O(h²) interior: three-point ladder
+eu = 3.202e-3 / 1.671e-3 / 8.618e-4 (N = 48/96/192), order 0.94-0.96,
+r² ≈ 1. Interior order 2 separately proven (T1/T2). Characterization
+FROZEN (heavy pin [0.85, 1.15] — a future 2nd-order open-BC must fail it
+upward); light band 5e-3 (measured 2.611e-3). Pressure-field validation
+passes (slope → 0.991, r² 0.99999). Benchmark-design note: Zou-He
+PRESSURE outlets force v = 0 and are NOT valid closures for exact
+solutions with tangential outlet velocity (first pass measured the
+resulting O(1)-fraction elliptic contamination). S2 characterization;
+core FYI: 2nd-order open BC (NEBB / non-equilibrium extrapolation) is the
+improvement candidate.
