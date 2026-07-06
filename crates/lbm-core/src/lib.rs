@@ -32,6 +32,7 @@ pub mod gpu;
 pub mod halo;
 mod kernels;
 pub mod lattice;
+pub mod les;
 pub mod params;
 pub mod particles;
 pub mod real;
@@ -46,6 +47,7 @@ pub mod prelude {
     pub use crate::fields::{LocalGeom, SoaFields};
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19};
+    pub use crate::les::{WaleLes, WALE_CW};
     pub use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
     pub use crate::real::Real;
     pub use crate::solver::{

@@ -1456,6 +1456,44 @@ where
         self.stage_out_all();
     }
 
+    /// Set or clear the per-cell symmetric relaxation-rate field
+    /// (`omega_plus = 1/tau`) in global compact order.
+    ///
+    /// The field is compact and solver-level by design: collision kernels only
+    /// replace the local `omega_plus` fetch when this field is present. A
+    /// `None` field uses the original uniform-rate path.
+    pub fn set_omega_field(&mut self, omega: Option<&[T]>) {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        if let Some(values) = omega {
+            assert_eq!(values.len(), n, "omega field length must match cell count");
+        }
+        self.host_dirty = true;
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let g = sub.geom;
+            match omega {
+                Some(values) => {
+                    let local = fields
+                        .omega_field
+                        .get_or_insert_with(|| vec![T::zero(); g.n_core()]);
+                    if local.len() != g.n_core() {
+                        local.resize(g.n_core(), T::zero());
+                    }
+                    for z in 0..g.core[2] {
+                        for y in 0..g.core[1] {
+                            for x in 0..g.core[0] {
+                                let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                                    * self.dims[0]
+                                    + (sub.origin[0] + x);
+                                local[g.cidx(x, y, z)] = values[gi];
+                            }
+                        }
+                    }
+                }
+                None => fields.omega_field = None,
+            }
+        }
+    }
+
     /// Momentum-exchange force on the probed solids during the most recent
     /// step (V1 `probed_force`).
     pub fn probed_force(&self) -> [T; 3] {
@@ -1703,6 +1741,108 @@ where
                             * self.dims[0]
                             + (sub.origin[0] + x);
                         out[gi] = self.strain_rate_at(fields, x, y, z);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Global velocity-gradient tensor in compact cell order.
+    ///
+    /// Each entry is `g[i][j] = du_i/dx_j`. Off-diagonal symmetric shear is
+    /// taken from [`Solver::gather_strain_rate`]'s non-equilibrium stress
+    /// path. Diagonal entries and the antisymmetric rotation are reconstructed
+    /// from velocity differences because the native stress observable contains
+    /// no vorticity, and D3Q19 moving-wall-adjacent normal stresses can carry
+    /// small pure-shear artifacts.
+    pub fn gather_velocity_gradient(&self) -> Vec<[[T; 3]; 3]> {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        let strain = self.gather_strain_rate();
+        let ux = self.gather_ux();
+        let uy = self.gather_uy();
+        let uz = self.gather_uz();
+        let idx =
+            |x: usize, y: usize, z: usize| -> usize { (z * self.dims[1] + y) * self.dims[0] + x };
+        let cell_state = |x: usize, y: usize, z: usize| -> Option<([T; 3], bool)> {
+            let (i, lx, ly, lz) = self.locate(x, y, z);
+            let g = self.subs[i].geom;
+            let pi = g.pidx(lx, ly, lz);
+            if self.host_parts[i].solid[pi] {
+                Some((self.host_parts[i].wall_u[pi], true))
+            } else {
+                let ci = idx(x, y, z);
+                Some(([ux[ci], uy[ci], uz[ci]], false))
+            }
+        };
+        let neighbor =
+            |x: usize, y: usize, z: usize, a: usize, da: isize| -> Option<([T; 3], bool)> {
+                let mut p = [x as isize, y as isize, z as isize];
+                p[a] += da;
+                if p[a] < 0 || p[a] >= self.dims[a] as isize {
+                    if a < L::D && self.periodic[a] {
+                        p[a] = (p[a] + self.dims[a] as isize) % self.dims[a] as isize;
+                    } else {
+                        return None;
+                    }
+                }
+                let (xx, yy, zz) = (p[0] as usize, p[1] as usize, p[2] as usize);
+                cell_state(xx, yy, zz)
+            };
+        let mut out = vec![[[T::zero(); 3]; 3]; n];
+        for z in 0..self.dims[2] {
+            for y in 0..self.dims[1] {
+                for x in 0..self.dims[0] {
+                    let i = idx(x, y, z);
+                    if self.is_solid(x, y, z) {
+                        continue;
+                    }
+                    let s = strain[i];
+                    let mut sm = [[T::zero(); 3]; 3];
+                    sm[0][0] = s[0];
+                    sm[1][1] = s[1];
+                    sm[2][2] = s[2];
+                    sm[0][1] = s[3];
+                    sm[1][0] = s[3];
+                    sm[0][2] = s[4];
+                    sm[2][0] = s[4];
+                    sm[1][2] = s[5];
+                    sm[2][1] = s[5];
+                    let mut fd = [[T::zero(); 3]; 3];
+                    let own = [ux[i], uy[i], uz[i]];
+                    for comp in 0..L::D {
+                        for a in 0..L::D {
+                            let plus = neighbor(x, y, z, a, 1);
+                            let minus = neighbor(x, y, z, a, -1);
+                            fd[comp][a] = match (plus, minus) {
+                                (Some((pv, false)), Some((mv, false))) => {
+                                    (pv[comp] - mv[comp]) * T::r(0.5)
+                                }
+                                (Some((pv, false)), Some((wv, true))) => {
+                                    -T::r(4.0 / 3.0) * wv[comp]
+                                        + own[comp]
+                                        + T::r(1.0 / 3.0) * pv[comp]
+                                }
+                                (Some((wv, true)), Some((mv, false))) => {
+                                    T::r(4.0 / 3.0) * wv[comp]
+                                        - own[comp]
+                                        - T::r(1.0 / 3.0) * mv[comp]
+                                }
+                                (Some((pv, false)), None) => pv[comp] - own[comp],
+                                (None, Some((mv, false))) => own[comp] - mv[comp],
+                                _ => T::zero(),
+                            };
+                        }
+                    }
+                    for row in 0..L::D {
+                        for col in 0..L::D {
+                            if row == col {
+                                out[i][row][col] = fd[row][col];
+                            } else {
+                                let w = T::r(0.5) * (fd[row][col] - fd[col][row]);
+                                out[i][row][col] = sm[row][col] + w;
+                            }
+                        }
                     }
                 }
             }

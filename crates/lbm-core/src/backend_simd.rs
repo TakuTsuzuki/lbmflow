@@ -214,6 +214,7 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
     uy: &[T],
     uz: &[T],
     field: &[[T; 3]],
+    omega: Option<&[T]>,
     kp: &KParams<T>,
 ) {
     if x0 >= x1 {
@@ -227,9 +228,11 @@ unsafe fn collide_span_fused<L: Lattice, T: Real, const FORCE: bool, const FF: b
             // sweeps free of aliasing checks, which is what lets them
             // vectorize (a src/dst pair measured ~30% slower end to end).
             debug_assert!(std::ptr::eq(src.planes.as_ptr(), dst.planes.as_ptr()));
-            collide_span_blocked::<L, T, FORCE, FF>(dst, x0, x1, rho, ux, uy, uz, field, kp);
+            collide_span_blocked::<L, T, FORCE, FF>(dst, x0, x1, rho, ux, uy, uz, field, omega, kp);
         } else {
-            collide_span_flat::<L, T, FORCE, FF>(src, dst, x0, x1, rho, ux, uy, uz, field, kp);
+            collide_span_flat::<L, T, FORCE, FF>(
+                src, dst, x0, x1, rho, ux, uy, uz, field, omega, kp,
+            );
         }
     }
 }
@@ -271,6 +274,7 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
     uy: &[T],
     uz: &[T],
     field: &[[T; 3]],
+    omega: Option<&[T]>,
     kp: &KParams<T>,
 ) {
     let three = T::r(3.0);
@@ -279,8 +283,14 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
     let nine = T::r(9.0);
     let half = T::r(0.5);
     let one = T::one();
-    let (op, om, cp, cm) = (kp.omega_p, kp.omega_m, kp.cp, kp.cm);
+    let (op0, om, cp0, cm) = (kp.omega_p, kp.omega_m, kp.cp, kp.cm);
     for x in x0..x1 {
+        let op = omega.map_or(op0, |v| v[x]);
+        let cp = if omega.is_some() {
+            one - op / T::r(2.0)
+        } else {
+            cp0
+        };
         let r = rho[x];
         let u = [ux[x], uy[x], uz[x]];
         let fv = if FORCE {
@@ -372,6 +382,7 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
     uy: &[T],
     uz: &[T],
     field: &[[T; 3]],
+    omega: Option<&[T]>,
     kp: &KParams<T>,
 ) {
     let three = T::r(3.0);
@@ -380,7 +391,7 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
     let nine = T::r(9.0);
     let half = T::r(0.5);
     let one = T::one();
-    let (op, om, cp, cm) = (kp.omega_p, kp.omega_m, kp.cp, kp.cm);
+    let (op0, om, cp0, cm) = (kp.omega_p, kp.omega_m, kp.cp, kp.cm);
     let mut xb = x0;
     while xb < x1 {
         let blen = (x1 - xb).min(BLOCK);
@@ -427,6 +438,13 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
             let i0 = planes.idx(L::REST, xb);
             for j in 0..blen {
                 // SAFETY: caller contract (disjoint cells, in bounds).
+                let x = xb + j;
+                let op = omega.map_or(op0, |v| v[x]);
+                let cp = if omega.is_some() {
+                    one - op / T::r(2.0)
+                } else {
+                    cp0
+                };
                 let f0 = unsafe { planes.planes.get(i0 + j) };
                 let v = if FORCE {
                     f0 - op * (f0 - w0 * eqb[j]) + cp * (-w0 * uf3v[j])
@@ -451,6 +469,12 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
                 let fb = unsafe { planes.planes.get(ib0 + j) };
                 let fp = half * (fa + fb);
                 let fm = half * (fa - fb);
+                let op = omega.map_or(op0, |v| v[x]);
+                let cp = if omega.is_some() {
+                    one - op / T::r(2.0)
+                } else {
+                    cp0
+                };
                 let rp = op * (fp - ep);
                 let rm = om * (fm - em);
                 if FORCE {
@@ -484,6 +508,7 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
 unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
     force_on: bool,
     field: Option<&[[T; 3]]>,
+    omega: Option<&[T]>,
     src: PlaneView<T>,
     dst: PlaneView<T>,
     x0: usize,
@@ -497,15 +522,35 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
     // SAFETY: forwarded caller contract.
     unsafe {
         match (force_on, field) {
-            (true, Some(fr)) => {
-                collide_span_fused::<L, T, true, true>(src, dst, x0, x1, rho, ux, uy, uz, fr, kp)
-            }
-            (true, None) => {
-                collide_span_fused::<L, T, true, false>(src, dst, x0, x1, rho, ux, uy, uz, &[], kp)
-            }
-            (false, _) => {
-                collide_span_fused::<L, T, false, false>(src, dst, x0, x1, rho, ux, uy, uz, &[], kp)
-            }
+            (true, Some(fr)) => collide_span_fused::<L, T, true, true>(
+                src, dst, x0, x1, rho, ux, uy, uz, fr, omega, kp,
+            ),
+            (true, None) => collide_span_fused::<L, T, true, false>(
+                src,
+                dst,
+                x0,
+                x1,
+                rho,
+                ux,
+                uy,
+                uz,
+                &[],
+                omega,
+                kp,
+            ),
+            (false, _) => collide_span_fused::<L, T, false, false>(
+                src,
+                dst,
+                x0,
+                x1,
+                rho,
+                ux,
+                uy,
+                uz,
+                &[],
+                omega,
+                kp,
+            ),
         }
     }
 }
@@ -708,6 +753,7 @@ struct FusedCtx<'a, L: Lattice, T: Real> {
     wall_u: &'a [[T; 3]],
     probe: Option<&'a [bool]>,
     ff: Option<&'a [[T; 3]]>,
+    omega: Option<&'a [T]>,
     force_on: bool,
     kp: &'a KParams<T>,
     range: CellRange,
@@ -962,6 +1008,7 @@ fn ensure_slab<L: Lattice, T: Real>(
         let uy = &ctx.uy_old[c0..c0 + nx];
         let uz = &ctx.uz_old[c0..c0 + nx];
         let ffrow = ctx.ff.map(|v| &v[c0..c0 + nx]);
+        let omega_row = ctx.omega.map(|v| &v[c0..c0 + nx]);
         let dst_view = PlaneView {
             planes: dst_raw,
             stride: cap_len,
@@ -981,6 +1028,7 @@ fn ensure_slab<L: Lattice, T: Real>(
                     collide_span_dispatch::<L, T>(
                         ctx.force_on,
                         ffrow,
+                        omega_row,
                         src_view,
                         dst_view,
                         a - 1,
@@ -1005,6 +1053,7 @@ fn ensure_slab<L: Lattice, T: Real>(
                         collide_span_dispatch::<L, T>(
                             ctx.force_on,
                             ffrow,
+                            omega_row,
                             dst_view,
                             dst_view,
                             a - 1,
@@ -1369,6 +1418,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         let (rho, ux, uy, uz) = (&fields.rho, &fields.ux, &fields.uy, &fields.uz);
         let solid = &fields.solid;
         let ff = fields.force_field.as_deref();
+        let omega = fields.omega_field.as_deref();
         let full_row = |y: usize, z: usize| {
             (z == 0 && halo[4])
                 || (z == nz - 1 && halo[5])
@@ -1384,6 +1434,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             let pb = g.pidx(0, y, z);
             let c0 = g.cidx(0, y, z);
             let ffrow = ff.map(|v| &v[c0..c0 + nx]);
+            let omega_row = omega.map(|v| &v[c0..c0 + nx]);
             let mut runs = Vec::new();
             solid_runs_row(&solid[pb - 1..pb - 1 + pnx], &mut runs);
             let view = PlaneView {
@@ -1397,6 +1448,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
                     collide_span_dispatch::<L, T>(
                         force_on,
                         ffrow,
+                        omega_row,
                         view,
                         view,
                         a - 1,
@@ -1438,6 +1490,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             let mut uy_g = [T::zero(); BLOCK];
             let mut uz_g = [T::zero(); BLOCK];
             let mut ff_g = [[T::zero(); 3]; BLOCK];
+            let mut omega_g = [T::zero(); BLOCK];
             let mut cnt = 0usize;
             let flush = |cnt: &mut usize,
                          cell_pi: &[usize; BLOCK],
@@ -1446,7 +1499,8 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
                          ux_g: &[T; BLOCK],
                          uy_g: &[T; BLOCK],
                          uz_g: &[T; BLOCK],
-                         ff_g: &[[T; 3]; BLOCK]| {
+                         ff_g: &[[T; 3]; BLOCK],
+                         omega_g: &[T; BLOCK]| {
                 if *cnt == 0 {
                     return;
                 }
@@ -1462,6 +1516,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
                     collide_span_dispatch::<L, T>(
                         force_on,
                         ff.map(|_| &ff_g[..*cnt]),
+                        omega.map(|_| &omega_g[..*cnt]),
                         view,
                         view,
                         0,
@@ -1502,15 +1557,19 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
                     if let Some(v) = ff {
                         ff_g[cnt] = v[c];
                     }
+                    if let Some(v) = omega {
+                        omega_g[cnt] = v[c];
+                    }
                     cnt += 1;
                     if cnt == BLOCK {
                         flush(
                             &mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g,
+                            &omega_g,
                         );
                     }
                 }
                 flush(
-                    &mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g,
+                    &mut cnt, &cell_pi, &mut fg, &rho_g, &ux_g, &uy_g, &uz_g, &ff_g, &omega_g,
                 );
             }
         };
@@ -1577,6 +1636,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
             wall_u: &fields.wall_u,
             probe: fields.probe.as_deref(),
             ff: fields.force_field.as_deref(),
+            omega: fields.omega_field.as_deref(),
             force_on,
             kp: &kp,
             range,
@@ -1804,6 +1864,7 @@ fn capture_stale<L: Lattice, T: Real>(
             }
             let cidx = g.cidx(pos[0], pos[1], pos[2]);
             let ffcell = ctx.ff.map(|v| &v[cidx..cidx + 1]);
+            let omega_cell = ctx.omega.map(|v| &v[cidx..cidx + 1]);
             // SAFETY: `cell` is thread-local; single-cell span.
             unsafe {
                 let view = PlaneView {
@@ -1814,6 +1875,7 @@ fn capture_stale<L: Lattice, T: Real>(
                 collide_span_dispatch::<L, T>(
                     ctx.force_on,
                     ffcell,
+                    omega_cell,
                     view,
                     view,
                     0,

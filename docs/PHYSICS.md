@@ -18,6 +18,35 @@ Record here the experiments and findings that justify fixes to the specification
 
 ## Experiment records
 
+### 2026-07-06: WALE LES MF-beta subset
+- Adopted LES model: **WALE** (Nicoud & Ducros 1999), not Smagorinsky. The decisive property is the laminar
+  null behavior: for unidirectional pure shear (Couette and Poiseuille), `S^d:S^d = 0` analytically, so
+  `nu_t = 0`. Smagorinsky would produce nonzero eddy viscosity in the same resolved laminar shear and would
+  silently bend the baseline physics.
+- Formula and conventions:
+  - `g_ij = du_i/dx_j`
+  - `S_ij = (g_ij + g_ji)/2`
+  - `S^d_ij = (g_ik g_kj + g_jk g_ki)/2 - delta_ij tr(g^2)/3`
+  - `nu_t = (Cw Delta)^2 (S^d:S^d)^(3/2) / ((S:S)^(5/2) + (S^d:S^d)^(5/4))`
+  - `Cw = 0.325`, `Delta = 1` in lattice units; the `0/0` limit is defined as `nu_t = 0`.
+- Implementation convention: WALE is a solver-level driver that writes a compact per-cell `omega_plus = 1/tau_eff`
+  field, where `tau_eff = 3(nu0 + nu_t) + 0.5`. Collision kernels only replace the local `omega_plus` fetch when
+  the optional field is present; the field-off path keeps the original uniform-relaxation arithmetic. The SGS field
+  is computed from the current post-streaming moments and therefore applies with a one-step lag.
+- Velocity-gradient observable: the symmetric off-diagonal shear terms reuse the native non-equilibrium stress
+  path used by `gather_strain_rate`. The diagonal entries and the antisymmetric rotation are reconstructed from
+  velocity differences; wall-adjacent derivatives use the half-way wall location and stored wall velocity. This
+  mixed path is intentional: D3Q19 moving-wall-adjacent non-equilibrium normal stresses showed small diagonal
+  artifacts in pure Couette, while the velocity derivative gives the correct pure-shear null tensor.
+- Measured release-test results in `crates/lbm-core/tests/wale_les.rs`:
+  - Constant per-cell `omega_plus` equal to the global value is bitwise identical to the field-off path for both
+    `CpuScalar` and `CpuSimd`.
+  - Couette null property: max `nu_t = 2.65e-48` (gate `<= 1e-12`).
+  - Poiseuille null property: max `nu_t <= 1e-12` (same test gate).
+  - Laminar duct non-interference after a null WALE update: velocity-field `L_inf <= 1e-12`.
+- Heavy characterization still pending in ignored tests: N=64 T15.4 TGV fitted `nu_eff`, deterministic N=48
+  multimode stabilization, and Re_tau=180 channel DNS comparison (T17/VR-STR-03).
+
 ### 2026-07-04: Level of mass drift due to rounding error
 - Total mass drift 1.05e-13 (relative) in a periodic box 64² over 1000 steps.
 - Collision and streaming conserve exactly analytically → this is accumulation of f64 rounding.

@@ -134,6 +134,7 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
     uz: &[T],
     solid: &[bool],
     ff: Option<&[[T; 3]]>,
+    omega: Option<&[T]>,
     p: &KParams<T>,
 ) {
     let three = T::r(3.0);
@@ -187,12 +188,15 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
         let i = pb + x;
         // SAFETY: row-disjoint dispatch (see RawSlice contract).
         unsafe {
+            let op = omega.map_or(p.omega_p, |v| v[x]);
+            let cp = if omega.is_some() {
+                T::one() - op / T::r(2.0)
+            } else {
+                p.cp
+            };
             let i0 = L::REST * np + i;
             let f0 = f.get(i0);
-            f.set(
-                i0,
-                f0 - p.omega_p * (f0 - feq[L::REST]) + p.cp * src[L::REST],
-            );
+            f.set(i0, f0 - op * (f0 - feq[L::REST]) + cp * src[L::REST]);
             for &(a, b) in L::PAIRS {
                 let (ia, ib) = (a * np + i, b * np + i);
                 let (fa, fb) = (f.get(ia), f.get(ib));
@@ -202,10 +206,10 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
                 let em = half * (feq[a] - feq[b]);
                 let sp = half * (src[a] + src[b]);
                 let sm = half * (src[a] - src[b]);
-                let rp = p.omega_p * (fp - ep);
+                let rp = op * (fp - ep);
                 let rm = p.omega_m * (fm - em);
-                f.set(ia, fa - rp - rm + p.cp * sp + p.cm * sm);
-                f.set(ib, fb - rp + rm + p.cp * sp - p.cm * sm);
+                f.set(ia, fa - rp - rm + cp * sp + p.cm * sm);
+                f.set(ib, fb - rp + rm + cp * sp - p.cm * sm);
             }
         }
     }
@@ -752,7 +756,7 @@ mod tests {
         let raw = RawSlice::new(&mut f);
         // SAFETY: single-threaded, sole writer of the row.
         unsafe {
-            collide_row::<L, T>(raw, np, 0, &rho, &ux, &uy, &uz, &solid, None, &kp);
+            collide_row::<L, T>(raw, np, 0, &rho, &ux, &uy, &uz, &solid, None, None, &kp);
         }
         for (k, (a, b)) in before.iter().zip(&f).enumerate() {
             // Bit equality via the exact f64 promotion (exact for f32 too,

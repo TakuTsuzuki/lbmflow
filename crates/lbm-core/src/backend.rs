@@ -358,6 +358,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
         let (rho, ux, uy, uz) = (&fields.rho, &fields.ux, &fields.uy, &fields.uz);
         let solid = &fields.solid;
         let ff = fields.force_field.as_deref();
+        let omega = fields.omega_field.as_deref();
         let body = |r: usize| {
             let y = r % g.core[1];
             let z = r / g.core[1];
@@ -376,6 +377,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
                     &uz[c0..c0 + nx],
                     &solid[pb..pb + nx],
                     ff.map(|v| &v[c0..c0 + nx]),
+                    omega.map(|v| &v[c0..c0 + nx]),
                     &kp,
                 )
             }
