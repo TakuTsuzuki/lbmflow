@@ -1318,3 +1318,29 @@ D2 spread with load matches roofline behavior — no code regression detected.
 D3Q19 target ≥1500 MLUPS NOT MET (peak measured 1353); the D3Q19 kernel needs
 further optimization. Claims-ledger 3D-GPU-perf remains RED. Kernel work (esoteric
 pull / better cache traversal / 19-population LDS bin) queued as ME-1-perf follow-up.
+
+## 2026-07-06 PM quiet-window bench (main dd40aae; src identical to 8fabc4d) — ME-1 gate MET, me1-perf REJECTED
+
+Quiet window (load 8→4 falling, no cargo/codex running), A/B/A protocol
+interleaving main against the me1-perf branch (85a5b7b, `step_periodic`
+specialized kernel), `bench_gpu --gpu-only`, Apple M5 Max / Metal:
+
+main (two samples):
+- D2Q9: 512² 11631/11386 (−4.3/−6.3% vs proto), 1024² 6831/6603 (−9.9/−12.9%),
+  2048² 5560/5511 (−20.3/−21.0%) — all inside the ±20% acceptance band
+  (2048² grazing it), confirming the window itself is sane.
+- **D3Q19: 128³ 2880/2778, 192³ 2813/2791 MLUPS → the ME-1 acceptance line
+  (single-GPU D3Q19 f32 ≥1,500 MLUPS) is MET on unmodified main.**
+  The 2026-07-06 morning "peak 1353" was a loaded-window artifact (load 3-18,
+  same roofline suppression the D2 rows showed in that session).
+
+me1-perf `step_periodic` (two samples, interleaved): D2Q9 512² 4205/4232
+(−65% vs proto), 1024² 4185/4091, 2048² 3661/3510; D3Q19 128³ 2561/2522,
+192³ 2489/2457. A consistent, reproducible regression on both lattices
+(D2 ~−64%, D3 ~−11%) versus main in the same window. The branch's own
+evidence was a static Naga-IR profile (1501 vs 3267 expressions) — IR size
+did not predict runtime; the general fused kernel's mask/branch overhead was
+already cache-served (as the 2026-07-05 bench header records). **Decision:
+me1-perf is rejected, not merged; ME-1 perf closes with no kernel change.**
+Follow-up optimization (if ever revisited) must be gated on measured MLUPS,
+not static profiles.
