@@ -276,7 +276,12 @@ struct GpuResourcePlan {
 }
 
 impl GpuResourcePlan {
-    fn for_grid<L: Lattice>(nx: usize, ny: usize, nz: usize, element_bytes: u64) -> Result<Self, GpuError> {
+    fn for_grid<L: Lattice>(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        element_bytes: u64,
+    ) -> Result<Self, GpuError> {
         let n = nx
             .checked_mul(ny)
             .and_then(|xy| xy.checked_mul(nz))
@@ -312,7 +317,11 @@ impl GpuResourcePlan {
             n,
             element_bytes,
             fbytes: bytes(qn, element_bytes, "population buffer")?,
-            stash_bytes: bytes(wgsl::stash_len::<L>(nx, ny, nz), element_bytes, "edge stash")?,
+            stash_bytes: bytes(
+                wgsl::stash_len::<L>(nx, ny, nz),
+                element_bytes,
+                "edge stash",
+            )?,
             mask_bytes: bytes(n, 4, "solid mask")?,
             vec2_bytes: bytes(n, 16, "vec3 field")?,
             moments_bytes: bytes(n, 4, "moment buffer")?,
@@ -978,7 +987,11 @@ impl<L: Lattice> WgpuBackend<L> {
             }
             let a = face.axis();
             let (t1, t2) = face.tangents();
-            let base = if face.is_neg() { 0 } else { (dims[a] - 1) * strides[a] };
+            let base = if face.is_neg() {
+                0
+            } else {
+                (dims[a] - 1) * strides[a]
+            };
             let stride1 = strides[t1];
             let stride2 = strides[t2];
             let extent1 = dims[t1];
@@ -1000,16 +1013,51 @@ impl<L: Lattice> WgpuBackend<L> {
             let q_m1 = L::dir_index(add(n_in, unit(t1, -1)));
             let q_t1 = L::dir_index(unit(t1, 1));
             let q_mt1 = L::dir_index(unit(t1, -1));
-            let q_p2 = if L::D == 3 { L::dir_index(add(n_in, unit(t2, 1))) } else { q_p1 };
-            let q_m2 = if L::D == 3 { L::dir_index(add(n_in, unit(t2, -1))) } else { q_m1 };
-            let q_t2 = if L::D == 3 { L::dir_index(unit(t2, 1)) } else { q_t1 };
-            let q_mt2 = if L::D == 3 { L::dir_index(unit(t2, -1)) } else { q_mt1 };
-            let q_pp = if L::D == 3 { L::dir_index(add(unit(t1, 1), unit(t2, 1))) } else { q_t1 };
-            let q_pm = if L::D == 3 { L::dir_index(add(unit(t1, 1), unit(t2, -1))) } else { q_t1 };
-            let q_mp = if L::D == 3 { L::dir_index(add(unit(t1, -1), unit(t2, 1))) } else { q_mt1 };
-            let q_mm = if L::D == 3 { L::dir_index(add(unit(t1, -1), unit(t2, -1))) } else { q_mt1 };
+            let q_p2 = if L::D == 3 {
+                L::dir_index(add(n_in, unit(t2, 1)))
+            } else {
+                q_p1
+            };
+            let q_m2 = if L::D == 3 {
+                L::dir_index(add(n_in, unit(t2, -1)))
+            } else {
+                q_m1
+            };
+            let q_t2 = if L::D == 3 {
+                L::dir_index(unit(t2, 1))
+            } else {
+                q_t1
+            };
+            let q_mt2 = if L::D == 3 {
+                L::dir_index(unit(t2, -1))
+            } else {
+                q_mt1
+            };
+            let q_pp = if L::D == 3 {
+                L::dir_index(add(unit(t1, 1), unit(t2, 1)))
+            } else {
+                q_t1
+            };
+            let q_pm = if L::D == 3 {
+                L::dir_index(add(unit(t1, 1), unit(t2, -1)))
+            } else {
+                q_t1
+            };
+            let q_mp = if L::D == 3 {
+                L::dir_index(add(unit(t1, -1), unit(t2, 1)))
+            } else {
+                q_mt1
+            };
+            let q_mm = if L::D == 3 {
+                L::dir_index(add(unit(t1, -1), unit(t2, -1)))
+            } else {
+                q_mt1
+            };
             let unk = L::unknowns(face);
-            assert!(unk.len() == 3 || unk.len() == 5, "GPU open face unknown count must be 3 or 5");
+            assert!(
+                unk.len() == 3 || unk.len() == 5,
+                "GPU open face unknown count must be 3 or 5"
+            );
             let (kind, p0, p1) = match *bc {
                 FaceBC::Closed => unreachable!(),
                 FaceBC::Velocity { u } => (wgsl::BC_VELOCITY, u[0], u[1]),
@@ -1244,7 +1292,11 @@ impl<L: Lattice> WgpuBackend<L> {
                         for c1 in 0..dims[t1] {
                             let t = c2 * dims[t1] + c1;
                             let mut pos = [0usize; 3];
-                            pos[face.axis()] = if face.is_neg() { 0 } else { dims[face.axis()] - 1 };
+                            pos[face.axis()] = if face.is_neg() {
+                                0
+                            } else {
+                                dims[face.axis()] - 1
+                            };
                             pos[t1] = c1;
                             pos[t2] = c2;
                             stash[off + k * ext + t] =
@@ -1255,7 +1307,11 @@ impl<L: Lattice> WgpuBackend<L> {
             }
             off += unk.len() * ext;
         }
-        q.write_buffer(&fields.stash[cur], 0, &encode_storage(self.cfg.storage, &stash));
+        q.write_buffer(
+            &fields.stash[cur],
+            0,
+            &encode_storage(self.cfg.storage, &stash),
+        );
         q.write_buffer(
             &fields.stash[1 - cur],
             0,
@@ -1378,7 +1434,8 @@ impl<L: Lattice> WgpuBackend<L> {
         let (nx, ny, nz) = (g.core[0] as u32, g.core[1] as u32, g.core[2] as u32);
         let n = (nx as usize) * (ny as usize) * (nz as usize);
         let element_bytes = self.cfg.storage.element_bytes();
-        let plan = GpuResourcePlan::for_grid::<L>(nx as usize, ny as usize, nz as usize, element_bytes)?;
+        let plan =
+            GpuResourcePlan::for_grid::<L>(nx as usize, ny as usize, nz as usize, element_bytes)?;
         plan.validate(&self.ctx.device.limits())?;
         let device = &self.ctx.device;
         use wgpu::BufferUsages as U;
@@ -1403,7 +1460,11 @@ impl<L: Lattice> WgpuBackend<L> {
         ];
         let mask = buf("mask", (n * 4) as u64, U::STORAGE | U::COPY_DST);
         let wall_u_size = if full_wall_u { (n * 16) as u64 } else { 16 };
-        let force_field_size = if full_force_field { (n * 16) as u64 } else { 16 };
+        let force_field_size = if full_force_field {
+            (n * 16) as u64
+        } else {
+            16
+        };
         let wall_u = buf("wall_u", wall_u_size, U::STORAGE | U::COPY_DST);
         let force_field = buf("force_field", force_field_size, U::STORAGE | U::COPY_DST);
         let rho = buf(
@@ -1939,7 +2000,10 @@ impl<L: Lattice> WgpuBackend<L> {
         let raw = self.map_staging(staging, bytes)?;
 
         let f_count = L::Q * n;
-        let f = Arc::new(bytemuck::cast_slice::<u8, f32>(&raw[..fbytes as usize]).to_vec());
+        let f = Arc::new(decode_storage(
+            self.cfg.storage,
+            &raw[..fbytes as usize],
+        ));
         let moments: &[f32] =
             bytemuck::cast_slice(&raw[moments_offset as usize..probe_offset as usize]);
         out.rho.clear();
