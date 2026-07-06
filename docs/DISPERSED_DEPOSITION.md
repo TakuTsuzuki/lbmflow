@@ -87,7 +87,7 @@ non-dimensional REGIME line.
 | P0 | Isolated skeleton; trend gate; 10 spec findings filed | ✅ done |
 | P1 | Fidelity: no force-deposit; resolved tray wall-jet; multi-jet; gentle empty = 0.0 | ✅ done |
 | P1.1 | Low-Mach: diffusive scaling; Ma ≤ 0.1, τ ≥ 0.51; CV band re-frozen 1.05–1.30 | ✅ done |
-| P2 | Core promotion: land CR-1/CR-2/CR-3 (§5); example switches from substitutions to real BCs + the core particle layer, reproducing P1.1 numbers within band | Gate: T18.1–.3 green, then example parity |
+| P2 | Core promotion: land CR-1/CR-2/CR-3 (§5); example switches from substitutions to real BCs + the core particle layer, reproducing P1.1 numbers within band | ✅ done 2026-07-06: T18.1–.3 green (29 tests + 2 GPU-on-Metal); example on face_patches + step_depositing reproduces gentle CV=1.138 (band 1.05–1.30), n_deposited 7836 vs 7868 (0.4%), harsh trend holds. Near-wall dispersion stays example-local by design (FR-PART-03) |
 | P3 | Free surface: single-phase mass-tracking (VOF-on-LBM), NOT a switch to FVM/FEM. Build ONLY if P1/P2 evidence shows the agitation-worsens-uniformity trend requires the interface — do not build speculatively | Gate: reproduce that trend from interface sloshing |
 | P4 | Inverse solver: ship discrete-recipe comparison FIRST; then CMA-ES / Bayesian-opt + a response-surface surrogate | Gate: recover a known-good recipe on a synthetic n\* (T18.5) |
 

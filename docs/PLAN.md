@@ -167,14 +167,17 @@ measurements are consolidated into the cluster plan (CLUSTER_OPTIONS.md, awaitin
 AI-agent-native forward/inverse design of deposited number-density fields
 n(x,y) from a withdraw/eject/agitate/settle protocol. Spec + phasing (P0–P4)
 frozen in [DISPERSED_DEPOSITION.md](DISPERSED_DEPOSITION.md); acceptance =
-VALIDATION.md **T18**. Status: P0/P1/P1.1 done and merged
-(`crates/lbm-cli/examples/dispersed_seeding/`, gentle CV band frozen
-1.05–1.30 at Ma ≤ 0.1); **P2 in progress** — promote the example's
-substitutions to core: CR-1 interior volume source/sink, CR-2 per-cell masked
-face BC, CR-3 deposition-aware particle layer (extends `particles.rs`), each
-with a codex-adversarial acceptance test in a separate worktree. P3 (VOF-on-LBM
-free surface) is evidence-gated, not speculative; P4 = inverse solver
-(discrete-recipe comparison first, then CMA-ES/BO + surrogate).
+VALIDATION.md **T18**. Status: **P0–P2 done** (2026-07-06). P2 landed CR-1
+interior volume source/sink, CR-2 per-cell masked face patches (incl. the
+frozen zero-velocity-lid semantics and global-coords seam handling), and CR-3
+deposition-aware particles (`step_depositing`), each gated by a
+codex-adversarial T18 suite (T18.1/.2/.3 green; 2 impl bugs caught and fixed
+at first measurement — see PHYSICS.md "T18 first-measurement
+reconciliation"); the example now runs on the real core capabilities and
+reproduces the P1.1 bands (gentle CV=1.138 ∈ [1.05, 1.30], deposition parity
+0.4%). Next: P3 (VOF-on-LBM free surface) is evidence-gated, not speculative;
+P4 = inverse solver (discrete-recipe comparison first, then CMA-ES/BO +
+surrogate) — T18.4 trend anchors and T18.5 recovery are the gates.
 
 **Fine-grained scheduling (rev.3)**: the authoritative dependency DAG is
 **REQ_STIRRED_REACTOR.md §11** (W-items; MF-α〜ζ above are the delegation bundles,
