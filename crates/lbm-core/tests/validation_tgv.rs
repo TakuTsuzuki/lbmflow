@@ -104,18 +104,12 @@ fn t1_tgv_effective_viscosity_within_two_percent() {
     let n = 64;
     let nu = 0.02;
     let (mut sim, _, _, k) = tgv_init(n, nu, TgvMode::Base);
-    let energy = |s: &Simulation<f64>| -> f64 {
-        s.ux_field()
-            .iter()
-            .zip(s.uy_field())
-            .map(|(ux, uy)| ux * ux + uy * uy)
-            .sum()
-    };
     sim.run(200);
-    let e1 = energy(&sim);
+    let e1 = common::tgv_analysis::ke2d(sim.ux_field(), sim.uy_field());
     sim.run(1000);
-    let e2 = energy(&sim);
-    let nu_eff = (e1 / e2).ln() / (4.0 * k * k * 1000.0);
+    let e2 = common::tgv_analysis::ke2d(sim.ux_field(), sim.uy_field());
+    // 2D TGV single mode: |K|² = 2 k².
+    let nu_eff = common::tgv_analysis::tgv_nu_eff(e1, e2, 2.0 * k * k, 1000.0);
     let rel = (nu_eff / nu - 1.0).abs();
     assert!(
         rel <= 0.02,

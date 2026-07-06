@@ -201,3 +201,28 @@ regime, dnu_rel = 6.6e-8) confirms it does not touch the diffusive-limit
 scaling either. Multimode (large S^d) shows it activates as expected. Three
 regimes, three consistent behaviors — the WALE-over-Smagorinsky ruling holds
 by measurement, not just by cited theory.
+## Dry run — 2026-07-06, lbmflow-accuracy-audit Skill on Bouzidi curved BC
+
+**Skill**: `.claude/skills/lbmflow-accuracy-audit` (v1). **Test file**:
+`crates/lbm-core/tests/accuracy_audit_bouzidi.rs`. **Branch**:
+`qa/skill-accuracy-audit`. **Result**: 2 default light tests pass (G1 A1
+convergence order slope 1.993 r² 1.0000; G2 A2 sub-cell translation spread
+5.69% peak-relative), 3 ignored (G4/G6 SPEC-GAPs carrying derivations, G5
+heavy tau sweep). **Zero engine bugs surfaced.** One P3 test-side finding:
+
+**ANOM-DRY-001 — convergence-order fit x-axis reversal** — S3 (minor, test
+tooling; taxonomy: fit-parameterization). **Disposition: test-fix (self,
+in-worktree).**
+- Scenario+config: G1 in accuracy_audit_bouzidi.rs, off-grid Poiseuille,
+  ny ∈ {22, 30, 42}, diffusive scaling F ∝ 1/width², nu=0.04.
+- Expected: `order_fit` slope ≈ +2 (Bouzidi second-order at fractional wall).
+- Observed (first pass): slope = −1.993, r² = 1.0000. Raw errors
+  `[2.50e-3, 1.29e-3, 6.41e-4]` at width `[20.4, 28.4, 40.4]`.
+- Root cause: passed `width` (grows with resolution) to `order_fit` instead
+  of `1/width` (mesh spacing → 0 as we refine); fit landed at
+  `err ∝ width^{-p}` with p ≈ 2.
+- Impact (bounded, this file only): none in engine. Trap documented in-line
+  in the test's `hs.push(...)` comment so the next audit avoids it.
+- **Calibration**: this is one more test-side derivation error on top of the
+  6/6 from the accuracy_audit.rs pass; the Skill's P3 discipline (derive
+  before blaming) caught it in one pass and saved a wasted engine-fix order.
