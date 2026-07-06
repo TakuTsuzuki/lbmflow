@@ -12,7 +12,7 @@
 //! the boundary shell — the communication-overlap seam) and must again match
 //! bit-for-bit.
 
-use lbm_core::lattice::D2Q9;
+use lbm_core::lattice::{D2Q9, D3Q19, D3Q27};
 use lbm_core::prelude::*;
 
 type S<H> = Solver<D2Q9, f64, CpuScalar, H>;
@@ -307,8 +307,15 @@ fn t13_tgv3d_2x2x2_split_invariant() {
     // 3D decomposition (COMPETITIVE_SPEC T13: "+3D: 2x2x2"): exercises the
     // z exchange phase and 3D edge/corner halo forwarding, which no 2D case
     // touches. D3Q19, triply periodic TGV.
-    use lbm_core::lattice::D3Q19;
-    type S3<H> = Solver<D3Q19, f64, CpuScalar, H>;
+    check_tgv3d_split_invariant::<D3Q19>("D3Q19");
+}
+
+#[test]
+fn t13_tgv3d_d3q27_2x2x2_split_invariant() {
+    check_tgv3d_split_invariant::<D3Q27>("D3Q27");
+}
+
+fn check_tgv3d_split_invariant<L: Lattice>(lattice: &str) {
     let n = 16usize;
     let spec = GlobalSpec::<f64> {
         dims: [n, n, n],
@@ -329,11 +336,11 @@ fn t13_tgv3d_2x2x2_split_invariant() {
         )
     };
     for (decomp, two_pass) in [([2, 2, 2], false), ([2, 2, 2], true), ([2, 1, 2], false)] {
-        let mut s: S3<InProcess> =
+        let mut s: Solver<L, f64, CpuScalar, InProcess> =
             Solver::new(&spec, &[], &[], decomp, CpuScalar::default(), InProcess);
         s.set_two_pass(two_pass);
         s.init_with(init);
-        let mut b: S3<LocalPeriodic> = Solver::new(
+        let mut b: Solver<L, f64, CpuScalar, LocalPeriodic> = Solver::new(
             &spec,
             &[],
             &[],
@@ -359,10 +366,10 @@ fn t13_tgv3d_2x2x2_split_invariant() {
                 .fold(0.0f64, f64::max);
             assert_eq!(
                 d, 0.0,
-                "3D {decomp:?} two_pass={two_pass}: {name} differs by {d:e}"
+                "{lattice} 3D {decomp:?} two_pass={two_pass}: {name} differs by {d:e}"
             );
         }
-        for q in 0..19 {
+        for q in 0..L::Q {
             let (fa, fb) = (b.gather_f(q), s.gather_f(q));
             let d = fa
                 .iter()
@@ -371,13 +378,13 @@ fn t13_tgv3d_2x2x2_split_invariant() {
                 .fold(0.0f64, f64::max);
             assert_eq!(
                 d, 0.0,
-                "3D {decomp:?} two_pass={two_pass}: f[{q}] differs by {d:e}"
+                "{lattice} 3D {decomp:?} two_pass={two_pass}: f[{q}] differs by {d:e}"
             );
         }
         let dm = (b.total_mass() - s.total_mass()).abs();
-        assert!(dm <= 1e-12 * b.total_mass(), "3D mass Δ = {dm:e}");
+        assert!(dm <= 1e-12 * b.total_mass(), "{lattice} 3D mass Δ = {dm:e}");
     }
-    println!("TGV3D 16^3: bit-exact across 2x2x2 (+two-pass) and 2x1x2 over 100 steps");
+    println!("{lattice} TGV3D 16^3: bit-exact across 2x2x2 (+two-pass) and 2x1x2 over 100 steps");
 }
 
 #[test]

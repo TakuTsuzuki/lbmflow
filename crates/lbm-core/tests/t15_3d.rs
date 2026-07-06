@@ -594,7 +594,7 @@ fn t15_3_sphere_drag_re100() {
 /// and return (L2rel error vs the diffusion-limit solution, relative decay-
 /// rate error). Short run ⇒ vortex stretching stays negligible and the
 /// linearised solution u = u_init e^{−3νk²t} is the reference.
-fn tgv3d_short(n: usize, nu: f64, u0_coef: f64) -> (f64, f64) {
+fn tgv3d_short<L: Lattice>(n: usize, nu: f64, u0_coef: f64) -> (f64, f64) {
     let u0 = u0_coef / n as f64;
     let k = 2.0 * PI / n as f64;
     let spec = GlobalSpec::<f64> {
@@ -603,7 +603,7 @@ fn tgv3d_short(n: usize, nu: f64, u0_coef: f64) -> (f64, f64) {
         periodic: [true, true, true],
         ..Default::default()
     };
-    let mut s: S3 = Solver::new(
+    let mut s: Solver<L, f64, CpuScalar, LocalPeriodic> = Solver::new(
         &spec,
         &[],
         &[],
@@ -625,7 +625,7 @@ fn tgv3d_short(n: usize, nu: f64, u0_coef: f64) -> (f64, f64) {
         let p = u0 * u0 / 16.0 * (((2.0 * xf).cos() + (2.0 * yf).cos()) * ((2.0 * zf).cos() + 2.0));
         (1.0 + 3.0 * p, vel(x, y, z))
     });
-    let ke = |s: &S3| -> f64 {
+    let ke = |s: &Solver<L, f64, CpuScalar, LocalPeriodic>| -> f64 {
         let (ux, uy, uz) = (s.gather_ux(), s.gather_uy(), s.gather_uz());
         ux.iter()
             .zip(&uy)
@@ -678,8 +678,8 @@ fn t15_4_tgv3d_diffusive_convergence() {
     // weak-vortex-stretching intent. f64 keeps 6+ digits of headroom at
     // u0 = 2e-6.
     let u0_coef = 1.28e-4;
-    let (e32, _) = tgv3d_short(32, nu, u0_coef);
-    let (e64, rate64) = tgv3d_short(64, nu, u0_coef);
+    let (e32, _) = tgv3d_short::<D3Q19>(32, nu, u0_coef);
+    let (e64, rate64) = tgv3d_short::<D3Q19>(64, nu, u0_coef);
     let order = (e32 / e64).log2();
     println!("TGV3D convergence: e32 = {e32:.4e}, e64 = {e64:.4e}, order = {order:.3}");
     assert!(
@@ -690,4 +690,115 @@ fn t15_4_tgv3d_diffusive_convergence() {
         order >= 1.7,
         "order = {order:.3} (e32 = {e32:.3e}, e64 = {e64:.3e})"
     );
+}
+
+#[test]
+fn t15_4_tgv3d_diffusive_convergence_d3q27() {
+    let nu = 0.02;
+    let u0_coef = 1.28e-4;
+    let (e32, _) = tgv3d_short::<D3Q27>(32, nu, u0_coef);
+    let (e64, rate64) = tgv3d_short::<D3Q27>(64, nu, u0_coef);
+    let order = (e32 / e64).log2();
+    println!("D3Q27 TGV3D convergence: e32 = {e32:.4e}, e64 = {e64:.4e}, order = {order:.3}");
+    assert!(
+        rate64 <= 0.02,
+        "D3Q27 N=64 decay rate off the diffusion limit by {rate64:.3e} (> 2%)"
+    );
+    assert!(
+        order >= 1.7,
+        "D3Q27 order = {order:.3} (e32 = {e32:.3e}, e64 = {e64:.3e})"
+    );
+}
+
+fn advected_tgv3d_decay_defect<L: Lattice>(collision: CollisionKind, mean_u: f64) -> f64 {
+    let n = 24usize;
+    let nu = 0.02;
+    let steps = 160usize;
+    let k = 2.0 * PI / n as f64;
+    let u0 = 0.012;
+    let mut spec = GlobalSpec::<f64> {
+        dims: [n, n, n],
+        nu,
+        collision,
+        periodic: [true, true, true],
+        ..Default::default()
+    };
+    let run_rate = |mean_u: f64, spec: &GlobalSpec<f64>| -> f64 {
+        let mut s: Solver<L, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        s.init_with(move |x, y, z| {
+            let (xf, yf, zf) = (k * x as f64, k * y as f64, k * z as f64);
+            let p =
+                u0 * u0 / 16.0 * (((2.0 * xf).cos() + (2.0 * yf).cos()) * ((2.0 * zf).cos() + 2.0));
+            (
+                1.0 + 3.0 * p,
+                [
+                    mean_u + u0 * xf.sin() * yf.cos() * zf.cos(),
+                    -u0 * xf.cos() * yf.sin() * zf.cos(),
+                    0.0,
+                ],
+            )
+        });
+        let perturbation_ke = |s: &Solver<L, f64, CpuScalar, LocalPeriodic>| -> f64 {
+            let (ux, uy, uz) = (s.gather_ux(), s.gather_uy(), s.gather_uz());
+            ux.iter()
+                .zip(&uy)
+                .zip(&uz)
+                .map(|((x, y), z)| (x - mean_u).powi(2) + y * y + z * z)
+                .sum::<f64>()
+        };
+        let e0 = perturbation_ke(&s);
+        s.run(steps);
+        let e1 = perturbation_ke(&s);
+        assert!(
+            e0.is_finite() && e1.is_finite() && e0 > 0.0 && e1 > 0.0,
+            "advected TGV energy must stay finite and positive: e0={e0:e}, e1={e1:e}"
+        );
+        -(e1 / e0).ln() / steps as f64
+    };
+    let base = run_rate(0.0, &spec);
+    spec.collision = collision;
+    let advected = run_rate(mean_u, &spec);
+    let defect = (advected - base).abs() / base.abs();
+    assert!(
+        base.is_finite() && advected.is_finite() && defect.is_finite(),
+        "advected TGV rates must be finite: base={base:e}, advected={advected:e}, defect={defect:e}"
+    );
+    defect
+}
+
+#[test]
+#[ignore = "baseline characterization: prints Galilean decay-rate defects for MF-alpha stage 2"]
+fn mf_alpha_galilean_invariance_baseline_advected_tgv3d() {
+    let cases = [
+        (
+            "D3Q19 BGK",
+            advected_tgv3d_decay_defect::<D3Q19>(CollisionKind::Bgk, 0.05),
+        ),
+        (
+            "D3Q19 TRT",
+            advected_tgv3d_decay_defect::<D3Q19>(CollisionKind::Trt { magic: 0.1875 }, 0.05),
+        ),
+        (
+            "D3Q27 BGK",
+            advected_tgv3d_decay_defect::<D3Q27>(CollisionKind::Bgk, 0.05),
+        ),
+        (
+            "D3Q27 TRT",
+            advected_tgv3d_decay_defect::<D3Q27>(CollisionKind::Trt { magic: 0.1875 }, 0.05),
+        ),
+    ];
+    for (name, defect) in cases {
+        println!("{name} advected-TGV3D decay-rate defect at U0=0.05: {defect:.6e}");
+        assert!(
+            defect.is_finite(),
+            "{name} defect is not finite: {defect:e}"
+        );
+    }
 }
