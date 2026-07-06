@@ -11,7 +11,15 @@ use lbm_core::particles::{sample_grid, DepositEvent, Particle, ParticleSet, Samp
 const RHO_F: f64 = 1.0;
 const RHO_P: f64 = 2.0;
 const NU: f64 = 0.1;
-const V0: f64 = 1.0e-4;
+// Triage 2026-07-06 (ANOM-P4-004): v0 = 1e-4 violated the Stokes-regime
+// assumption because hitting tau_p = 2 at rho_p = 2, nu = 0.1 needs
+// d = sqrt(18*0.1*2/2) ~= 1.34 lattice units, so Re_p = v0*d/nu = 1.34e-3
+// and the SN factor 1 + 0.15*Re^0.687 shifts lambda by 1.3e-3 relative —
+// exactly the first-pass failure. With v0 = 1e-10, Re_p = 1.34e-9 and the
+// SN residual on lambda is 0.15*Re^0.687 = 1.2e-7, an ~8x margin under the
+// 1e-6 identification band. The integrator identity itself is v0-invariant
+// (linear ODE), so shrinking v0 only purifies the regime.
+const V0: f64 = 1.0e-10;
 const REL_BAND: f64 = 1.0e-6;
 const ABS_BAND: f64 = 1.0e-12;
 
