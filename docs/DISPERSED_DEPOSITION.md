@@ -199,6 +199,34 @@ DEPOSITION — `pos` = the interpolated crossing point (duplicated in
 criteria, unlike the pre-step state), `exposure` = as accumulated through the
 depositing step's start sample.
 
+## 5.5 Phase B model-validity domain (near-neutral particles, frozen 2026-07-06)
+
+The real dispersed phase is ~20 µm organic/silicone membrane-like material —
+near-neutrally buoyant (|ρ_p/ρ_f − 1| ≲ 0.03–0.05, sign unconfirmed). The
+core one-way integrator is drag-only (semi-implicit Schiller-Naumann, pinned
+exact by the particle audit). For ρ_p/ρ_f → 1 the neglected BBO terms (added
+mass, pressure-gradient/Faxén, Basset history) are O(1) RELATIVE to the
+density-difference forcing: the steady tracer limit v → u remains correct,
+but transient response and inertial migration are order-unity wrong (V&V
+physics-validity note, 2026-07-06).
+
+Frozen consequences:
+- Settling-dominated conclusions claim validity only for
+  |ρ_p/ρ_f − 1| ≥ 0.05 (provisional floor; frozen at first measurement of
+  the tracer-limit audit).
+- Below the floor, the honest model is TRACER + SETTLING SLIP: v = u + v_s
+  (the fast-relaxation limit; excellent here since τ_p ≈ 2.3e-5 s is far
+  below any resolved flow timescale). The ballistic-settle switch and all
+  near-neutral results are validated against THIS limit, not against SN
+  settling. Inertial migration / lift effects are outside the validity claim.
+- V&V adds a tracer-limit audit row (v → u relaxation in nonuniform flow)
+  once the Phase B spec lands.
+- ρ_p sensitivity sweep {970, 1000, 1030, 1060} kg/m³ is the standard Phase B
+  experiment matrix (2D visualization per run); deposition for near-neutral
+  particles is transport + contact-adhesion dominated — the adhesion capture
+  criterion enters as a (B)-class closure
+  (docs/proposals/adhesion-capture-closure.md, in preparation).
+
 ## 6. Validation anchors (forward-model monotone signs) = T18.4
 
 The forward model must reproduce these monotone trends:
