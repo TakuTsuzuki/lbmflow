@@ -218,6 +218,32 @@ The 5 dispositions of order #2:
    `t14_pressure_bc_ulp_sensitivity_control` (continuously verifies that the 1-ulp perturbation drift is in the
    1e-6..1e-5 band; revisit the tolerance line if it leaves the band).
 
+## New note (2026-07-06 W-ROT direct-forcing IBM)
+
+1. Implemented marker-based rotating-body direct-forcing IBM in `lbm-core` as
+   a native `Solver::apply_rotating_ibm` force-source update. It composes by
+   adding to the existing per-cell Guo force field and does not change GPU,
+   SIMD, or collide internals. The API accepts explicit marker lists and
+   includes a 2D circle marker builder; the velocity target is `U = Omega x r`.
+2. Characterization from `cargo test -p lbm-core --release --test
+   rotating_ibm -- --nocapture`:
+   - 3-point full-strength rotating-cylinder update: one-sweep
+     `slip_max_rel=2.400000e-2`; four-sweep multi-direct-forcing
+     `slip_max_rel=2.922798e-3`, `slip_rms_rel=1.839415e-3`,
+     `momentum_error_rel=2.721937e-15`, `torque_z=6.913391e0`.
+   - Marker-straddling 2x2 split: monolithic vs split max velocity difference
+     `0.000000e0`.
+   - Under-relaxed IBM Couette vs native moving wall:
+     `slip_max_rel=1.169682e-3`, profile `L2_rel=5.735445e-1`.
+   - Under-relaxed Taylor-Couette annulus:
+     `slip_max_rel=3.582527e-4`, `momentum_error_rel=5.187458e-12`,
+     `torque_z=-1.221330e-1`, analytic-profile `L2_rel=8.999944e-1`.
+3. Full direct forcing is stiff in the long near-wall profile cases on the
+   current coarse BGK/TRT grid, so those tests freeze an explicit
+   under-relaxed setting (`relaxation=0.05`). The full-strength
+   multi-direct-forcing adoption condition is covered by the standalone slip
+   reduction test.
+
 2. **GPU bench measurement hygiene**: with unified memory a concurrently running CPU suite
    (today: the 3D agent's t15, load ~38) eats the GPU's DRAM bandwidth, and
    bandwidth-bound kernels drop 15-25% at 1024²/2048² (512², which fits in SLC, is insensitive).
