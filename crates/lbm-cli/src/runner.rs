@@ -477,7 +477,7 @@ fn run_t<T: Real>(
         wall_seconds: wall,
         mlups: cells * executed as f64 / wall.max(1e-9) / 1e6,
         diagnostics: Diagnostics {
-            total_mass: sim.total_mass().as_f64(),
+            total_mass: sim.total_mass_f64(),
             max_speed,
             tau: sim.tau(),
         },
@@ -979,7 +979,7 @@ fn run3d_t<T: lbm_core::real::Real>(
         wall_seconds: wall,
         mlups: cells * executed as f64 / wall.max(1e-9) / 1e6,
         diagnostics: Diagnostics {
-            total_mass: s.total_mass().as_f64(),
+            total_mass: s.total_mass_f64(),
             max_speed,
             tau: s.tau(),
         },

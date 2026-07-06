@@ -434,7 +434,7 @@ fn t14_cell_force_bgk() {
             [(2e-5 * yf.sin()) as f32, (-2e-5 * xf.sin()) as f32, 0.0]
         })
         .collect();
-    pair.cpu.fields_mut(0).force_field = Some(field.clone());
+    pair.cpu.set_body_force_field_values(&field);
     pair.gpu.set_force_field(field);
     pair.init(move |x, y| {
         let (xf, yf) = (k * x as f64, k * y as f64);

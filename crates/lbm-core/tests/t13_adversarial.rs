@@ -338,22 +338,7 @@ fn set_force_field<L: Lattice, H: HaloExchange<f64>>(
     s: &mut Sol<L, H>,
     force: impl Fn(usize, usize, usize) -> [f64; 3],
 ) {
-    for pi in 0..s.part_count() {
-        let sub = s.sub(pi).clone();
-        let g = sub.geom;
-        let fields = s.fields_mut(pi);
-        let ff = fields
-            .force_field
-            .get_or_insert_with(|| vec![[0.0; 3]; g.n_core()]);
-        for z in 0..g.core[2] {
-            for y in 0..g.core[1] {
-                for x in 0..g.core[0] {
-                    ff[g.cidx(x, y, z)] =
-                        force(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
-                }
-            }
-        }
-    }
+    s.set_body_force_field(force);
 }
 
 #[test]

@@ -31,6 +31,10 @@ if [ "$(uname -sm)" = "Darwin arm64" ] && ! file "$(command -v mpirun)" | grep -
 fi
 echo "using $(command -v mpirun): $(mpirun --version | head -1)"
 
+echo "== build (--features mpi, debug dirty-guard check) =="
+cargo build -p lbm-core --features mpi --example mpi_t13 || exit 1
+DEBUG_BIN="$ROOT/target/debug/examples/mpi_t13"
+
 echo "== build (--features mpi) =="
 cargo build -p lbm-core --release --features mpi --example mpi_t13 || exit 1
 BIN="$ROOT/target/release/examples/mpi_t13"
@@ -55,6 +59,25 @@ elif ! grep -q "MPI rank specification mismatch: nu differs across ranks" "$tmp"
     fail=1
 fi
 rm -f "$tmp"
+
+echo "== mpirun -n 2 mpi_t13 dirty-mismatch (debug expected failure) =="
+tmp="$(mktemp)"
+if mpirun --oversubscribe -n 2 "$DEBUG_BIN" dirty-mismatch >"$tmp" 2>&1; then
+    echo "FAIL: dirty-mismatch unexpectedly succeeded in debug" >&2
+    cat "$tmp" >&2
+    fail=1
+elif ! grep -q "MpiSolver host_dirty mismatch across ranks before step" "$tmp"; then
+    echo "FAIL: dirty-mismatch did not trip the host_dirty debug assertion" >&2
+    cat "$tmp" >&2
+    fail=1
+fi
+rm -f "$tmp"
+
+echo "== mpirun -n 2 mpi_t13 dirty-mismatch (release assert compiled out) =="
+if ! mpirun --oversubscribe -n 2 "$BIN" dirty-mismatch; then
+    echo "FAIL: dirty-mismatch failed in release; debug assertion should be compiled out" >&2
+    fail=1
+fi
 
 echo
 if [ "$fail" -eq 0 ]; then

@@ -40,22 +40,21 @@ fn tgv(n: usize) -> Cpu {
     s
 }
 
-/// A single NaN population injected mid-run is caught at the next check,
-/// with the completed-step count in the error.
+/// A single NaN force injected mid-run is caught at the next check, with the
+/// completed-step count in the error.
 #[test]
 fn nan_injection_detected_within_one_interval() {
     let mut s = tgv(32);
     s.run(5); // healthy prefix
     assert_eq!(s.time(), 5);
 
-    // Inject NaN into one population of one interior fluid cell.
-    {
-        let fields = s.fields_mut(0);
-        let g = fields.geom;
-        let np = g.n_padded();
-        let pi = g.pidx(7, 9, 0);
-        fields.f[3 * np + pi] = f64::NAN;
-    }
+    s.set_body_force_field(|x, y, _| {
+        if (x, y) == (7, 9) {
+            [f64::NAN, 0.0, 0.0]
+        } else {
+            [0.0, 0.0, 0.0]
+        }
+    });
 
     let check_every = 4;
     let err = s
@@ -74,13 +73,13 @@ fn nan_injection_detected_within_one_interval() {
 #[test]
 fn tail_check_catches_short_runs() {
     let mut s = tgv(16);
-    {
-        let fields = s.fields_mut(0);
-        let g = fields.geom;
-        let np = g.n_padded();
-        let pi = g.pidx(3, 3, 0);
-        fields.f[1 * np + pi] = f64::INFINITY; // ±Inf must be caught too
-    }
+    s.set_body_force_field(|x, y, _| {
+        if (x, y) == (3, 3) {
+            [f64::INFINITY, 0.0, 0.0]
+        } else {
+            [0.0, 0.0, 0.0]
+        }
+    });
     let err = s.run_guarded(3, 100).expect_err("Inf must be detected");
     assert_eq!(err.step, 3);
 }
