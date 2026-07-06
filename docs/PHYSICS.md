@@ -208,6 +208,31 @@ total_momentum to be aggregated in f64 regardless of T.
   steps from rest. Measured residual `max|u| = 5.377754647296416e-15`; the regression test freezes the band at `6e-14`
   (~10× headroom) and separately checks that the bottom-quarter mean density exceeds the top-quarter mean density.
 
+### 2026-07-06: W-GRAV well-balanced gravity composition point
+- Construction adopted for the single-phase W-GRAV scope: gravity is not a new
+  forcing scheme. It is composed into the existing Guo force source as
+  `F_total = F_user + F_cell + rho*g` at the solver's one-step staging point,
+  so moments, stress correction, and diagnostics continue to use the Guo
+  `F/2` physical-velocity convention.
+- FR-BC-02 dynamic-pressure/hydrostatic decomposition is represented at this
+  same composition point. In the future resolved-interface path, W-VOF replaces
+  the density multiplier at this line with the consistent phase-field density
+  `rho(phi)` (and later the AGG-consistent density when `J_rho` lands). The
+  hydrostatic reference term then enters as the residual force
+  `(rho(phi)-rho_h)*g` plus the discrete hydrostatic reference contribution,
+  without changing collision or boundary kernels.
+- Single-phase compatibility deliberately freezes `rho_h = 0`: this preserves
+  the landed public contract that `set_gravity(g)` is bit-identical to a raw
+  per-cell force field filled with `rho(x)*g`, while still giving a closed box
+  the measured hydrostatic stratification through the existing pressure-density
+  coupling.
+- VR-STR-06 characterization after 5,000 steps, closed boxes, TRT
+  `Lambda=3/16`, `nu=1/6`: D2Q9/f64 `max|u| =
+  3.125692086243839e-10`; D2Q9/f32 `1.235706095366519e-7`; D3Q19/f64
+  `3.372688635697144e-15`; D3Q19/f32 `8.086668657928531e-8`. Frozen bands:
+  D2Q9/f64 `2e-9`, D2Q9/f32 `5e-7`, D3Q19/f64 `1e-13`, D3Q19/f32 `5e-7`.
+  All are tighter than the provisional `1e-6` lattice-unit requirement.
+
 ### 2026-07-04: Confirmed the Poiseuille exactness of TRT magic 3/16
 - Measured L∞ relative error < 1e-10 for H=8, τ=0.8, body-force driven (as theory predicts).
 - BGK has finite error under the same conditions due to τ-dependent slip → only 2nd-order convergence is required (T2).

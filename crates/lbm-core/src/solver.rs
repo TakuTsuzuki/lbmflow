@@ -730,6 +730,20 @@ where
         self.device_ahead = false;
     }
 
+    /// Compose gravity into the existing Guo force field for one step.
+    ///
+    /// This is the gravity source-composition point required by FR-BC-02:
+    /// the caller-owned per-cell force field is `F_s + F_user + ...`, and
+    /// this method adds the single-phase gravity term `rho(x) * g` on fluid
+    /// cells before collision. W-VOF must replace the density factor at this
+    /// exact line with `rho(phi)` (or the consistent AGG density field once
+    /// the phase-flux correction lands), leaving the Guo forcing scheme and
+    /// all other force sources unchanged. In dynamic-pressure notation the
+    /// future well-balanced residual is composed here as
+    /// `F_s + (rho(phi) - rho_h) * g + F_b^scalar + ...`; single-phase
+    /// compatibility currently uses `rho_h = 0`, which preserves the landed
+    /// public contract that `set_gravity(g)` is bit-identical to a raw
+    /// per-cell force field filled with `rho(x) * g`.
     fn stage_gravity(&mut self) -> Option<Vec<(bool, Vec<[T; 3]>)>> {
         let gvec = self.gravity?;
         let mut staged = Vec::with_capacity(self.host_parts.len());
