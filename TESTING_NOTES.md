@@ -1377,3 +1377,26 @@ already cache-served (as the 2026-07-05 bench header records). **Decision:
 me1-perf is rejected, not merged; ME-1 perf closes with no kernel change.**
 Follow-up optimization (if ever revisited) must be gated on measured MLUPS,
 not static profiles.
+
+## T16 FP16 measurements + band freeze (PM, 2026-07-06, M5 Max Metal SHADER_F16)
+
+Accuracy (ignored T16 suite, `--include-ignored --features gpu`):
+- TGV 256^2 one decay time (41,501 steps): f16-vs-f32 u L2rel 1.401e-1,
+  f16-vs-analytic 1.413e-1 -> band frozen 2.0e-1 (transient grade; rounding
+  random-walk, see PHYSICS.md FP16 section).
+- Cavity 128^2 Re=100 40k steps: centerline L2rel f16-vs-f32 2.579e-3 ->
+  band frozen 5.0e-3 (steady grade).
+
+Throughput (`bench_gpu --gpu-only [--f16]`, two interleaved A/B pairs; window
+carried a CPU-heavy chan180 characterization run, so RATIOS are the signal;
+f32 absolutes are load-suppressed):
+- 2048^2: f16 9,926/9,868 vs f32 4,967/4,868 MLUPS -> **~2.0x (ME-2 gate
+  >=1.5x @2048^2 MET)**
+- 1024^2: f16 17,690/17,721 vs f32 5,877/5,909 -> ~3.0x (cache-resident win)
+- 512^2: f16 16,184/16,203 vs f32 10,895/10,994 -> ~1.5x
+- D3Q19 128^3: f16 5,402/5,086 vs f32 2,628/2,479 -> ~2.0x; 192^3: f16
+  5,051/4,814 vs f32 2,615/2,533 -> ~1.9x. **f16 D3Q19 exceeds 5 GLUPS.**
+
+PM-side fixes on top of codex commits (892efdd scaffolding + 1019cea WGSL
+conversions): try_read_sync decoded the f readback as raw f32 regardless of
+storage (index OOB under f16; backend.rs now routes through decode_storage).

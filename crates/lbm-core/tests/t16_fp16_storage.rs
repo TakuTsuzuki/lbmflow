@@ -12,7 +12,15 @@ use std::sync::Arc;
 
 type Gpu2 = Solver<D2Q9, f32, WgpuBackend<D2Q9>, LocalPeriodic>;
 
-const T16_BAND_PLACEHOLDER: f64 = 1.0e-2; // BAND-FREEZE-PENDING(PM)
+// Bands frozen by PM 2026-07-06 on Apple M5 Max / Metal / SHADER_F16
+// (measured: TGV 256^2 one decay time (41,501 steps) f16-vs-f32 1.401e-1,
+// f16-vs-analytic 1.413e-1; cavity 128^2 Re=100 40k steps centerline
+// f16-vs-f32 2.579e-3). The transient TGV error is dominated by per-step
+// f16 rounding accumulating as a random walk on a decaying signal —
+// steady flows (cavity) re-converge and stay ~50x tighter. Rationale and
+// the steady-vs-transient dichotomy are recorded in docs/PHYSICS.md.
+const T16_TGV_TRANSIENT_BAND: f64 = 2.0e-1;
+const T16_CAVITY_STEADY_BAND: f64 = 5.0e-3;
 
 fn shader_f16_ctx_or_skip() -> Option<Arc<GpuContext>> {
     match GpuContext::new_with_shader_f16(true) {
@@ -114,12 +122,12 @@ fn t16_tgv2d_f16_storage_degradation_vs_f32_gpu() {
          f16_vs_analytic_u_l2rel={f16_vs_analytic:.9e}"
     );
     assert!(
-        f16_vs_f32 <= T16_BAND_PLACEHOLDER,
-        "T16 TGV2D f16-vs-f32 u-field L2rel measured {f16_vs_f32:.9e} > placeholder band {T16_BAND_PLACEHOLDER:.9e}"
+        f16_vs_f32 <= T16_TGV_TRANSIENT_BAND,
+        "T16 TGV2D f16-vs-f32 u-field L2rel measured {f16_vs_f32:.9e} > frozen band {T16_TGV_TRANSIENT_BAND:.9e}"
     );
     assert!(
-        f16_vs_analytic <= T16_BAND_PLACEHOLDER,
-        "T16 TGV2D f16-vs-analytic u-field L2rel measured {f16_vs_analytic:.9e} > placeholder band {T16_BAND_PLACEHOLDER:.9e}"
+        f16_vs_analytic <= T16_TGV_TRANSIENT_BAND,
+        "T16 TGV2D f16-vs-analytic u-field L2rel measured {f16_vs_analytic:.9e} > frozen band {T16_TGV_TRANSIENT_BAND:.9e}"
     );
 }
 
@@ -172,7 +180,7 @@ fn t16_cavity2d_f16_storage_degradation_vs_f32_gpu() {
         "T16 cavity2D f16 storage: steps={steps}, Re={re:.1}, f16_vs_f32_centerline_l2rel={f16_vs_f32:.9e}"
     );
     assert!(
-        f16_vs_f32 <= T16_BAND_PLACEHOLDER,
-        "T16 cavity2D f16-vs-f32 centerline L2rel measured {f16_vs_f32:.9e} > placeholder band {T16_BAND_PLACEHOLDER:.9e}"
+        f16_vs_f32 <= T16_CAVITY_STEADY_BAND,
+        "T16 cavity2D f16-vs-f32 centerline L2rel measured {f16_vs_f32:.9e} > frozen band {T16_CAVITY_STEADY_BAND:.9e}"
     );
 }

@@ -2000,7 +2000,10 @@ impl<L: Lattice> WgpuBackend<L> {
         let raw = self.map_staging(staging, bytes)?;
 
         let f_count = L::Q * n;
-        let f = Arc::new(bytemuck::cast_slice::<u8, f32>(&raw[..fbytes as usize]).to_vec());
+        let f = Arc::new(decode_storage(
+            self.cfg.storage,
+            &raw[..fbytes as usize],
+        ));
         let moments: &[f32] =
             bytemuck::cast_slice(&raw[moments_offset as usize..probe_offset as usize]);
         out.rho.clear();

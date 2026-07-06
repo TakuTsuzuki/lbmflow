@@ -357,3 +357,28 @@ rotating_ibm -- --nocapture`):
 `sum r x (-F_fluid)`, using the represented force actually spread to fluid
 cells. The global momentum-conservation diagnostic compares the represented
 marker force with the Eulerian spread sum.
+
+## FP16 distribution storage (ME-2 / T16) — accuracy grade, frozen 2026-07-06
+
+Decision: `GpuStorage::F16` stores the distribution deviations in IEEE f16;
+ALL arithmetic stays f32 (loads widen, stores narrow — wgsl.rs emits the
+conversions; the F32 kernel text is byte-identical to the pre-F16 generator,
+enforced by unit test).
+
+Measured accuracy grade (Apple M5 Max / Metal / SHADER_F16):
+
+- **Steady flows re-converge to the f32 answer**: lid cavity 128² Re=100,
+  40k steps → centerline L2rel f16-vs-f32 = 2.579e-3 (band frozen 5e-3).
+  The boundary-pinned steady state suppresses rounding accumulation.
+- **Long transients accumulate f16 rounding as a random walk on a decaying
+  signal**: TGV 256² run to one decay time (41,501 steps) → u-field L2rel
+  1.401e-1 vs f32 and 1.413e-1 vs analytic (band frozen 2e-1). The error is
+  storage-rounding-dominated (~5e-4 relative per step × sqrt(N) steps against
+  an e^-1-decayed signal), not a scheme defect.
+
+Physics ruling: f16 storage is a **capacity/throughput grade for steady and
+short-transient runs** (×2 grid capacity; ~2× MLUPS measured, see
+TESTING_NOTES), NOT a long-transient accuracy grade. Scenarios needing
+long-horizon transient fidelity stay on f32. If a transient-grade f16 is ever
+required, the known remedy is a shifted-exponent custom format (FluidX3D's
+FP16S/FP16C) — recorded here as a roadmap option, not implemented.
