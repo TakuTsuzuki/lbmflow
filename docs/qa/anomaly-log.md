@@ -213,3 +213,13 @@ orientation (heavy below) diverges by step 400 (max|u| = 4e3,
 rho_min = −6.0) while T12's unstable orientation passes CI. Engine-finding
 candidate: MCMP + per-component gravity, stable stratification divergence.
 Routing package = the rev-3 test + printed trajectory (cx/mp-hard).
+
+### ANOM-P4-008 FULLY CLOSED — the −0.16|u|² term verdict: (B)
+Ablation A/B (cx/e1-ablation, docs/qa/e1-ablation-report.md + PNG): ON−OFF
+slope difference matches the derived footprint δc = 0.16·(1/4)·2/(2−ω)
+within 26.5% (ν=0.02) and 24.9% (ν=0.10); the τ-fingerprint RATIO across
+the two viscosities is 3.42 vs 3.50 predicted — the term is a real
+Galilean-class correction, retained with measured provenance (inventory
+3.1: offset was (C), removed; u²-term is (B), validated). The audit file's
+E1 SPEC-GAP stays as documentation (the toggle is a compile-time const, so
+the A/B cannot live in one test binary); the report is its evidence.
