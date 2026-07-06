@@ -36,6 +36,7 @@ use mpi::topology::SimpleCommunicator;
 use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Root, Source};
 use mpi::{Rank, Tag};
 use std::cell::RefCell;
+use std::path::Path;
 
 use crate::backend::Backend;
 use crate::fields::SoaFields;
@@ -46,7 +47,7 @@ use crate::halo::{
 use crate::lattice::{Face, Lattice};
 use crate::params::{CollisionKind, FaceBC};
 use crate::real::Real;
-use crate::solver::{partition, GlobalSpec, Solver};
+use crate::solver::{decomp_hash, partition, CheckpointError, CheckpointRank, GlobalSpec, Solver};
 use crate::subdomain::Subdomain;
 
 const TAG_F: Tag = 100;
@@ -546,6 +547,7 @@ where
     size: usize,
     /// Full decomposition metadata (origins/extents of every rank's part).
     subs_meta: Vec<Subdomain>,
+    periodic: [bool; 3],
     probe_active: bool,
     probed_force: [T; 3],
 }
@@ -585,6 +587,7 @@ where
             rank,
             size,
             subs_meta,
+            periodic: spec.periodic,
             probe_active: false,
             probed_force: [T::zero(); 3],
         }
@@ -778,6 +781,57 @@ where
     /// Barrier over the solver's communicator (bench timing fences).
     pub fn barrier(&self) {
         self.comm.barrier();
+    }
+
+    /// Save a distributed checkpoint collectively.
+    ///
+    /// Each rank writes its one local payload file. Rank 0 then writes the
+    /// authoritative manifest containing the communicator size and every
+    /// rank's part layout. Restart requires the same rank count and partition
+    /// layout; repartitioning is deliberately not attempted.
+    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let local = self
+            .inner
+            .save_owned_parts_for_checkpoint(dir, self.rank, &[self.rank])?;
+        let meta = dir.join(format!(".rank_{:04}.checkpoint.json", self.rank));
+        std::fs::write(&meta, serde_json::to_vec(&local)?)?;
+        self.comm.barrier();
+
+        if self.rank == 0 {
+            let mut entries: Vec<CheckpointRank> = Vec::with_capacity(self.size);
+            for rank in 0..self.size {
+                let path = dir.join(format!(".rank_{rank:04}.checkpoint.json"));
+                let text = std::fs::read_to_string(&path)?;
+                let mut rank_entries: Vec<CheckpointRank> = serde_json::from_str(&text)?;
+                entries.append(&mut rank_entries);
+            }
+            entries.sort_by_key(|entry| (entry.rank, entry.part));
+            let manifest = self.inner.checkpoint_manifest(
+                self.size,
+                entries,
+                decomp_hash(&self.subs_meta, self.periodic),
+            );
+            Solver::<L, T, B, MpiExchange<T>>::write_checkpoint_manifest(dir, &manifest)?;
+            for rank in 0..self.size {
+                let _ = std::fs::remove_file(dir.join(format!(".rank_{rank:04}.checkpoint.json")));
+            }
+        }
+        self.comm.barrier();
+        Ok(())
+    }
+
+    /// Restore a distributed checkpoint collectively into this already-built
+    /// solver. The current communicator size and partition layout are the
+    /// restart authority.
+    pub fn restore(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        self.inner.restore_distributed_checkpoint(
+            dir,
+            decomp_hash(&self.subs_meta, self.periodic),
+            self.size,
+            self.rank,
+        )
     }
 
     // ------------------------------------------------------------------

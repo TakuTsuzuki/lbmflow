@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
-const CKPT_FORMAT_VERSION: u32 = 1;
+const CKPT_FORMAT_VERSION: u32 = 2;
 const CKPT_MAGIC: &[u8; 8] = b"LBMKPT\0\0";
 const SEC_F_PRIMARY: u32 = 1;
 const SEC_STALE_STASH: u32 = 2;
@@ -71,7 +71,7 @@ impl From<serde_json::Error> for CheckpointError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CheckpointManifest {
+pub(crate) struct CheckpointManifest {
     kind: String,
     format_version: u32,
     step: u64,
@@ -87,14 +87,15 @@ struct CheckpointManifest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CheckpointRank {
-    rank: usize,
-    file: String,
-    origin: [usize; 3],
-    core: [usize; 3],
-    bytes: u64,
-    payload_hash: String,
-    mask_hash: String,
+pub(crate) struct CheckpointRank {
+    pub(crate) rank: usize,
+    pub(crate) part: usize,
+    pub(crate) file: String,
+    pub(crate) origin: [usize; 3],
+    pub(crate) core: [usize; 3],
+    pub(crate) bytes: u64,
+    pub(crate) payload_hash: String,
+    pub(crate) mask_hash: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -841,7 +842,7 @@ fn spec_hash<T: Real, L: Lattice>(
     h
 }
 
-fn decomp_hash(subs: &[Subdomain], periodic: [bool; 3]) -> u64 {
+pub(crate) fn decomp_hash(subs: &[Subdomain], periodic: [bool; 3]) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     hash_u64(&mut h, subs.len() as u64);
     for v in periodic {
@@ -1008,17 +1009,17 @@ fn read_rank_file(path: &Path) -> Result<(RankHeader, BTreeMap<u32, Vec<u8>>), C
         ));
     }
     let format_ver = read_u32(&bytes, &mut pos)?;
-    if format_ver > CKPT_FORMAT_VERSION {
+    if format_ver != CKPT_FORMAT_VERSION {
         return Err(CheckpointError::new(
-            "CKPT_TOO_NEW",
-            format!("rank file format {format_ver} is newer than supported {CKPT_FORMAT_VERSION}"),
+            "CKPT_VERSION_MISMATCH",
+            format!("rank file format_version {format_ver} differs from supported {CKPT_FORMAT_VERSION}"),
         ));
     }
     let endian = read_u8(&bytes, &mut pos)?;
     if endian != 0 {
         return Err(CheckpointError::new(
             "CKPT_BAD_MAGIC",
-            "cross-endian checkpoints are not supported by format v1",
+            "cross-endian checkpoints are not supported by this checkpoint format",
         ));
     }
     let dtype = read_u8(&bytes, &mut pos)?;
@@ -2596,22 +2597,13 @@ where
         self.host_dirty = true;
     }
 
-    /// Save a single-rank checkpoint directory (`manifest.json` +
-    /// `rank_0000.bin`). Populations are stored as raw deviation bytes, with
-    /// the ping-pong partner preserved so open-boundary stale slots resume
-    /// exactly.
-    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
-        self.stage_out_all();
-        if self.host_parts.len() != 1 {
-            return Err(CheckpointError::new(
-                "CKPT_UNSUPPORTED",
-                "single-node checkpoint currently expects one local rank/part",
-            ));
-        }
-        let dir = dir.as_ref();
-        std::fs::create_dir_all(dir)?;
-        let fields = &self.host_parts[0];
-        let sub = &self.subs[0];
+    fn write_part_checkpoint(
+        dir: &Path,
+        rank: usize,
+        part: usize,
+        sub: &Subdomain,
+        fields: &SoaFields<T>,
+    ) -> Result<CheckpointRank, CheckpointError> {
         let np = fields.geom.n_padded();
         let nc = fields.geom.n_core();
 
@@ -2674,25 +2666,34 @@ where
         bin.extend_from_slice(&payload);
         write_u64(&mut bin, payload_hash);
 
-        let rank_file = "rank_0000.bin";
-        let rank_path = dir.join(rank_file);
+        let rank_file = format!("rank_{rank:04}_part_{part:04}.bin");
+        let rank_path = dir.join(&rank_file);
         let mut file = std::fs::File::create(&rank_path)?;
         file.write_all(&bin)?;
 
-        let rank = CheckpointRank {
-            rank: 0,
-            file: rank_file.to_string(),
+        Ok(CheckpointRank {
+            rank,
+            part,
+            file: rank_file,
             origin: sub.origin,
             core: sub.geom.core,
             bytes: bin.len() as u64,
             payload_hash: hash_string(payload_hash),
             mask_hash: hash_string(part_mask_hash(fields)),
-        };
+        })
+    }
+
+    pub(crate) fn checkpoint_manifest(
+        &self,
+        nranks: usize,
+        ranks: Vec<CheckpointRank>,
+        decomp_hash: u64,
+    ) -> CheckpointManifest {
         let mut reserved = BTreeMap::new();
         reserved.insert("rng".to_string(), false);
         reserved.insert("particles".to_string(), false);
         reserved.insert("stats".to_string(), false);
-        let manifest = CheckpointManifest {
+        CheckpointManifest {
             kind: "lbmflow-checkpoint".to_string(),
             format_version: CKPT_FORMAT_VERSION,
             step: self.time,
@@ -2701,16 +2702,64 @@ where
             lattice: lattice_name::<L>().to_string(),
             global: self.dims,
             scenario_hash: hash_string(self.current_spec_hash()),
-            decomp_hash: hash_string(decomp_hash(&self.subs, self.periodic)),
-            nranks: 1,
-            ranks: vec![rank],
+            decomp_hash: hash_string(decomp_hash),
+            nranks,
+            ranks,
             reserved,
-        };
+        }
+    }
+
+    pub(crate) fn write_checkpoint_manifest(
+        dir: impl AsRef<Path>,
+        manifest: &CheckpointManifest,
+    ) -> Result<(), CheckpointError> {
         std::fs::write(
-            dir.join("manifest.json"),
+            dir.as_ref().join("manifest.json"),
             serde_json::to_string_pretty(&manifest)?,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn save_owned_parts_for_checkpoint(
+        &mut self,
+        dir: impl AsRef<Path>,
+        rank: usize,
+        part_ids: &[usize],
+    ) -> Result<Vec<CheckpointRank>, CheckpointError> {
+        self.stage_out_all();
+        if part_ids.len() != self.host_parts.len() {
+            return Err(CheckpointError::new(
+                "CKPT_DECOMP_MISMATCH",
+                format!(
+                    "checkpoint part id list has {} entries for {} owned parts",
+                    part_ids.len(),
+                    self.host_parts.len()
+                ),
+            ));
+        }
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let mut out = Vec::with_capacity(self.host_parts.len());
+        for ((sub, fields), &part) in self
+            .subs
+            .iter()
+            .zip(self.host_parts.iter())
+            .zip(part_ids.iter())
+        {
+            out.push(Self::write_part_checkpoint(dir, rank, part, sub, fields)?);
+        }
+        Ok(out)
+    }
+
+    /// Save a checkpoint directory (`manifest.json` plus one payload per
+    /// owned part). Single-process split runs keep all part payloads under
+    /// rank 0 and require the same partition layout on restart.
+    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        let dir = dir.as_ref();
+        let part_ids: Vec<usize> = (0..self.host_parts.len()).collect();
+        let ranks = self.save_owned_parts_for_checkpoint(dir, 0, &part_ids)?;
+        let manifest = self.checkpoint_manifest(1, ranks, decomp_hash(&self.subs, self.periodic));
+        Self::write_checkpoint_manifest(dir, &manifest)
     }
 
     /// Load a single-rank checkpoint into a freshly rebuilt solver. The caller
@@ -2768,11 +2817,11 @@ where
                 format!("manifest kind is {}", manifest.kind),
             ));
         }
-        if manifest.format_version > CKPT_FORMAT_VERSION {
+        if manifest.format_version != CKPT_FORMAT_VERSION {
             return Err(CheckpointError::new(
-                "CKPT_TOO_NEW",
+                "CKPT_VERSION_MISMATCH",
                 format!(
-                    "checkpoint format_version {} is newer than supported {}",
+                    "checkpoint format_version {} differs from supported {}",
                     manifest.format_version, CKPT_FORMAT_VERSION
                 ),
             ));
@@ -2817,6 +2866,87 @@ where
             ));
         }
         let current_decomp = hash_string(decomp_hash(&self.subs, self.periodic));
+        self.load_into_with_layout(dir, manifest, current_decomp, 1, 0)
+    }
+
+    #[cfg_attr(not(feature = "mpi"), allow(dead_code))]
+    pub(crate) fn restore_distributed_checkpoint(
+        &mut self,
+        dir: impl AsRef<Path>,
+        expected_decomp_hash: u64,
+        nranks: usize,
+        rank: usize,
+    ) -> Result<(), CheckpointError> {
+        let expected = self.current_spec_hash();
+        let dir = dir.as_ref();
+        let manifest_text = std::fs::read_to_string(dir.join("manifest.json"))?;
+        let manifest: CheckpointManifest = serde_json::from_str(&manifest_text)?;
+        if manifest.kind != "lbmflow-checkpoint" {
+            return Err(CheckpointError::new(
+                "CKPT_BAD_MAGIC",
+                format!("manifest kind is {}", manifest.kind),
+            ));
+        }
+        if manifest.format_version != CKPT_FORMAT_VERSION {
+            return Err(CheckpointError::new(
+                "CKPT_VERSION_MISMATCH",
+                format!(
+                    "checkpoint format_version {} differs from supported {}",
+                    manifest.format_version, CKPT_FORMAT_VERSION
+                ),
+            ));
+        }
+        if manifest.dtype != dtype_name::<T>() {
+            return Err(CheckpointError::new(
+                "CKPT_DTYPE_MISMATCH",
+                format!(
+                    "checkpoint dtype {} differs from run dtype {}",
+                    manifest.dtype,
+                    dtype_name::<T>()
+                ),
+            ));
+        }
+        if manifest.lattice != lattice_name::<L>() {
+            return Err(CheckpointError::new(
+                "CKPT_LATTICE_MISMATCH",
+                format!(
+                    "checkpoint lattice {} differs from run lattice {}",
+                    manifest.lattice,
+                    lattice_name::<L>()
+                ),
+            ));
+        }
+        if manifest.global != self.dims {
+            return Err(CheckpointError::new(
+                "CKPT_GEOM_MISMATCH",
+                format!(
+                    "checkpoint global {:?} differs from run {:?}",
+                    manifest.global, self.dims
+                ),
+            ));
+        }
+        let expected = hash_string(expected);
+        if manifest.scenario_hash != expected {
+            return Err(CheckpointError::new(
+                "CKPT_SCENARIO_MISMATCH",
+                format!(
+                    "scenario_hash differed: checkpoint={} current={expected}",
+                    manifest.scenario_hash
+                ),
+            ));
+        }
+        let current_decomp = hash_string(expected_decomp_hash);
+        self.load_into_with_layout(dir, manifest, current_decomp, nranks, rank)
+    }
+
+    fn load_into_with_layout(
+        &mut self,
+        dir: &Path,
+        manifest: CheckpointManifest,
+        current_decomp: String,
+        expected_nranks: usize,
+        current_rank: usize,
+    ) -> Result<(), CheckpointError> {
         if manifest.decomp_hash != current_decomp {
             return Err(CheckpointError::new(
                 "CKPT_DECOMP_MISMATCH",
@@ -2826,107 +2956,133 @@ where
                 ),
             ));
         }
-        if manifest.nranks != 1 || manifest.ranks.len() != 1 || self.host_parts.len() != 1 {
+        if manifest.nranks != expected_nranks {
+            return Err(CheckpointError::new(
+                "CKPT_RANK_MISMATCH",
+                format!(
+                    "checkpoint rank count {} differs from current {}",
+                    manifest.nranks, expected_nranks
+                ),
+            ));
+        }
+        let mut entries: Vec<&CheckpointRank> = manifest
+            .ranks
+            .iter()
+            .filter(|entry| entry.rank == current_rank)
+            .collect();
+        entries.sort_by_key(|entry| entry.part);
+        if entries.len() != self.host_parts.len() {
             return Err(CheckpointError::new(
                 "CKPT_DECOMP_MISMATCH",
-                "B-5 checkpoint load supports exactly one rank and one local part",
-            ));
-        }
-        let rank = &manifest.ranks[0];
-        let sub = &self.subs[0];
-        if rank.origin != sub.origin || rank.core != sub.geom.core {
-            return Err(CheckpointError::new(
-                "CKPT_GEOM_MISMATCH",
                 format!(
-                    "rank geometry differed: checkpoint origin={:?} core={:?}, current origin={:?} core={:?}",
-                    rank.origin, rank.core, sub.origin, sub.geom.core
-                ),
-            ));
-        }
-        let current_mask = hash_string(part_mask_hash(&self.host_parts[0]));
-        if rank.mask_hash != current_mask {
-            return Err(CheckpointError::new(
-                "CKPT_MASK_MISMATCH",
-                format!(
-                    "mask_hash differed: checkpoint={} current={current_mask}",
-                    rank.mask_hash
+                    "checkpoint has {} payload parts for rank {}, current owner has {}",
+                    entries.len(),
+                    current_rank,
+                    self.host_parts.len()
                 ),
             ));
         }
 
-        let (header, payload) = read_rank_file(&dir.join(&rank.file))?;
-        if header.dtype != (if dtype_name::<T>() == "f32" { 0 } else { 1 }) {
-            return Err(CheckpointError::new(
-                "CKPT_DTYPE_MISMATCH",
-                "rank file dtype differs from requested run precision",
-            ));
-        }
-        if header.lattice_id != lattice_id::<L>()
-            || header.q != L::Q as u16
-            || header.d != L::D as u16
+        for ((entry, sub), fields) in entries
+            .into_iter()
+            .zip(self.subs.iter())
+            .zip(self.host_parts.iter_mut())
         {
-            return Err(CheckpointError::new(
-                "CKPT_LATTICE_MISMATCH",
-                "rank file lattice metadata differs from requested lattice",
-            ));
-        }
-        let fields = &mut self.host_parts[0];
-        let np = fields.geom.n_padded();
-        let nc = fields.geom.n_core();
-        if header.np != np as u64 || header.n_core != nc as u64 {
-            return Err(CheckpointError::new(
-                "CKPT_GEOM_MISMATCH",
-                format!(
-                    "rank file np/n_core {}/{} differs from current {np}/{nc}",
-                    header.np, header.n_core
-                ),
-            ));
-        }
-        if hash_string(header.payload_hash) != rank.payload_hash {
-            return Err(CheckpointError::new(
-                "CKPT_PAYLOAD_CORRUPT",
-                format!(
-                    "rank payload hash {} differs from manifest {}",
-                    hash_string(header.payload_hash),
-                    rank.payload_hash
-                ),
-            ));
-        }
-
-        let f = required_section(&payload, SEC_F_PRIMARY, "F_PRIMARY")?;
-        fields.f = read_real_bytes(f, L::Q * np)?;
-        let ftmp = required_section(&payload, SEC_STALE_STASH, "STALE_STASH")?;
-        fields.ftmp = read_real_bytes(ftmp, L::Q * np)?;
-        let moments = required_section(&payload, SEC_MOMENTS, "MOMENTS")?;
-        let vals = read_real_bytes(moments, 4 * nc)?;
-        fields.rho.copy_from_slice(&vals[0..nc]);
-        fields.ux.copy_from_slice(&vals[nc..2 * nc]);
-        fields.uy.copy_from_slice(&vals[2 * nc..3 * nc]);
-        fields.uz.copy_from_slice(&vals[3 * nc..4 * nc]);
-        if let Some(solid) = payload.get(&SEC_SOLID) {
-            if solid.len() != fields.solid.len() {
+            if entry.origin != sub.origin || entry.core != sub.geom.core {
                 return Err(CheckpointError::new(
                     "CKPT_GEOM_MISMATCH",
-                    "solid section length differs from current padded geometry",
+                    format!(
+                        "part geometry differed: checkpoint rank={} part={} origin={:?} core={:?}, current origin={:?} core={:?}",
+                        entry.rank, entry.part, entry.origin, entry.core, sub.origin, sub.geom.core
+                    ),
                 ));
             }
-            let loaded: Vec<bool> = solid.iter().map(|&v| v != 0).collect();
-            if loaded != fields.solid {
+            let current_mask = hash_string(part_mask_hash(fields));
+            if entry.mask_hash != current_mask {
                 return Err(CheckpointError::new(
                     "CKPT_MASK_MISMATCH",
-                    "serialized solid mask differs from rebuilt mask",
+                    format!(
+                        "mask_hash differed for rank={} part={}: checkpoint={} current={current_mask}",
+                        entry.rank, entry.part, entry.mask_hash
+                    ),
                 ));
             }
-        }
-        if let Some(force) = payload.get(&SEC_FORCE_FIELD) {
-            let vals = read_real_bytes(force, 3 * nc)?;
-            let mut ff = vec![[T::zero(); 3]; nc];
-            for c in 0..nc {
-                ff[c] = [vals[3 * c], vals[3 * c + 1], vals[3 * c + 2]];
+
+            let (header, payload) = read_rank_file(&dir.join(&entry.file))?;
+            if header.dtype != (if dtype_name::<T>() == "f32" { 0 } else { 1 }) {
+                return Err(CheckpointError::new(
+                    "CKPT_DTYPE_MISMATCH",
+                    "rank file dtype differs from requested run precision",
+                ));
             }
-            fields.force_field = Some(ff);
+            if header.lattice_id != lattice_id::<L>()
+                || header.q != L::Q as u16
+                || header.d != L::D as u16
+            {
+                return Err(CheckpointError::new(
+                    "CKPT_LATTICE_MISMATCH",
+                    "rank file lattice metadata differs from requested lattice",
+                ));
+            }
+            let np = fields.geom.n_padded();
+            let nc = fields.geom.n_core();
+            if header.np != np as u64 || header.n_core != nc as u64 {
+                return Err(CheckpointError::new(
+                    "CKPT_GEOM_MISMATCH",
+                    format!(
+                        "rank file np/n_core {}/{} differs from current {np}/{nc}",
+                        header.np, header.n_core
+                    ),
+                ));
+            }
+            if hash_string(header.payload_hash) != entry.payload_hash {
+                return Err(CheckpointError::new(
+                    "CKPT_PAYLOAD_CORRUPT",
+                    format!(
+                        "rank payload hash {} differs from manifest {}",
+                        hash_string(header.payload_hash),
+                        entry.payload_hash
+                    ),
+                ));
+            }
+
+            let f = required_section(&payload, SEC_F_PRIMARY, "F_PRIMARY")?;
+            fields.f = read_real_bytes(f, L::Q * np)?;
+            let ftmp = required_section(&payload, SEC_STALE_STASH, "STALE_STASH")?;
+            fields.ftmp = read_real_bytes(ftmp, L::Q * np)?;
+            let moments = required_section(&payload, SEC_MOMENTS, "MOMENTS")?;
+            let vals = read_real_bytes(moments, 4 * nc)?;
+            fields.rho.copy_from_slice(&vals[0..nc]);
+            fields.ux.copy_from_slice(&vals[nc..2 * nc]);
+            fields.uy.copy_from_slice(&vals[2 * nc..3 * nc]);
+            fields.uz.copy_from_slice(&vals[3 * nc..4 * nc]);
+            if let Some(solid) = payload.get(&SEC_SOLID) {
+                if solid.len() != fields.solid.len() {
+                    return Err(CheckpointError::new(
+                        "CKPT_GEOM_MISMATCH",
+                        "solid section length differs from current padded geometry",
+                    ));
+                }
+                let loaded: Vec<bool> = solid.iter().map(|&v| v != 0).collect();
+                if loaded != fields.solid {
+                    return Err(CheckpointError::new(
+                        "CKPT_MASK_MISMATCH",
+                        "serialized solid mask differs from rebuilt mask",
+                    ));
+                }
+            }
+            if let Some(force) = payload.get(&SEC_FORCE_FIELD) {
+                let vals = read_real_bytes(force, 3 * nc)?;
+                let mut ff = vec![[T::zero(); 3]; nc];
+                for c in 0..nc {
+                    ff[c] = [vals[3 * c], vals[3 * c + 1], vals[3 * c + 2]];
+                }
+                fields.force_field = Some(ff);
+            } else {
+                fields.force_field = None;
+            }
+            fields.fused = None;
         }
-        fields.fused = None;
         self.time = manifest.step;
         self.probed_force = [T::zero(); 3];
         self.host_dirty = true;
@@ -3381,12 +3537,14 @@ mod tests {
         }
     }
 
-    fn assert_solver_bits_eq<L, T>(
-        a: &Solver<L, T, CpuScalar, LocalPeriodic>,
-        b: &Solver<L, T, CpuScalar, LocalPeriodic>,
+    fn assert_solver_bits_eq<L, T, HA, HB>(
+        a: &Solver<L, T, CpuScalar, HA>,
+        b: &Solver<L, T, CpuScalar, HB>,
     ) where
         L: Lattice,
         T: Real,
+        HA: HaloExchange<T>,
+        HB: HaloExchange<T>,
     {
         assert_eq!(a.time(), b.time());
         assert_eq!(a.dims(), b.dims());
@@ -3479,6 +3637,124 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_multi_part_roundtrip_bit_exact() {
+        let spec = GlobalSpec::<f64> {
+            dims: [24, 18, 1],
+            nu: 0.04,
+            periodic: [true, true, false],
+            force: [1.0e-6, -2.0e-6, 0.0],
+            ..Default::default()
+        };
+        let mut solid = vec![false; spec.dims[0] * spec.dims[1]];
+        solid[(spec.dims[1] / 2) * spec.dims[0] + spec.dims[0] / 2] = true;
+        let wall_u = vec![[0.0f64; 3]; solid.len()];
+        let decomp = [2, 2, 1];
+        let mut continuous: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            decomp,
+            CpuScalar::default(),
+            InProcess,
+        );
+        let mut resumed: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            decomp,
+            CpuScalar::default(),
+            InProcess,
+        );
+        let init = |x: usize, y: usize, _z: usize| {
+            let kx = 2.0 * std::f64::consts::PI / spec.dims[0] as f64;
+            let ky = 2.0 * std::f64::consts::PI / spec.dims[1] as f64;
+            (
+                1.0 + 0.002 * (kx * x as f64).cos() * (ky * y as f64).sin(),
+                [
+                    0.02 * (kx * x as f64).sin(),
+                    -0.015 * (ky * y as f64).cos(),
+                    0.0,
+                ],
+            )
+        };
+        continuous.init_with(init);
+        resumed.init_with(init);
+        continuous.run(20);
+        resumed.run(7);
+        let dir = tmp_ckpt("split-roundtrip");
+        resumed.save(&dir).unwrap();
+        let mut loaded: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::load(
+            &dir,
+            &spec,
+            &solid,
+            &wall_u,
+            decomp,
+            CpuScalar::default(),
+            InProcess,
+        )
+        .unwrap();
+        loaded.run(13);
+        assert_solver_bits_eq(&continuous, &loaded);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_layout_and_version_mismatch_are_precise() {
+        let spec = GlobalSpec::<f32> {
+            dims: [24, 16, 1],
+            nu: 0.05,
+            periodic: [true, true, false],
+            force: [5.0e-7, 0.0, 0.0],
+            ..Default::default()
+        };
+        let mut s: Solver<D2Q9, f32, CpuScalar, InProcess> =
+            Solver::new(&spec, &[], &[], [2, 2, 1], CpuScalar::default(), InProcess);
+        s.run(4);
+        let dir = tmp_ckpt("layout-version");
+        s.save(&dir).unwrap();
+
+        let err = match Solver::<D2Q9, f32, CpuScalar, InProcess>::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [4, 1, 1],
+            CpuScalar::default(),
+            InProcess,
+        ) {
+            Ok(_) => panic!("changed decomposition must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "CKPT_DECOMP_MISMATCH");
+        assert!(err.message.contains("decomp_hash differed"));
+
+        let manifest_path = dir.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["format_version"] = serde_json::Value::from(1);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = match Solver::<D2Q9, f32, CpuScalar, InProcess>::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [2, 2, 1],
+            CpuScalar::default(),
+            InProcess,
+        ) {
+            Ok(_) => panic!("old checkpoint version must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "CKPT_VERSION_MISMATCH");
+        assert!(err.message.contains("format_version 1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn checkpoint_reports_truncated_payload_and_spec_mismatch() {
         let spec = GlobalSpec::<f32> {
             dims: [12, 10, 1],
@@ -3515,7 +3791,7 @@ mod tests {
         assert_eq!(err.code, "CKPT_SCENARIO_MISMATCH");
         assert!(err.message.contains("scenario_hash differed"));
 
-        let rank = dir.join("rank_0000.bin");
+        let rank = dir.join("rank_0000_part_0000.bin");
         let clean_rank = std::fs::read(&rank).unwrap();
         let mut corrupt = clean_rank.clone();
         let flip_at = corrupt.len() / 2;
