@@ -96,19 +96,37 @@ SCOPE:
 - No drive-by refactors, no new helpers beyond the fix.
 
 ACCEPTANCE (all must pass, in this order):
-1. RETIGHTEN THE PIN: {{pin_test_name}} in {{pin_test_file}} currently
-   asserts the wrong value {{wrong_value}}. Change it to assert the correct
-   value {{correct_value}} with band {{band}}, remove its #[ignore], and
-   rename it from *_current_wrong_value_pin_* to *_regression_pin_*.
-   The pin test MUST remain in the file - it is the regression witness.
-   Deleting it is an automatic reject.
-2. cargo test -p lbm-core --release --no-fail-fast is green.
-3. {{extra_gates, from lbmflow-build-verify tier for the touched files;
-   physics change => cargo test --workspace --release -- --include-ignored
-   AND a docs/PHYSICS.md entry (rationale + measured before/after)}}
+1. RETIGHTEN THE PIN IN THE SAME COMMIT AS THE FIX: {{pin_test_name}} in
+   {{pin_test_file}} currently asserts the wrong value {{wrong_value}} with
+   an assert message containing "{{anomaly_id}}". Change it to assert the
+   correct value {{correct_value}} with band {{band}} (denominator/
+   normalization named explicitly in the assert message), remove its
+   #[ignore], and rename it from *_current_wrong_value_pin_* to
+   *_regression_pin_*. The pin test MUST remain in the file - it is the
+   regression witness. Deleting it is an automatic reject. Deferring the
+   pin retighten to a follow-up PR is also an automatic reject.
+2. LANDING GATE (UNPIPED exit code, never pipe to tail/grep — the pipe eats
+   the exit code and can report red as green):
+     cargo test --workspace --release --no-fail-fast; echo EXIT:$?
+   The gate passes iff EXIT:0 AND every test line is `ok`. --no-fail-fast
+   is mandatory: without it, a later regression can be hidden behind an
+   earlier failure.
+3. GPU: this fix touches {{gpu_touched, y/n}}. If y, the order does BUILD +
+   CPU gates only and reports "BENCH/GPU-PENDING for PM" - do NOT attempt
+   GPU benches in the codex sandbox (Metal adapter access is intermittent
+   in-sandbox; PM runs GPU evidence outside the sandbox).
+4. PHYSICS: if this is a physics change (moments/BC/tau/forcing/collision):
+   the full validation tier
+     cargo test --workspace --release --no-fail-fast -- --include-ignored;
+     echo EXIT:$?
+   also passes, AND a docs/PHYSICS.md entry is added with rationale and
+   measured before/after values.
+5. If you find you must LOOSEN any band to make a test pass, STOP and
+   report - loosening needs a PHYSICS.md rationale AND PM sign-off; do it
+   yourself in the fix order and the order is rejected.
 
 Commit with message "fix: {{anomaly_id}} {{one-line}}" and report the
-before/after measured values printed by the pin test.
+before/after measured values printed by the pin test verbatim.
 ```
 
 ### Slot-filling rules

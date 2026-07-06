@@ -154,6 +154,44 @@ Dispatch engine-fix orders using the **P4 template** in
   a physics change triggers the full `--include-ignored` tier plus a
   PHYSICS.md rationale entry.
 
+## Merge-queue hard requirements (PM ruling — every P4 order encodes these)
+
+All six are mandatory in P4 fix orders and their landing gates. The
+`references/order-templates.md` P4 template already embeds them; changes to
+this list happen only by PM ruling. Each row also names the recent incident
+that motivates it, so a future audit cannot loosen a rule without
+understanding what it costs.
+
+1. **Landing gate = `cargo test --workspace --release --no-fail-fast`
+   with UNPIPED exit code** — invoke as
+   `cargo test --workspace --release --no-fail-fast; echo EXIT:$?`.
+   Never pipe the gate through `tail`/`grep`/`awk` — the pipe eats the exit
+   code and reports red as green. (Bit us for ~4h on a `backend_equiv`
+   regression that fail-fast masked; a piped tail reported the run green.)
+2. **GPU landing evidence is PM-run outside the codex sandbox.** In-sandbox
+   Metal adapter access is intermittent (2 of 5 orders had it on
+   2026-07-05). Fix orders touching GPU say "build + CPU gates only; report
+   `BENCH/GPU-PENDING` for PM" — they do NOT gate on GPU benches.
+3. **Adversarial/audit test orders NEVER share a worktree with implementation
+   or fix orders.** Enforced by the P2 template stating it and by the
+   dispatcher assigning worktrees.
+4. **Band freeze = measured value + stated headroom.** Measured values are
+   printed in every assert message (`println!` before `assert!`, and quoted
+   in the assert body). Loosening a band needs a `docs/PHYSICS.md` rationale
+   entry AND PM sign-off. **The denominator / normalization of every
+   relative tolerance is stated in the assert message** — per-component
+   relative vs force-scale relative flipped pass/fail on identical physics
+   on 2026-07-05.
+5. **Current-wrong-value pins carry their ANOM id in the assert message**
+   (e.g. `"ANOM-P2-001 current wrong uniform/field impulse ratio"`) — so a
+   fix order flips the pin instead of silently "fixing" the test. The pin
+   is retightened to the correct value **in the same commit as the fix**;
+   pin retighten is never deferred to a follow-up.
+6. **Anomaly-log entry required before merge for every P3-confirmed finding**
+   — including test-side dispositions. On 2026-07-06 the first 6 adversarial
+   failures were 6/6 test-side; recording those in the log is what stops the
+   next audit's P1 from stepping on the same rakes.
+
 ## Machine etiquette (before any heavy run)
 
 - Check `TESTING_NOTES.md` (main repo copy) for an open
@@ -162,6 +200,16 @@ Dispatch engine-fix orders using the **P4 template** in
 - `cargo test` ALWAYS `--release` (LBM is ~50x slower in debug).
 - ≤ 5-8 compile-bound codex orders machine-wide — count the PM's fleet, not
   just your own orders.
+
+## Metrics-library promotion rule
+
+The metrics library today lives as a tests/common module in `lbm-core` +
+a `scripts/qa` Python mirror (PM placement ruling). **Promote it to a shared
+dev-dependency crate ONLY when a second crate independently needs the same
+functions.** A speculative crate is abstraction-for-hypothetical-futures,
+which CLAUDE.md's minimal-scope discipline bans. A drift-guard cross-check
+test pins the Rust and Python semantics to each other (see
+`references/metrics-api.md`).
 
 ## Worked example
 

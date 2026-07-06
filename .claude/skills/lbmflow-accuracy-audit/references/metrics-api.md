@@ -87,3 +87,25 @@ A new metric goes into BOTH files with identical fixtures in both
 self-tests, in the same commit. A metric needed by only one test does not
 belong here until a second caller appears — inline it in the test with its
 derivation until then.
+
+## Promotion rule (PM ruling)
+
+The library lives as `lbm-core` tests/common + `scripts/qa` today.
+**Promote to a shared dev-dependency crate under `crates/` ONLY when a
+SECOND crate independently needs the same metric functions.** A speculative
+`crates/lbm-metrics` today is abstraction-for-hypothetical-futures, which
+CLAUDE.md's minimal-scope discipline bans. When (if) a second crate needs
+it, promote in one commit: create the crate, move metrics.rs into it, add
+it as `[dev-dependencies]` to every consumer, delete the copies. The Python
+mirror does not follow — Python analysis stays under scripts/qa regardless.
+
+## Drift guard (Rust ⇄ Python)
+
+The Rust and Python implementations are semantically pinned by
+`crates/lbm-core/tests/metrics_drift_guard.rs`: it invokes
+`python3 scripts/qa/metrics.py --drift-guard` on a fixed input vector and
+asserts the returned metric values agree with the Rust computation to
+1e-12. If `python3` is unavailable, the test is `#[ignore]`d with an
+explanatory message rather than passing silently. **Any change to
+`metrics.rs` must be matched in `metrics.py` in the same commit**, verified
+by this test.

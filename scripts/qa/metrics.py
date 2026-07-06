@@ -134,5 +134,47 @@ def _selftest() -> None:
     print("metrics.py selftest OK")
 
 
+def _drift_guard() -> None:
+    """Emit metric values on a fixed vector for the Rust drift-guard test.
+
+    The vector and metric set MUST match
+    `crates/lbm-core/tests/metrics_drift_guard.rs` exactly - if you change
+    one side, change the other in the same commit.
+    """
+    ref = [1.0, 2.0, 3.0, 4.0, 5.0]
+    act = [1.05, 1.9, 3.2, 4.1, 4.9]
+    h = [0.1, 0.05, 0.025, 0.0125]
+    err = [4e-2, 1.05e-2, 2.7e-3, 7e-4]
+    y = [0.5, 1.0, 2.0, 3.5, 5.0]
+    amp = [0.7 * math.exp(-0.35 * v) for v in y]
+    omega = 2 * math.pi / 100
+    t = list(range(400))
+    sig = [0.02 * math.sin(omega * ti + 0.6) for ti in t]
+
+    out = {
+        "l2_rel": l2_rel(act, ref),
+        "linf_rel": linf_rel(act, ref, 0.0),
+        "order_slope": order_fit(h, err).slope,
+        "order_r2": order_fit(h, err).r2,
+        "env_slope": envelope_fit(y, amp).slope,
+        "env_intercept": envelope_fit(y, amp).intercept,
+        "phase_amp": phase_fit(t, sig, omega)[0],
+        "phase_phase": phase_fit(t, sig, omega)[1],
+        "monotonicity": monotonicity([5.0, 4.0, 3.0, 3.5, 1.0]),
+        "curve_worst_x": curve_agreement(
+            lambda x: x * x, [(1, 1), (2, 4), (3, 9.9), (4, 16)], 0.05, 0.0
+        ).worst_x,
+        "curve_max_rel_dev": curve_agreement(
+            lambda x: x * x, [(1, 1), (2, 4), (3, 9.9), (4, 16)], 0.05, 0.0
+        ).max_rel_dev,
+    }
+    for k in sorted(out):
+        print(f"{k}={out[k]:.17e}")
+
+
 if __name__ == "__main__":
-    _selftest()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--drift-guard":
+        _drift_guard()
+    else:
+        _selftest()
