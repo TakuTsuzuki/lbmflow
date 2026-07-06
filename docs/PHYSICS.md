@@ -323,10 +323,17 @@ Improving the mean-profile grade needs either finer near-wall resolution
 (delta >= 96, y+ <= 1.9 — GPU cost ~30 min, planned as a follow-up
 characterization) or a wall model (roadmap item, not implemented).
 
+Resolution trend (delta=64, 171x130x96, y+/cell = 2.8, 50 Te warmup,
+equilibrated — measured 2026-07-07, 1341 s GPU): mean U+ L2rel 0.1549
+(from 0.2328), centerline U+ 20.58 (from 22.02; DNS 18.30), total-stress
+L2rel 0.0192, -<u'v'>+ (y+~30, last 10 Te) 0.755 (DNS ~0.75), peak 0.733.
+Every metric converges toward DNS with near-wall resolution, confirming the
+resolution-grade classification. The frozen delta=48 bands stand; a
+delta>=96 point and/or a wall model are the paths to a tighter mean band.
+
 Harness notes: (i) the total-stress fold initially applied the half-channel
 sign only to the viscous term — the Reynolds term needs the same fold
 (upper-half error ~2x line; fixed before freezing); (ii) delta=64 at 20 Te
 warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
 the equilibrium ceiling, stress residual 34%) — equilibration is delta-
-dependent; the delta=64 point is being re-measured at 50 Te before any
-resolution-trend claim.
+dependent; 50 Te equilibrates it (measurements above).
