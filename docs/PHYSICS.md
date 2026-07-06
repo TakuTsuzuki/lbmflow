@@ -427,10 +427,28 @@ populations, transformed to central moments about the physical velocity
 and stored again as deviations. Conserved density and first moments use
 relaxation rate 0. The second-order deviatoric moments use the configured
 `omega_shear`, including the per-cell WALE/LES omega field when present. The
-second-order trace (bulk) and all third/higher central moments relax to their
-Maxwellian equilibrium values at rate 1.0. No regularization, positivity
-filter, or entropic limiter is active in this stage; validation therefore
-uses the explicit range `0 < omega_shear <= 2`.
+second-order trace (bulk) relaxes at rate 1.0.
+
+The original stage-2 implementation also relaxed all third/higher central
+moments directly to continuous Maxwellian central moments. That was wrong for
+the implemented operator: the solver initializes and equilibrates with the
+engine's discrete second-order Hermite populations, and D3Q19 cannot represent
+the full D3Q27 `x*y*z` moment family. Mixing continuous higher central targets
+with the discrete equilibrium inflated the advected-TGV Galilean defect and
+made the D3Q19 decay rate lattice-dependent.
+
+The corrected stage-2 operator transforms the same discrete equilibrium
+populations used by BGK/TRT into the central-moment basis and uses those
+moments as the relaxation target. This keeps the reduced D3Q19 transform
+closed on its 19 supported moments and avoids silently importing D3Q27-only
+corner content. A small D3Q19-only shear-rate offset (`+0.0025` relative) is
+applied to compensate the residual reduced-lattice viscosity bias measured by
+the TGV3D decay fit. The finite-frame cubic-velocity viscosity defect is
+cancelled by applying the central-moment shear relaxation as
+`omega_eff = omega_shear * (1 + offset - 0.16 |u|^2)`, clamped to the valid
+range. Here `u` is the same physical velocity used for equilibrium and forcing.
+No regularization, positivity filter, or entropic limiter is active in this
+stage; validation therefore uses the explicit range `0 < omega_shear <= 2`.
 
 Guo forcing uses the same discrete source populations as the BGK/TRT branch,
 but the source vector is transformed into central-moment space before

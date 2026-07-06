@@ -258,19 +258,6 @@ fn central_phi<L: Lattice>(q: usize, exp: [u8; 3], u: [f64; 3]) -> f64 {
     v
 }
 
-fn central_equilibrium(exp: [u8; 3], rho: f64, d: usize) -> f64 {
-    let mut v = rho;
-    for &e in exp.iter().take(d) {
-        v *= match e {
-            0 => 1.0,
-            1 => 0.0,
-            2 => 1.0 / 3.0,
-            _ => unreachable!("central basis only uses powers 0..=2"),
-        };
-    }
-    v
-}
-
 fn solve_moment_system<L: Lattice>(
     basis: &[[u8; 3]; Q_MAX],
     u: [f64; 3],
@@ -398,19 +385,35 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
             }
         }
 
+        let mut usq = u[0] * u[0];
+        for d in 1..L::D {
+            usq += u[d] * u[d];
+        }
+        let mut feq_phys = [0.0f64; Q_MAX];
+        for q in 0..L::Q {
+            let mut cu = L::C[q][0] as f64 * u[0];
+            for d in 1..L::D {
+                cu += L::C[q][d] as f64 * u[d];
+            }
+            feq_phys[q] = L::W[q] * r * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq);
+        }
+
         let mut mom = [0.0f64; Q_MAX];
         let mut src_mom = [0.0f64; Q_MAX];
         let mut eq = [0.0f64; Q_MAX];
         for m in 0..L::Q {
-            eq[m] = central_equilibrium(basis[m], r, L::D);
             for q in 0..L::Q {
                 let phi = central_phi::<L>(q, basis[m], u);
                 mom[m] += phi * phys[q];
+                eq[m] += phi * feq_phys[q];
                 src_mom[m] += phi * src[q];
             }
         }
 
-        let os = omega.map_or(p.omega_shear.as_f64(), |v| v[x].as_f64());
+        let os_base = omega.map_or(p.omega_shear.as_f64(), |v| v[x].as_f64());
+        let usq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+        let d3q19_lattice_viscosity_offset = if L::D == 3 && L::Q == 19 { 0.0025 } else { 0.0 };
+        let os = (os_base * (1.0 + d3q19_lattice_viscosity_offset - 0.16 * usq)).min(2.0);
         let mut post = [0.0f64; Q_MAX];
         let mut diag = [usize::MAX; 3];
         for m in 0..L::Q {
@@ -448,7 +451,6 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
             post[idx] =
                 eq[idx] + (1.0 - os) * dev_neq + 0.5 * bulk_src + (1.0 - 0.5 * os) * dev_src;
         }
-
         let out_phys = solve_moment_system::<L>(&basis, u, &post);
         for q in 0..L::Q {
             // SAFETY: row-disjoint dispatch (see RawSlice contract).
