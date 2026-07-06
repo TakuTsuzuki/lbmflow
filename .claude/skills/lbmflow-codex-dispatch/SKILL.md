@@ -57,6 +57,31 @@ Decision procedure:
 5. One order should be a **focused item bundle** — coherent enough that a single
    codex run can finish and self-verify it, not a grab-bag of unrelated work.
 
+## Step 1.5 — Physics-affecting orders: mandatory template clauses
+
+If the order can alter any computed physical behavior (core, scenario,
+examples, demos), its text MUST embed all four clauses — an order missing one
+is malformed and gets Goodharted (2026-07-06 incident: closures calibrated to
+CV bands produced an unreviewed edge-ring deposition pattern):
+
+1. **Reading clause**: "Read and follow
+   `.claude/skills/lbmflow-physics-discipline/SKILL.md` — the provenance
+   gate, ban list, and behavior-validity review are requirements of this
+   order."
+2. **Ban clause**: "No new constants without derivation + PHYSICS.md entry;
+   no branches keyed to sample/case identity; no clamps/caps that absorb
+   transport; no silent physical defaults."
+3. **Stop-rule clause**: "If the gate cannot be met without violating the ban
+   clause, STOP and emit the stop-rule report (a success outcome) — do not
+   recalibrate constants to force green; that is a PM decision."
+4. **Two-layer acceptance**: state the band AND at least one behavior anchor
+   (sign / monotonicity / spatial structure) the result must satisfy, plus
+   "attach the behavior-validity review record for every run you report".
+
+The stop-rule clause has a proven track record: the P2 integration v1 order
+stopped exactly right on a deposition-parity failure instead of recalibrating
+the dispersion constant, which is what surfaced the real wiring bug.
+
 ## Step 2 — Assign one dedicated worktree per order
 
 Each order gets its own worktree so the background runs never collide on the

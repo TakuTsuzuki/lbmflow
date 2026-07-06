@@ -1,8 +1,11 @@
-# ORDER — Ad-hoc-physics extermination sweep (V&V session)
+# ORDER — Physics-rigor risk sweep (V&V session)
 
-Commissioned by the D-track PM, user directive 2026-07-06. Addressee: the
-"Fluid-structure coupling simulator V&V" session. (Direct message channel was
-down at commissioning time; this file is the canonical order.)
+Commissioned by the D-track PM, user directive 2026-07-06 (refined same day:
+the goal is to IDENTIFY every place that risks compromising physical rigor
+and hedge each with MINIMAL EFFORT — prioritized triage, not blind mass
+deletion). Addressee: the "Fluid-structure coupling simulator V&V" session.
+This file is the canonical order. The executable discipline all fixes must
+follow is `.claude/skills/lbmflow-physics-discipline/SKILL.md`.
 
 ## Standing principle (read first)
 
@@ -40,13 +43,31 @@ the step loop):
    (behavior-validity finding; origin note in CLAUDE.md).
 5. The deterministic `sin()` pseudo-agitation kick in the harsh branch.
 
-## Task 2 — Kill plan
+## Task 2 — Minimal-effort hedge plan
 
-For each (C): propose replace-with-resolved-physics or
-replace-with-validated-closure. Where neither is possible at current
-resolution, classify as a CORE CAPABILITY GAP and prepare the routing package
-(scenario JSON, exported fields, metrics, repro command) for the core-engine
-session per the routing rule in CLAUDE.md.
+For each (C) item, assign a risk tier (does it shape a REPORTED result? a
+frozen band? only an unreported internal detail?) and pick the CHEAPEST
+sufficient hedge from this ladder, in order:
+
+1. **Delete** — if the term is decorative (removal changes no gated metric),
+   remove it outright.
+2. **Validate & document** — if a literature basis exists, add the four
+   Rule-1 artifacts (citation/derivation, validity domain, validation test,
+   PHYSICS.md entry) and keep the term. Often the cheapest real fix.
+3. **Ablation-guard** — if the term's influence on reported results is the
+   risk, add an ablation behavior anchor (term off ⇒ gated metric must move)
+   so its effect is at least visible and tracked, and file the follow-up.
+4. **Replace with resolved physics** — when the resolved field/solver can
+   already provide the behavior (post-CR-1/2/3 this is true for more of the
+   deposition demo than when the closures were written).
+5. **CORE CAPABILITY GAP** — when none of the above is possible at current
+   resolution, prepare the routing package (scenario JSON, exported fields,
+   metrics, repro command) for the core-engine session per the routing rule
+   in CLAUDE.md.
+
+Bands frozen on top of a (C)-class term are NOT authoritative: flag them for
+re-freezing from resolved physics (PM decision 2026-07-06 — e.g. the gentle
+CV band 1.05–1.30 was calibrated on the wall-jet closure).
 
 ## Task 3 — Continuous V&V loop (after PM triage of the inventory)
 

@@ -94,8 +94,12 @@ cd web && npm run build                   # GUI (tsc strict + vite)
   position clamps or caps that silently absorb transport; decorative physics
   terms. If a gate cannot be met without such a hack, STOP and report — the
   spec gets revised, not the physics faked. Existing violations are being
-  inventoried and exterminated (V&V sweep commissioned 2026-07-06), not
-  grandfathered.
+  inventoried and risk-hedged with minimal effort (V&V sweep commissioned
+  2026-07-06), not grandfathered. **The executable procedure (provenance
+  decision table, ban-list greps, two-layer gates, stop-rule template,
+  behavior-review record) is `.claude/skills/lbmflow-physics-discipline` —
+  every developer agent follows it mechanically; every physics-affecting
+  codex order embeds its clauses (see lbmflow-codex-dispatch Step 1.5).**
 - **V&V loop and finding routing.** V&V continuously runs experiment
   matrices, visualizes the results (qa-viewer), and behavior-reviews them;
   every anomaly becomes a finding. Routing: core-engine defect → send the
