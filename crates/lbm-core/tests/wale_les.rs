@@ -305,6 +305,160 @@ fn make_multimode(n: usize, nu: f64, u0: f64) -> S3 {
     s
 }
 
+fn reference_wale_nu_t(s: &S3) -> Vec<f64> {
+    let cw_delta_sq = WALE_CW * WALE_CW;
+    s.gather_velocity_gradient()
+        .iter()
+        .map(|g| {
+            let mut strain = [[0.0; 3]; 3];
+            for a in 0..3 {
+                for b in 0..3 {
+                    strain[a][b] = 0.5 * (g[a][b] + g[b][a]);
+                }
+            }
+
+            let mut g2 = [[0.0; 3]; 3];
+            for a in 0..3 {
+                for b in 0..3 {
+                    for k in 0..3 {
+                        g2[a][b] += g[a][k] * g[k][b];
+                    }
+                }
+            }
+            let tr_g2 = g2[0][0] + g2[1][1] + g2[2][2];
+            let mut sd = [[0.0; 3]; 3];
+            for a in 0..3 {
+                for b in 0..3 {
+                    sd[a][b] = 0.5 * (g2[a][b] + g2[b][a]);
+                    if a == b {
+                        sd[a][b] -= tr_g2 / 3.0;
+                    }
+                }
+            }
+
+            let mut ss = 0.0;
+            let mut sdsd = 0.0;
+            for a in 0..3 {
+                for b in 0..3 {
+                    ss += strain[a][b] * strain[a][b];
+                    sdsd += sd[a][b] * sd[a][b];
+                }
+            }
+            let denom = ss.powf(2.5) + sdsd.powf(1.25);
+            if denom > 0.0 {
+                cw_delta_sq * sdsd.powf(1.5) / denom
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn wale_unset_clipping_matches_raw_wale_bitwise_on_sheared_field() {
+    let mut s = make_multimode(12, 0.02, 0.04);
+    let expected = reference_wale_nu_t(&s);
+    assert!(
+        expected.iter().any(|v| *v > 0.0),
+        "fixture must exercise non-zero WALE viscosity"
+    );
+
+    let mut les = WaleLes::<f64>::new();
+    les.update(&mut s);
+    assert_eq!(les.tau_eff_max(), None);
+    assert_eq!(les.nu_t().len(), expected.len());
+    for (i, (actual, expected)) in les.nu_t().iter().zip(&expected).enumerate() {
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "nu_t[{i}] changed with clipping unset"
+        );
+    }
+
+    let diagnostics = les.diagnostics();
+    let max_expected = expected.iter().copied().fold(0.0_f64, f64::max);
+    assert_eq!(diagnostics.clipped_cells, 0);
+    assert_eq!(diagnostics.clipped_fraction, 0.0);
+    assert_eq!(
+        diagnostics.max_nu_t_before_clipping.to_bits(),
+        max_expected.to_bits()
+    );
+    assert_eq!(diagnostics.tau_eff_max, None);
+    assert_eq!(diagnostics.nu_t_max, None);
+}
+
+#[test]
+fn wale_tau_eff_clipping_diagnostics_match_reference() {
+    let nu = 0.02;
+    let mut s = make_multimode(12, nu, 0.04);
+    let raw = reference_wale_nu_t(&s);
+    let mut sorted = raw.clone();
+    sorted.sort_by(f64::total_cmp);
+    let requested_cap = sorted[sorted.len() / 4];
+    let tau_eff_max = 0.5 + 3.0 * (nu + requested_cap);
+
+    let mut les = WaleLes::<f64>::new().with_tau_eff_max(tau_eff_max);
+    les.update(&mut s);
+
+    let diagnostics = les.diagnostics();
+    let active_cap = diagnostics
+        .nu_t_max
+        .expect("clipping must report nu_t bound");
+    let expected_clipped = raw.iter().filter(|v| **v > active_cap).count();
+    let max_raw = raw.iter().copied().fold(0.0_f64, f64::max);
+    assert!(
+        expected_clipped > 0,
+        "fixture must exercise tau_eff clipping"
+    );
+    assert_eq!(diagnostics.clipped_cells, expected_clipped);
+    assert_eq!(
+        diagnostics.clipped_fraction,
+        expected_clipped as f64 / raw.len() as f64
+    );
+    assert_eq!(
+        diagnostics.max_nu_t_before_clipping.to_bits(),
+        max_raw.to_bits()
+    );
+    assert_eq!(diagnostics.tau_eff_max, Some(tau_eff_max));
+
+    for (i, (actual, raw)) in les.nu_t().iter().zip(&raw).enumerate() {
+        let expected = if *raw > active_cap { active_cap } else { *raw };
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "nu_t[{i}] was not clipped exactly at the active bound"
+        );
+    }
+}
+
+#[test]
+fn wale_tau_eff_clipping_count_is_monotone_with_bound() {
+    let nu = 0.02;
+    let raw = reference_wale_nu_t(&make_multimode(12, nu, 0.04));
+    let max_raw = raw.iter().copied().fold(0.0_f64, f64::max);
+    assert!(
+        max_raw > 0.0,
+        "fixture must exercise non-zero WALE viscosity"
+    );
+
+    let run = |fraction_of_max: f64| {
+        let tau_eff_max = 0.5 + 3.0 * (nu + fraction_of_max * max_raw);
+        let mut s = make_multimode(12, nu, 0.04);
+        let mut les = WaleLes::<f64>::new().with_tau_eff_max(tau_eff_max);
+        les.update(&mut s);
+        les.diagnostics().clipped_cells
+    };
+
+    let clipped_low_bound = run(0.25);
+    let clipped_mid_bound = run(0.50);
+    let clipped_high_bound = run(0.75);
+    assert!(
+        clipped_low_bound >= clipped_mid_bound && clipped_mid_bound >= clipped_high_bound,
+        "raising tau_eff_max increased clipped cells: low={clipped_low_bound}, \
+         mid={clipped_mid_bound}, high={clipped_high_bound}"
+    );
+}
+
 fn max_speed(s: &S3) -> f64 {
     let (ux, uy, uz) = (s.gather_ux(), s.gather_uy(), s.gather_uz());
     ux.iter()

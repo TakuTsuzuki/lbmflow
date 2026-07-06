@@ -365,6 +365,49 @@ impinging-jet class of scenarios.
 Without these notes, someone re-tightening the bands from "1e-12 looks
 tight" chases physically impossible numbers.
 
+### 2026-07-07 WALE `tau_eff` upper clipping (`crates/lbm-core/src/les.rs:WaleLes`)
+- Form: when explicitly configured, the WALE driver limits the effective
+  symmetric relaxation time to `tau_eff <= tau_eff_max`, where
+  `tau_eff = 1/2 + (nu_0 + nu_t)/(c_s^2 Delta t) = 1/2 + 3(nu_0 + nu_t)`
+  in lattice units. The equivalent eddy-viscosity cap is
+  `nu_t <= (tau_eff_max - (1/2 + 3nu_0)) / 3`. `None` leaves the raw WALE
+  `nu_t` bit-identical to the unclipped implementation.
+- Source: LBM BGK/TRT relaxation uses `omega_plus = 1/tau_eff`; very large
+  `tau_eff` drives `omega_plus` toward zero and over-diffuses the resolved
+  field. FR-LES-02 defines the effective relaxation relation and FR-LES-03
+  requires upper clipping with diagnostics. The limiter is therefore a
+  configured numerical-stability bound on the collision relaxation, not a
+  calibration term for any validation band.
+- Validity domain: applies only to WALE SGS viscosity in lattice units after
+  the Nicoud-Ducros WALE closure has computed raw `nu_t`; the configured
+  `tau_eff_max` must be finite, greater than `1/2`, and at least the laminar
+  `tau_0 = 1/2 + 3nu_0` for the solver. Default is off; no silent physical
+  default is installed.
+- Validation: `crates/lbm-core/tests/wale_les.rs::wale_unset_clipping_matches_raw_wale_bitwise_on_sheared_field`,
+  `::wale_tau_eff_clipping_diagnostics_match_reference`, and
+  `::wale_tau_eff_clipping_count_is_monotone_with_bound`.
+- Replaces / interacts with: augments the WALE SGS relaxation-field driver.
+  Diagnostics are mandatory per update: clipped-cell count, clipped-cell
+  fraction, maximum raw `nu_t` before clipping, configured `tau_eff_max`, and
+  the equivalent active `nu_t` bound.
+
+### 2026-07-07 behavior review — REV-4 WALE `tau_eff` clipping tests
+Pattern: with clipping unset, the sheared multimode field preserves every raw
+WALE `nu_t` bit; with clipping engaged, only cells whose raw `nu_t` exceeds
+the active bound are clipped to that bound.
+Mechanism: the pattern follows directly from limiting
+`tau_eff = tau_0 + 3nu_t`, so clipping only lowers the SGS contribution in
+cells that would otherwise exceed the explicitly configured relaxation-time
+ceiling.
+Resolved vs closure: velocity gradients and collision relaxation remain the
+resolved LBM path; WALE is the active SGS closure; the new limiter is a
+diagnosed numerical-stability limiter on that closure output.
+Artifacts checked: no field-visualization artifact was produced because this
+was a code+unit-test order, not an experiment/demo run; the behavior anchor is
+the exact cell-by-cell clipped-set assertion.
+Verdict: PHYSICAL.
+Routing: none.
+
 ---
 
 ## 3. Prohibited patterns
