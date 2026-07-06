@@ -33,6 +33,15 @@ enum Command {
         /// Output directory (default: out/<scenario name>)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Save checkpoints every N steps (0 disables checkpoint writes)
+        #[arg(long)]
+        save_every: Option<usize>,
+        /// Directory where ckpt_<step>/ checkpoint folders are written
+        #[arg(long)]
+        checkpoint_dir: Option<PathBuf>,
+        /// Restore from an existing checkpoint directory before running
+        #[arg(long)]
+        restore: Option<PathBuf>,
         /// Print the result manifest to stdout as JSON
         #[arg(long)]
         json: bool,
@@ -90,9 +99,14 @@ fn load_scenario(path: &str) -> Result<Scenario> {
     Ok(sc)
 }
 
-fn run_and_report(sc: &Scenario, out: Option<PathBuf>, json: bool) -> Result<()> {
+fn run_and_report(
+    sc: &Scenario,
+    out: Option<PathBuf>,
+    json: bool,
+    options: runner::RunOptions,
+) -> Result<()> {
     let out_dir = out.unwrap_or_else(|| PathBuf::from("out").join(&sc.name));
-    let manifest = runner::run(sc, &out_dir)?;
+    let manifest = runner::run_with_options(sc, &out_dir, &options)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&manifest)?);
     } else {
@@ -120,10 +134,22 @@ fn main() -> Result<()> {
         Command::Run {
             scenario,
             out,
+            save_every,
+            checkpoint_dir,
+            restore,
             json,
         } => {
             let sc = load_scenario(&scenario)?;
-            run_and_report(&sc, out, json)?;
+            run_and_report(
+                &sc,
+                out,
+                json,
+                runner::RunOptions {
+                    save_every,
+                    checkpoint_dir,
+                    restore,
+                },
+            )?;
         }
         Command::Validate { scenario } => {
             let sc = load_scenario(&scenario)?;
@@ -180,7 +206,7 @@ fn main() -> Result<()> {
                     .iter()
                     .find(|(n, _, _)| *n == name)
                     .ok_or_else(|| anyhow::anyhow!("no such preset '{name}'"))?;
-                run_and_report(&found.2, out, false)?;
+                run_and_report(&found.2, out, false, runner::RunOptions::default())?;
             }
         },
         Command::Gallery { out } => {

@@ -1173,3 +1173,17 @@ purely through arithmetic reassociation (trunk 5/5 green, r2-b1 2/5, same physic
 Changed the assertion denominator to the force-vector L_inf scale, consistent with the
 T14 field-scale-relative convention. This is a denominator fix, not a gate loosening:
 effective absolute limit at this config 4.5e-4, measured deltas have 3 orders headroom.
+
+## B-5 checkpoint/restart implementation (2026-07-06)
+
+Implemented single-rank checkpoint/restart with `manifest.json` plus
+`rank_0000.bin` TLV payloads. The saved payload copies deviation-form `f`
+bytes directly, stores the ping-pong partner as `STALE_STASH`, and stores
+compact moments so carried solid densities are not recomputed on restart.
+
+Evidence so far: `cargo test -p lbm-core checkpoint --release` green. The
+checkpoint test covers 50 -> save -> load -> 50 bit-exact equality against a
+100-step continuous run for f32/f64 and D2Q9/D3Q19 with body force and solids;
+explicit `CKPT_PAYLOAD_CORRUPT` and truncated-file rejection; explicit
+`CKPT_SCENARIO_MISMATCH`; byte preservation of `ftmp` stale storage; and a
+carried solid-cell `rho` value restored from the `MOMENTS` section.

@@ -750,6 +750,8 @@ dependencies = [
  "num-traits",
  "pollster",
  "rayon",
+ "serde",
+ "serde_json",
  "wgpu",
 ]
 

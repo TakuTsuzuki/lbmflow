@@ -14,6 +14,100 @@ use crate::lattice::{Face, Lattice};
 use crate::params::{CollisionKind, FaceBC, KParams, Reduction, StepParams, MAX_SPEED};
 use crate::real::Real;
 use crate::subdomain::Subdomain;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::path::Path;
+
+const CKPT_FORMAT_VERSION: u32 = 1;
+const CKPT_MAGIC: &[u8; 8] = b"LBMKPT\0\0";
+const SEC_F_PRIMARY: u32 = 1;
+const SEC_STALE_STASH: u32 = 2;
+const SEC_MOMENTS: u32 = 3;
+const SEC_SOLID: u32 = 4;
+const SEC_FORCE_FIELD: u32 = 5;
+
+/// Structured checkpoint/restart failure. The `code` field is intentionally
+/// stable for CLI/MCP agents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl CheckpointError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for CheckpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for CheckpointError {}
+
+impl From<std::io::Error> for CheckpointError {
+    fn from(e: std::io::Error) -> Self {
+        Self::new("CKPT_IO", e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for CheckpointError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::new("CKPT_MANIFEST_INVALID", e.to_string())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CheckpointManifest {
+    kind: String,
+    format_version: u32,
+    step: u64,
+    time: f64,
+    dtype: String,
+    lattice: String,
+    global: [usize; 3],
+    scenario_hash: String,
+    decomp_hash: String,
+    nranks: usize,
+    ranks: Vec<CheckpointRank>,
+    reserved: BTreeMap<String, bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CheckpointRank {
+    rank: usize,
+    file: String,
+    origin: [usize; 3],
+    core: [usize; 3],
+    bytes: u64,
+    payload_hash: String,
+    mask_hash: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SectionEntry {
+    id: u32,
+    offset: u64,
+    byte_len: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RankHeader {
+    dtype: u8,
+    lattice_id: u16,
+    q: u16,
+    d: u16,
+    np: u64,
+    n_core: u64,
+    payload_hash: u64,
+}
 
 /// Global scenario description, backend/decomposition agnostic.
 #[derive(Clone, Debug)]
@@ -348,6 +442,330 @@ fn face_is_full_solid_rim(face: Face, dims: [usize; 3], solid: &[bool]) -> bool 
     true
 }
 
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    hash_bytes(&mut h, bytes);
+    h
+}
+
+fn hash_bytes(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+}
+
+fn hash_u64(h: &mut u64, v: u64) {
+    hash_bytes(h, &v.to_le_bytes());
+}
+
+fn hash_f64(h: &mut u64, v: f64) {
+    hash_bytes(h, &v.to_bits().to_le_bytes());
+}
+
+fn hash_real<T: Real>(h: &mut u64, v: T) {
+    if std::mem::size_of::<T>() == 4 {
+        hash_bytes(h, &(v.as_f64() as f32).to_bits().to_le_bytes());
+    } else {
+        hash_bytes(h, &v.as_f64().to_bits().to_le_bytes());
+    }
+}
+
+fn hash_face_bc<T: Real>(h: &mut u64, bc: FaceBC<T>) {
+    match bc {
+        FaceBC::Closed => hash_u64(h, 0),
+        FaceBC::Velocity { u } => {
+            hash_u64(h, 1);
+            for v in u {
+                hash_real(h, v);
+            }
+        }
+        FaceBC::Pressure { rho } => {
+            hash_u64(h, 2);
+            hash_real(h, rho);
+        }
+        FaceBC::Outflow => hash_u64(h, 3),
+        FaceBC::Convective { u_conv } => {
+            hash_u64(h, 4);
+            hash_real(h, u_conv);
+        }
+    }
+}
+
+fn spec_hash<T: Real, L: Lattice>(
+    spec: &GlobalSpec<T>,
+    _solid: &[bool],
+    _wall_u: &[[T; 3]],
+) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    hash_u64(&mut h, L::D as u64);
+    hash_u64(&mut h, L::Q as u64);
+    for v in spec.dims {
+        hash_u64(&mut h, v as u64);
+    }
+    hash_f64(&mut h, spec.nu);
+    match spec.collision {
+        CollisionKind::Bgk => hash_u64(&mut h, 1),
+        CollisionKind::Trt { magic } => {
+            hash_u64(&mut h, 2);
+            hash_f64(&mut h, magic);
+        }
+    }
+    for v in spec.periodic {
+        hash_u64(&mut h, u64::from(v));
+    }
+    for bc in spec.faces {
+        hash_face_bc(&mut h, bc);
+    }
+    for v in spec.force {
+        hash_real(&mut h, v);
+    }
+    h
+}
+
+fn decomp_hash(subs: &[Subdomain], periodic: [bool; 3]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    hash_u64(&mut h, subs.len() as u64);
+    for v in periodic {
+        hash_u64(&mut h, u64::from(v));
+    }
+    for sub in subs {
+        for v in sub.origin {
+            hash_u64(&mut h, v as u64);
+        }
+        for v in sub.geom.core {
+            hash_u64(&mut h, v as u64);
+        }
+        for nb in sub.neighbors {
+            hash_u64(&mut h, nb.map(|v| v as u64 + 1).unwrap_or(0));
+        }
+    }
+    h
+}
+
+fn part_mask_hash<T: Real>(fields: &SoaFields<T>) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    hash_u64(&mut h, fields.solid.len() as u64);
+    for &v in &fields.solid {
+        hash_u64(&mut h, u64::from(v));
+    }
+    for u in &fields.wall_u {
+        for v in *u {
+            hash_real(&mut h, v);
+        }
+    }
+    h
+}
+
+fn hash_string(h: u64) -> String {
+    format!("fnv1a64:{h:016x}")
+}
+
+fn dtype_name<T: Real>() -> &'static str {
+    if std::mem::size_of::<T>() == 4 {
+        "f32"
+    } else {
+        "f64"
+    }
+}
+
+fn lattice_name<L: Lattice>() -> &'static str {
+    match (L::D, L::Q) {
+        (2, 9) => "D2Q9",
+        (3, 19) => "D3Q19",
+        _ => "unknown",
+    }
+}
+
+fn lattice_id<L: Lattice>() -> u16 {
+    match (L::D, L::Q) {
+        (2, 9) => 29,
+        (3, 19) => 319,
+        _ => 0,
+    }
+}
+
+fn push_real_bytes<T: Real>(out: &mut Vec<u8>, values: &[T]) {
+    if std::mem::size_of::<T>() == 4 {
+        for &v in values {
+            out.extend_from_slice(&(v.as_f64() as f32).to_bits().to_le_bytes());
+        }
+    } else {
+        for &v in values {
+            out.extend_from_slice(&v.as_f64().to_bits().to_le_bytes());
+        }
+    }
+}
+
+fn read_real_bytes<T: Real>(bytes: &[u8], expected: usize) -> Result<Vec<T>, CheckpointError> {
+    let width = std::mem::size_of::<T>();
+    if bytes.len() != expected * width {
+        return Err(CheckpointError::new(
+            "CKPT_GEOM_MISMATCH",
+            format!(
+                "section length {} does not match expected {} values of {width} bytes",
+                bytes.len(),
+                expected
+            ),
+        ));
+    }
+    let mut out = Vec::with_capacity(expected);
+    if width == 4 {
+        for chunk in bytes.chunks_exact(4) {
+            let v = f32::from_bits(u32::from_le_bytes(chunk.try_into().unwrap()));
+            out.push(T::r(v as f64));
+        }
+    } else {
+        for chunk in bytes.chunks_exact(8) {
+            let v = f64::from_bits(u64::from_le_bytes(chunk.try_into().unwrap()));
+            out.push(T::r(v));
+        }
+    }
+    Ok(out)
+}
+
+fn required_section<'a>(
+    sections: &'a BTreeMap<u32, Vec<u8>>,
+    id: u32,
+    name: &'static str,
+) -> Result<&'a [u8], CheckpointError> {
+    sections.get(&id).map(Vec::as_slice).ok_or_else(|| {
+        CheckpointError::new(
+            "CKPT_TRUNCATED",
+            format!("checkpoint is missing required section {name}"),
+        )
+    })
+}
+
+fn write_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], CheckpointError> {
+    if bytes.len().saturating_sub(*pos) < n {
+        return Err(CheckpointError::new(
+            "CKPT_TRUNCATED",
+            "rank file ended before the declared header/table/payload",
+        ));
+    }
+    let out = &bytes[*pos..*pos + n];
+    *pos += n;
+    Ok(out)
+}
+
+fn read_u8(bytes: &[u8], pos: &mut usize) -> Result<u8, CheckpointError> {
+    Ok(take(bytes, pos, 1)?[0])
+}
+
+fn read_u16(bytes: &[u8], pos: &mut usize) -> Result<u16, CheckpointError> {
+    Ok(u16::from_le_bytes(take(bytes, pos, 2)?.try_into().unwrap()))
+}
+
+fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32, CheckpointError> {
+    Ok(u32::from_le_bytes(take(bytes, pos, 4)?.try_into().unwrap()))
+}
+
+fn read_u64(bytes: &[u8], pos: &mut usize) -> Result<u64, CheckpointError> {
+    Ok(u64::from_le_bytes(take(bytes, pos, 8)?.try_into().unwrap()))
+}
+
+fn read_rank_file(path: &Path) -> Result<(RankHeader, BTreeMap<u32, Vec<u8>>), CheckpointError> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+    let mut pos = 0usize;
+    if take(&bytes, &mut pos, 8)? != CKPT_MAGIC {
+        return Err(CheckpointError::new(
+            "CKPT_BAD_MAGIC",
+            "rank file magic is not LBMKPT",
+        ));
+    }
+    let format_ver = read_u32(&bytes, &mut pos)?;
+    if format_ver > CKPT_FORMAT_VERSION {
+        return Err(CheckpointError::new(
+            "CKPT_TOO_NEW",
+            format!("rank file format {format_ver} is newer than supported {CKPT_FORMAT_VERSION}"),
+        ));
+    }
+    let endian = read_u8(&bytes, &mut pos)?;
+    if endian != 0 {
+        return Err(CheckpointError::new(
+            "CKPT_BAD_MAGIC",
+            "cross-endian checkpoints are not supported by format v1",
+        ));
+    }
+    let dtype = read_u8(&bytes, &mut pos)?;
+    let lattice_id = read_u16(&bytes, &mut pos)?;
+    let q = read_u16(&bytes, &mut pos)?;
+    let d = read_u16(&bytes, &mut pos)?;
+    let np = read_u64(&bytes, &mut pos)?;
+    let n_core = read_u64(&bytes, &mut pos)?;
+    let section_count = read_u32(&bytes, &mut pos)? as usize;
+    let mut table = Vec::with_capacity(section_count);
+    for _ in 0..section_count {
+        table.push(SectionEntry {
+            id: read_u32(&bytes, &mut pos)?,
+            offset: read_u64(&bytes, &mut pos)?,
+            byte_len: read_u64(&bytes, &mut pos)?,
+        });
+    }
+    if bytes.len().saturating_sub(pos) < 8 {
+        return Err(CheckpointError::new(
+            "CKPT_TRUNCATED",
+            "rank file is missing payload hash trailer",
+        ));
+    }
+    let payload_end = bytes.len() - 8;
+    let payload_hash = u64::from_le_bytes(bytes[payload_end..].try_into().unwrap());
+    let payload = &bytes[pos..payload_end];
+    if fnv1a64(payload) != payload_hash {
+        return Err(CheckpointError::new(
+            "CKPT_PAYLOAD_CORRUPT",
+            "rank file payload hash does not match its contents",
+        ));
+    }
+    let mut sections = BTreeMap::new();
+    for entry in table {
+        let start = entry.offset as usize;
+        let len = entry.byte_len as usize;
+        let end = start.checked_add(len).ok_or_else(|| {
+            CheckpointError::new("CKPT_TRUNCATED", "section offset overflows usize")
+        })?;
+        if end > payload.len() {
+            return Err(CheckpointError::new(
+                "CKPT_TRUNCATED",
+                format!(
+                    "section {} range {}..{} exceeds payload length {}",
+                    entry.id,
+                    start,
+                    end,
+                    payload.len()
+                ),
+            ));
+        }
+        sections.insert(entry.id, payload[start..end].to_vec());
+    }
+    Ok((
+        RankHeader {
+            dtype,
+            lattice_id,
+            q,
+            d,
+            np,
+            n_core,
+            payload_hash,
+        },
+        sections,
+    ))
+}
+
 /// Which global faces are walls, and their tangential velocities.
 #[derive(Clone, Copy, Debug)]
 pub struct WallSpec<T: Real> {
@@ -518,6 +936,7 @@ where
 {
     params: StepParams<T>,
     nu: f64,
+    collision: CollisionKind,
     dims: [usize; 3],
     periodic: [bool; 3],
     subs: Vec<Subdomain>,
@@ -660,6 +1079,7 @@ where
         let mut solver = Self {
             params,
             nu: spec.nu,
+            collision: spec.collision,
             dims: spec.dims,
             periodic: spec.periodic,
             subs,
@@ -1456,6 +1876,329 @@ where
         self.stage_out_all();
     }
 
+    /// Save a single-rank checkpoint directory (`manifest.json` +
+    /// `rank_0000.bin`). Populations are stored as raw deviation bytes, with
+    /// the ping-pong partner preserved so open-boundary stale slots resume
+    /// exactly.
+    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        self.stage_out_all();
+        if self.host_parts.len() != 1 {
+            return Err(CheckpointError::new(
+                "CKPT_UNSUPPORTED",
+                "single-node checkpoint currently expects one local rank/part",
+            ));
+        }
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let fields = &self.host_parts[0];
+        let sub = &self.subs[0];
+        let np = fields.geom.n_padded();
+        let nc = fields.geom.n_core();
+
+        let mut sections: Vec<(u32, Vec<u8>)> = Vec::new();
+        let mut f_primary = Vec::with_capacity(fields.f.len() * std::mem::size_of::<T>());
+        push_real_bytes(&mut f_primary, &fields.f);
+        sections.push((SEC_F_PRIMARY, f_primary));
+
+        let mut ftmp = Vec::with_capacity(fields.ftmp.len() * std::mem::size_of::<T>());
+        push_real_bytes(&mut ftmp, &fields.ftmp);
+        sections.push((SEC_STALE_STASH, ftmp));
+
+        let mut moments = Vec::with_capacity(4 * nc * std::mem::size_of::<T>());
+        push_real_bytes(&mut moments, &fields.rho);
+        push_real_bytes(&mut moments, &fields.ux);
+        push_real_bytes(&mut moments, &fields.uy);
+        push_real_bytes(&mut moments, &fields.uz);
+        sections.push((SEC_MOMENTS, moments));
+
+        let solid: Vec<u8> = fields.solid.iter().map(|&v| u8::from(v)).collect();
+        sections.push((SEC_SOLID, solid));
+
+        if let Some(force) = &fields.force_field {
+            let mut bytes = Vec::with_capacity(3 * force.len() * std::mem::size_of::<T>());
+            for v in force {
+                push_real_bytes(&mut bytes, v);
+            }
+            sections.push((SEC_FORCE_FIELD, bytes));
+        }
+
+        let mut payload = Vec::new();
+        let mut table = Vec::with_capacity(sections.len());
+        for (id, bytes) in sections {
+            let offset = payload.len() as u64;
+            payload.extend_from_slice(&bytes);
+            table.push(SectionEntry {
+                id,
+                offset,
+                byte_len: bytes.len() as u64,
+            });
+        }
+        let payload_hash = fnv1a64(&payload);
+
+        let mut bin = Vec::new();
+        bin.extend_from_slice(CKPT_MAGIC);
+        write_u32(&mut bin, CKPT_FORMAT_VERSION);
+        bin.push(0);
+        bin.push(if dtype_name::<T>() == "f32" { 0 } else { 1 });
+        write_u16(&mut bin, lattice_id::<L>());
+        write_u16(&mut bin, L::Q as u16);
+        write_u16(&mut bin, L::D as u16);
+        write_u64(&mut bin, np as u64);
+        write_u64(&mut bin, nc as u64);
+        write_u32(&mut bin, table.len() as u32);
+        for entry in &table {
+            write_u32(&mut bin, entry.id);
+            write_u64(&mut bin, entry.offset);
+            write_u64(&mut bin, entry.byte_len);
+        }
+        bin.extend_from_slice(&payload);
+        write_u64(&mut bin, payload_hash);
+
+        let rank_file = "rank_0000.bin";
+        let rank_path = dir.join(rank_file);
+        let mut file = std::fs::File::create(&rank_path)?;
+        file.write_all(&bin)?;
+
+        let rank = CheckpointRank {
+            rank: 0,
+            file: rank_file.to_string(),
+            origin: sub.origin,
+            core: sub.geom.core,
+            bytes: bin.len() as u64,
+            payload_hash: hash_string(payload_hash),
+            mask_hash: hash_string(part_mask_hash(fields)),
+        };
+        let mut reserved = BTreeMap::new();
+        reserved.insert("rng".to_string(), false);
+        reserved.insert("particles".to_string(), false);
+        reserved.insert("stats".to_string(), false);
+        let manifest = CheckpointManifest {
+            kind: "lbmflow-checkpoint".to_string(),
+            format_version: CKPT_FORMAT_VERSION,
+            step: self.time,
+            time: self.time as f64,
+            dtype: dtype_name::<T>().to_string(),
+            lattice: lattice_name::<L>().to_string(),
+            global: self.dims,
+            scenario_hash: hash_string(self.current_spec_hash()),
+            decomp_hash: hash_string(decomp_hash(&self.subs, self.periodic)),
+            nranks: 1,
+            ranks: vec![rank],
+            reserved,
+        };
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest)?,
+        )?;
+        Ok(())
+    }
+
+    /// Load a single-rank checkpoint into a freshly rebuilt solver. The caller
+    /// supplies the same spec/masks/decomposition used to build the run; hashes
+    /// are checked before any checkpoint bytes are installed.
+    pub fn load(
+        dir: impl AsRef<Path>,
+        spec: &GlobalSpec<T>,
+        solid: &[bool],
+        wall_u: &[[T; 3]],
+        decomp: [usize; 3],
+        backend: B,
+        exchange: H,
+    ) -> Result<Self, CheckpointError> {
+        let mut solver = Self::new(spec, solid, wall_u, decomp, backend, exchange);
+        solver.load_into(dir, spec_hash::<T, L>(spec, solid, wall_u))?;
+        Ok(solver)
+    }
+
+    /// Restore a checkpoint into this already-built solver. The current
+    /// solver configuration and masks are used as the rebuilt spec/mask
+    /// authority; mismatch errors are returned before checkpoint state is
+    /// installed.
+    pub fn restore(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        let expected = self.current_spec_hash();
+        self.load_into(dir, expected)
+    }
+
+    fn current_spec_hash(&self) -> u64 {
+        let spec = GlobalSpec {
+            dims: self.dims,
+            nu: self.nu,
+            collision: self.collision,
+            periodic: self.periodic,
+            faces: self.params.faces,
+            force: self.params.force,
+        };
+        let fields = &self.host_parts[0];
+        spec_hash::<T, L>(&spec, &fields.solid, &fields.wall_u)
+    }
+
+    fn load_into(&mut self, dir: impl AsRef<Path>, expected_spec_hash: u64) -> Result<(), CheckpointError> {
+        let dir = dir.as_ref();
+        let manifest_text = std::fs::read_to_string(dir.join("manifest.json"))?;
+        let manifest: CheckpointManifest = serde_json::from_str(&manifest_text)?;
+        if manifest.kind != "lbmflow-checkpoint" {
+            return Err(CheckpointError::new(
+                "CKPT_BAD_MAGIC",
+                format!("manifest kind is {}", manifest.kind),
+            ));
+        }
+        if manifest.format_version > CKPT_FORMAT_VERSION {
+            return Err(CheckpointError::new(
+                "CKPT_TOO_NEW",
+                format!(
+                    "checkpoint format_version {} is newer than supported {}",
+                    manifest.format_version, CKPT_FORMAT_VERSION
+                ),
+            ));
+        }
+        if manifest.dtype != dtype_name::<T>() {
+            return Err(CheckpointError::new(
+                "CKPT_DTYPE_MISMATCH",
+                format!("checkpoint dtype {} differs from run dtype {}", manifest.dtype, dtype_name::<T>()),
+            ));
+        }
+        if manifest.lattice != lattice_name::<L>() {
+            return Err(CheckpointError::new(
+                "CKPT_LATTICE_MISMATCH",
+                format!(
+                    "checkpoint lattice {} differs from run lattice {}",
+                    manifest.lattice,
+                    lattice_name::<L>()
+                ),
+            ));
+        }
+        if manifest.global != self.dims {
+            return Err(CheckpointError::new(
+                "CKPT_GEOM_MISMATCH",
+                format!("checkpoint global {:?} differs from run {:?}", manifest.global, self.dims),
+            ));
+        }
+        let expected = hash_string(expected_spec_hash);
+        if manifest.scenario_hash != expected {
+            return Err(CheckpointError::new(
+                "CKPT_SCENARIO_MISMATCH",
+                format!(
+                    "scenario_hash differed: checkpoint={} current={expected}",
+                    manifest.scenario_hash
+                ),
+            ));
+        }
+        let current_decomp = hash_string(decomp_hash(&self.subs, self.periodic));
+        if manifest.decomp_hash != current_decomp {
+            return Err(CheckpointError::new(
+                "CKPT_DECOMP_MISMATCH",
+                format!(
+                    "decomp_hash differed: checkpoint={} current={current_decomp}",
+                    manifest.decomp_hash
+                ),
+            ));
+        }
+        if manifest.nranks != 1 || manifest.ranks.len() != 1 || self.host_parts.len() != 1 {
+            return Err(CheckpointError::new(
+                "CKPT_DECOMP_MISMATCH",
+                "B-5 checkpoint load supports exactly one rank and one local part",
+            ));
+        }
+        let rank = &manifest.ranks[0];
+        let sub = &self.subs[0];
+        if rank.origin != sub.origin || rank.core != sub.geom.core {
+            return Err(CheckpointError::new(
+                "CKPT_GEOM_MISMATCH",
+                format!(
+                    "rank geometry differed: checkpoint origin={:?} core={:?}, current origin={:?} core={:?}",
+                    rank.origin, rank.core, sub.origin, sub.geom.core
+                ),
+            ));
+        }
+        let current_mask = hash_string(part_mask_hash(&self.host_parts[0]));
+        if rank.mask_hash != current_mask {
+            return Err(CheckpointError::new(
+                "CKPT_MASK_MISMATCH",
+                format!(
+                    "mask_hash differed: checkpoint={} current={current_mask}",
+                    rank.mask_hash
+                ),
+            ));
+        }
+
+        let (header, payload) = read_rank_file(&dir.join(&rank.file))?;
+        if header.dtype != (if dtype_name::<T>() == "f32" { 0 } else { 1 }) {
+            return Err(CheckpointError::new(
+                "CKPT_DTYPE_MISMATCH",
+                "rank file dtype differs from requested run precision",
+            ));
+        }
+        if header.lattice_id != lattice_id::<L>() || header.q != L::Q as u16 || header.d != L::D as u16 {
+            return Err(CheckpointError::new(
+                "CKPT_LATTICE_MISMATCH",
+                "rank file lattice metadata differs from requested lattice",
+            ));
+        }
+        let fields = &mut self.host_parts[0];
+        let np = fields.geom.n_padded();
+        let nc = fields.geom.n_core();
+        if header.np != np as u64 || header.n_core != nc as u64 {
+            return Err(CheckpointError::new(
+                "CKPT_GEOM_MISMATCH",
+                format!(
+                    "rank file np/n_core {}/{} differs from current {np}/{nc}",
+                    header.np, header.n_core
+                ),
+            ));
+        }
+        if hash_string(header.payload_hash) != rank.payload_hash {
+            return Err(CheckpointError::new(
+                "CKPT_PAYLOAD_CORRUPT",
+                format!(
+                    "rank payload hash {} differs from manifest {}",
+                    hash_string(header.payload_hash),
+                    rank.payload_hash
+                ),
+            ));
+        }
+
+        let f = required_section(&payload, SEC_F_PRIMARY, "F_PRIMARY")?;
+        fields.f = read_real_bytes(f, L::Q * np)?;
+        let ftmp = required_section(&payload, SEC_STALE_STASH, "STALE_STASH")?;
+        fields.ftmp = read_real_bytes(ftmp, L::Q * np)?;
+        let moments = required_section(&payload, SEC_MOMENTS, "MOMENTS")?;
+        let vals = read_real_bytes(moments, 4 * nc)?;
+        fields.rho.copy_from_slice(&vals[0..nc]);
+        fields.ux.copy_from_slice(&vals[nc..2 * nc]);
+        fields.uy.copy_from_slice(&vals[2 * nc..3 * nc]);
+        fields.uz.copy_from_slice(&vals[3 * nc..4 * nc]);
+        if let Some(solid) = payload.get(&SEC_SOLID) {
+            if solid.len() != fields.solid.len() {
+                return Err(CheckpointError::new(
+                    "CKPT_GEOM_MISMATCH",
+                    "solid section length differs from current padded geometry",
+                ));
+            }
+            let loaded: Vec<bool> = solid.iter().map(|&v| v != 0).collect();
+            if loaded != fields.solid {
+                return Err(CheckpointError::new(
+                    "CKPT_MASK_MISMATCH",
+                    "serialized solid mask differs from rebuilt mask",
+                ));
+            }
+        }
+        if let Some(force) = payload.get(&SEC_FORCE_FIELD) {
+            let vals = read_real_bytes(force, 3 * nc)?;
+            let mut ff = vec![[T::zero(); 3]; nc];
+            for c in 0..nc {
+                ff[c] = [vals[3 * c], vals[3 * c + 1], vals[3 * c + 2]];
+            }
+            fields.force_field = Some(ff);
+        }
+        fields.fused = None;
+        self.time = manifest.step;
+        self.probed_force = [T::zero(); 3];
+        self.host_dirty = true;
+        self.device_ahead = false;
+        self.masks_dirty = false;
+        Ok(())
+    }
+
     /// Momentum-exchange force on the probed solids during the most recent
     /// step (V1 `probed_force`).
     pub fn probed_force(&self) -> [T; 3] {
@@ -1754,6 +2497,221 @@ mod tests {
     use crate::backend::CpuScalar;
     use crate::halo::{InProcess, LocalPeriodic};
     use crate::lattice::D2Q9;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp_ckpt(name: &str) -> std::path::PathBuf {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("lbmflow-{name}-{n}"))
+    }
+
+    fn bits<T: Real>(v: T) -> u64 {
+        if std::mem::size_of::<T>() == 4 {
+            (v.as_f64() as f32).to_bits() as u64
+        } else {
+            v.as_f64().to_bits()
+        }
+    }
+
+    fn assert_solver_bits_eq<L, T>(
+        a: &Solver<L, T, CpuScalar, LocalPeriodic>,
+        b: &Solver<L, T, CpuScalar, LocalPeriodic>,
+    ) where
+        L: Lattice,
+        T: Real,
+    {
+        assert_eq!(a.time(), b.time());
+        assert_eq!(a.dims(), b.dims());
+        for q in 0..L::Q {
+            let af = a.gather_f(q);
+            let bf = b.gather_f(q);
+            assert_eq!(af.len(), bf.len());
+            for (i, (&x, &y)) in af.iter().zip(&bf).enumerate() {
+                assert_eq!(bits(x), bits(y), "f[{q}][{i}] differs");
+            }
+        }
+        for (name, av, bv) in [
+            ("rho", a.gather_rho(), b.gather_rho()),
+            ("ux", a.gather_ux(), b.gather_ux()),
+            ("uy", a.gather_uy(), b.gather_uy()),
+            ("uz", a.gather_uz(), b.gather_uz()),
+        ] {
+            for (i, (&x, &y)) in av.iter().zip(&bv).enumerate() {
+                assert_eq!(bits(x), bits(y), "{name}[{i}] differs");
+            }
+        }
+    }
+
+    fn solid_box(dims: [usize; 3]) -> Vec<bool> {
+        let mut solid = vec![false; dims[0] * dims[1] * dims[2]];
+        let idx = |x: usize, y: usize, z: usize| (z * dims[1] + y) * dims[0] + x;
+        solid[idx(dims[0] / 2, dims[1] / 2, dims[2] / 2)] = true;
+        solid
+    }
+
+    fn run_resume_bits<L, T>(dims: [usize; 3])
+    where
+        L: Lattice,
+        T: Real,
+    {
+        let spec = GlobalSpec::<T> {
+            dims,
+            nu: 0.08,
+            periodic: [true, true, L::D == 3],
+            force: [T::r(1.0e-6), T::r(-2.0e-6), T::r(if L::D == 3 { 3.0e-7 } else { 0.0 })],
+            ..Default::default()
+        };
+        let solid = solid_box(dims);
+        let wall_u = vec![[T::zero(); 3]; solid.len()];
+        let mut continuous: Solver<L, T, CpuScalar, LocalPeriodic> =
+            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        let mut resumed: Solver<L, T, CpuScalar, LocalPeriodic> =
+            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        continuous.run(100);
+        resumed.run(50);
+        let dir = tmp_ckpt("bit-resume");
+        resumed.save(&dir).unwrap();
+        let mut loaded: Solver<L, T, CpuScalar, LocalPeriodic> = Solver::load(
+            &dir,
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .unwrap();
+        loaded.run(50);
+        assert_solver_bits_eq(&continuous, &loaded);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_resume_bit_exact_f32_f64_d2q9_d3q19() {
+        run_resume_bits::<D2Q9, f32>([16, 12, 1]);
+        run_resume_bits::<D2Q9, f64>([16, 12, 1]);
+        run_resume_bits::<D3Q19, f32>([8, 7, 6]);
+        run_resume_bits::<D3Q19, f64>([8, 7, 6]);
+    }
+
+    #[test]
+    fn checkpoint_reports_truncated_payload_and_spec_mismatch() {
+        let spec = GlobalSpec::<f32> {
+            dims: [12, 10, 1],
+            periodic: [true, true, false],
+            force: [1.0e-6, 0.0, 0.0],
+            ..Default::default()
+        };
+        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> =
+            Solver::new(&spec, &[], &[], [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        s.run(3);
+        let dir = tmp_ckpt("errors");
+        s.save(&dir).unwrap();
+
+        let mut changed = spec.clone();
+        changed.nu = 0.09;
+        let err = match Solver::<D2Q9, f32, CpuScalar, LocalPeriodic>::load(
+            &dir,
+            &changed,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        ) {
+            Ok(_) => panic!("changed spec must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "CKPT_SCENARIO_MISMATCH");
+        assert!(err.message.contains("scenario_hash differed"));
+
+        let rank = dir.join("rank_0000.bin");
+        let clean_rank = std::fs::read(&rank).unwrap();
+        let mut corrupt = clean_rank.clone();
+        let flip_at = corrupt.len() / 2;
+        corrupt[flip_at] ^= 0x01;
+        std::fs::write(&rank, corrupt).unwrap();
+        let err = match Solver::<D2Q9, f32, CpuScalar, LocalPeriodic>::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        ) {
+            Ok(_) => panic!("corrupted rank file must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "CKPT_PAYLOAD_CORRUPT");
+
+        let mut bytes = clean_rank;
+        bytes.truncate(bytes.len() - 5);
+        std::fs::write(&rank, bytes).unwrap();
+        let err = match Solver::<D2Q9, f32, CpuScalar, LocalPeriodic>::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        ) {
+            Ok(_) => panic!("truncated rank file must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert!(matches!(err.code, "CKPT_TRUNCATED" | "CKPT_PAYLOAD_CORRUPT"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_preserves_stale_stash_and_carried_solid_moments() {
+        let mut faces = [FaceBC::<f32>::Closed; 6];
+        faces[Face::XNeg.index()] = FaceBC::Velocity { u: [0.03, 0.0, 0.0] };
+        faces[Face::XPos.index()] = FaceBC::Convective { u_conv: 0.03 };
+        let dims = [18, 10, 1];
+        let mut walls = WallSpec::<f32>::default();
+        walls.is_wall[Face::YNeg.index()] = true;
+        walls.is_wall[Face::YPos.index()] = true;
+        let (solid, wall_u) = build_wall_rims(2, dims, &walls);
+        let spec = GlobalSpec::<f32> {
+            dims,
+            nu: 0.06,
+            periodic: [false, false, false],
+            faces,
+            force: [2.0e-6, 0.0, 0.0],
+            ..Default::default()
+        };
+        let mut s: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> =
+            Solver::new(&spec, &solid, &wall_u, [1, 1, 1], CpuScalar::default(), LocalPeriodic);
+        s.run(8);
+        {
+            let f = s.fields_mut(0);
+            let c = f.geom.cidx(0, 0, 0);
+            f.rho[c] = 1.2345;
+        }
+        let saved_ftmp = s.fields(0).ftmp.clone();
+        let dir = tmp_ckpt("stash-moments");
+        s.save(&dir).unwrap();
+        let loaded: Solver<D2Q9, f32, CpuScalar, LocalPeriodic> = Solver::load(
+            &dir,
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.fields(0).ftmp.iter().map(|&v| bits(v)).collect::<Vec<_>>(),
+            saved_ftmp.iter().map(|&v| bits(v)).collect::<Vec<_>>()
+        );
+        assert_eq!(bits(loaded.fields(0).rho[loaded.fields(0).geom.cidx(0, 0, 0)]), bits(1.2345f32));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// A-5 (E4): building a single-part owner of a wider decomposition with a
     /// Local exchange must fail at construction — such an owner keeps global
