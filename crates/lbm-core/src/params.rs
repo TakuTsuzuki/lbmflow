@@ -149,6 +149,9 @@ pub struct StepParams<T: Real> {
     pub omega_m: f64,
     /// Uniform body force (Guo forcing).
     pub force: [T; 3],
+    /// Optional per-mass gravity composed as `rho(x) * gravity` in the same
+    /// Guo forcing source as `force` and per-cell force fields.
+    pub gravity: Option<[T; 3]>,
     /// Open BC per global face, `Face::index()` order.
     pub faces: [FaceBC<T>; 6],
     /// Localized interior volume sources/sinks.
@@ -175,6 +178,8 @@ pub struct KParams<T: Real> {
     pub cm: T,
     /// Uniform body force.
     pub force: [T; 3],
+    /// Optional per-mass gravity.
+    pub gravity: Option<[T; 3]>,
     /// Discrete velocities as `T` (first `Q` entries valid).
     pub cr: [[T; 3]; Q_MAX],
     /// Weights as `T` (first `Q` entries valid).
@@ -203,8 +208,40 @@ impl<T: Real> KParams<T> {
             cp: T::r(1.0 - p.omega_p / 2.0),
             cm: T::r(1.0 - p.omega_m / 2.0),
             force: p.force,
+            gravity: p.gravity,
             cr,
             wr,
+        }
+    }
+
+    #[inline]
+    pub fn force_on(&self, field_present: bool) -> bool {
+        self.force[0] != T::zero()
+            || self.force[1] != T::zero()
+            || self.force[2] != T::zero()
+            || field_present
+            || self.gravity.is_some()
+    }
+
+    #[inline]
+    pub fn force_at(&self, field: Option<&[[T; 3]]>, idx: usize, rho: T) -> [T; 3] {
+        match (field, self.gravity) {
+            (Some(field), Some(g)) => [
+                self.force[0] + (field[idx][0] + rho * g[0]),
+                self.force[1] + (field[idx][1] + rho * g[1]),
+                self.force[2] + (field[idx][2] + rho * g[2]),
+            ],
+            (Some(field), None) => [
+                self.force[0] + field[idx][0],
+                self.force[1] + field[idx][1],
+                self.force[2] + field[idx][2],
+            ],
+            (None, Some(g)) => [
+                self.force[0] + rho * g[0],
+                self.force[1] + rho * g[1],
+                self.force[2] + rho * g[2],
+            ],
+            (None, None) => self.force,
         }
     }
 }

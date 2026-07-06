@@ -142,24 +142,14 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
     let f15 = T::r(1.5);
     let nine = T::r(9.0);
     let half = T::r(0.5);
-    let force_on = p.force[0] != T::zero()
-        || p.force[1] != T::zero()
-        || p.force[2] != T::zero()
-        || ff.is_some();
+    let force_on = p.force_on(ff.is_some());
     for x in 0..rho.len() {
         if solid[x] {
             continue;
         }
         let r = rho[x];
         let u = [ux[x], uy[x], uz[x]];
-        let fv = match ff {
-            Some(field) => [
-                p.force[0] + field[x][0],
-                p.force[1] + field[x][1],
-                p.force[2] + field[x][2],
-            ],
-            None => p.force,
-        };
+        let fv = p.force_at(ff, x, r);
         let mut usq = u[0] * u[0];
         for d in 1..L::D {
             usq = usq + u[d] * u[d];
@@ -340,16 +330,10 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
         if solid[x] {
             continue;
         }
-        let r = rho[x].as_f64();
+        let r_t = rho[x];
+        let r = r_t.as_f64();
         let u = [ux[x].as_f64(), uy[x].as_f64(), uz[x].as_f64()];
-        let fv_t = match ff {
-            Some(field) => [
-                p.force[0] + field[x][0],
-                p.force[1] + field[x][1],
-                p.force[2] + field[x][2],
-            ],
-            None => p.force,
-        };
+        let fv_t = p.force_at(ff, x, r_t);
         let fv = [fv_t[0].as_f64(), fv_t[1].as_f64(), fv_t[2].as_f64()];
         let force_on = fv[0] != 0.0 || fv[1] != 0.0 || fv[2] != 0.0;
         let i = pb + x;
@@ -582,15 +566,8 @@ pub(crate) fn moments_row<L: Lattice, T: Real>(
                 m[2] = m[2] + p.cr[q][2] * fq;
             }
         }
-        let fv = match ff {
-            Some(field) => [
-                p.force[0] + field[x][0],
-                p.force[1] + field[x][1],
-                p.force[2] + field[x][2],
-            ],
-            None => p.force,
-        };
         let r = T::one() + dr;
+        let fv = p.force_at(ff, x, r);
         rho[x] = r;
         let inv = T::one() / r;
         ux[x] = (m[0] + half * fv[0]) * inv;
@@ -1007,6 +984,7 @@ mod tests {
             omega_p: 1.25,
             omega_m: 0.7,
             force: [T::zero(); 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),
@@ -1079,6 +1057,7 @@ mod tests {
             omega_p: 1.25,
             omega_m: 1.25,
             force: [T::zero(); 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),
@@ -1093,6 +1072,7 @@ mod tests {
             omega_p: 1.25,
             omega_m: 1.25,
             force: [0.0; 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),
@@ -1129,6 +1109,7 @@ mod tests {
             omega_p: 1.1,
             omega_m: 1.1,
             force: [0.0; 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),

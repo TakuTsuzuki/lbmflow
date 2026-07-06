@@ -169,6 +169,13 @@ pub trait Backend<L: Lattice, T: Real> {
         true
     }
 
+    /// Whether this backend can compose per-mass gravity `rho(x) * g` inside
+    /// the same backend-resident Guo force path used for uniform and per-cell
+    /// force fields.
+    fn supports_gravity_body_force(&self) -> bool {
+        false
+    }
+
     /// Exchange post-collision population halos for backend-owned fields.
     ///
     /// CPU backends delegate to the current `HaloExchange<SoaFields>`
@@ -357,6 +364,10 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
 
     fn stage_out(&self, _sub: &Subdomain, fields: &SoaFields<T>, host: &mut SoaFields<T>) {
         *host = fields.clone();
+    }
+
+    fn supports_gravity_body_force(&self) -> bool {
+        true
     }
 
     fn exchange_f<H: HaloExchange<T>>(
@@ -568,8 +579,7 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
             .iter()
             .filter(|patch| patch.face == face.index())
             .filter_map(|patch| {
-                patch_rect_local(sub, face, patch.lo, patch.hi)
-                    .map(|(lo, hi)| (patch.bc, lo, hi))
+                patch_rect_local(sub, face, patch.lo, patch.hi).map(|(lo, hi)| (patch.bc, lo, hi))
             })
             .collect();
         let profiles = &fields.inlet_profiles;
@@ -872,9 +882,17 @@ pub(crate) fn reduce_impl<L: Lattice, T: Real>(
                         for q in 0..L::Q {
                             m += L::C[q][a] as f64 * fields.f[q * np + pb + x].as_f64();
                         }
-                        let fa = match ff {
-                            Some(field) => p.force[a].as_f64() + field[c0 + x][a].as_f64(),
-                            None => p.force[a].as_f64(),
+                        let mut rho = 1.0f64;
+                        for q in 0..L::Q {
+                            rho += fields.f[q * np + pb + x].as_f64();
+                        }
+                        let field_force = ff.map(|field| &field[c0 + x]);
+                        let gravity_force = p.gravity.map_or(0.0, |g| rho * g[a].as_f64());
+                        let fa = match field_force {
+                            Some(field) => {
+                                p.force[a].as_f64() + (field[a].as_f64() + gravity_force)
+                            }
+                            None => p.force[a].as_f64() + gravity_force,
                         };
                         acc += m + 0.5 * fa;
                     }

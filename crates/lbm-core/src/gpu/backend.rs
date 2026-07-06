@@ -538,7 +538,7 @@ struct RecState {
     pending_collide: bool,
     use_cached_moments_once: bool,
     /// Written Params uniform (asserts step-parameter stability per run).
-    params_words: Option<[u32; 16]>,
+    params_words: Option<[u32; 20]>,
     /// Written per-face BC uniforms.
     bc_words: Option<[[u32; 64]; 6]>,
     /// Bumped per fused dispatch; invalidates the readback cache.
@@ -1017,7 +1017,8 @@ impl<L: Lattice> WgpuBackend<L> {
             CollisionKind::Trt { .. } => 1u32,
             CollisionKind::Cumulant { .. } => 2u32,
         };
-        let words: [u32; 16] = [
+        let gravity = p.gravity.unwrap_or([0.0; 3]);
+        let words: [u32; 20] = [
             fields.nx,
             fields.ny,
             fields.nz,
@@ -1029,6 +1030,9 @@ impl<L: Lattice> WgpuBackend<L> {
             p.force[0].to_bits(),
             p.force[1].to_bits(),
             p.force[2].to_bits(),
+            gravity[0].to_bits(),
+            gravity[1].to_bits(),
+            gravity[2].to_bits(),
             {
                 let halo = sub.halo_flags();
                 let mut flags = 0u32;
@@ -1049,6 +1053,9 @@ impl<L: Lattice> WgpuBackend<L> {
                 if fields.wale.is_some() {
                     flags |= wgsl::FLAG_WALE;
                 }
+                if p.gravity.is_some() {
+                    flags |= wgsl::FLAG_GRAVITY;
+                }
                 for face in Face::ALL {
                     if face.axis() >= L::D {
                         continue;
@@ -1061,6 +1068,7 @@ impl<L: Lattice> WgpuBackend<L> {
             },
             (p.collision.omega_shear((1.0 / p.omega_p - 0.5) / 3.0) as f32).to_bits(),
             collision_code,
+            0,
             0,
             0,
         ];
@@ -1726,7 +1734,7 @@ impl<L: Lattice> WgpuBackend<L> {
         let uy = buf("uy", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let uz = buf("uz", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let probe_acc = buf("probe_acc", 12, U::STORAGE | U::COPY_DST | U::COPY_SRC);
-        let params_ub = buf("params", 64, U::UNIFORM | U::COPY_DST);
+        let params_ub = buf("params", 80, U::UNIFORM | U::COPY_DST);
         let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 256, U::UNIFORM | U::COPY_DST));
         let profiles = std::array::from_fn(|i| {
             let (t1, t2) = Face::ALL[i].tangents();
@@ -1889,6 +1897,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         false
     }
 
+    fn supports_gravity_body_force(&self) -> bool {
+        true
+    }
+
     fn alloc(&self, sub: &Subdomain) -> GpuFields {
         self.try_alloc(sub).expect("GPU field allocation failed")
     }
@@ -2014,7 +2026,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
-        let has_uniform_force = p.force.iter().any(|&f| f != 0.0);
+        let has_uniform_force = p.force.iter().any(|&f| f != 0.0) || p.gravity.is_some();
         if has_uniform_force && fields.host_ff.is_none() {
             self.ensure_params(sub, fields, p);
             let mut st = fields.state.borrow_mut();
@@ -2177,9 +2189,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
                             for q in 0..L::Q {
                                 m += L::C[q][a] as f64 * f[q * n + c] as f64;
                             }
+                            let rho = 1.0 + (0..L::Q).map(|q| f[q * n + c] as f64).sum::<f64>();
+                            let gravity_force = p.gravity.map_or(0.0, |g| rho * g[a] as f64);
                             let fa = match &fields.host_ff {
-                                Some(field) => p.force[a] as f64 + field[c][a] as f64,
-                                None => p.force[a] as f64,
+                                Some(field) => {
+                                    p.force[a] as f64 + (field[c][a] as f64 + gravity_force)
+                                }
+                                None => p.force[a] as f64 + gravity_force,
                             };
                             acc += m + 0.5 * fa;
                         }
