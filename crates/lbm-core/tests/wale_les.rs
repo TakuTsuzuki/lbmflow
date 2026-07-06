@@ -157,13 +157,6 @@ fn les_on_does_not_change_laminar_duct_after_null_update() {
     assert!(max_abs_diff(&off.gather_uz(), &on.gather_uz()) <= 1.0e-12);
 }
 
-#[test]
-#[ignore = "T17/VR-STR-03 heavy acceptance: channel Re_tau=180 vs DNS"]
-fn wale_channel_re_tau_180_dns_skeleton() {
-    // TODO(T17/VR-STR-03): set up Re_tau=180 channel, collect mean profile
-    // and Reynolds stresses, and compare against DNS acceptance bands.
-}
-
 fn make_tgv64(nu: f64) -> S3 {
     // T15.4 setup: classic 3D TGV, u0 = 1.28e-4/N under diffusive scaling,
     // pressure-consistent init (rho = 1 + 3p). See tests/t15_3d.rs.

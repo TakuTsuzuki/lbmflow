@@ -66,8 +66,8 @@ Scenario JSON currently exposes a narrower surface than the core:
 | Axis | Product-path exposure today |
 |---|---|
 | Dimension × lattice | `grid.nz <= 1` -> 2D D2Q9; `grid.nz > 1` -> 3D D3Q19. D3Q27 is not selectable from scenario JSON today. |
-| Collision | `physics.collision` accepts `bgk` or `trt` only. Cumulant scenario exposure is in flight on branch `cx/scenario-expose` (2026-07-07). |
-| Precision / storage | `physics.precision` accepts `f32` or `f64` only. There is no scenario-level `storage: f16` field today; f16 product exposure is in flight on branch `cx/scenario-expose` (2026-07-07). |
+| Collision | `physics.collision` accepts `bgk`, `trt`, or `cumulant` (landed 2026-07-07). Cumulant is honored on the 3D D3Q19 native CPU path only; 2D compat and GPU paths reject it with explicit errors. |
+| Precision / storage | `physics.precision` accepts `f32` or `f64`. `compute.storage` accepts `f32` or `f16` (landed 2026-07-07); `f16` is honored only for 2D D2Q9 GPU scenarios with a SHADER_F16 adapter, otherwise rejected with explicit errors. |
 | Backend | `compute.backend` accepts `auto`, `cpu`, or `gpu`; explicit GPU requests are honored or rejected. Current GPU scenario dispatch is constrained to f32 and rejects unsupported 3D combinations. |
 | Partition | Scenario JSON does not expose MPI decomposition hints today. MPI is a core/CLI validation path, not a general scenario contract field. |
 
@@ -103,7 +103,8 @@ pub struct D2Q9; pub struct D3Q19; pub struct D3Q27;
 - Precision is 2 axes of "compute precision × storage precision": (f32,f32) /
   (f64,f64) / GPU-only (f32 compute, f16 distribution storage). f16 pack/unpack
   is kept inside the wgpu backend; the core API surface presents f32 for that
-  mode. Scenario JSON does not expose this storage axis yet.
+  mode. Scenario JSON exposes this axis as `compute.storage: f32 | f16`
+  (2D D2Q9 GPU scenarios only, landed 2026-07-07).
 - The moments cache (rho,u) is for diagnostics, visualization, and multiphase.
   It resides in backend-side memory, with explicit readback (no implicit sync).
 
@@ -186,11 +187,12 @@ a public API, and the scenario / CLI / wasm 2D paths use it.
 ```
 - Existing fields are unchanged (stays deny_unknown_fields, additions only).
 - `grid.nz` is implemented, but scenario selection maps 3D to D3Q19 today.
-- `physics.collision` is implemented for BGK/TRT only in the scenario schema;
-  cumulant exposure is in flight on branch `cx/scenario-expose` (2026-07-07).
-- Scenario-level `storage: "f16"`, lattice selection, and MPI `decompose` hints
-  are design targets / PLAN.md REV-1 items, not implemented product-path fields
-  today.
+- `physics.collision` accepts `bgk`/`trt`/`cumulant` in the scenario schema
+  (cumulant honored on 3D D3Q19 CPU only; landed 2026-07-07). `compute.storage:
+  "f16"` is landed for 2D D2Q9 GPU scenarios. The run manifest records the
+  actually-used backend/lattice/collision/precision/storage (`provenance`).
+- Scenario-level lattice selection and MPI `decompose` hints remain design
+  targets (PLAN.md REV-1 residual), not implemented product-path fields today.
 - GUI remains 2D-only (3D goes via CLI/agent first).
 
 ## 5. Verification map (what to write to call it "done")

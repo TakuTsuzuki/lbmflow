@@ -27,7 +27,7 @@ promises.
 | Area | Current limitation | Evidence |
 |---|---|---|
 | FP16 storage | FP16 is a capacity/throughput mode, not a validation-grade long-transient reference mode. Distribution storage narrows to f16 while arithmetic remains f32; steady flows re-converge, but long transients accumulate storage rounding. | `crates/lbm-core/src/gpu/backend.rs:142-148`, `crates/lbm-core/tests/t16_fp16_storage.rs:15-23`, `docs/PHYSICS.md:313-324`, `docs/PERFORMANCE.md:59-62` |
-| Scenario schema | Scenario JSON exposes only `physics.precision: f32 | f64` and `collision: bgk | trt`. Cumulant and f16 are available in core/GPU APIs, not in scenario JSON today. | `crates/lbm-scenario/src/lib.rs:187-211`, `crates/lbm-core/src/params.rs:23-30`, `crates/lbm-core/src/gpu/backend.rs:142-148`, `README.md:127-130` |
+| Scenario schema | Scenario JSON exposes `collision: bgk | trt | cumulant` and `compute.storage: f32 | f16`, but with narrow honored paths: cumulant only on 3D D3Q19 CPU scenarios; f16 only on 2D D2Q9 GPU scenarios (SHADER_F16 adapter required). All other combinations are rejected with explicit errors — no silent fallback. Scenario-level lattice selection (D3Q27) and MPI hints remain unexposed. | `crates/lbm-scenario/src/lib.rs` (`CollisionSpec`, `StorageSpec`, `CUMULANT_*`/`GPU_F16_*` errors), manifest `provenance` in `crates/lbm-cli/src/runner.rs` |
 
 ## 4. Particles
 

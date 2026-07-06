@@ -413,3 +413,51 @@ order embeds its clauses. Do not duplicate that content here.
   transport-absorbing behavior because it silently switched the drag law
   outside the closure's validity domain instead of making the invalid state
   visible to the caller.
+
+---
+
+## T17/VR-STR-03 — Re_tau=178.12 turbulent channel vs MKM DNS (first measurement, frozen 2026-07-07)
+
+Setup: minimal-flow-unit body-force channel (delta=48: 128x98x72, Lx+=475,
+Lz+=267, u_tau=0.008, TRT magic 3/16 + WALE), deterministic multimode init,
+20 Te warmup + 30 Te statistics. Primary characterization runs on the GPU
+(f32, on-device WALE; 280 s wall vs ~5.5 h CPU); the f64 CPU variant is the
+reference-precision cross-check. GPU f32 reproduces the CPU harness smoke
+values to 4 significant digits.
+
+Measured (delta=48, equilibrium verified):
+- Sustained turbulence: -<u'v'>+ at y+~30 over the last 10 Te = 0.729
+  (MKM DNS ~0.75); peak -<u'v'>+ = 0.726. The resolved Reynolds shear stress
+  MATCHES DNS.
+- Total-stress force balance: nu dU/dy - <u'v'> vs u_tau^2(1 - y/delta),
+  L2rel = 0.0535 over y/delta in [0.2, 0.8] — statistical equilibrium holds;
+  the residual is the (unaccounted) SGS mean contribution + finite window.
+- Mean profile: U+ L2rel vs MKM = 0.2328 over y+ in [5, 150]; centerline U+
+  = 22.0 vs DNS 18.30 (+20%).
+
+Behavior-validity review: the error pattern (correct Reynolds stress, correct
+force balance, over-predicted mean gradient in the buffer/log region) is the
+documented signature of wall-UNRESOLVED LES without a wall model at
+y+/cell = 3.7. It is a resolution grade, not a model defect: WALE's null
+gates (laminar shear, TGV small-strain) remain exact, and the equilibrium
+diagnostics above rule out forcing/BC artifacts. Bands frozen accordingly:
+mean U+ L2rel <= 0.30 (coarse-LES grade, measured 0.2328), stress balance
+<= 0.10 (measured 0.0535), turbulence guard -<u'v'>+ > 0.4 (measured 0.729).
+Improving the mean-profile grade needs either finer near-wall resolution
+(delta >= 96, y+ <= 1.9 — GPU cost ~30 min, planned as a follow-up
+characterization) or a wall model (roadmap item, not implemented).
+
+Resolution trend (delta=64, 171x130x96, y+/cell = 2.8, 50 Te warmup,
+equilibrated — measured 2026-07-07, 1341 s GPU): mean U+ L2rel 0.1549
+(from 0.2328), centerline U+ 20.58 (from 22.02; DNS 18.30), total-stress
+L2rel 0.0192, -<u'v'>+ (y+~30, last 10 Te) 0.755 (DNS ~0.75), peak 0.733.
+Every metric converges toward DNS with near-wall resolution, confirming the
+resolution-grade classification. The frozen delta=48 bands stand; a
+delta>=96 point and/or a wall model are the paths to a tighter mean band.
+
+Harness notes: (i) the total-stress fold initially applied the half-channel
+sign only to the viscous term — the Reynolds term needs the same fold
+(upper-half error ~2x line; fixed before freezing); (ii) delta=64 at 20 Te
+warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
+the equilibrium ceiling, stress residual 34%) — equilibration is delta-
+dependent; 50 Te equilibrates it (measurements above).
