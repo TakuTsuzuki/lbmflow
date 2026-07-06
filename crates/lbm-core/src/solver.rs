@@ -176,6 +176,11 @@ pub enum SpecError {
         /// Offending value.
         magic: f64,
     },
+    /// Cumulant/central-moment shear relaxation must be finite and in range.
+    InvalidCumulantRate {
+        /// Offending value.
+        omega_shear: f64,
+    },
     /// The domain must be at least 3 cells on every active axis.
     DomainTooSmall {
         /// Configured extents.
@@ -302,6 +307,10 @@ impl std::fmt::Display for SpecError {
             SpecError::InvalidMagic { magic } => {
                 write!(f, "TRT magic must be finite and > 0 (got {magic})")
             }
+            SpecError::InvalidCumulantRate { omega_shear } => write!(
+                f,
+                "cumulant omega_shear must be finite and in (0, 2] (got {omega_shear})"
+            ),
             SpecError::DomainTooSmall { dims } => write!(
                 f,
                 "domain must be at least 3 cells on every active axis (got {dims:?})"
@@ -413,11 +422,19 @@ impl<T: Real> GlobalSpec<T> {
         if !(self.nu > 0.0) {
             return Err(SpecError::NonPositiveViscosity { nu: self.nu });
         }
-        // TRT magic (finite & positive).
-        if let CollisionKind::Trt { magic } = self.collision {
-            if !magic.is_finite() || !(magic > 0.0) {
-                return Err(SpecError::InvalidMagic { magic });
+        // Collision-specific relaxation parameters.
+        match self.collision {
+            CollisionKind::Trt { magic } => {
+                if !magic.is_finite() || !(magic > 0.0) {
+                    return Err(SpecError::InvalidMagic { magic });
+                }
             }
+            CollisionKind::Cumulant { omega_shear } => {
+                if !omega_shear.is_finite() || !(omega_shear > 0.0 && omega_shear <= 2.0) {
+                    return Err(SpecError::InvalidCumulantRate { omega_shear });
+                }
+            }
+            CollisionKind::Bgk => {}
         }
         // Body force finiteness, plus the 2D z-component rule.
         for (a, comp) in self.force.iter().enumerate() {
@@ -775,6 +792,10 @@ fn spec_hash<T: Real, L: Lattice>(
         CollisionKind::Trt { magic } => {
             hash_u64(&mut h, 2);
             hash_f64(&mut h, magic);
+        }
+        CollisionKind::Cumulant { omega_shear } => {
+            hash_u64(&mut h, 3);
+            hash_f64(&mut h, omega_shear);
         }
     }
     for v in spec.periodic {
@@ -1365,7 +1386,11 @@ where
             };
             return Err(SpecError::UnsupportedOnGpu { feature });
         }
-        let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
+        let (omega_p, omega_m_base) = spec.collision.omegas(spec.nu);
+        let omega_m = match spec.collision {
+            CollisionKind::Cumulant { omega_shear } => -omega_shear,
+            CollisionKind::Bgk | CollisionKind::Trt { .. } => omega_m_base,
+        };
         let params = StepParams {
             omega_p,
             omega_m,

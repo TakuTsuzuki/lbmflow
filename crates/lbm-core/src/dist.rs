@@ -187,6 +187,10 @@ fn spec_item_hashes<T: Real>(
             hash_bytes(&mut collision, &[1]);
             hash_f64(&mut collision, magic);
         }
+        CollisionKind::Cumulant { omega_shear } => {
+            hash_bytes(&mut collision, &[2]);
+            hash_f64(&mut collision, omega_shear);
+        }
     }
     let mut faces = 0xcbf29ce484222325u64;
     for bc in spec.faces {

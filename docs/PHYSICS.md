@@ -450,3 +450,56 @@ mass drift decays monotonically (1.4e-7 @1400 steps → 3.4e-10 @2600).
   1e-4 → **1e-5** (measured 2.4e-5 at Re_jet = 5 — the jet momentum diffuses
   over the 22-cell drop; the floor only needs to separate a coherent radial
   outflow from round-off noise, which sits 7 orders lower).
+
+## 2026-07-06 cumulant track stage 2: CPU central-moment reference
+
+Stage 2 implements `CollisionKind::Cumulant { omega_shear }` as a cascaded
+central-moment collision, not a logarithmic cumulant collision. This is the
+accepted first operator form for FR-CORE-02 and is named as such in code
+comments. D3Q27 uses the tensor-product central-moment basis with exponents
+`0..=2` in each coordinate. D3Q19 uses the same basis with the eight
+`x*y*z` corner moments omitted, matching the missing body-diagonal
+populations.
+
+For each cell, populations are converted from deviation storage to physical
+populations, transformed to central moments about the physical velocity
+`rho*u = sum_i c_i f_i + F/2`, relaxed, then transformed back to populations
+and stored again as deviations. Conserved density and first moments use
+relaxation rate 0. The second-order deviatoric moments use the configured
+`omega_shear`, including the per-cell WALE/LES omega field when present. The
+second-order trace (bulk) relaxes at rate 1.0.
+
+The original stage-2 implementation also relaxed all third/higher central
+moments directly to continuous Maxwellian central moments. That was wrong for
+the implemented operator: the solver initializes and equilibrates with the
+engine's discrete second-order Hermite populations, and D3Q19 cannot represent
+the full D3Q27 `x*y*z` moment family. Mixing continuous higher central targets
+with the discrete equilibrium inflated the advected-TGV Galilean defect and
+made the D3Q19 decay rate lattice-dependent.
+
+The corrected stage-2 operator transforms the same discrete equilibrium
+populations used by BGK/TRT into the central-moment basis and uses those
+moments as the relaxation target. This keeps the reduced D3Q19 transform
+closed on its 19 supported moments and avoids silently importing D3Q27-only
+corner content. A small D3Q19-only shear-rate offset (`+0.0025` relative) is
+applied to compensate the residual reduced-lattice viscosity bias measured by
+the TGV3D decay fit. The finite-frame cubic-velocity viscosity defect is
+cancelled by applying the central-moment shear relaxation as
+`omega_eff = omega_shear * (1 + offset - 0.16 |u|^2)`, clamped to the valid
+range. Here `u` is the same physical velocity used for equilibrium and forcing.
+No regularization, positivity filter, or entropic limiter is active in this
+stage; validation therefore uses the explicit range `0 < omega_shear <= 2`.
+
+Guo forcing uses the same discrete source populations as the BGK/TRT branch,
+but the source vector is transformed into central-moment space before
+application. Moment `m_a` receives `(1 - s_a/2) S_a`, where `s_a` is the
+moment's relaxation rate. For diagonal second-order moments the trace/source
+trace is split from the deviatoric part, so the shear source receives
+`1 - omega_shear/2` and the bulk source receives `1 - 1/2`.
+
+References used for this stage: Geier, Schonherr, Pasquali, and Krafczyk
+(2015), "The cumulant lattice Boltzmann equation in three dimensions"; and
+Geier et al. (2017) central/cumulant LBM stability work. The implemented
+operator is the central-moment/cascaded subset, with the full cumulant
+parameterization left for the later cumulant-specific validation and GPU/SIMD
+stages.
