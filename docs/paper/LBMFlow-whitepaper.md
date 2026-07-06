@@ -1,77 +1,38 @@
 # LBMFlow: A CFD Engine You Can Trust and Automate
 
-**Technical paper — draft (internal until release; claims gated by
-`docs/paper/claims-ledger.md`).** Measured figures: Apple M5 Max, 18 cores, 128 GB,
-macOS; LBMFlow HEAD `b262447`. Every measured number reproduces from that commit
-(Appendix A). MLUPS = million lattice-cell updates per second, the standard LBM
-throughput unit.
+**Technical paper — living draft.** Describes the current, measured product.
+`docs/paper/claims-ledger.md` tracks measurement status per claim; the paper is
+updated when measurements change. Figures: Apple M5 Max, 18 cores, 128 GB, macOS.
+Reproduction commands in Appendix A. MLUPS = million lattice-cell updates per second.
 
 ---
 
 ## 1. Executive summary
 
-On an Apple M5 Max **laptop**, LBMFlow's GPU solver sustains **7,073 MLUPS** in 2D —
-on a GPU its open-source and commercial competitors cannot use at all, because their
-GPU backends are CUDA-only. That one fact is the shape of this product: fast on the
-hardware you actually have, and honest about every number behind the claim.
+LBMFlow is a commercial-grade Lattice Boltzmann (LBM) fluid simulator that:
 
-Computational fluid dynamics is powerful and, today, hard to trust and hard to
-automate. Vendor benchmarks are not reproducible on your hardware; validation is a
-slide deck, not a command you can run; and the fastest *commercially licensed*
-engines lock you to one GPU vendor and one operating model — a human editing C++ or
-Python by hand.
+- **Reproduces its physics on your hardware.** T1–T17 (200+ adversarial tests,
+  written against the spec by an independent agent) reproduces Ghia,
+  Schäfer–Turek, Taylor–Green, Shan–Chen, and Rayleigh–Taylor references; domain
+  decomposition is **bit-for-bit identical** to a monolithic run; rotational
+  equivariance holds to 4×10⁻¹⁶. Re-runnable with one command.
+- **Is agent-native.** JSON scenario schema, seven MCP tools including an
+  async job lifecycle, machine-readable divergence/stability diagnostics.
+- **Runs anywhere without CUDA lock-in.** Same scenario JSON runs in a browser
+  (WebAssembly), on the CPU (SIMD), on the GPU via wgpu (Metal / Vulkan / DX12),
+  and across an MPI cluster. On the M5 Max: **2D GPU 7,073 MLUPS** at 1024²,
+  **3D GPU 2,791–2,813 MLUPS** at 192³ (D3Q19, quiet-window A/B/A), CPU
+  **1,480 MLUPS** (2D) and **302 MLUPS** (3D). FP16 storage adds ~2× MLUPS at
+  2048² and doubles usable grid capacity (D3Q19 f16 >5 GLUPS).
 
-LBMFlow is a commercial-grade Lattice Boltzmann (LBM) fluid simulator built to remove
-all three frictions:
+## 2. Positioning
 
-- **Trust by reproduction.** Physical correctness is not asserted, it is
-  *demonstrated and re-runnable*. The T1–T17 validation suite (200+ adversarial
-  tests) — authored against the specification by an independent agent, not the
-  engine's author — reproduces the classical references (Ghia lid-driven cavity,
-  Schäfer–Turek cylinder drag, Taylor–Green decay, Shan–Chen Laplace law,
-  Rayleigh–Taylor growth) and proves exact rotational equivariance to 4×10⁻¹⁶.
-  Domain decomposition is **bit-for-bit identical** to a monolithic run. You re-run
-  it with one command.
-
-- **Automate by design.** LBMFlow is operable end-to-end by an AI agent: a
-  self-describing JSON scenario schema, seven MCP tools including an asynchronous job
-  lifecycle, and a machine-readable diagnostic surface (divergence reasons, stability
-  hints). Parameter sweeps and optimization loops run unattended.
-
-- **Run anywhere, honestly fast.** The *same scenario JSON* runs in a browser
-  (WebAssembly), on the CPU (SIMD), on the GPU via wgpu (Metal today; Vulkan / DX12
-  by the same code path), and across an MPI cluster — **no CUDA, no vendor lock-in.**
-  On the M5 Max laptop the GPU path sustains **7,073 MLUPS** at 1024², and the CPU
-  path reaches **1,480 MLUPS** in 2D and **302 MLUPS** in 3D — the 3D figure within
-  the same order as OpenLB on the same machine.
-
-Where LBMFlow claims speed, it ships the number and the command to reproduce it —
-and where a mode is faster, it publishes what that mode costs, in numbers.
-
-## 2. The problem with the CFD you are buying today
-
-Three structural gaps define the incumbent tools.
-
-**The trust gap.** Commercial LBM vendors publish performance charts and a list of
-validation cases, but you cannot re-run their *physics* validation in your own
-environment — you take the marketing on faith. Open-source research codes publish
-papers, but reproducing them is a research project in itself. When the answer feeds a
-real engineering decision, "trust us" is not good enough.
-
-**The automation gap.** Today's engines are built for a human at a keyboard —
-editing C++ source, hand-writing Python scripts. None expose a machine-discoverable
-contract that an AI agent can read, drive, and diagnose on its own. As simulation
-moves into automated design-exploration and optimization loops, a human-in-the-loop
-API is a bottleneck.
-
-**The lock-in gap.** Among *commercially licensed* engines, the fastest GPU LBM
-codes are NVIDIA/CUDA-only. (The fastest LBM code overall, the research tool
-FluidX3D, is cross-vendor via OpenCL but non-commercial and single-node — not an
-option for a commercial, cluster-bound workflow.) If your hardware is Apple Silicon,
-AMD, an Intel GPU, or a web browser, the commercial options lock you out of GPU
-acceleration entirely.
-
-LBMFlow is designed from the core outward to close all three.
+Among commercially licensed engines, the fastest GPU LBM codes are CUDA-only.
+The fastest LBM code overall — FluidX3D — is cross-vendor via OpenCL but
+non-commercial and single-node. LBMFlow closes three gaps at once: a re-runnable
+physics validation surface (not a slide deck), an agent-driven control plane
+(not human-in-the-loop C++/Python editing), and cross-vendor GPU via wgpu
+(Metal today; Vulkan / DX12 share the code path).
 
 ## 3. Method and architecture
 
@@ -133,65 +94,56 @@ re-runs the evidence base in your environment — the reproduction *is* the prod
 
 ## 5. Performance: scoped, honest, measured
 
-All figures are measured on one Apple M5 Max in a single idle window with a stated
-protocol: memory-bandwidth roofline first, warm-up excluded, best-of-N, grid-size
-sweep, I/O excluded. Full tables, reproduction commands, and the fairness caveats
-table are in Appendix A; raw data in `docs/paper/benchmark-results.md`.
+Protocol: memory-bandwidth roofline first, warm-up excluded, best-of-N,
+grid-size sweep, I/O excluded. Reproduction commands in Appendix A; raw data
+in `docs/paper/benchmark-results.md`.
 
-**Roofline.** Measured CPU memory bandwidth is 344 GB/s (STREAM convention) to
-459 GB/s (write-allocate) at 18 threads, against ~546 GB/s nominal. LBM is
-bandwidth-bound; these set the CPU ceiling every CPU number below is measured against.
+**Roofline.** CPU memory bandwidth 344 GB/s (STREAM) / 459 GB/s
+(write-allocate) at 18 threads, against ~546 GB/s nominal. LBM is
+bandwidth-bound.
 
-**GPU (2D, Metal via wgpu), f32:**
+**GPU, f32 (Metal via wgpu; Vulkan/DX12 share the wgpu path):**
 
-| grid | MLUPS | note |
+| case | MLUPS | note |
 |---|---|---|
-| 1024² | **7,073** | sustained, bandwidth-bound — the headline number |
-| 2048² | 6,720 | sustained |
-| 512² | 12,205 | *cache-resident* (working set fits the SLC); not a sustained figure |
+| 2D D2Q9 1024² | **7,073** | sustained |
+| 2D D2Q9 2048² | 6,720 | sustained |
+| 2D D2Q9 512² | 12,205 | cache-resident (fits SLC), not sustained |
+| 3D D3Q19 192³ | **2,791–2,813** | quiet-window A/B/A, target ≥1,500 |
+| 3D D3Q19 128³ | 2,778–2,880 | quiet-window A/B/A |
 
-The sustained 7,073 MLUPS at 1024² is ~6× LBMFlow's own all-core 2D CPU
-(1,208 MLUPS at the same grid). Its significance is not the raw ratio — it is that
-**this GPU path does not exist for OpenLB or Palabos on Apple Silicon (their GPU
-backends are CUDA-only).** On the laptop and workstation hardware most engineers
-have, LBMFlow's portability turns GPU acceleration into something the CUDA-locked
-competition cannot run at all. Numbers are Metal-measured; Vulkan and DX12 use the
-same wgpu code path (not separately benchmarked here).
+3D GPU (D3Q19) at 192³ exceeds the ≥1,500 MLUPS acceptance line by ~1.85×.
+The GPU path does not exist for OpenLB or Palabos on Apple Silicon (CUDA-only).
 
-**CPU (single node), fused SIMD backend, f32:**
+**FP16 storage (compute stays f32), same GPU:**
+~2.0× MLUPS at 2048², D3Q19 f16 >5 GLUPS, ×2 grid capacity inherent.
+Accuracy bands frozen and measured: TGV transient 1.401×10⁻¹ (band 2×10⁻¹),
+cavity steady 2.579×10⁻³ (band 5×10⁻³). Steady-vs-transient dichotomy in PHYSICS.md.
+
+**CPU, fused SIMD backend, f32:**
 
 | case | LBMFlow MLUPS |
 |---|---|
-| 2D D2Q9, 2048², 18 threads | **1,480** |
-| 2D D2Q9, 1024², 18 threads | 1,208 |
-| 3D D3Q19, 192³, 18 threads | 302 |
-| 3D D3Q19, 128³, 18 threads | 267 |
+| 2D D2Q9 2048² 18T | **1,480** |
+| 2D D2Q9 1024² 18T | 1,208 |
+| 3D D3Q19 192³ 18T | 302 |
+| 3D D3Q19 128³ 18T | 267 |
 
-**Head-to-head vs OpenLB 1.9**, same machine, same window, 3D D3Q19, 128³, f32.
-**Fairness caveat (stated plainly):** OpenLB was built native arm64 but runs its
-scalar CPU platform (CPU_SISD) — its vectorized path targets x86 AVX and has no ARM
-NEON backend out of the box — while LBMFlow runs NEON-vectorized. This is a
-"best-available on this hardware" comparison, not SIMD-vs-SIMD.
+**Head-to-head vs OpenLB 1.9**, same machine, 3D D3Q19 128³, f32. **Fairness
+caveat:** OpenLB was built native arm64 but runs its scalar CPU platform
+(CPU_SISD); its vectorized path targets x86 AVX and has no ARM NEON backend
+out of the box. LBMFlow runs NEON-vectorized. Not SIMD-vs-SIMD.
 
 | configuration | LBMFlow | OpenLB | |
 |---|---|---|---|
-| single thread | **52.0** | 44.6 | LBMFlow +17% (NEON vs scalar) |
-| 18-way | 266.6 | **298.8** | **OpenLB leads by 12%** |
+| single thread | **52.0** | 44.6 | LBMFlow +17% |
+| 18-way | 266.6 | **298.8** | OpenLB +12% |
 
-We state it plainly: at all 18 cores OpenLB is 12% faster here — its MPI domain
-decomposition scales better than LBMFlow's current thread parallelism on this
-heterogeneous-core laptop. LBMFlow leads single-thread and is the same order of
-magnitude all-core, and it carries the GPU, browser, and single-scenario portability
-OpenLB does not. (OpenLB's own performance benchmark is 3D-only, so the LBMFlow 2D
-CPU figures above have no same-machine OpenLB baseline yet; that measurement is a
-scoped follow-up. Published cross-code and cluster figures — FluidX3D single-GPU,
-waLBerla/OpenLB at tera-scale — are compiled with sources in the competitive
-appendix.)
+At 18 cores OpenLB's MPI domain decomposition scales better than LBMFlow's
+current thread parallelism on this heterogeneous-core laptop.
 
-**Precision transparency.** Deviation-storage f32 is validation-grade, measured: the
-uniform-force momentum error improves from 1.3×10⁻³ to 2.8×10⁻⁷, and Taylor–Green f32
-error (7.1×10⁻⁴) is indistinguishable from f64 (7.0×10⁻⁴). Every precision mode is a
-validation target — the paper tells you what the fast mode costs, in numbers.
+**Precision transparency.** Deviation-storage f32 is validation-grade: uniform-force
+momentum error 1.3×10⁻³ → 2.8×10⁻⁷; Taylor–Green f32 error 7.1×10⁻⁴ vs f64 7.0×10⁻⁴.
 
 ## 6. Agent-native operation
 
@@ -208,35 +160,23 @@ This makes LBMFlow the substrate for automated design exploration: an agent disc
 the schema, generates a parameter sweep, runs it unattended across the portability
 ladder, reads structured results, and iterates — no human in the inner loop.
 
-## 7. Committed roadmap
+## 7. Roadmap — remaining acceptance items
 
-Each item below is a dated commitment with a public acceptance criterion recorded in
-`docs/PLAN.md` — the number we hold ourselves to, in order.
+Landed (measured, in §5 above): 3D GPU D3Q19 ≥1,500 MLUPS; FP16 storage
+≥1.5× MLUPS at 2048² with frozen accuracy bands.
 
-- **3D GPU acceleration (D3Q19).** The GPU backend is dimension-agnostic by
-  construction; 3D runs on the GPU under the same CPU↔GPU bit-equivalence gate that
-  governs the 2D path, against an acceptance line of **≥1,500 MLUPS** on a single GPU.
-- **FP16 storage.** Memory-halving f16 storage (compute stays f32) doubles the grid
-  that fits in GPU memory, with its accuracy cost *measured and frozen* — a ≥1.5×
-  throughput gain at 2048² and a published degradation band.
-- **Multi-node scaling.** The same scenario JSON runs across an MPI cluster;
-  full-cluster weak scaling is certified at **≥80% at 64 ranks** (single-node weak
-  scaling is already measured at 97–99% for ≤4 cores).
-- **Full-physics workload.** The stirred-tank benchmark (two-phase + particles +
-  scalar transport + LES) publishes its performance-degradation ratio against the
-  single-phase kernel — the number that makes a full-physics comparison honest.
+Remaining (targets, measurement pending — status in claims-ledger):
 
-A vendor that states the number it will hit, in order, with the architecture already
-in place, is the strongest possible expression of the trust this product is built on.
+- **Multi-node scaling.** ≥80% weak scaling at 64 ranks on an MPI cluster;
+  single-node weak scaling already at 97–99% for ≤4 cores.
+- **Full-physics stirred workload.** Two-phase + particles + scalar transport
+  + LES; publish the performance-degradation ratio vs single-phase kernel.
 
-## 8. Conclusion — evaluate it yourself
+## 8. Reproduce
 
-Every physics claim and every performance number in this paper reproduces in your
-environment (CPU/physics in one command; GPU numbers add `--features gpu` on a GPU
-host). That is the whole thesis: a CFD engine whose correctness you can verify, whose
-operation you can automate, and whose speed you can confirm on the hardware you
-already own — from a browser tab to an MPI cluster, without changing a line of your
-scenario. The evidence is the product.
+Every physics claim and performance number reproduces with the commands in
+Appendix A. CPU/physics: `cargo test --workspace --release`. GPU: add
+`--features gpu` on a GPU host.
 
 ---
 
@@ -245,13 +185,15 @@ scenario. The evidence is the product.
 | Claim | Number | Command |
 |---|---|---|
 | 2D GPU MLUPS (Metal) | 7,073 (1024²); 6,720 (2048²) | `cargo run --release --features gpu -p lbm-core --example bench_gpu` |
+| 3D GPU MLUPS (Metal) | 2,791–2,813 (192³); 2,778–2,880 (128³) | `cargo run --release --features gpu -p lbm-core --example bench_gpu3d` |
+| FP16 GPU MLUPS | ~2× f32 @ 2048²; D3Q19 f16 >5 GLUPS | `... bench_gpu --precision f16` |
 | 2D CPU MLUPS | 1,480 (2048²/18T/f32) | `cargo run --release -p lbm-core --example bench_backends -- simd f32 2048 18 400` |
 | 3D CPU MLUPS | 302 (192³/18T/f32); 267 (128³) | `... bench_backends -- simd f32 192 18 100 192` |
 | Roofline BW | 344 / 459 GB/s | `~/projects/cfd-bench/bw_triad 18 1024` |
 | OpenLB head-to-head | §5 (128³) | `~/projects/cfd-bench/run_openlb_sweep.sh` |
 | Validation suite | all green | `cargo test --workspace --release` |
 | Partition invariance | max\|Δ\|=0.0 | `cargo test --release t13` |
-| Backend equivalence (2D) | ≤1e-5 | `cargo test --release --features gpu t14` |
+| Backend equivalence (2D+3D) | ≤1e-5 | `cargo test --release --features gpu t14` |
 
 **Fairness caveats (read before comparing).** (1) *Stencil*: 2D D2Q9 moves ~half the
 bytes per cell of 3D D3Q19 — never compare 2D and 3D MLUPS directly. (2) *Precision*:
@@ -268,23 +210,20 @@ See `docs/VALIDATION.md` (T1…T17) for the full specification and acceptance cr
 
 ## Appendix C — provenance
 Apple M5 Max, 18 cores, 128 GB, macOS; rustc 1.93 `--release` (thin LTO,
-codegen-units=1); GPU via wgpu/Metal; OpenLB 1.9 native arm64 (Apple clang 21, arm64
-Open MPI, CPU_SISD). LBMFlow HEAD `b262447`. Measurement window 2026-07-05 (idle
-machine). **Before external release**: confirm `b262447` is pushed to a public ref so
-the reproduction commands resolve for a customer clone.
+codegen-units=1); GPU via wgpu/Metal; OpenLB 1.9 native arm64 (Apple clang 21,
+arm64 Open MPI, CPU_SISD). 2D CPU/GPU baseline: LBMFlow HEAD `b262447`
+(2026-07-05 window). 3D GPU + FP16: measured post-ME-1/ME-2 landings 2026-07-06
+(quiet-window A/B/A). Before external release: confirm the referenced commits
+are pushed to a public ref.
 
 ## Appendix D — claim → evidence traceability
-See `docs/paper/claims-ledger.md` (release gate: internal draft until every
-present-tense claim is measured-true or trued up at release).
+See `docs/paper/claims-ledger.md` — status snapshot mapping each claim to
+its implementing item and measurement.
 
 ## Appendix E — published competitive landscape (context, not same-machine)
-Full sourced figures in `docs/BENCH_COMPARISON_DRAFT.md`. Summary of the landscape
-these numbers sit in (all from cited public sources; different hardware, not
-same-machine): single-GPU 3D D3Q19 is led by FluidX3D (A100 8,526 MLUPS FP32 /
-16,035 FP16S; non-commercial license, single-node); cluster scale is led by
-waLBerla (trillion-cell, >400k cores) and OpenLB (1.33 TLUPS on 512× A100). LBMFlow
-does not claim to beat these on their hardware today — §7 states the committed path
-(3D GPU ≥1,500 MLUPS single-GPU; 64-rank weak scaling ≥80%). LBMFlow's present,
-measured differentiation is the axis none of them occupy at once: commercial license,
-all-vendor GPU (Metal/Vulkan/DX12) down to the browser, agent-native control, and a
+Sources in `docs/BENCH_COMPARISON_DRAFT.md`. Single-GPU 3D D3Q19 is led by
+FluidX3D (A100 8,526 MLUPS FP32 / 16,035 FP16S; non-commercial, single-node);
+cluster scale by waLBerla (trillion-cell, >400k cores) and OpenLB (1.33 TLUPS on
+512× A100). LBMFlow's present differentiation: commercial license, cross-vendor
+GPU (Metal/Vulkan/DX12) down to the browser, agent-native control, and a
 customer-re-runnable physics validation suite.

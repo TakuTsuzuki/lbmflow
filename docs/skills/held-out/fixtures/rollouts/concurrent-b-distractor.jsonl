@@ -1,4 +1,0 @@
-{"timestamp":"2026-07-05T12:40:00.000Z","type":"session_meta","payload":{"session_id":"eval-concurrent-b","id":"eval-concurrent-b","timestamp":"2026-07-05T12:40:00.000Z","cwd":"/tmp/lbmflow-eval/wt-cx-rphase-a3","originator":"codex_exec","cli_version":"0.142.4","source":"exec","thread_source":"user","model_provider":"openai"}}
-{"timestamp":"2026-07-05T12:40:01.000Z","type":"turn_context","payload":{"cwd":"/tmp/lbmflow-eval/wt-cx-rphase-a3","approval_policy":"never","sandbox_policy":{"mode":"workspace-write"},"model":"gpt-5"}}
-{"timestamp":"2026-07-05T12:41:10.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Working on A-3 in crates/lbm-core/src/config.rs."}}
-{"timestamp":"2026-07-05T12:46:30.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Still running unit tests locally for edit feedback."}}

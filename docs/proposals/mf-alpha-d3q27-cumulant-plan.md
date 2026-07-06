@@ -1,3 +1,5 @@
+> **STATUS: IMPLEMENTED 2026-07-06 via 20d0e10 (central-moment collision on SIMD + GPU, MF-alpha stage 3)**
+
 # MF-α implementation plan: D3Q27 lattice + cumulant/central-moment collision
 
 Produced 2026-07-06 by a PM-commissioned design survey (Plan agent) of

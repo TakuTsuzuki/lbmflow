@@ -1,3 +1,5 @@
+> **STATUS: spec absorbed into VALIDATION.md T18.2**
+
 # SPEC_NOTES_T18_2
 
 Notes from authoring the adversarial T18.2 acceptance tests from the frozen CR-2

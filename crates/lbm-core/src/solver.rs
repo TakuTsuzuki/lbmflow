@@ -1916,6 +1916,21 @@ where
         self.host_dirty = true;
     }
 
+    /// Install or remove explicit Bouzidi curved-wall records for one local
+    /// part. This narrow hook is intended for validation cases that construct
+    /// analytic link distances directly; higher-level geometry should prefer
+    /// [`Solver::set_bouzidi_circle`], [`Solver::set_bouzidi_sphere`], or
+    /// [`Solver::set_bouzidi_half_way_links`].
+    pub fn set_bouzidi_links(
+        &mut self,
+        part: usize,
+        links: Option<crate::bouzidi::BouzidiLinks<T>>,
+    ) {
+        self.stage_out_all();
+        self.host_parts[part].bouzidi = links;
+        self.host_dirty = true;
+    }
+
     /// Select the solid cells whose momentum-exchange force is accumulated
     /// each step (V1 `set_force_probe`).
     pub fn set_force_probe(&mut self, pred: impl Fn(usize, usize, usize) -> bool) {
@@ -2444,11 +2459,19 @@ where
     pub fn fields(&self, i: usize) -> &SoaFields<T> {
         &self.host_parts[i]
     }
-    /// Mutable fields of part `i` (see [`Solver::fields`] caveat).
-    pub fn fields_mut(&mut self, i: usize) -> &mut SoaFields<T> {
+    /// Mutable fields of part `i` for crate-internal setup and fault-injection
+    /// tests. Public callers must use dedicated methods so host/mask dirty
+    /// flags cannot be forgotten.
+    #[allow(dead_code)]
+    pub(crate) fn fields_mut(&mut self, i: usize) -> &mut SoaFields<T> {
         self.stage_out_all();
         self.host_dirty = true;
         &mut self.host_parts[i]
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn host_dirty_for_debug(&self) -> bool {
+        self.host_dirty
     }
 
     /// Synchronize backend-owned populations and moments into host staging.
@@ -2493,6 +2516,41 @@ where
                 None => fields.omega_field = None,
             }
         }
+    }
+
+    /// Install a compact global per-cell body-force field.
+    ///
+    /// `values` is indexed as `((z * ny + y) * nx + x)` and is sliced into
+    /// owned parts automatically. This is the slice-oriented counterpart of
+    /// [`Solver::set_body_force_field`]; both mark the host staging as dirty
+    /// so the next step uploads the edited force field before collision.
+    pub fn set_body_force_field_values(&mut self, values: &[[T; 3]]) {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        assert_eq!(values.len(), n, "force field length must match cell count");
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let g = sub.geom;
+            let n_core = g.n_core();
+            let buf = fields
+                .force_field
+                .get_or_insert_with(|| vec![[T::zero(); 3]; n_core]);
+            if buf.len() != n_core {
+                buf.clear();
+                buf.resize(n_core, [T::zero(); 3]);
+            }
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi =
+                            ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                                * self.dims[0]
+                                + (sub.origin[0] + x);
+                        buf[g.cidx(x, y, z)] = values[gi];
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
     }
 
     /// Save a single-rank checkpoint directory (`manifest.json` +
@@ -2866,8 +2924,17 @@ where
     /// Total mass over fluid cells (V1 `total_mass`: physical mass =
     /// fluid-cell count + deviation sum, both accumulated in `f64`).
     pub fn total_mass(&self) -> T {
+        T::r(self.total_mass_f64())
+    }
+
+    /// Total mass over fluid cells as an `f64` diagnostic.
+    ///
+    /// Population storage may be `f32`, but the reduction is still performed
+    /// in `f64`; returning `f64` avoids quantizing million-cell diagnostics
+    /// back to the current precision's scalar spacing.
+    pub fn total_mass_f64(&self) -> f64 {
         let (fluid, m) = self.local_mass_partials();
-        T::r(fluid + m)
+        fluid + m
     }
 
     /// Local partial sums behind [`Solver::total_mass`]: `(fluid_cells,

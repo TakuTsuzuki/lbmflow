@@ -606,9 +606,10 @@ where
         &self.inner
     }
 
-    /// Mutable access to the local solver (see [`MpiSolver::local`] caveats;
-    /// mask edits through this must be followed by [`Solver::mark_masks_dirty`]
-    /// *on every rank*).
+    /// Mutable access to the local solver (see [`MpiSolver::local`] caveats).
+    /// Prefer collective [`MpiSolver`] methods for edits that must be applied
+    /// consistently across ranks; debug builds fail fast if only a subset of
+    /// ranks leaves host staging dirty before [`MpiSolver::step`].
     pub fn local_mut(&mut self) -> &mut Solver<L, T, B, MpiExchange<T>> {
         &mut self.inner
     }
@@ -625,6 +626,8 @@ where
     /// Advance one step (collective). Refreshes the global probed force when
     /// a probe is active.
     pub fn step(&mut self) {
+        #[cfg(debug_assertions)]
+        self.assert_host_dirty_consistent();
         self.inner.step();
         if self.probe_active {
             let lf = self.inner.probed_force();
@@ -634,6 +637,27 @@ where
                 .all_reduce_into(&local[..], &mut global[..], SystemOperation::sum());
             self.probed_force = [T::r(global[0]), T::r(global[1]), T::r(global[2])];
         }
+    }
+
+    /// Debug-only guard against single-rank host edits. A mixed host_dirty
+    /// state means some ranks will stage edited host fields while others will
+    /// keep backend-owned data, a classic distributed control-flow trap when
+    /// paired with later collectives. Release builds compile this call out.
+    #[cfg(debug_assertions)]
+    fn assert_host_dirty_consistent(&self) {
+        let local = [if self.inner.host_dirty_for_debug() {
+            0b01u8
+        } else {
+            0b10u8
+        }];
+        let mut global = [0u8];
+        self.comm
+            .all_reduce_into(&local, &mut global, SystemOperation::bitwise_or());
+        assert_ne!(
+            global[0], 0b11,
+            "MpiSolver host_dirty mismatch across ranks before step; apply local edits \
+             through collective MpiSolver APIs, or perform the same local edit on every rank"
+        );
     }
 
     /// Advance `steps` steps (collective).
@@ -769,10 +793,18 @@ where
     /// mass_deviation)` f64 sums, `MPI_SUM`-combined, then `fluid + m`.
     /// Differs from a single-rank run by f64 reassociation only.
     pub fn total_mass(&self) -> T {
+        T::r(self.total_mass_f64())
+    }
+
+    /// Global total mass as an `f64` diagnostic. The rank partials are the
+    /// same f64 `(fluid_cells, mass_deviation)` sums used by
+    /// [`MpiSolver::total_mass`], but the final scalar is not quantized back
+    /// to `T`.
+    pub fn total_mass_f64(&self) -> f64 {
         let (fluid, m) = self.inner.local_mass_partials();
         let mut out = [0.0f64; 2];
         self.allreduce_sum(&[fluid, m], &mut out);
-        T::r(out[0] + out[1])
+        out[0] + out[1]
     }
 
     /// Global total mass with fixed-order composition. Rank blocks are first

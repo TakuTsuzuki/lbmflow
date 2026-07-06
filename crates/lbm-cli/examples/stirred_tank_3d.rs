@@ -1,10 +1,11 @@
 //! 3D baffled stirred tank with a Rushton-turbine impeller — velocity and
 //! shear-stress fields, plus a subsampled 3D volume for an interactive viewer.
 //!
-//! Standard stirred-tank proportions (tank diameter T, liquid height H ~ T,
+//! Standard Rushton-tank proportions (tank diameter T, liquid height H ~ T,
 //! impeller diameter D ~ T/3, off-bottom clearance C ~ T/3, four wall baffles
-//! of width ~ T/10). The impeller is a six-blade Rushton turbine (hub + disk +
-//! six flat blades) on a central shaft.
+//! of width ~ T/10; see Doran, Bioprocess Engineering Principles, 2nd ed.,
+//! Ch. 8). The impeller is a six-blade Rushton turbine (hub + disk + six flat
+//! blades) on a central shaft.
 //!
 //! The impeller is NOT a resolved moving solid (the core has no moving-boundary
 //! / IBM API yet — docs/REQ_STIRRED_REACTOR.md FR-ROT-01, pending M-F). It is
@@ -22,6 +23,7 @@
 //! Run:
 //!   cargo run --release --example stirred_tank_3d -- <outdir> [n] [steps] [every]
 
+use lbm_core::compat::rotor::penalization_force;
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
 use std::fs::File;
@@ -145,9 +147,9 @@ impl Geom {
             tip_r,
             disk_r: tip_r * 0.66,
             hub_r: tip_r * 0.22,
-            shaft_r: (tip_r * 0.12).max(1.5),
+            shaft_r: (tip_r * 0.12).max(1.5), // lattice-resolution guard for the shaft
             blade_hh: tip_r * 0.30,
-            disk_hh: 1.2,
+            disk_hh: 1.2, // lattice-resolution guard for the disk half-thickness
             n_blades: 6,
             blade_hw: 1.2,
             baffle_len: r_tank * 0.2, // width ~ T/10
@@ -237,9 +239,8 @@ fn main() {
     let idx = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
 
     let omega = u_tip / g.tip_r;
-    let alpha = 0.32_f64;
     let spin_up = 1500.0_f64;
-    let f_cap = 0.25 * u_tip; // scale the penalization cap with tip speed (0.08 -> 0.02)
+    let chi = 1.0_f64; // PHYSICS.md rotor-penalization stability-envelope default
     let re = u_tip * (2.0 * g.tip_r) / nu;
     let cs = 1.0_f64 / 3.0_f64.sqrt();
     let ma_tip = u_tip / cs;
@@ -330,8 +331,10 @@ fn main() {
     let mut frame = 0usize;
 
     let stamp_region = |force: &mut [[f64; 3]],
+                        previous_force: &[[f64; 3]],
                         theta: f64,
                         ramp: f64,
+                        rho: &[f64],
                         ux: &[f64],
                         uy: &[f64],
                         x: usize,
@@ -343,23 +346,29 @@ fn main() {
         if let Some(t) = g.impeller_dir(x, y, z, theta) {
             let i = idx(x, y, z);
             let vb = omega * g.rad(x, y) * ramp;
-            let mut fx = 2.0 * alpha * (t[0] * vb - ux[i]);
-            let mut fy = 2.0 * alpha * (t[1] * vb - uy[i]);
-            let fm = (fx * fx + fy * fy).sqrt();
-            if fm > f_cap {
-                fx *= f_cap / fm;
-                fy *= f_cap / fm;
-            }
+            let u_star = [
+                ux[i] - previous_force[i][0] / (2.0 * rho[i]),
+                uy[i] - previous_force[i][1] / (2.0 * rho[i]),
+            ];
+            let [fx, fy] = penalization_force(rho[i], chi, [t[0] * vb, t[1] * vb], u_star);
             force[i] = [fx, fy, 0.0];
         }
     };
+    let power_number = |reaction_torque: f64| {
+        let rotational_hz = omega / (2.0 * PI);
+        -reaction_torque * omega / (rotational_hz.powi(3) * (2.0 * g.tip_r).powi(5))
+    };
+    let mut final_reaction_torque = 0.0f64;
+    let mut final_np = 0.0f64;
 
     // ---- time loop ---------------------------------------------------------
     for step in 0..steps {
         let theta = omega * step as f64;
         let ramp = (step as f64 / spin_up).min(1.0);
+        let rho = sim.gather_rho();
         let ux = sim.gather_ux();
         let uy = sim.gather_uy();
+        let previous_force = force.clone();
 
         // Zero the two force footprints, then stamp the turbine + shaft.
         for z in zb0..=zb1 {
@@ -379,17 +388,51 @@ fn main() {
         for z in zb0..=zb1 {
             for y in by0..=by1 {
                 for x in bx0..=bx1 {
-                    stamp_region(&mut force, theta, ramp, &ux, &uy, x, y, z);
+                    stamp_region(
+                        &mut force,
+                        &previous_force,
+                        theta,
+                        ramp,
+                        &rho,
+                        &ux,
+                        &uy,
+                        x,
+                        y,
+                        z,
+                    );
                 }
             }
         }
         for z in (g.zc as usize)..nz - 1 {
             for y in sy0..=sy1 {
                 for x in sx0..=sx1 {
-                    stamp_region(&mut force, theta, ramp, &ux, &uy, x, y, z);
+                    stamp_region(
+                        &mut force,
+                        &previous_force,
+                        theta,
+                        ramp,
+                        &rho,
+                        &ux,
+                        &uy,
+                        x,
+                        y,
+                        z,
+                    );
                 }
             }
         }
+        let mut reaction_torque = 0.0f64;
+        for z in 1..nz - 1 {
+            for y in 1..ny - 1 {
+                for x in 1..nx - 1 {
+                    let i = idx(x, y, z);
+                    reaction_torque -=
+                        (x as f64 - g.cx) * force[i][1] - (y as f64 - g.cy) * force[i][0];
+                }
+            }
+        }
+        final_reaction_torque = reaction_torque;
+        final_np = power_number(reaction_torque);
 
         sim.set_body_force_field(|x, y, z| force[idx(x, y, z)]);
         sim.step();
@@ -516,7 +559,8 @@ fn main() {
     println!(
         "SUMMARY u_tip={u_tip} nu={nu} tau={tau:.3} Ma_tip={ma_tip:.3} Re~{re:.0} \
          final_max|u|={final_max:.4} Ma_field={ma_field:.2} grid_Re={grid_re:.0} \
-         shear_max={shear_max:.5} -> {status}"
+         shear_max={shear_max:.5} reaction_torque={final_reaction_torque:.6e} \
+         Np={final_np:.6e} -> {status}"
     );
     export_volume(
         &outdir, &g, &ux, &uy, &uz, &shear, nx, ny, nz, omega, u_tip, nu,

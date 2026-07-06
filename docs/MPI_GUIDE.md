@@ -1,46 +1,43 @@
-# MPI Distributed Guide (M-D, 2026-07-05)
+# MPI Distributed Guide
 
-The lbm-core `mpi` feature provides an MPI implementation of HaloExchange
+The lbm-core `mpi` feature provides an MPI implementation of `HaloExchange`
 (`dist::MpiExchange`) and a 1-rank = 1-subdomain driver (`dist::MpiSolver`).
-The design corresponds to docs/ARCHITECTURE_V2.md §2.3 / docs/HPC_SCALING.md
-staged plan 3.
+Design: docs/ARCHITECTURE_V2.md §2.3.
 
-## Current scope (honest current state)
+## Status
 
-- **Verified**: Multi-rank within a single node (Open MPI 5.0.9 / arm64 macOS,
-  via shared-memory BTL). T13-MPI confirmed distributed execution ≡
-  single-rank execution (fields are bit-identical, diagnostics show only
-  f64 recombination differences. See below).
+- **Verified**: multi-rank within a single node (Open MPI 5.0.9 / arm64
+  macOS via shared-memory BTL). T13-MPI: distributed execution is
+  **bit-identical** to single-rank in all cases (fields Δ = 0.0; diagnostics
+  differ only by f64 partial-sum recombination, atol+rtol 1e-11).
+- **Weak scaling** (single node, shmem BTL, not a real interconnect):
+  99.4% / 97.0% at 2 / 4 ranks — meets R3's ≥85% local pass line.
+  n=8 (73.2%) drops due to M5 Max E/P core heterogeneity + lockstep jitter,
+  not communication volume (~50 KB/step/rank). True weak scaling awaits
+  cluster measurement.
 - **Not yet supported**:
-  - Combined use with the GPU backend (`--features mpi,gpu` builds, but
-    `MpiSolver` assumes a `CpuScalar`-family `SoaFields` backend.
-    Device-resident halo transfer and GPUDirect are M-E or later).
-  - Overlap of communication and computation (`exchange_f` completes
-    synchronously within each axis phase. The two-pass streaming seam
-    already exists in the Solver, so switching to Isend issue → internal
-    computation → wait → boundary computation is an M-E candidate).
-  - Parallel I/O (only full-field reconstruction via rank-0 gather.
-    Parallel VTK/HDF5 not yet started).
-  - Multi-node measurements (awaiting cluster access. See §Cluster
-    measurement checklist).
+  - `mpi` + `gpu`: builds, but `MpiSolver` assumes a `CpuScalar`-family
+    `SoaFields` backend. Device-resident halo + GPUDirect is M-E or later.
+  - Communication/computation overlap: `exchange_f` is synchronous per
+    axis phase. The two-pass streaming seam exists; switching to
+    Isend → interior → wait → boundary is M-E.
+  - Parallel I/O: rank-0 gather only. Parallel VTK / HDF5 not started.
+  - Multi-node measurements: **ME-3 = RED**, blocked on cluster spend
+    confirm (see [CLUSTER_OPTIONS.md](CLUSTER_OPTIONS.md)).
 
 ## Build
 
-rsmpi (crate `mpi` 0.8) looks for `mpicc` at build time. **A native arm64
-MPI must be first in PATH** (in environments where an x86_64 MPI lives in
-/usr/local, PATH ordering causes trouble. Confirm arm64 with
-`file $(which mpirun)`).
+rsmpi (`mpi` 0.8) probes for `mpicc` at build time. **A native arm64
+MPI must be first in `PATH`** (an x86_64 MPI in `/usr/local` breaks the
+probe or forces Rosetta at launch; verify with `file $(which mpirun)`).
 
 ```bash
-# Use a source-built Open MPI (e.g. $HOME/.local/openmpi)
 export PATH=$HOME/.local/openmpi/bin:$PATH
-file $(which mpirun)   # → confirm Mach-O 64-bit executable arm64
-
+file $(which mpirun)   # confirm Mach-O 64-bit arm64
 cargo build -p lbm-core --release --features mpi
 ```
 
-Open MPI source build steps (reference: 5.0.9 / arm64, Fortran disabled,
-~15 minutes):
+Open MPI source build (5.0.9 / arm64, Fortran disabled, ~15 min):
 
 ```bash
 mkdir -p ~/.local/src && cd ~/.local/src
@@ -50,22 +47,20 @@ cd openmpi-5.0.9
 make -j$(sysctl -n hw.ncpu) && make install
 ```
 
-The default build (no feature) has zero dependency on rsmpi.
-`cargo test --workspace` continues to pass without an MPI environment,
-as before.
+The default build has zero rsmpi dependency; `cargo test --workspace`
+continues to pass without an MPI environment.
 
 ## Run
 
 ```bash
-# T13-MPI verification (-n 1,2,4: 2D 4 cases / -n 8: 3D TGV 2x2x2. nonzero exit = failure)
+# T13-MPI verification (-n 1,2,4 for 2D; -n 8 for 3D TGV 2×2×2)
 ./scripts/test_mpi.sh
 
-# Weak scaling (512^2 per rank, ranks {1,2,4,8}, table output)
-./scripts/bench_mpi.sh          # tune via LOCAL=512 STEPS=200 RANKS="1 2 4 8"
+# Weak-scaling sweep (512²/rank, ranks {1,2,4,8})
+./scripts/bench_mpi.sh          # override: LOCAL=512 STEPS=200 RANKS="1 2 4 8"
 ```
 
-Minimal API example (1 rank = 1 part. Cartesian decomposition must match
-the rank count):
+Minimal API (1 rank = 1 part; Cartesian decomposition must match rank count):
 
 ```rust
 use lbm_core::dist::MpiSolver;
@@ -78,59 +73,51 @@ let mut s: MpiSolver<D2Q9, f64, CpuScalar> =
     MpiSolver::new(&world, &spec, &[], &[], [world.size() as usize, 1, 1],
                    CpuScalar::default());
 s.init_with(|x, y, _| (1.0, [0.0, 0.0, 0.0]));
-s.run(1000);                       // step/diagnostics/gather are all collective
-let mass = s.total_mass();         // Allreduce (same value on all ranks)
-let rho = s.gather_rho();          // Some(full field) only on rank 0
-drop(s);                           // release the duplicated communicator before finalize
+s.run(1000);                       // step/diagnostics/gather are collective
+let mass = s.total_mass();         // Allreduce (same on all ranks)
+let rho  = s.gather_rho();         // Some(field) on rank 0 only
+drop(s);                           // drop the duplicated comm before finalize
 ```
 
-**Collective contract**: `step` / `init_with` / `update_shan_chen_force` /
-diagnostics (`total_mass` / `total_momentum` / `nonfinite_count`) /
-`gather_*` / mask edits must be called by all ranks in the same order.
-`set_solid` must be **called by all ranks with the same coordinate
-sequence** (the owning rank stores it, other ranks only reserve the halo
-re-exchange). Since `MpiSolver` holds a duplicated communicator, drop the
-solver **before** dropping the `mpi::initialize()` Universe (i.e. before
-MPI_Finalize).
+**Collective contract.** `step` / `init_with` / `update_shan_chen_force` /
+diagnostics (`total_mass`, `total_momentum`, `nonfinite_count`) / `gather_*`
+and mask edits must be called by all ranks in the same order. `set_solid`
+must be called by every rank with the same coordinate sequence (owner
+stores; non-owners only reserve halo re-exchange). Drop `MpiSolver`
+**before** the `Universe` (i.e. before `MPI_Finalize`).
 
-## Exchange protocol (implementation notes)
+## Exchange protocol
 
-- **Identical x → y → z phase order and identical pack/unpack** as
-  InProcess (both implementations call the shared helper in `halo.rs`).
-  Corners/edges are forwarded via face adjacency: each phase transfers the
-  halo-inclusive layer of preceding axes (only the 6 face links are used
-  even with MPI).
-- For each axis phase, the layers on both of the two faces are issued as
-  Irecv → Isend → wait for all completions → unpack. The tag for a
-  message addressed to receiving face `F` is `base + F.index()`
-  (f: 100, ψ: 200, mask: 300/400, gather: 500). For a periodic axis with
-  decomp=1, self-wrap is a local copy that bypasses MPI.
-- Since the transfer is raw bytes of a scalar type (reversible for both
-  f64/f32), the partitioned-execution field is **bit-identical** to the
-  single-rank execution. Only diagnostics allow a difference from
-  rank partial-sum → Allreduce f64 recombination (T13 convention:
-  atol + rtol, 1e-11).
-- Rank placement follows `solver::partition`'s Cartesian decomposition
-  as-is (part id = `(pz·dy+py)·dx+px` = rank). MPI_Cart is not used.
+- Identical x → y → z phase order and pack/unpack as the in-process
+  exchange; both call the shared helper in `halo.rs`. Each phase transfers
+  the halo-inclusive layer of preceding axes (only the 6 face links carry
+  data even with MPI).
+- Per axis phase: Irecv → Isend → wait-all → unpack. Tag for a message to
+  face `F` is `base + F.index()` (f: 100, ψ: 200, mask: 300/400, gather:
+  500). Periodic axis with decomp=1 self-wraps locally, bypassing MPI.
+- Transferred payload is raw scalar bytes, so the partitioned field is
+  bit-identical to the single-rank field; only diagnostics accumulate a
+  partial-sum → Allreduce f64 recombination difference.
+- Rank placement uses `solver::partition`'s Cartesian layout
+  (part id = `(pz·dy + py)·dx + px` = rank). `MPI_Cart` not used.
 
-## T13-MPI measurements (2026-07-05, M5 Max / Open MPI 5.0.9)
+## T13-MPI evidence (2026-07-05, M5 Max / Open MPI 5.0.9)
 
 | Case | -n | decomp | field max\|Δ\| | diagnostic max\|Δ\| |
 |---|---|---|---|---|
-| 2D TGV 96×64 | 1/2/4 | 1×1 / 2×1 / 2×2 | **0.0** (bit-identical) | ≤ 3.3e-14 |
-| Cavity 64×64 (lid crosses the seam) | 1/2/4 | same as above | **0.0** | ≤ 2.3e-14 |
-| Cylinder + force probe (on the seam) + parabolic inflow | 1/2/4 | same as above | **0.0** | ≤ 9.1e-13 |
-| Shan-Chen droplet (ψ via exchange_scalar, 2×2 corner) | 1/2/4 | same as above | **0.0** | ≤ 4.5e-11* |
+| 2D TGV 96×64 | 1/2/4 | 1×1 / 2×1 / 2×2 | **0.0** | ≤ 3.3e-14 |
+| Cavity 64×64 (lid crosses seam) | 1/2/4 | " | **0.0** | ≤ 2.3e-14 |
+| Cylinder + force probe (on seam) + parabolic inflow | 1/2/4 | " | **0.0** | ≤ 9.1e-13 |
+| Shan-Chen droplet (ψ via `exchange_scalar`) | 1/2/4 | " | **0.0** | ≤ 4.5e-11 * |
 | 3D TGV 24³ (D3Q19) | 8 | 2×2×2 | **0.0** | ≤ 4.6e-15 |
 
-\* The droplet's diagnostic difference is the recombination difference
-relative to total_mass ≈ 1.5e3 (relative ~3e-14). Pass/fail is judged by
-`atol + rtol·|ref|` (both 1e-11) and all cases PASS.
+\* Relative to total_mass ≈ 1.5e3 (~3e-14 relative); pass judged by
+`atol + rtol·|ref|`, both 1e-11.
 
-## Weak scaling (single-node measurement, 2026-07-05)
+## Weak scaling (single-node shmem, 2026-07-05)
 
-512² per rank (D2Q9 f64 TGV, **serial** backend within each rank,
-decomp [n,1,1], 200-step measurement, 20-step warmup):
+512²/rank, D2Q9 f64 TGV, serial backend per rank, 200-step measurement,
+20-step warmup:
 
 | ranks | time | total MLUPS | MLUPS/rank | efficiency |
 |---|---|---|---|---|
@@ -139,72 +126,49 @@ decomp [n,1,1], 200-step measurement, 20-step warmup):
 | 4 | 1.346 s | 155.9 | 39.0 | 97.0% |
 | 8 | 1.781 s | 235.5 | 29.4 | 73.2% |
 
-**How to read this (important)**: this measurement goes through Open MPI's
-**shared memory**, not a real interconnect measurement. Furthermore, the
-measurement machine (M5 Max) has a heterogeneous core configuration of
-6 Efficiency + 12 Performance cores, and even a control experiment
-(8 independent single-rank jobs run concurrently with zero communication)
-only reaches 33.7 MLUPS/rank (= equivalent to 84%). In other words, the
-breakdown of n=8's 73.2% is "the ceiling from hardware (heterogeneous
-cores + bandwidth contention) at 84%" × "the remaining ~87.5% from
-MPI-ization (mainly jitter coupling from lockstep synchronization to the
-slowest rank; the communication volume itself is ~50 KB/step/rank and
-negligible)." n≤4, which stays within the homogeneous cores, meets R3's
-local pass line of ≥85% (97-99%). **True weak scaling requires cluster
-measurements** (see below).
+n=8 drop is hardware (6 E + 12 P heterogeneous cores + bandwidth
+contention: 8 independent single-rank jobs only reach 84% of ideal) ×
+lockstep jitter, not MPI volume. **True weak scaling requires a real
+interconnect** — see the cluster checklist below.
 
-## Checklist of measurements to do on a cluster (R3 completion criteria)
+## Cluster measurement checklist (R3 completion)
 
-1. **Full weak-scaling measurement**: 3D 128³ per rank (D3Q19) from
-   1→64 ranks (within-node → multi-node). R3 pass line: efficiency
-   ≥80% at 64 ranks. Also do a 2D 512² version for comparison
-   (to connect with this guide's single-node table).
-2. **Strong scaling**: fixed 1024³ from 8→512 ranks (the point where
-   surface-area/volume ratio degrades).
-3. **Measured communication/computation ratio**: the share occupied by
-   exchange_f via an MPI_T profile or mpiP. If >10%, bring forward the
-   two-pass overlap (M-E).
-4. **Inter-node BTL/MTL confirmation**: UCX/OFI selection, eager/rendezvous
-   thresholds (layer messages are in the ~10-200 KB band), and presence
-   of tag-matching contention.
-5. **Optimal rank × thread hybrid point**: this guide's measurements use
-   serial execution within each rank. Sweep a grid of
-   "rank count × rayon thread count" per node (the
-   `CpuScalar::parallel_min_cells` threshold can be reused as-is).
-6. **Process placement/binding**: `--map-by`/`--bind-to` (not possible on
-   macOS, required on Linux clusters). Also check layer pack/unpack
-   bandwidth across NUMA nodes.
-7. **Re-confirm correctness**: make scripts/test_mpi.sh pass fully on the
-   cluster's MPI implementation too (MPICH/Cray MPICH in addition to
-   Open MPI) (rsmpi supports both. The bit-identity requirement should be
+1. **Weak scaling**: 3D 128³/rank (D3Q19) from 1→64 ranks. R3 pass line:
+   ≥80% at 64 ranks. Also 2D 512² for continuity with the table above.
+2. **Strong scaling**: fixed 1024³ from 8→512 ranks.
+3. **Communication/computation ratio**: `MPI_T` profile or mpiP;
+   if `exchange_f` > 10%, bring forward two-pass overlap (M-E).
+4. **BTL/MTL**: UCX/OFI selection, eager/rendezvous thresholds (layer
+   messages are 10–200 KB), tag-matching contention.
+5. **Rank × thread hybrid sweep** per node (reuse
+   `CpuScalar::parallel_min_cells`).
+6. **Placement/binding**: `--map-by` / `--bind-to`, NUMA pack/unpack.
+7. **Cross-implementation correctness**: `scripts/test_mpi.sh` on MPICH /
+   Cray MPICH as well (rsmpi supports both; bit-identity should be
    implementation-independent).
-8. **Diagnostic cost at scale**: the scaling limits of Allreduce
-   (diagnostics) and rank-0 gather (output). For output, gather material
-   for a decision on migrating to parallel I/O (HDF5/ADIOS2-family).
+8. **Diagnostics/output cost at scale**: Allreduce and rank-0 gather
+   scaling; decision material for HDF5 / ADIOS2 parallel I/O migration.
 
-## Known pitfalls (hit this time)
+## Known pitfalls
 
-- **Coexistence with x86_64 MPI**: if the Homebrew (x86_64) mpicc in
-  /usr/local is first in PATH, rsmpi's probe picks up x86_64 flags and
-  either fails to link, or launching breaks via a Rosetta-mediated
-  mpirun. Always keep the arm64 version first in PATH.
-- **MPI_Comm_free after MPI_Finalize**: `MpiSolver` (and `MpiExchange`)
-  release the duplicated communicator on Drop. Design the scope so it is
-  dropped **before** the `mpi::initialize()` Universe (see examples).
+- **Coexistence with x86_64 MPI**: Homebrew (x86_64) mpicc in `/usr/local`
+  ahead in `PATH` makes rsmpi's probe pick x86_64 flags — link fails or
+  launch goes through Rosetta. Keep arm64 first.
+- **`MPI_Comm_free` after `MPI_Finalize`**: `MpiSolver` / `MpiExchange`
+  release their duplicated communicator on `Drop`. Drop the solver **before**
+  the `mpi::initialize()` `Universe`.
 - **Collectiveness of mask edits**: calling `set_solid` only on the
-  owning rank causes the halo re-exchange (collective) call count to
-  drift between ranks, causing a deadlock. `MpiSolver::set_solid` is
-  designed so that non-owning ranks only set the dirty mark. When using
-  `Solver` directly, call `mark_masks_dirty()` on all ranks.
-- **Allreduce timing for probes**: probed_force is an Allreduce on every
-  step. It is omitted when no probe is configured (so as not to add
-  extraneous collectives to the benchmark).
+  owning rank drifts the collective call count and deadlocks.
+  `MpiSolver::set_solid` fixes this; direct `Solver` users must call
+  `mark_masks_dirty()` on every rank.
+- **Probe Allreduce timing**: `probed_force` Allreduces every step. Omitted
+  when no probe is configured (to keep the benchmark loop clean).
 
-## run_guarded (R-Phase 1, A-9)
+## `run_guarded` (R-Phase 1 A-9)
 
-`MpiSolver::run_guarded(steps, check_every)` is a **collective** call: every rank
-must invoke it with the same arguments. Each check is a 2-double Allreduce over the
-mass partials (NaN propagates through the sum), and the divergence branch —
-`Err(Diverged{step})` — is taken uniformly on all ranks, so there is no
-divergence-induced deadlock. Overhead at 512²/rank with check_every=100 is <0.5%.
-The trajectory is bit-identical to plain `run`.
+`MpiSolver::run_guarded(steps, check_every)` is collective: every rank
+invokes with identical arguments. Each check is a 2-double Allreduce over
+mass partials (NaN propagates through the sum); the divergence branch
+(`Err(Diverged { step })`) is taken uniformly on all ranks, so there is
+no divergence-induced deadlock. Overhead at 512²/rank with `check_every=100`
+is <0.5%. Trajectory is bit-identical to plain `run`.

@@ -25,7 +25,7 @@
   envelope in its JSON-scenario / CLI / MCP idiom.
 - **Where LBMFlow is already ahead** (keep and market): 200+ adversarial validation
   suite, MCP/agent-native async API, WASM web GUI, f32 **deviation storage (f−w)**,
-  and raw per-node speed (1183 MLUPS 2D / 6–12 GLUPS Apple GPU).
+  and raw per-node speed (1,480 MLUPS 2D / 6–12 GLUPS Apple GPU).
 - **The single highest-leverage gap** flagged by both codes and by the user:
   **an SI unit system** at the API boundary (currently raw lattice units).
 
@@ -82,7 +82,7 @@ is an emscripten/WASM build of the full engine.
 | **Units (SI)** | `UnitConverter` family (`src/core/unitConverter.h`) + thermal/ADE/multiphase/power-law/radiative converters | raw lattice units | **Y (flagship gap)** |
 | MPI | Cuboid decomposition + `HeuristicLoadBalancer`, `HeterogeneousLoadBalancer` (CPU+GPU mix), `SuperCommunicator::requestField<FIELD>()` | halo exchange, bit-identical partition invariance, 97-99% weak scaling | partial (load balancing, field-selective comm) |
 | GPU | CUDA + HIP/ROCm (`src/core/platform/gpu/{cuda,hip}/`) | wgpu (Metal/Vulkan/DX12 — arguably broader) | N (different trade) |
-| SIMD CPU | AVX2/512 columns + `CyclicColumn` periodic-shift streaming | fused collide-stream 1183 MLUPS | N |
+| SIMD CPU | AVX2/512 columns + `CyclicColumn` periodic-shift streaming | fused collide-stream 1,480 MLUPS | N |
 | VTK output | Parallel `SuperVTMwriter2D/3D` (per-cuboid VTI + VTM + PVD) | legacy VTK, no parallel | Y |
 | **Checkpoint/restart** | `Serializer`/`Serializable`; `SuperLattice` `save()/load()` (`src/core/serializer.h`) | none | **Y** |
 | Functor framework | `GenericF` hierarchy: `SuperLatticePhysVelocity3D`, `SuperLatticePhysDrag`, `SuperPlaneIntegralFluxVelocity`, `SuperRelativeErrorLpNorm`, functor arithmetic | probes/force CSV, stress fields | Y (composability) |
@@ -400,7 +400,7 @@ double-shear-layer collision benchmarks, not a DSL.)
 | **Sparse domains** | SparseBlockStructure2D/3D — blocks only where fluid exists (`multiBlock/sparseBlockStructure*.h`); ~90% memory savings in aneurysm | Dense bounding box | **Y** |
 | **Data processors (coupling)** | BoxProcessing/Dot/Bounded/reductive functionals, processor levels, modif-tracking, auto envelope sync (`atomicBlock/dataProcessingFunctional*.h`) | Fixed pass structure | Architectural difference (see B9) |
 | **MPI** | MpiManager, ThreadAttribution block→rank, ParallelBlockCommunicator, static repartition only, **no dynamic load balancing** (`src/parallelism/`) | Halo exchange, bit-identical partition invariance | N (LBMFlow stronger on determinism; Palabos stronger on sparse decomposition) |
-| **Threading** | None in core (MPI-only) | rayon + SIMD, 1183 MLUPS 2D | N (LBMFlow superior) |
+| **Threading** | None in core (MPI-only) | rayon + SIMD, 1,480 MLUPS 2D | N (LBMFlow superior) |
 | **GPU** | acceleratedLattice: C++17 stdpar **via nvc++ only**, enum-dispatched kernels, hybrid CPU/GPU (`src/acceleratedLattice/*`); coProcessors stub D3Q19+BGK only | wgpu, 6–12 GLUPS, equivalence gates, vendor-portable | N (LBMFlow superior; note their GPU path runs cumulant) |
 | **Checkpoint/restart** | saveBinaryBlock/loadBinaryBlock + dynamics-id registry (`io/multiBlockWriter*.*`, `mpiParallelIO.h` collective `writeRawData`; `core/dynamicsIdentifiers.h`) | None | **Y** (P1) |
 | **Output** | VTK ImageData (base64), parallel VTK, structured grid, sparse VTK, **XDMF+HDF5** (`io/vtkDataOutput.h`, `xdmfDataOutput.h`, `hdfWrapper.h`), PPM/GIF via ImageMagick shell-out | PNG/CSV/VTK, manifest, HTML gallery | Partial (parallel/HDF5) |

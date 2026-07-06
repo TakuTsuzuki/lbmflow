@@ -228,20 +228,11 @@ definition + 3 fixed interpreters**. Operator N and backend M stop multiplying.
 
 ---
 
-## 7. What each operator costs once the boundary exists (the multiplier, made concrete)
+## 7. Operator cost (after boundary)
 
-| Operator | Effort after boundary | Notes |
-|---|---|---|
-| MRT (D2Q9/D3Q19) | **S/M** | per-moment `s_i` relax; moment matrix from lattice tables; no D3Q27 needed |
-| Central-moment / cumulant (D3Q27) | **M** | gated on the planned `Q_MAX=27`; transform written once against `Arith` → RM/HM/CM/CHM/K/RR become near-free siblings |
-| LES Smagorinsky (effective-omega) | **S** | `EffectiveOmega<Smagorinsky,Trt>`; `Π_neq` already in hand; zero extra field |
-| WALE LES | **S/M** | needs one velocity-gradient stencil; would *exceed* OpenLB/Palabos (neither ships WALE) |
-| Non-Newtonian power-law/Carreau/Herschel-Bulkley | **S** | `EffectiveOmega<PowerLaw,_>`; same `Π_neq`→strain-rate path |
-| Regularized (RLB) | **S/M** | project onto `Π_neq` then relax; a `Collision` impl |
-
-Each is **one ZST**, automatically live on CPU-scalar, CPU-SIMD (flat+blocked), and GPU. That is the
-B-1/B-8 payoff and the reason to build this boundary before MF-α rather than hand-porting cumulant
-four times.
+Each new operator = one ZST, live on CPU-scalar, CPU-SIMD (flat+blocked), and GPU
+without further backend porting. Concrete targets: MRT (S/M), cumulant D3Q27 (M),
+Smagorinsky/WALE LES (S/S–M), non-Newtonian Carreau/Herschel-Bulkley (S), RLB (S/M).
 
 ---
 

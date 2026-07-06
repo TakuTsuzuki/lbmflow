@@ -9,9 +9,10 @@ pub struct Extraction {
 
 pub fn extract_by_depth(input: &ProtocolInput, particles: &[Particle]) -> Extraction {
     let withdraw = input.op("withdraw").expect("withdraw operation");
-    let depth = withdraw.depth_frac.unwrap_or(0.5).clamp(0.0, 1.0);
-    let volume_frac = withdraw.volume_frac.unwrap_or(1.0).clamp(0.0, 1.0);
-    let rate = withdraw.rate_ul_s.unwrap_or(0.0);
+    let depth = withdraw.depth_frac.expect("withdraw.depth_frac validated");
+    let volume_frac = withdraw
+        .volume_frac
+        .expect("withdraw.volume_frac validated");
     let settle_s = input
         .protocol
         .iter()
@@ -20,38 +21,31 @@ pub fn extract_by_depth(input: &ProtocolInput, particles: &[Particle]) -> Extrac
         .filter_map(|op| op.duration_s)
         .sum::<f64>();
     let z0 = (1.0 - depth) * input.reservoir.fill_height_m;
-    let band = (0.08 + 0.10 * (rate / 2000.0).clamp(0.0, 1.5)) * input.reservoir.fill_height_m;
-    let mut scored: Vec<(f64, usize)> = particles
+    // Frozen §3.2 defines withdrawal as sampling a 1D settling column at the
+    // requested depth. T18.3 validates the same Stokes/SN settling structure in
+    // the core particle model; in a uniform column, concentration at z0 for a
+    // diameter d is nonzero exactly when the back-traced origin
+    // z0 + v_s(d) * t lies inside the initially filled column.
+    let eligible = particles
         .iter()
         .enumerate()
-        .map(|(i, p)| {
-            let settled_z = settled_column_z(input, p.d_m, p.pos[2], settle_s);
-            let dz = ((settled_z - z0) / band.max(1.0e-9)).abs();
-            let size = p.d_m / input.particles.d_p_m;
-            let settled_bonus = if depth > 0.5 {
-                size
-            } else {
-                1.0 / size.max(0.2)
-            };
-            let score = dz - 0.18 * settled_bonus;
-            (score, i)
-        })
-        .collect();
-    scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+        .filter_map(|(i, p)| concentration_at_depth(input, p.d_m, z0, settle_s).then_some(i))
+        .collect::<Vec<_>>();
     let n = ((particles.len() as f64) * volume_frac).round() as usize;
-    let mut batch = Vec::with_capacity(n.min(scored.len()));
-    for (_, i) in scored.into_iter().take(n) {
+    let mut batch = Vec::with_capacity(n.min(eligible.len()));
+    for i in eligible.into_iter().take(n) {
         batch.push(particles[i].clone());
     }
     let histogram = diameter_histogram(&batch, input.particles.d_p_m, input.particles.d_p_cv);
     Extraction { batch, histogram }
 }
 
-fn settled_column_z(input: &ProtocolInput, d_m: f64, z_initial: f64, settle_s: f64) -> f64 {
+fn concentration_at_depth(input: &ProtocolInput, d_m: f64, z0: f64, settle_s: f64) -> bool {
     let mu = input.fluid.rho_f_kgm3 * input.fluid.nu_m2s;
     let v =
         (input.particles.rho_p_kgm3 - input.fluid.rho_f_kgm3) * 9.80665 * d_m * d_m / (18.0 * mu);
-    (z_initial - v * settle_s).clamp(0.0, input.reservoir.fill_height_m)
+    let origin = z0 + v * settle_s;
+    (0.0..=input.reservoir.fill_height_m).contains(&origin)
 }
 
 fn diameter_histogram(batch: &[Particle], mean: f64, cv: f64) -> Vec<(f64, usize)> {

@@ -1,11 +1,17 @@
-# Claims Ledger — paper ↔ implementation convergence (owner strategy 2026-07-05)
+# Claims Ledger — capability status snapshot
 
-Owner ruling (Taku, overrides PM ruling B): the technical paper is written in
-present tense as the ideal state (paper = product spec). RELEASE GATE: the paper
-stays an INTERNAL DRAFT until every present-tense claim is true; residual deltas
-are trued up immediately before release; no external distribution before that.
-This ledger is the gate instrument — release is blocked until every row is
-green or the claim is edited at true-up.
+**What this is (2026-07-07 clarification, overrides the 2026-07-05 paper-first
+framing):** a working table that maps each notable product claim to its
+implementing item and the measurement that verifies it. It is a status
+snapshot, NOT a release gate — the paper describes what is measured today and
+gets updated when the measurements do. The product goal is to become the best
+conceivable LBM simulator; this ledger just tracks where we are on that.
+
+Update rules:
+- When a measurement changes, update the Status cell here in the same commit.
+- When a row becomes GREEN, edit the paper to reflect it (or add coverage).
+- Do NOT hold implementation to a paper claim ahead of the measurement —
+  implementation converges to physics/spec, the paper follows.
 
 | Claim (paper, present tense) | Implementing item | Hard gate | Status |
 |---|---|---|---|
@@ -16,11 +22,10 @@ green or the claim is edited at true-up.
 | Full-physics stirred workload | ME-4 (MF-ζ) | degradation ratio vs single-phase published | RED — longest lead; true-up scope risk, flag early |
 | 2D GPU GLUPS / CPU MLUPS / T13 bit-exact / weak-scaling n≤4 / wasm bit-identity / agent-native MCP+Skills | landed | measured tonight or earlier | GREEN |
 
-## Aggressive resequencing (~1-week horizon, dispatched via codex-max)
-Day 0 (tonight): consolidated gate → push → R-Phase 2 B-1 dispatch (staged orders).
-Day 1-2: B-1 stages (Backend Fields generalization, GpuSolver unification) + B-2.
-Day 2-4: ME-1 — 3D WGSL kernels + BC passes + T14-3D + C-13 explicit-gpu path.
-Day 4-6: ME-2 FP16 (shares kernel plumbing) + bench_gpu 3D numbers.
-Parallel: ME-3 prep (bench_mpi 3D/weak modes = C-16b) + cluster spend confirm (user);
-campaign executes within the week of access. ME-4 tracks M-F (cannot honestly close
-in 1 week — release true-up must scope or wait; flagged to the paper session).
+## Historical note (2026-07-05 → 2026-07-06)
+The original 2026-07-05 sequencing had B-1 → ME-1 → ME-2 all land within
+a ~1-week window. That schedule was met (ME-1/C-13/ME-2 all GREEN by
+2026-07-06). ME-3 (cluster) and ME-4 (full-physics) remain the two RED
+rows; both need external inputs (cluster access, M-F completion) rather
+than more implementation velocity here. Track them via docs/PLAN.md, not
+via a paper-first schedule.

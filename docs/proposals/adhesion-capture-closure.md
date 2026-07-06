@@ -1,3 +1,5 @@
+> **STATUS: Proposal landed 2026-07-06 via 3dde2bf; implementation Phase B still pending**
+
 # Adhesion-Capture and Resuspension Closure Proposal (D-track, phase B)
 
 Status: PROPOSAL for review. Not yet implemented. Author: physics-literature

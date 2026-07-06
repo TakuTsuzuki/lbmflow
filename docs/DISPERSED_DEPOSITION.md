@@ -1,7 +1,8 @@
 # DISPERSED_DEPOSITION.md — Dispersed-Phase Deposition-Design Tool (D-track)
 
-Status: P0/P1/P1.1 complete and verified · P2 (core promotion) in progress.
-Acceptance criteria live in [VALIDATION.md](VALIDATION.md) **T18**.
+Status: P0/P1/P1.1/P2 complete and verified (P2 landed 2026-07-06, commit
+76b5071; CR-1/CR-2/CR-3 in-core; example parity 0.4% on n_deposited) · P3/P4
+open per §4. Acceptance criteria live in [VALIDATION.md](VALIDATION.md) **T18**.
 Decisions in §3 are **frozen** — implement, do not re-litigate.
 
 ## 1. Goal

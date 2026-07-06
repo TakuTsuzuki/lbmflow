@@ -411,21 +411,14 @@ fn cell_force_2d<T: Real>() {
     let lim = tol::<T>();
     let mut worst = 0.0f64;
     for s in 0..250usize {
-        for solver_idx in 0..2 {
-            let fields = if solver_idx == 0 {
-                pair.a.fields_mut(0)
-            } else {
-                pair.b.fields_mut(0)
-            };
-            let ff = fields
-                .force_field
-                .get_or_insert_with(|| vec![[T::zero(); 3]; nx * ny]);
-            for y in 0..ny {
-                for x in 0..nx {
-                    ff[y * nx + x] = pat(x, y, s);
-                }
+        let mut ff = vec![[T::zero(); 3]; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                ff[y * nx + x] = pat(x, y, s);
             }
         }
+        pair.a.set_body_force_field_values(&ff);
+        pair.b.set_body_force_field_values(&ff);
         pair.a.step();
         pair.b.step();
         if s % 25 == 0 || s == 249 {

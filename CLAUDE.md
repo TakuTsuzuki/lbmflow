@@ -42,16 +42,14 @@ cd web && npm run build                   # GUI (tsc strict + vite)
   (update whenever you change physics)
 - [ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md) — dimension × lattice ×
   precision × backend × partition design
-- [SOLVER_IMPROVEMENT_SPEC.md](docs/SOLVER_IMPROVEMENT_SPEC.md) — R-Phase spec ·
-  [REVIEW_2026-07-05.md](docs/REVIEW_2026-07-05.md) (+ `_2`) — solver review findings
+- [SOLVER_IMPROVEMENT_SPEC.md](docs/SOLVER_IMPROVEMENT_SPEC.md) — R-Phase spec
 - [REQ_STIRRED_REACTOR.md](docs/REQ_STIRRED_REACTOR.md) — M-F requirements ·
   [T15_5_CAVITY3D_REFERENCE.md](docs/T15_5_CAVITY3D_REFERENCE.md) — 3D cavity reference data
 - [DISPERSED_DEPOSITION.md](docs/DISPERSED_DEPOSITION.md) — D-track dispersed-phase
   deposition tool (frozen spec, P0–P4, CR-1/2/3, acceptance = T18)
 - [PERFORMANCE.md](docs/PERFORMANCE.md) / [GPU_EVALUATION.md](docs/GPU_EVALUATION.md) /
   [BENCH_COMPARISON_DRAFT.md](docs/BENCH_COMPARISON_DRAFT.md) — perf measurements
-- [MPI_GUIDE.md](docs/MPI_GUIDE.md) / [HPC_SCALING.md](docs/HPC_SCALING.md) /
-  [CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md) — distributed runs
+- [MPI_GUIDE.md](docs/MPI_GUIDE.md) / [CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md) — distributed runs
 - [MULTIPHASE_DESIGN.md](docs/MULTIPHASE_DESIGN.md) /
   [WASM_BRIDGE_DESIGN.md](docs/WASM_BRIDGE_DESIGN.md) /
   [AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md) /

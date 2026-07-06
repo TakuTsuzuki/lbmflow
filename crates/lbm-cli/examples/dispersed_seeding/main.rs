@@ -9,7 +9,7 @@ use protocol::ProtocolInput;
 use reservoir::extract_by_depth;
 use std::path::PathBuf;
 
-type Sim3 = Solver<D3Q19, f64, CpuScalar, LocalPeriodic>;
+type Sim3 = Solver<D3Q19, f64, CpuSimd, LocalPeriodic>;
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let mut reservoir_sim = build_reservoir_sim(&input, regime.nu_lattice);
-    run_lbm_steps(&mut reservoir_sim, 40);
+    run_until_quasi_steady(&mut reservoir_sim, 0.0, 1)?;
     let reservoir_velocity = gather_velocity(&reservoir_sim);
 
     let reservoir_particles = make_reservoir_particles(&input);
@@ -44,20 +44,18 @@ fn main() -> anyhow::Result<()> {
     let batch = extraction.batch;
     let n_extracted = batch.len();
 
-    let mut tray_sim = build_tray_sim(&input, &regime);
-    run_lbm_steps(&mut tray_sim, 90);
-    let tray_velocity = gather_velocity(&tray_sim)
-        .into_iter()
-        .map(|u| {
-            [
-                u[0] * regime.dx / regime.dt,
-                u[1] * regime.dx / regime.dt,
-                u[2] * regime.dx / regime.dt,
-            ]
-        })
-        .collect::<Vec<_>>();
-
-    let (suspended, deposits) = deposit_batch(&input, &regime, batch, &tray_velocity)?;
+    let mut tray_sim = build_tray_sim(&input, &regime, true);
+    run_until_quasi_steady(&mut tray_sim, regime.u_jet_lattice, 512)?;
+    let (suspended, deposits) = deposit_batch(&input, &regime, batch, &mut tray_sim)?;
+    let tray_velocity = gather_velocity_si(&tray_sim, &regime);
+    if deposits.len() + suspended.particles.len() != n_extracted {
+        anyhow::bail!(
+            "particle count ledger failed: deposited {} + suspended {} != extracted {}",
+            deposits.len(),
+            suspended.particles.len(),
+            n_extracted
+        );
+    }
     let metrics = readout::write_outputs(
         &input,
         &regime,
@@ -91,15 +89,78 @@ fn main() -> anyhow::Result<()> {
 
 fn validate_protocol(input: &ProtocolInput) -> anyhow::Result<()> {
     validate_grid_counts(input)?;
+    if !(0.0..=1.0).contains(&input.reservoir.initial_conc) {
+        anyhow::bail!("reservoir.initial_conc must be in [0, 1]");
+    }
+    input
+        .op("withdraw")
+        .ok_or_else(|| anyhow::anyhow!("protocol requires a withdraw operation"))?;
+    input
+        .op("eject")
+        .ok_or_else(|| anyhow::anyhow!("protocol requires an eject operation"))?;
     for op in &input.protocol {
+        if op.op == "settle" && op.duration_s.is_none() {
+            anyhow::bail!("settle.duration_s is required");
+        }
+        if op.op == "withdraw" {
+            let depth = op
+                .depth_frac
+                .ok_or_else(|| anyhow::anyhow!("withdraw.depth_frac is required"))?;
+            if !(0.0..=1.0).contains(&depth) {
+                anyhow::bail!("withdraw.depth_frac must be in [0, 1]");
+            }
+            let volume = op
+                .volume_frac
+                .ok_or_else(|| anyhow::anyhow!("withdraw.volume_frac is required"))?;
+            if !(0.0..=1.0).contains(&volume) {
+                anyhow::bail!("withdraw.volume_frac must be in [0, 1]");
+            }
+            if op.rate_ul_s.is_none() {
+                anyhow::bail!("withdraw.rate_uLs is required");
+            }
+        }
         if op.op == "agitate" && op.pattern.as_deref() != Some("translational") {
             anyhow::bail!(
                 "unsupported agitate pattern {:?}; only translational is implemented",
                 op.pattern
             );
         }
-        if op.op == "eject" && op.nozzle_diameter_m.is_none() {
-            anyhow::bail!("eject.nozzle_diameter_m is required");
+        if op.op == "eject" {
+            let nozzle_d = op
+                .nozzle_diameter_m
+                .ok_or_else(|| anyhow::anyhow!("eject.nozzle_diameter_m is required"))?;
+            if nozzle_d <= 0.0 {
+                anyhow::bail!("eject.nozzle_diameter_m must be positive");
+            }
+            if op.rate_ul_s.is_none() {
+                anyhow::bail!("eject.rate_uLs is required");
+            }
+            let h = op
+                .height_m
+                .ok_or_else(|| anyhow::anyhow!("eject.height_m is required"))?;
+            if !(0.0..=input.target.height_m).contains(&h) {
+                anyhow::bail!("eject.height_m must be inside the target height");
+            }
+            let points = op
+                .points_xy_frac
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("eject.points_xy_frac is required"))?;
+            let radius = 0.5 * nozzle_d;
+            for &pt in points {
+                let cx = pt[0] * input.target.width_m;
+                let cy = pt[1] * input.target.depth_m;
+                if cx - radius < 0.0
+                    || cx + radius > input.target.width_m
+                    || cy - radius < 0.0
+                    || cy + radius > input.target.depth_m
+                {
+                    anyhow::bail!(
+                        "eject nozzle disk centered at ({:.3}, {:.3}) must lie inside the target",
+                        pt[0],
+                        pt[1]
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -170,7 +231,6 @@ fn build_reservoir_sim(input: &ProtocolInput, nu: f64) -> Sim3 {
         collision: CollisionKind::Trt {
             magic: CollisionKind::MAGIC_STD,
         },
-        force: [0.0, 0.0, -1.0e-7],
         ..Default::default()
     };
     let (solid, wall_u) = build_wall_rims(3, dims, &walls);
@@ -179,19 +239,23 @@ fn build_reservoir_sim(input: &ProtocolInput, nu: f64) -> Sim3 {
         &solid,
         &wall_u,
         [1, 1, 1],
-        CpuScalar::default(),
+        CpuSimd::default(),
         LocalPeriodic,
     )
 }
 
-fn build_tray_sim(input: &ProtocolInput, regime: &protocol::Regime) -> Sim3 {
+fn build_tray_sim(input: &ProtocolInput, regime: &protocol::Regime, jets_on: bool) -> Sim3 {
     let dims = [input.grid.tray_nx, input.grid.tray_ny, input.grid.tray_nz];
     let mut walls = WallSpec::<f64>::default();
     for face in [Face::XNeg, Face::XPos, Face::YNeg, Face::YPos, Face::ZNeg] {
         walls.is_wall[face.index()] = true;
     }
     let faces = [FaceBC::Closed; 6];
-    let face_patches = nozzle_face_patches(input, regime);
+    let face_patches = if jets_on {
+        nozzle_face_patches(input, regime)
+    } else {
+        Vec::new()
+    };
     let spec = GlobalSpec::<f64> {
         dims,
         nu: regime.nu_lattice,
@@ -209,7 +273,7 @@ fn build_tray_sim(input: &ProtocolInput, regime: &protocol::Regime) -> Sim3 {
         &solid,
         &wall_u,
         [1, 1, 1],
-        CpuScalar::default(),
+        CpuSimd::default(),
         LocalPeriodic,
     )
 }
@@ -270,10 +334,44 @@ fn inside_any_nozzle(
     })
 }
 
-fn run_lbm_steps(sim: &mut Sim3, steps: usize) {
-    for _ in 0..steps {
-        sim.step();
+fn run_until_quasi_steady(
+    sim: &mut Sim3,
+    speed_scale: f64,
+    max_steps: usize,
+) -> anyhow::Result<()> {
+    if max_steps == 0 || speed_scale == 0.0 {
+        return Ok(());
     }
+    // Numerical spin-up criterion: once the max node-wise velocity change per
+    // step is below 0.1% of the imposed jet speed, the resolved jet field is
+    // quasi-steady for particle insertion. This is a convergence residual, not
+    // a physical closure term.
+    let tolerance = 1.0e-3 * speed_scale;
+    let mut prev = gather_velocity(sim);
+    for step in 1..=max_steps {
+        sim.step();
+        let current = gather_velocity(sim);
+        let max_delta = current
+            .iter()
+            .zip(prev.iter())
+            .map(|(a, b)| {
+                let dx = a[0] - b[0];
+                let dy = a[1] - b[1];
+                let dz = a[2] - b[2];
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .fold(0.0, f64::max);
+        if max_delta <= tolerance {
+            return Ok(());
+        }
+        prev = current;
+        if step == max_steps {
+            anyhow::bail!(
+                "tray flow did not reach the quasi-steady residual criterion within {max_steps} steps; max_delta={max_delta:.3e}, tolerance={tolerance:.3e}"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn gather_velocity(sim: &Sim3) -> Vec<[f64; 3]> {
@@ -281,4 +379,17 @@ fn gather_velocity(sim: &Sim3) -> Vec<[f64; 3]> {
     let uy = sim.gather_uy();
     let uz = sim.gather_uz();
     (0..ux.len()).map(|i| [ux[i], uy[i], uz[i]]).collect()
+}
+
+fn gather_velocity_si(sim: &Sim3, regime: &protocol::Regime) -> Vec<[f64; 3]> {
+    gather_velocity(sim)
+        .into_iter()
+        .map(|u| {
+            [
+                u[0] * regime.dx / regime.dt,
+                u[1] * regime.dx / regime.dt,
+                u[2] * regime.dx / regime.dt,
+            ]
+        })
+        .collect()
 }

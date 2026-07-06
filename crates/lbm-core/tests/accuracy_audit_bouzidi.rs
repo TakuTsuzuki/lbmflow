@@ -128,7 +128,7 @@ fn offgrid_poiseuille_channel(
                 });
             }
         }
-        solver.fields_mut(0).bouzidi = Some(BouzidiLinks::new(records));
+        solver.set_bouzidi_links(0, Some(BouzidiLinks::new(records)));
     }
 
     solver.init_with(|_, y, _| {
