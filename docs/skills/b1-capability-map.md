@@ -1,5 +1,13 @@
 # B1 Capability Map — LBMFlow (current `main`)
 
+> **Status note (2026-07-07, PM):** this map is a dated snapshot (2026-07-05).
+> Its GPU findings are superseded: 2D `backend:"gpu"` scenario dispatch is now
+> landed (feature `gpu`, f32 only) and unsupported cases raise an explicit
+> error instead of silently falling back to CPU
+> (`crates/lbm-scenario/src/lib.rs:110-112`, `crates/lbm-cli/src/runner.rs`).
+> See the README capability matrix for current status. The historical trap
+> documented in §4.4 is retained on purpose.
+
 **Track B (Skills for User), session B1.** This report classifies what a USER can do
 on current `main`, per workflow stage, color-coded with hard evidence. Source of truth is
 **executable CLI/MCP/schema on `main` only** — not docs claims, not branches, not planned
@@ -279,6 +287,7 @@ Schema states `gpu は未提供` ("not provided"). Empirically:
   GPU run happened. (No source change made — reported only.)
 
 No GPU numerical execution exists → 🔴. Any "run on GPU" user request is not satisfiable.
+*(Superseded 2026-07-07: 2D GPU scenario dispatch landed with explicit errors — see status note at top.)*
 
 ### 4.5 Quantitative validation / comparison against reference — 🔴
 
