@@ -15,9 +15,11 @@ Licensed under MIT OR Apache-2.0.
 - **Explicit accuracy–speed control.** Every trade-off — collision operator,
   precision, backend, resolution — is a first-class knob, not a hidden default.
   BGK is fast; TRT with magic parameter Λ = 3/16 reproduces plane Poiseuille
-  exactly on the half-way bounce-back grid; cumulant restores Galilean
-  invariance at high Re. Pick your point on the curve; the trade-off is
-  measured, not asserted.
+  exactly on the half-way bounce-back grid; cumulant improves high-Re
+  stability and isotropy (its D3Q19 shear-rate calibration is validated for
+  non-advected decay; a Galilean-invariance holdout at finite frame velocity
+  is an open finding — see PHYSICS.md). Pick your point on the curve; the
+  trade-off is measured, not asserted.
 - **Physically rigorous.** Every model term is derived from the governing
   equations or a literature-backed closure with a recorded derivation, validity
   domain, and its own validation test (`docs/PHYSICS.md`). Constants calibrated
