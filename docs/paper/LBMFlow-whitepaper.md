@@ -1,8 +1,11 @@
 # LBMFlow: A CFD Engine You Can Trust and Automate
 
-**Technical paper — draft (internal until release; claims gated by
-`docs/paper/claims-ledger.md`).** Measured figures: Apple M5 Max, 18 cores, 128 GB,
-macOS; LBMFlow HEAD `b262447`. Every measured number reproduces from that commit
+**Technical paper — living draft.** Update the paper text as the implementation
+lands or changes; describe the current, measured product, not an aspirational target.
+`docs/paper/claims-ledger.md` is a status snapshot of what has been measured and
+what has not — a working reference, not a release gate. Measured figures: Apple M5
+Max, 18 cores, 128 GB, macOS; LBMFlow HEAD `b262447`. Every measured number
+reproduces from that commit
 (Appendix A). MLUPS = million lattice-cell updates per second, the standard LBM
 throughput unit.
 
@@ -274,8 +277,10 @@ machine). **Before external release**: confirm `b262447` is pushed to a public r
 the reproduction commands resolve for a customer clone.
 
 ## Appendix D — claim → evidence traceability
-See `docs/paper/claims-ledger.md` (release gate: internal draft until every
-present-tense claim is measured-true or trued up at release).
+See `docs/paper/claims-ledger.md` — a working measurement-status snapshot
+mapping each paper claim to its implementing item and the measurement that
+verifies it. It is a status ledger, not a release gate: the paper describes
+what is measured today, and is updated when the measurements change.
 
 ## Appendix E — published competitive landscape (context, not same-machine)
 Full sourced figures in `docs/BENCH_COMPARISON_DRAFT.md`. Summary of the landscape

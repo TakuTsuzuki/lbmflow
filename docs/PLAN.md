@@ -124,10 +124,11 @@ M-Star) are hereby **committed**, in this order:
 | ME-3 | **Multi-node / cluster measurement** (R3) | 64-rank weak scaling **≥80%** on a real cluster; the 8-item measurement list in MPI_GUIDE §cluster | C-1 (MPI setup localization) + cluster access — **AWS hpc7g×8 (~¥13k, CLUSTER_OPTIONS.md recommended) or Fugaku trial**; committed on the roadmap, instance spend gets a one-line user confirm at execution | R-Phase 3 window |
 | ME-4 | **Full-physics benchmark** (stirred-tank workload: two-phase + particles + scalar + LES) | performance-degradation ratio vs single-phase measured and published (the M-Star-comparable number); runs as part of MF-ζ acceptance | M-F tracks | MF-ζ |
 
-Sales/technical-paper policy (PM decision, same date): hybrid — scoped honest claims
-now (2D GPU GLUPS, single-node CPU, n≤4 weak scaling, verification-as-product,
-agent-native), roadmap items labeled as roadmap with the acceptance lines above as
-public commitments; a follow-up "performance title" edition after ME-1/ME-2 land.
+The paper (docs/paper/LBMFlow-whitepaper.md) describes what is measured today;
+edit the paper as the implementation lands, not the other way around. The
+acceptance lines above are the technical targets the roadmap converges on —
+they are not paper claims to true up at release. See docs/paper/claims-ledger.md
+for the current measurement-status snapshot.
 
 ### M-F: rotating boundary, high-density-ratio two-phase, LES-coupled 3D (REQ-M-F-STR rev.1b)
 
