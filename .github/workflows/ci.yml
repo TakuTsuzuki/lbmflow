@@ -56,9 +56,33 @@ jobs:
         run: |
           set -o pipefail
           cargo test --workspace --release -- --include-ignored 2>&1 | tee heavy-validation.log
+      - name: Performance regression check
+        run: |
+          set -o pipefail
+          if [ -f bench/baselines/ci-runner.json ]; then
+            TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            cargo run --release -p lbm-core --example bench_backends -- \
+              --check \
+              --host-tag ci-runner \
+              --timestamp "$TS" \
+              2>&1 | tee bench-regression.log
+          else
+            mkdir -p bench
+            echo "bench/baselines/ci-runner.json not found; skipping performance regression check" | tee bench-regression.log
+          fi
       - name: Upload heavy validation log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: heavy-validation-log
           path: heavy-validation.log
+      - name: Upload performance benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-benchmark-artifacts
+          if-no-files-found: ignore
+          path: |
+            bench-regression.log
+            bench/history.csv
+            bench/results/*.json

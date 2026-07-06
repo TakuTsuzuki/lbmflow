@@ -1,0 +1,129 @@
+{
+  "schema": 1,
+  "host_tag": "m5-max-sandbox",
+  "generated_at": "2026-07-06T18:44:40Z",
+  "git_commit": "416063ec8f95b746a64aa51eea34543c8cc3e7b2",
+  "note": "Initial sandbox seed from this Codex workspace. Sandboxed numbers may differ from native runs; the PM should re-seed natively and tighten per-host thresholds from real variance data.",
+  "cases": [
+    {
+      "case": "d2q9-scalar-f32-512x512-1t",
+      "mlups": 7.748936655283474,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f32-512x512-1t",
+      "mlups": 28.242416787516504,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f64-512x512-1t",
+      "mlups": 8.296515057183822,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f64-512x512-1t",
+      "mlups": 19.555658501625928,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f32-512x512-12t",
+      "mlups": 4.760718142240621,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f32-512x512-12t",
+      "mlups": 18.999082502921187,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f64-512x512-12t",
+      "mlups": 4.798726647134391,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f64-512x512-12t",
+      "mlups": 19.78943301892953,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f32-1024x1024-1t",
+      "mlups": 7.590146963455124,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f32-1024x1024-1t",
+      "mlups": 31.091542009359166,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f64-1024x1024-1t",
+      "mlups": 8.642436105333767,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f64-1024x1024-1t",
+      "mlups": 20.900561673493776,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f32-1024x1024-12t",
+      "mlups": 13.225221342334779,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f32-1024x1024-12t",
+      "mlups": 56.040276280868824,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-scalar-f64-1024x1024-12t",
+      "mlups": 14.046292553879292,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d2q9-simd-f64-1024x1024-12t",
+      "mlups": 48.89652170573086,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-scalar-f32-128x128x128-1t",
+      "mlups": 3.4104079840022696,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-simd-f32-128x128x128-1t",
+      "mlups": 6.894592165111848,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-scalar-f64-128x128x128-1t",
+      "mlups": 3.495764758765207,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-simd-f64-128x128x128-1t",
+      "mlups": 6.693158899339211,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-scalar-f32-128x128x128-12t",
+      "mlups": 24.492891302460283,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-simd-f32-128x128x128-12t",
+      "mlups": 35.988301327515906,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-scalar-f64-128x128x128-12t",
+      "mlups": 24.48297977191485,
+      "regression_threshold": 0.1
+    },
+    {
+      "case": "d3q19-simd-f64-128x128x128-12t",
+      "mlups": 31.38627517296359,
+      "regression_threshold": 0.1
+    }
+  ]
+}

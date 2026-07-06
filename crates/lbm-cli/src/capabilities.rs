@@ -131,11 +131,16 @@ fn matrix() -> CapabilityMatrix {
 }
 
 fn scenario_collision_names() -> Vec<&'static str> {
-    [CollisionSpec::Bgk, CollisionSpec::Trt]
+    [
+        CollisionSpec::Bgk,
+        CollisionSpec::Trt,
+        CollisionSpec::Cumulant,
+    ]
         .into_iter()
         .map(|collision| match collision {
             CollisionSpec::Bgk => "bgk",
             CollisionSpec::Trt => "trt",
+            CollisionSpec::Cumulant => "cumulant",
         })
         .collect()
 }

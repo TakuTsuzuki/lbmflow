@@ -7,6 +7,23 @@ excluded via best-of-N. Measurement path: `examples/bench_backends.rs`
 (CPU) / `examples/bench_gpu.rs` (GPU) / T14-3D quiet-window A/B/A for the
 current 3D GPU headline. All figures below are on the same machine.
 
+## Regression gate
+
+The CPU benchmark harness supports a machine-readable regression check:
+
+```bash
+cargo run --release -p lbm-core --example bench_backends -- \
+  --check --host-tag <host-tag> --timestamp <UTC timestamp>
+```
+
+Baselines live under `bench/baselines/<host-tag>.json`; each case may set
+`regression_threshold`, and absent thresholds default to 10%. This is a
+generous structural-regression bound, not a noise model. The PM tightens
+per-host baselines after collecting real variance data. Use
+`--update-baseline` to rewrite a baseline explicitly; it is never automatic.
+Every check/update run appends rows to `bench/history.csv` and writes the
+latest machine-readable result under `bench/results/`.
+
 ## Current measured headline (M-E, 2026-07-07)
 
 | backend | grid | precision | MLUPS / GLUPS | notes |
