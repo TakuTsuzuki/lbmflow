@@ -9,7 +9,7 @@ promises.
 
 | Area | Current limitation | Evidence |
 |---|---|---|
-| D3Q27 open faces | D3Q27 velocity inlet, pressure outlet, outflow, and convective open-face closures are not supported. Open-face validation accepts only 3-unknown D2Q9 and 5-unknown D3Q19 closures; other lattices return `UnsupportedOpenFaceLattice`. D3Q27 has 9 unknown populations per face. | `crates/lbm-core/src/solver.rs:233-240`, `crates/lbm-core/src/solver.rs:349-353`, `crates/lbm-core/src/solver.rs:586-600`, `crates/lbm-core/src/lattice.rs:446-451` |
+| D3Q27 open faces | Velocity inlet and pressure outlet landed 2026-07-07 (NEBB moment closure, CPU backends; moment exactness at machine precision, duct gates, T13 seam invariance — see PHYSICS.md entry). Still rejected explicitly: D3Q27 `Outflow` and `Convective` faces (`UnsupportedOpenFaceKind`) and all D3Q27 open faces on the GPU path. | `crates/lbm-core/tests/d3q27_open_bc.rs`, `crates/lbm-core/src/kernels.rs` (NEBB), PHYSICS.md 2026-07-07 entry |
 | Curved walls | Curved-wall helpers are analytic Bouzidi circle and sphere records, plus an explicit low-level link hook for validation. They are not a general geometry importer. | `crates/lbm-core/src/bouzidi.rs:47-56`, `crates/lbm-core/src/bouzidi.rs:105-114`, `crates/lbm-core/src/solver.rs:1865-1896`, `crates/lbm-core/src/solver.rs:1919-1923` |
 | Geometry import | Scenario obstacles are built-in primitives (`circle`, `rect`, `sphere`). STL/CAD import is outside the current solver spec; no voxelization import path is exposed by the scenario schema. | `crates/lbm-scenario/src/lib.rs:306-320`, `docs/REQ_STIRRED_REACTOR.md:568-571` |
 

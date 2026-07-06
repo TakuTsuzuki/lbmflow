@@ -53,7 +53,7 @@ Status terms used below:
 | Distribution storage | CPU: f32/f64 deviation storage matching arithmetic; GPU: f32 or f16 distribution buffers with f32 arithmetic (`GpuStorage`) |
 | Backend | CpuScalar, CpuSimd, Wgpu (`feature = "gpu"`) |
 | Partition / halo | LocalPeriodic, InProcess, MPI (`feature = "mpi"`) |
-| Open faces | D2Q9 and D3Q19 open-face closures are supported; D3Q27 open faces are rejected with `UnsupportedOpenFaceLattice` because each face has 9 unknown populations |
+| Open faces | D2Q9, D3Q19, and (since 2026-07-07) D3Q27 velocity-inlet / pressure-outlet closures are supported on CPU; D3Q27 outflow/convective and GPU open faces are rejected explicitly |
 
 WALE LES is implemented as a core solver-level relaxation-field driver. Scenario-level
 LES controls, Smagorinsky selection, and the Re_tau DNS acceptance line remain design
@@ -93,7 +93,8 @@ pub struct D2Q9; pub struct D3Q19; pub struct D3Q27;
 - Face unknowns are derived from the lattice table as the directions where
   `c dot n_in > 0`: 3 per D2Q9 face, 5 per D3Q19 face, 9 per D3Q27 face.
   Implemented open-face kernels currently accept only the 3-unknown and
-  5-unknown cases; D3Q27 open-face closures are a design target (PLAN.md REV-5).
+  5-unknown cases plus the D3Q27 9-unknown NEBB closure for velocity inlet /
+  pressure outlet (landed 2026-07-07); D3Q27 outflow/convective remain open.
 
 ### 3.2 Storage (SoA fixed, for GPU coalescing)
 

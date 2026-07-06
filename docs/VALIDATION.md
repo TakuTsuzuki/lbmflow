@@ -264,14 +264,14 @@ File: `crates/lbm-core/tests/t15_3d.rs`.
    **u0 coefficient frozen at u0 = 1.28e-4/N** (classic 3D TGV isn't an exact NS solution → a
    resolution-independent relative offset ≈ 0.13·u0/(νk) under diffusive scaling would
    destroy the order; PHYSICS.md).
-   D3Q27 coverage is currently periodic / closed-wall only: any open face
-   (velocity inlet, pressure outlet, outflow, convective outflow) is rejected
-   with `UnsupportedOpenFaceLattice` because D3Q27 has 9 unknown populations
-   per open face. Open-face D3Q27 validation gates are future work; current
-   D3Q27 tests cover periodic TGV / split invariance and closed-wall specs
-   (`crates/lbm-core/src/solver.rs::validate_lattice`,
-   `crates/lbm-core/tests/t15_3d.rs`,
-   `crates/lbm-core/tests/t13_split_invariance.rs`).
+   D3Q27 open-face coverage (updated 2026-07-07): velocity inlet and pressure
+   outlet are supported on CPU via a non-equilibrium bounce-back moment
+   closure with dedicated gates — moment exactness on all six faces at
+   machine precision, duct profile vs series + D3Q19 consistency, mass-flux
+   balance, and T13 split invariance with seams crossing BC cells
+   (`crates/lbm-core/tests/d3q27_open_bc.rs`). D3Q27 `Outflow` / `Convective`
+   faces and GPU-path D3Q27 open faces remain explicitly rejected
+   (`UnsupportedOpenFaceKind`).
 5. **T15.5 3D cavity** (Albensoeder & Kuhlmann 2005, Re=1000): reference in
    [T15_5_CAVITY3D_REFERENCE.md](T15_5_CAVITY3D_REFERENCE.md); file `t15_5_cavity3d.rs`.
    - Default N=64 qualitative sentinel: mass drift, symmetry-plane |v|/U, extrema
