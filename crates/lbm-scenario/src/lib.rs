@@ -107,8 +107,62 @@ pub enum WallModel {
     Bouzidi,
 }
 
-const GPU_2D_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: the 2D compat scenario path cannot honor explicit GPU requests pending R-Phase 2 B-1, and this build was compiled without GPU scenario dispatch (--features gpu is not enabled for this scenario path). Use compute.backend \"cpu\" or \"auto\".";
-const GPU_3D_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: the 3D scenario path currently supports CPU execution only, and this build was compiled without GPU scenario dispatch (--features gpu is not enabled for this scenario path). Use compute.backend \"cpu\" or \"auto\".";
+const GPU_FEATURE_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: this binary was built without GPU scenario dispatch (--features gpu). Use compute.backend \"cpu\" or rebuild with --features gpu.";
+const GPU_F64_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for physics.precision f64; GPU scenario dispatch currently supports f32 storage/compute only. Use physics.precision \"f32\" or compute.backend \"cpu\".";
+const GPU_3D_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for this 3D scenario: unsupported 3D GPU scenario combinations are f64 precision, multiphase, rotor, particles, non-rest init, force probes, and non-f32 storage. Use compute.backend \"cpu\" or simplify the scenario.";
+
+/// Backend selected after applying explicit/auto policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackendChoice {
+    Cpu,
+    Gpu,
+}
+
+pub fn requested_backend(sc: &Scenario) -> BackendSpec {
+    sc.compute.map(|c| c.backend).unwrap_or_default()
+}
+
+pub fn auto_gpu_threshold(sc: &Scenario) -> bool {
+    if sc.is_3d() {
+        sc.grid.nx.saturating_mul(sc.grid.ny).saturating_mul(sc.grid.nz) >= 64usize.pow(3)
+    } else {
+        sc.grid.nx.saturating_mul(sc.grid.ny) >= 256usize.pow(2)
+    }
+}
+
+pub fn selected_backend(sc: &Scenario) -> BackendChoice {
+    match requested_backend(sc) {
+        BackendSpec::Cpu => BackendChoice::Cpu,
+        BackendSpec::Gpu => BackendChoice::Gpu,
+        BackendSpec::Auto => {
+            if auto_gpu_threshold(sc) && gpu_capability_error(sc).is_none() {
+                BackendChoice::Gpu
+            } else {
+                BackendChoice::Cpu
+            }
+        }
+    }
+}
+
+pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
+    if sc.physics.precision == Precision::F64 {
+        return Some(GPU_F64_UNSUPPORTED);
+    }
+    if sc.is_3d()
+        && (sc.multiphase.is_some()
+            || sc.rotor.is_some()
+            || sc.particles.is_some()
+            || !matches!(sc.init, InitSpec::Rest)
+            || sc
+                .probes
+                .iter()
+                .any(|p| matches!(p, ProbeSpec::Force { .. })))
+    {
+        return Some(GPU_3D_UNSUPPORTED);
+    }
+    None
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -556,6 +610,25 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
             );
         }
     }
+    if selected_backend(sc) == BackendChoice::Gpu {
+        #[cfg(not(feature = "gpu"))]
+        if requested_backend(sc) == BackendSpec::Gpu {
+            warn("compute.backend", GPU_FEATURE_UNAVAILABLE.to_string());
+        }
+        #[cfg(feature = "gpu")]
+        if let Some(e) = gpu_capability_error(sc) {
+            warn("compute.backend", e.to_string());
+        } else {
+            warn(
+                "compute.backend",
+                format!(
+                    "GPU backend selected by {:?} policy for {} cells",
+                    requested_backend(sc),
+                    sc.grid.nx * sc.grid.ny * sc.grid.nz
+                ),
+            );
+        }
+    }
     if sc.is_3d() {
         if sc.multiphase.is_some() {
             warn(
@@ -564,23 +637,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                     .to_string(),
             );
         }
-        if matches!(
-            sc.compute,
-            Some(ComputeSpec {
-                backend: BackendSpec::Gpu
-            })
-        ) {
-            warn("compute.backend", GPU_3D_UNAVAILABLE.to_string());
-        }
     } else {
-        if matches!(
-            sc.compute,
-            Some(ComputeSpec {
-                backend: BackendSpec::Gpu
-            })
-        ) {
-            warn("compute.backend", GPU_2D_UNAVAILABLE.to_string());
-        }
         if sc.edges.front.is_some() || sc.edges.back.is_some() {
             warn(
                 "edges",
@@ -645,6 +702,9 @@ pub enum SimHandle {
     F64(Simulation<f64>, Option<ShanChen<f64>>),
 }
 
+#[cfg(feature = "gpu")]
+pub type GpuSim2 = lbm_core::gpu::GpuSolver<lbm_core::lattice::D2Q9>;
+
 /// Build error for 2D scenarios: either a core configuration error or a
 /// requested scenario capability the 2D compat execution path cannot provide.
 #[derive(Debug)]
@@ -655,6 +715,8 @@ pub enum BuildError {
     Units(String),
     /// Feature not available on the 2D scenario path (message is user-facing).
     Unsupported(&'static str),
+    /// Explicit or auto-selected backend that cannot be honored.
+    BackendUnavailable(&'static str),
 }
 
 impl std::fmt::Display for BuildError {
@@ -663,6 +725,7 @@ impl std::fmt::Display for BuildError {
             BuildError::Core(e) => write!(f, "{e}"),
             BuildError::Units(e) => write!(f, "{e}"),
             BuildError::Unsupported(what) => write!(f, "{what}"),
+            BuildError::BackendUnavailable(what) => write!(f, "{what}"),
         }
     }
 }
@@ -748,6 +811,16 @@ pub fn build_check(sc: &Scenario) -> Result<(), String> {
         Err(e) => return Err(e),
     };
     let sc = &resolved;
+    if selected_backend(sc) == BackendChoice::Gpu {
+        #[cfg(not(feature = "gpu"))]
+        if requested_backend(sc) == BackendSpec::Gpu {
+            return Err(GPU_FEATURE_UNAVAILABLE.to_string());
+        }
+        #[cfg(feature = "gpu")]
+        if let Some(e) = gpu_capability_error(sc) {
+            return Err(e.to_string());
+        }
+    }
     if sc.is_3d() {
         build3d(sc).map(|_| ()).map_err(|e| e.to_string())
     } else {
@@ -813,9 +886,14 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     if !matches!(sc.init, InitSpec::Rest) {
         return Err(Build3Error::Unsupported("init must be rest only"));
     }
-    if let Some(c) = &sc.compute {
-        if c.backend == BackendSpec::Gpu {
-            return Err(Build3Error::BackendUnavailable(GPU_3D_UNAVAILABLE));
+    if selected_backend(sc) == BackendChoice::Gpu {
+        #[cfg(not(feature = "gpu"))]
+        if requested_backend(sc) == BackendSpec::Gpu {
+            return Err(Build3Error::BackendUnavailable(GPU_FEATURE_UNAVAILABLE));
+        }
+        #[cfg(feature = "gpu")]
+        if let Some(e) = gpu_capability_error(sc) {
+            return Err(Build3Error::BackendUnavailable(e));
         }
     }
     let dims = [sc.grid.nx, sc.grid.ny, sc.grid.nz];
@@ -1048,13 +1126,15 @@ pub fn build(sc: &Scenario) -> Result<SimHandle, BuildError> {
         }
         .into());
     }
-    if matches!(
-        sc.compute,
-        Some(ComputeSpec {
-            backend: BackendSpec::Gpu
-        })
-    ) {
-        return Err(BuildError::Unsupported(GPU_2D_UNAVAILABLE));
+    if selected_backend(sc) == BackendChoice::Gpu {
+        #[cfg(not(feature = "gpu"))]
+        if requested_backend(sc) == BackendSpec::Gpu {
+            return Err(BuildError::BackendUnavailable(GPU_FEATURE_UNAVAILABLE));
+        }
+        #[cfg(feature = "gpu")]
+        if let Some(e) = gpu_capability_error(sc) {
+            return Err(BuildError::BackendUnavailable(e));
+        }
     }
     Ok(match sc.physics.precision {
         Precision::F32 => {
@@ -1200,6 +1280,168 @@ fn build_t<T: Real>(sc: &Scenario) -> Result<(Simulation<T>, Option<ShanChen<T>>
         model
     });
     Ok((sim, mp))
+}
+
+#[cfg(feature = "gpu")]
+pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
+    use lbm_core::lattice::{D2Q9, Face};
+    use lbm_core::prelude::{build_wall_rims, CollisionKind, FaceBC, GlobalSpec, WallSpec};
+    use std::sync::Arc;
+
+    let resolved;
+    let sc = match resolve(sc) {
+        Ok(Some(r)) => {
+            resolved = r.scenario;
+            &resolved
+        }
+        Ok(None) => sc,
+        Err(e) => return Err(BuildError::Units(e)),
+    };
+    if sc.is_3d() {
+        return Err(BuildError::Unsupported("build_gpu2d requires nz == 1"));
+    }
+    if let Some(e) = gpu_capability_error(sc) {
+        return Err(BuildError::BackendUnavailable(e));
+    }
+    if sc.multiphase.is_some() {
+        return Err(BuildError::Unsupported("GPU scenario dispatch does not support multiphase"));
+    }
+    if sc.rotor.is_some() {
+        return Err(BuildError::Unsupported("GPU scenario dispatch does not support rotor"));
+    }
+    if sc.particles.is_some() {
+        return Err(BuildError::Unsupported("GPU scenario dispatch does not support particles"));
+    }
+    if !matches!(sc.init, InitSpec::Rest) {
+        return Err(BuildError::Unsupported("GPU scenario dispatch supports init rest only"));
+    }
+    let dims = [sc.grid.nx, sc.grid.ny, 1];
+    let specs = [sc.edges.left, sc.edges.right, sc.edges.bottom, sc.edges.top];
+    let mut periodic = [false; 3];
+    for (axis, name) in [(0usize, "x"), (1, "y")] {
+        let lo = matches!(specs[2 * axis], EdgeSpec::Periodic);
+        let hi = matches!(specs[2 * axis + 1], EdgeSpec::Periodic);
+        if lo != hi {
+            return Err(ConfigError::UnpairedPeriodic { axis: name }.into());
+        }
+        periodic[axis] = lo && hi;
+    }
+    periodic[2] = true;
+    let mut walls = WallSpec::<f32>::default();
+    let mut faces = [FaceBC::<f32>::Closed; 6];
+    for (i, s) in specs.iter().enumerate() {
+        match *s {
+            EdgeSpec::Periodic => {}
+            EdgeSpec::BounceBack => walls.is_wall[i] = true,
+            EdgeSpec::MovingWall { u } => {
+                walls.is_wall[i] = true;
+                walls.u[i] = [u[0] as f32, u[1] as f32, 0.0];
+            }
+            EdgeSpec::VelocityInlet { u } => {
+                faces[i] = FaceBC::Velocity {
+                    u: [u[0] as f32, u[1] as f32, 0.0],
+                };
+            }
+            EdgeSpec::PressureOutlet { rho } => faces[i] = FaceBC::Pressure { rho: rho as f32 },
+            EdgeSpec::Outflow => faces[i] = FaceBC::Outflow,
+            EdgeSpec::ConvectiveOutflow { u_conv } => {
+                faces[i] = FaceBC::Convective {
+                    u_conv: u_conv as f32,
+                }
+            }
+        }
+    }
+    let spec = GlobalSpec::<f32> {
+        dims,
+        nu: sc.physics.nu,
+        collision: match sc.physics.collision {
+            CollisionSpec::Bgk => CollisionKind::Bgk,
+            CollisionSpec::Trt => CollisionKind::Trt {
+                magic: CollisionKind::MAGIC_STD,
+            },
+        },
+        periodic,
+        faces,
+        force: [sc.physics.force[0] as f32, sc.physics.force[1] as f32, 0.0],
+    };
+    let (mut solid, wall_u) = build_wall_rims::<f32>(2, dims, &walls);
+    let idx = |x: usize, y: usize| y * dims[0] + x;
+    for ob in &sc.obstacles {
+        match *ob {
+            Obstacle::Circle { cx, cy, r } => {
+                let r2 = r * r;
+                for y in 0..dims[1] {
+                    for x in 0..dims[0] {
+                        let dx = x as f64 - cx;
+                        let dy = y as f64 - cy;
+                        if dx * dx + dy * dy <= r2 {
+                            solid[idx(x, y)] = true;
+                        }
+                    }
+                }
+            }
+            Obstacle::Rect { x0, y0, x1, y1 } => {
+                for y in y0..=y1.min(dims[1] - 1) {
+                    for x in x0..=x1.min(dims[0] - 1) {
+                        solid[idx(x, y)] = true;
+                    }
+                }
+            }
+            Obstacle::Sphere { r, .. } => {
+                return Err(ConfigError::InvalidParameter {
+                    what: "obstacles: sphere requires a 3D grid (nz > 1)",
+                    value: r,
+                }
+                .into());
+            }
+        }
+    }
+    spec.validate(2, &solid)
+        .map_err(|e| BuildError::Unsupported(Box::leak(e.to_string().into_boxed_str())))?;
+    let ctx = lbm_core::gpu::GpuContext::new()
+        .map_err(|_| BuildError::BackendUnavailable("requested backend \"gpu\" is unavailable: no usable GPU adapter was found"))?;
+    let mut s = lbm_core::gpu::GpuSolver::<D2Q9>::new(&spec, &solid, &wall_u, Arc::clone(&ctx));
+    if let Some(p) = &sc.inlet_profile {
+        let face = match p.edge {
+            EdgeName::Left => Face::XNeg,
+            EdgeName::Right => Face::XPos,
+            EdgeName::Bottom => Face::YNeg,
+            EdgeName::Top => Face::YPos,
+        };
+        let (t1, _t2) = face.tangents();
+        let len = dims[t1];
+        let h = (len - 2) as f64;
+        let n = face.n_in();
+        let normal = [n[0] as f64, n[1] as f64, 0.0];
+        let values = (0..len)
+            .map(|c| {
+                if c == 0 || c as f64 >= h + 1.0 {
+                    [0.0, 0.0, 0.0]
+                } else {
+                    let w = c as f64 - 0.5;
+                    let mag = 4.0 * p.umax * w * (h - w) / (h * h);
+                    [
+                        (mag * normal[0]) as f32,
+                        (mag * normal[1]) as f32,
+                        0.0,
+                    ]
+                }
+            })
+            .collect::<Vec<_>>();
+        s.set_inlet_profile(face, &values);
+    }
+    if sc
+        .probes
+        .iter()
+        .any(|p| matches!(p, ProbeSpec::Force { .. }))
+    {
+        let solid_probe = solid.clone();
+        let (nx, ny) = (dims[0], dims[1]);
+        s.set_force_probe(move |x, y, _| {
+            x > 0 && x + 1 < nx && y > 0 && y + 1 < ny && solid_probe[y * nx + x]
+        });
+    }
+    Ok(s)
 }
 
 // ---------------------------------------------------------------- presets
@@ -1644,20 +1886,27 @@ mod tests {
             Err(e) => e.to_string(),
             Ok(_) => panic!("explicit GPU backend should fail for 2D scenarios"),
         };
+        #[cfg(not(feature = "gpu"))]
         assert!(
             err.contains("requested backend \"gpu\" is unavailable"),
             "{err}"
         );
-        assert!(err.contains("2D compat scenario path"), "{err}");
-        assert!(err.contains("R-Phase 2 B-1"), "{err}");
+        #[cfg(feature = "gpu")]
+        assert!(
+            err.contains("requested backend \"gpu\" is unsupported for physics.precision f64"),
+            "{err}"
+        );
+        #[cfg(not(feature = "gpu"))]
         assert!(err.contains("--features gpu"), "{err}");
 
         let check = build_check(&sc).unwrap_err();
         assert_eq!(check, err);
         assert!(validate(&sc).iter().any(|w| {
             w.field == "compute.backend"
-                && w.message
+                && (w.message
                     .contains("requested backend \"gpu\" is unavailable")
+                    || w.message
+                        .contains("requested backend \"gpu\" is unsupported"))
         }));
     }
 

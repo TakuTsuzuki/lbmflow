@@ -328,11 +328,24 @@ fn mcp_async_job_lifecycle() {
     let report = tool_json(&res);
     assert_eq!(report["ok"], false, "{report}");
     let error = report["error"].as_str().unwrap();
+    #[cfg(not(feature = "gpu"))]
     assert!(
-        error.contains("requested backend \"gpu\" is unavailable")
-            && error.contains("2D compat scenario path")
-            && error.contains("--features gpu"),
+        error.contains("requested backend \"gpu\" is unavailable") && error.contains("--features gpu"),
         "{error}"
+    );
+    #[cfg(feature = "gpu")]
+    assert!(
+        error.contains("requested backend \"gpu\" is unsupported for physics.precision f64"),
+        "{error}"
+    );
+    assert!(
+        report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["field"] == "compute.backend"
+                && w["message"].as_str().unwrap().contains("GPU")),
+        "{report}"
     );
 
     let res = mcp.call_tool("get_schema", json!({}));

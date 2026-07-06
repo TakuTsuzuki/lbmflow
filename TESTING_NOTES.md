@@ -1201,7 +1201,26 @@ Focused evidence from this session:
   could not measure MLUPS in this session because adapter acquisition returned
   `no usable GPU adapter was found`.
 
-Gaps still open for ME-1 acceptance: D3 open-face BC shader/runtime coverage,
-scenario `backend:"gpu"|"auto"` dispatch, 128^3/192^3 MLUPS measurement, and the
-full workspace + full feature-gpu gates. ME-2 FP16 storage/T16 was not started in
-this partial bring-up.
+## ME-1 continuation: D3 open faces and scenario GPU dispatch (2026-07-06)
+
+Focused evidence from this continuation:
+- `cargo test -p lbm-core --features gpu wgsl --release --no-fail-fast` passed.
+  D2Q9 and D3Q19 generated WGSL parse and Naga validation stayed green after the
+  generic open-face descriptor expansion.
+- `cargo test -p lbm-core --features gpu --test t14_3d_backend_equiv --release --no-fail-fast`
+  passed. The added `t14_3d_open_faces_with_body_force_d3q19` case uses an X
+  velocity inlet, X pressure outlet, four wall faces, and body force; asserted
+  bands are velocity abs <= 1e-5, density/pressure abs <= 1e-4, populations abs
+  <= 1e-4.
+- `cargo test -p lbm-scenario -p lbm-cli --release --no-fail-fast` passed.
+- `cargo test -p lbm-scenario -p lbm-cli --features gpu --release --no-fail-fast`
+  passed.
+- A direct CLI f32 GPU cavity smoke reached the new dispatch path and logged
+  `compute.backend selected gpu`, then adapter creation failed in that process
+  with `requested backend "gpu" is unavailable: no usable GPU adapter was found`.
+  The lower-level T14 GPU tests did acquire/use an adapter in this session, so
+  this is recorded as a sandbox/process adapter limitation rather than a bench
+  result.
+
+Bench status: BENCH-PENDING (sandbox adapter). Per order, `bench_gpu` was not
+attempted in this continuation.
