@@ -30,9 +30,20 @@ HARD CONVENTIONS (all mandatory):
 1. Derive every reference formula analytically in comments in the test file,
    from the physics, so the test reviews standalone. Do not cite the
    implementation as the reference.
-2. Bands come from theory with ~10x headroom over float noise. Never tune a
-   band to make a failing test pass - a failing test is a P3 finding, leave
-   it failing and report it.
+2. Bands come from theory with headroom SIZED to the expected physical
+   spread of the quantity, not a fixed multiplier. The assert message
+   states the MEASURED value AND the band, so a future reviewer sees the
+   headroom directly. Two calibrated datums (2026-07-06):
+     - qa/wles-freeze T15.4 TGV64 fitted nu_eff: measured dnu_rel = 6.6e-8,
+       band 1e-6 (~15x headroom over a physical quantity whose noise floor
+       is float-precision-limited).
+     - cx/acc rotor half-cell staircase probe: measured 4.86%, band 15%
+       (~3.1x headroom over a physical quantity whose spread across
+       supported configurations is O(percent)).
+   The rule: the headroom absorbs the KNOWN physical spread of the
+   observable (a wider-spread observable gets a wider band, but always
+   above the noise floor). Never tune a band to make a failing test pass -
+   a failing test is a P3 finding, leave it failing and report it.
 3. If the public API cannot express a probe, write the test body as the
    analytic derivation in comments, mark it #[ignore = "SPEC-GAP: ..."],
    and list it in your final report. Never silently drop a row.

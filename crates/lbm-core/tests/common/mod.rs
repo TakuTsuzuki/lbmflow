@@ -6,6 +6,7 @@
 use lbm_core::compat::prelude::*;
 
 pub mod metrics;
+pub mod tgv_analysis;
 #[allow(unused_imports)]
 pub use metrics::l2_rel;
 
