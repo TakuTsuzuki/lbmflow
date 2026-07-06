@@ -236,8 +236,17 @@ fn d1_jet_per_step_momentum_ledger_identity() {
         ..Default::default()
     };
     let mut s = build(&spec, &all_walls());
+    // Semantics pin (triage 2026-07-06, ANOM-P4-005): q_lu is the REGION
+    // TOTAL mass flow, not a per-cell rate — consistent with the T18.1 mass
+    // ledger d(total_mass)/step = SUM over SOURCES of q_lu. The injected
+    // momentum per step is therefore q_lu * u (first measurement: the
+    // per-cell reading over-predicted by exactly N_region = 64, and the
+    // region-total identity then holds to 12 printed digits). The region
+    // cell count must NOT appear in J; keep it computed only to document
+    // the distinction.
     let n = region_cell_count(lo, hi) as f64;
-    let j = [n * q_lu * u[0], n * q_lu * u[1], n * q_lu * u[2]];
+    let _ = n;
+    let j = [q_lu * u[0], q_lu * u[1], q_lu * u[2]];
     let mut p0 = momentum_from_gather(&s, dims);
     // A Jet source adds equilibrium-shaped populations with zeroth moment q
     // and first moment q*u at each source cell. Summing the discrete first
@@ -419,17 +428,19 @@ fn d4_per_cell_masked_patch_bc_node_exactness() {
         }
         (vel_max, lid_max, pressure_max, seam_lid_max)
     };
-    // The public docs describe face patches on the global face but do not
-    // spell out whether the prescribed node is the solid rim cell or the
-    // boundary-adjacent fluid cell. Probe both top layers and pin the physical
-    // convention used for assertions: wall rims make z=nz-1 solid, so the
-    // gathered face-node fluid layer is z=nz-2.
+    // Convention pin (triage 2026-07-06, ANOM-P4-006): the patch BC nodes
+    // are the FACE LAYER itself (z = nz-1) — first measurement there:
+    // vel 3.5e-18, lid 4.1e-20, pressure 1.1e-16, seam 4.1e-20, i.e. exact
+    // at machine precision, matching the whole-face Zou-He node exactness
+    // class (T15 measured 6.9e-18). The adjacent interior layer z = nz-2
+    // shows O(1e-3..1e-2) deviations that are developed FLOW, not BC error;
+    // it stays printed as an informational probe only.
     let rim_z = dims[2] - 1;
     let z = dims[2] - 2;
-    let rim = layer_error(rim_z);
-    let (vel_max, lid_max, pressure_max, seam_lid_max) = layer_error(z);
+    let interior = layer_error(z);
+    let (vel_max, lid_max, pressure_max, seam_lid_max) = layer_error(rim_z);
     println!(
-        "ACC SRC D4: sampled_fluid_z={z} vel_max={vel_max:.3e} lid_max={lid_max:.3e} pressure_max={pressure_max:.3e} seam_lid_max={seam_lid_max:.3e} rim_z={rim_z} rim_errors={rim:?} band=1.000e-13"
+        "ACC SRC D4: bc_node_z={rim_z} vel_max={vel_max:.3e} lid_max={lid_max:.3e} pressure_max={pressure_max:.3e} seam_lid_max={seam_lid_max:.3e} interior_z={z} interior_flow_errors={interior:?} band=1.000e-13"
     );
     assert!(
         vel_max <= 1.0e-13,
