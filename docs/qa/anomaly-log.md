@@ -124,3 +124,33 @@ Retained pointers only; details in git history:
   cumulant; rename or implement true cumulants (D-track owns the routing).
 - Particle SN validity clamp at Re_p=800 is silent; add
   debug_assert→warn/documented saturation at API surface.
+
+---
+
+## Pass 5 — 2026-07-07, hard-multiphase first measurements
+(cx/mp-hard rev 2; the diagnostic protocol REFUTED all four test-side
+hypotheses — these are real finding candidates)
+
+- **ANOM-P4-014 — Jurin capillary rise: gap-dependent collapse steeper than
+  1/w** — S2 candidate, UNDER INVESTIGATION (visuals required). gap16:
+  +3.0% (good); gap24: −22.5%; gap32: −67% vs h = 2σcosθ/(Δρgw) with
+  T11/T11c inputs; θ_slot ≈ 66-68° stable; h·w falls 878 → 660 → 280
+  instead of constant. Known mechanisms predict the OPPOSITE trend. Field
+  dumps ordered (rev 3).
+- **ANOM-P4-015 — MCMP interfacial-wave frequency +29% at kW ≈ 0.5** — S3
+  test-design: bookkeeping fully verified; sharp-interface dispersion
+  applied at kW ≈ 0.5 where O((kW)²) ~ 25%. Rev 3: k-sweep (kW ≤ 0.25)
+  must recover theory as kW → 0; σ(k) trend = diffuse-interface
+  characterization.
+- **ANOM-P4-016 — MCMP RT-cutoff seeding NaN** — OPEN: max|u| = 0.3 by
+  step 10, NaN < step 1000, at BOTH stable and unstable modes, while T12
+  runs the same class healthily. Rev 3 diffs the initialization against
+  validation_rt.rs before any engine claim.
+- **ANOM-P4-017 — Taylor-Culick: scaling law holds, prefactor 0.49** — S2
+  characterization candidate: v ∝ h^(-1/2) confirmed (slope −0.5, r² 0.96,
+  h ∈ {16,24,32}) but v/v_TC plateaus at 0.49-0.54 (20h retraction, two
+  interfaces confirmed, vapor drag ~6%). Candidate mechanism: Laplace-σ
+  (static, T11) vs MECHANICAL σ (momentum flux) discrepancy of the SC
+  pressure tensor — the lane-1.7 "SC pressure-tensor form" audit row and
+  this measurement now referee each other. If confirmed: documented SC
+  validity limit (PHYSICS.md), core FYI.
