@@ -312,6 +312,20 @@ fn symmetry_abs(values: &[f64]) -> f64 {
 }
 
 #[cfg(feature = "gpu")]
+fn symmetry_rel(values: &[f64]) -> f64 {
+    let h = values.len();
+    let mut max_rel = 0.0f64;
+    for j in 0..h / 2 {
+        let denom = values[j]
+            .abs()
+            .max(values[h - 1 - j].abs())
+            .max(f64::MIN_POSITIVE);
+        max_rel = max_rel.max((values[j] - values[h - 1 - j]).abs() / denom);
+    }
+    max_rel
+}
+
+#[cfg(feature = "gpu")]
 #[allow(deprecated)]
 fn run_gpu_tier() -> Vec<CheckOutcome> {
     use lbm_core::prelude::{
@@ -367,13 +381,16 @@ fn run_gpu_tier() -> Vec<CheckOutcome> {
                 return checks;
             }
         };
-    if !run_gpu_to_steady(&mut sim, 500, 1.0e-11, 200_000) {
+    // f32 arithmetic cannot reach the f64 T2 exactness thresholds; use the
+    // f32 band class frozen in crates/lbm-core/tests/gpu_absolute.rs
+    // (steadiness 1e-7, L_inf_rel <= 1e-5 = T14 field-agreement class).
+    if !run_gpu_to_steady(&mut sim, 500, 1.0e-7, 200_000) {
         checks.push(failed_without_value(
-            "T2 body-force Poiseuille exactness (GPU)",
+            "T2 body-force Poiseuille exactness (GPU, f32 band)",
             "gpu",
             "Linf_rel",
-            "<= 1.0e-10",
-            "docs/VALIDATION.md T2; crates/lbm-core/tests/validation_channel.rs",
+            "<= 1.0e-5",
+            "docs/VALIDATION.md T2/T14; crates/lbm-core/tests/gpu_absolute.rs",
             "steady-state criterion was not reached",
         ));
         return checks;
@@ -388,22 +405,22 @@ fn run_gpu_tier() -> Vec<CheckOutcome> {
     let ux = sim.gather_ux();
     let got: Vec<f64> = (1..=(ny - 2)).map(|y| ux[y * dims[0]] as f64).collect();
     checks.push(pass_fail(
-        "T2 body-force Poiseuille exactness (GPU)",
+        "T2 body-force Poiseuille exactness (GPU, f32 band)",
         "gpu",
         "Linf_rel",
         linf_rel(&got, &exact),
-        1.0e-10,
-        "<= 1.0e-10",
-        "docs/VALIDATION.md T2; crates/lbm-core/tests/validation_channel.rs",
+        1.0e-5,
+        "<= 1.0e-5",
+        "docs/VALIDATION.md T2/T14; crates/lbm-core/tests/gpu_absolute.rs",
     ));
     checks.push(pass_fail(
-        "T2 body-force Poiseuille top/bottom symmetry (GPU)",
+        "T2 body-force Poiseuille top/bottom symmetry (GPU, f32 band)",
         "gpu",
-        "max_abs",
-        symmetry_abs(&got),
-        1.0e-13,
-        "<= 1.0e-13",
-        "docs/VALIDATION.md T2; crates/lbm-core/tests/validation_channel.rs",
+        "max_rel",
+        symmetry_rel(&got),
+        1.0e-5,
+        "<= 1.0e-5",
+        "docs/VALIDATION.md T2/T14; crates/lbm-core/tests/gpu_absolute.rs",
     ));
     checks
 }
