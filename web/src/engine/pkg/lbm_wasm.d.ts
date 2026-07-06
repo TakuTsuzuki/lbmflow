@@ -11,6 +11,11 @@ export class WasmSim {
      * (Re)initialise from an EngineConfig JSON string.
      */
     init(cfg_json: string): void;
+    /**
+     * Initialise from the shared scenario JSON schema. The browser bridge is
+     * intentionally restricted to the 2D f32 subset used by the GUI.
+     */
+    init_scenario(scenario_json: string): void;
     constructor();
     nx(): number;
     ny(): number;
@@ -28,12 +33,16 @@ export class WasmSim {
     uy_ptr(): number;
 }
 
+export function normalize_scenario_json(scenario_json: string): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmsim_free: (a: number, b: number) => void;
+    readonly normalize_scenario_json: (a: number, b: number) => [number, number, number, number];
     readonly wasmsim_init: (a: number, b: number, c: number) => [number, number];
+    readonly wasmsim_init_scenario: (a: number, b: number, c: number) => [number, number];
     readonly wasmsim_new: () => number;
     readonly wasmsim_nx: (a: number) => number;
     readonly wasmsim_ny: (a: number) => number;
@@ -48,6 +57,7 @@ export interface InitOutput {
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __externref_table_dealloc: (a: number) => void;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
 }
 
