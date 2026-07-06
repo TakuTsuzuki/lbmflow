@@ -1,0 +1,33 @@
+LBMFlow UQ Sweep Summary
+========================
+
+Runs: 6
+Parameters: param.physics.nu, param.grid.nx, param.grid.ny
+Numeric QOIs: 32
+Bootstrap CI rows with repeats: 0
+
+Top normalized OAT sensitivities by absolute mean:
+- param.physics.nu -> qoi.manifest.warningCount: normalized=-2.33333, raw=-33.3333, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.uy.min: normalized=1.42261, raw=0.00144462, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.ux.max: normalized=-1.34193, raw=-0.0601298, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.rho.std: normalized=0.74939, raw=0.00958586, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.ux.last: normalized=-0.613522, raw=-0.200087, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.ux.mean: normalized=-0.610879, raw=-0.175804, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.ux.min: normalized=-0.519786, raw=-0.212153, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.ux.std: normalized=0.509465, raw=0.0497985, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.uy.mean: normalized=0.484375, raw=0.041703, groups=2
+- param.physics.nu -> qoi.field.speed.kineticEnergy: normalized=0.346036, raw=5.47513, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.uy.std: normalized=0.337616, raw=0.0128843, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.uy.last: normalized=0.306539, raw=0.0383793, groups=2
+- param.physics.nu -> qoi.field.speed.sum: normalized=0.296308, raw=277.799, groups=2
+- param.physics.nu -> qoi.field.speed.mean: normalized=0.296308, raw=0.154891, groups=2
+- param.physics.nu -> qoi.probe.point_16_16.uy.max: normalized=0.287475, raw=0.0365955, groups=2
+- param.physics.nu -> qoi.field.speed.rms: normalized=0.175302, raw=0.152272, groups=2
+- param.physics.nu -> qoi.manifest.tau: normalized=0.122807, raw=3, groups=2
+- param.physics.nu -> qoi.field.speed.std: normalized=0.106948, raw=0.073911, groups=2
+- param.physics.nu -> qoi.manifest.maxSpeed: normalized=0.0399765, raw=0.15338, groups=2
+- param.physics.nu -> qoi.field.speed.max: normalized=0.0399765, raw=0.15338, groups=2
+
+Bootstrap confidence intervals:
+- Computed only for exact repeated parameter points with n >= 2.
+- Rows are written to bootstrap_ci.csv; raw sweep rows are unchanged.
