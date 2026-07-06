@@ -9,6 +9,7 @@
 use lbm_core::params::MAX_SPEED;
 use lbm_core::prelude::*;
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 type Cpu = Solver<D2Q9, f32, CpuScalar, LocalPeriodic>;
 
@@ -152,6 +153,22 @@ fn t14_initial_discontinuity_on_velocity_boundary_face() {
 
 #[test]
 fn t14_probe_solid_touches_domain_face() {
+    let Some(mut pair) = face_touching_probe_pair() else {
+        return;
+    };
+    for _ in 0..4 {
+        pair.cpu.run(75);
+        pair.gpu.run(75);
+        assert_probe_close(
+            &pair.cpu.probed_force(),
+            &pair.gpu.probed_force(),
+            "face-touching probe",
+        );
+        pair.run_and_check(0, "face-touching probe", FIELD_TOL);
+    }
+}
+
+fn face_touching_probe_pair() -> Option<Pair> {
     let (nx, ny) = (112usize, 56usize);
     let mut walls = WallSpec::<f32>::default();
     walls.is_wall[Face::YNeg.index()] = true;
@@ -168,9 +185,7 @@ fn t14_probe_solid_touches_domain_face() {
         faces,
         ..Default::default()
     };
-    let Some(mut pair) = Pair::new(&spec, &walls, 0.07) else {
-        return;
-    };
+    let mut pair = Pair::new(&spec, &walls, 0.07)?;
     let touches_bottom = |x: usize, y: usize, _: usize| (30..42).contains(&x) && y <= 6;
     for y in 0..ny {
         for x in 0..nx {
@@ -182,19 +197,74 @@ fn t14_probe_solid_touches_domain_face() {
     }
     pair.cpu.set_force_probe(touches_bottom);
     pair.gpu.set_force_probe(touches_bottom);
-    for _ in 0..4 {
+    Some(pair)
+}
+
+fn assert_probe_close(cpu_force: &[f32; 3], gpu_force: &[f32; 3], what: &str) {
+    // Tolerance is relative to the force-vector scale (L_inf norm), matching the
+    // T14 convention of field-scale-relative gates. A per-component relative
+    // check would demand ~1e-7 of the force scale on cancellation-dominated
+    // components (PM ruling 2026-07-06: measured GPU deltas 3.6-4.8e-7 on
+    // |F|_inf = 4.5 straddled the old per-component limit purely via f32
+    // reassociation; see TESTING_NOTES).
+    let scale = cpu_force
+        .iter()
+        .map(|v| (*v as f64).abs())
+        .fold(1e-6_f64, f64::max);
+    for c in 0..2 {
+        let cpu = cpu_force[c] as f64;
+        let gpu = gpu_force[c] as f64;
+        let d = (cpu - gpu).abs();
+        let lim = DIAG_TOL * scale;
+        assert!(
+            d <= lim,
+            "{what} force[{c}]: |delta|={d:.3e} > {lim:.3e} (cpu={cpu:.9e}, gpu={gpu:.9e})"
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual GPU diagnostic for the B-1 face-touching probe bias"]
+fn diag_t14_probe_solid_touches_domain_face_chunks() {
+    let Some(mut pair) = face_touching_probe_pair() else {
+        panic!("diagnostic requires a usable GPU adapter");
+    };
+    let mut cpu_sum = [0.0f64; 3];
+    let mut gpu_sum = [0.0f64; 3];
+    for chunk in 1..=4 {
         pair.cpu.run(75);
         pair.gpu.run(75);
-        let (fa, fb) = (pair.cpu.probed_force(), pair.gpu.probed_force());
-        for c in 0..2 {
-            assert_diag(
-                fa[c] as f64,
-                fb[c] as f64,
-                1e-6,
-                &format!("face-touching probe force[{c}]"),
-            );
+        let cpu = pair.cpu.probed_force();
+        let gpu = pair.gpu.probed_force();
+        for c in 0..3 {
+            cpu_sum[c] += cpu[c] as f64;
+            gpu_sum[c] += gpu[c] as f64;
         }
-        pair.run_and_check(0, "face-touching probe", FIELD_TOL);
+        eprintln!(
+            "chunk {chunk} t={}: cpu=[{:.9e},{:.9e},{:.9e}] gpu=[{:.9e},{:.9e},{:.9e}] \
+             delta=[{:.3e},{:.3e},{:.3e}] cumulative_cpu=[{:.9e},{:.9e},{:.9e}] \
+             cumulative_gpu=[{:.9e},{:.9e},{:.9e}] cumulative_delta=[{:.3e},{:.3e},{:.3e}]",
+            pair.cpu.time(),
+            cpu[0] as f64,
+            cpu[1] as f64,
+            cpu[2] as f64,
+            gpu[0] as f64,
+            gpu[1] as f64,
+            gpu[2] as f64,
+            cpu[0] as f64 - gpu[0] as f64,
+            cpu[1] as f64 - gpu[1] as f64,
+            cpu[2] as f64 - gpu[2] as f64,
+            cpu_sum[0],
+            cpu_sum[1],
+            cpu_sum[2],
+            gpu_sum[0],
+            gpu_sum[1],
+            gpu_sum[2],
+            cpu_sum[0] - gpu_sum[0],
+            cpu_sum[1] - gpu_sum[1],
+            cpu_sum[2] - gpu_sum[2],
+        );
+        pair.run_and_check(0, "face-touching probe diagnostic", FIELD_TOL);
     }
 }
 
@@ -230,7 +300,72 @@ fn t14_near_max_speed_periodic_tgv() {
 }
 
 #[test]
-#[ignore = "known D-8 T14 defect: mixed force field + moving wall + convective open exceeds 1e-5 CPU/GPU equivalence"]
+fn gpu_run_submits_recorded_chunks() {
+    let Some(ctx) = gpu_ctx_or_skip() else {
+        return;
+    };
+    let n = 1024usize;
+    let spec = GlobalSpec::<f32> {
+        dims: [n, n, 1],
+        nu: 0.08,
+        periodic: [true, true, false],
+        ..Default::default()
+    };
+    let mut gpu: GpuSolver<D2Q9> = GpuSolver::new(&spec, &[], &[], ctx);
+    gpu.init_with(|x, y, _| {
+        let k = 2.0 * std::f64::consts::PI / n as f64;
+        let xf = k * x as f64;
+        let yf = k * y as f64;
+        (
+            1.0,
+            [
+                (0.02 * xf.cos() * yf.sin()) as f32,
+                (-0.02 * xf.sin() * yf.cos()) as f32,
+                0.0,
+            ],
+        )
+    });
+
+    gpu.set_submit_chunk(8);
+    gpu.run(8);
+    gpu.gather_ux();
+
+    gpu.set_submit_chunk(1);
+    let single_start = Instant::now();
+    gpu.run(1);
+    let single = single_start.elapsed();
+    gpu.gather_ux();
+
+    let steps = 50usize;
+    let chunk = 8usize;
+    gpu.set_submit_chunk(chunk);
+    let before_submits = gpu.submissions();
+    let run_start = Instant::now();
+    gpu.run(steps);
+    let run_elapsed = run_start.elapsed();
+    let after_run_submits = gpu.submissions();
+    let expected_submits = steps.div_ceil(chunk) as u64;
+    assert!(
+        after_run_submits - before_submits >= expected_submits,
+        "gpu run({steps}) submitted {} chunks, expected at least {expected_submits}",
+        after_run_submits - before_submits
+    );
+
+    let sync_start = Instant::now();
+    gpu.sync();
+    let sync_elapsed = sync_start.elapsed();
+    let total_elapsed = run_elapsed + sync_elapsed;
+
+    let floor = (single.mul_f64(4.0)).max(Duration::from_millis(2));
+    assert!(
+        total_elapsed >= floor,
+        "gpu run({steps}) + sync completed too quickly for queued work: \
+         run_elapsed={run_elapsed:?}, sync_elapsed={sync_elapsed:?}, \
+         floor={floor:?}, measured_single_step={single:?}"
+    );
+}
+
+#[test]
 fn t14_mixed_force_field_moving_wall_and_open_faces() {
     let (nx, ny) = (128usize, 54usize);
     let mut walls = WallSpec::<f32>::default();

@@ -70,6 +70,7 @@ use crate::backend::{
     CpuScalar, HostMoments, PARALLEL_MIN_CELLS,
 };
 use crate::fields::{FusedScratch, LocalGeom, SoaFields};
+use crate::halo::HaloExchange;
 use crate::kernels::{for_face_cells, RawSlice};
 use crate::lattice::{Face, Lattice, Q_MAX};
 use crate::params::{KParams, Reduction, StepParams};
@@ -1321,6 +1322,23 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
 
     fn alloc(&self, sub: &Subdomain) -> SoaFields<T> {
         SoaFields::new(L::Q, sub.geom)
+    }
+
+    fn stage_in(&self, _sub: &Subdomain, fields: &mut SoaFields<T>, host: &SoaFields<T>) {
+        *fields = host.clone();
+    }
+
+    fn stage_out(&self, _sub: &Subdomain, fields: &SoaFields<T>, host: &mut SoaFields<T>) {
+        *host = fields.clone();
+    }
+
+    fn exchange_f<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [SoaFields<T>],
+    ) {
+        exchange.exchange_f::<L>(subs, fields);
     }
 
     /// Collide, in place in `f`, exactly the one-cell core boundary shell of

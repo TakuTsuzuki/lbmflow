@@ -17,7 +17,10 @@
 //! of the fused backend and compare velocity fields 1:1 (frozen as the
 //! T14 regression recipe).
 
+#[cfg(feature = "gpu")]
+use crate::fields::LocalGeom;
 use crate::fields::SoaFields;
+use crate::halo::HaloExchange;
 use crate::kernels::{
     collide_row, convective_face, moments_row, outflow_face, stream_row, zou_he_face, RawSlice,
     ZhKind,
@@ -73,17 +76,105 @@ impl CellRange {
     }
 }
 
+/// Boundary shells complementing the interior box: fixed order YNeg row,
+/// YPos row, XNeg column, XPos column (minus corners already covered), then
+/// Z planes for 3D. Only the probe partials' summation order depends on
+/// this; field results do not.
+pub(crate) fn boundary_shells(sub: &Subdomain, interior: CellRange) -> Vec<CellRange> {
+    let c = sub.geom.core;
+    let mut shells = Vec::new();
+    let z_full = (0, c[2]);
+    // y = 0 and y = ny-1 full-width rows.
+    shells.push(CellRange {
+        lo: [0, 0, z_full.0],
+        hi: [c[0], interior.lo[1], z_full.1],
+    });
+    shells.push(CellRange {
+        lo: [0, interior.hi[1], z_full.0],
+        hi: [c[0], c[1], z_full.1],
+    });
+    // x columns between the y rows.
+    shells.push(CellRange {
+        lo: [0, interior.lo[1], z_full.0],
+        hi: [interior.lo[0], interior.hi[1], z_full.1],
+    });
+    shells.push(CellRange {
+        lo: [interior.hi[0], interior.lo[1], z_full.0],
+        hi: [c[0], interior.hi[1], z_full.1],
+    });
+    if sub.geom.d == 3 {
+        // z planes of the remaining interior-xy box.
+        shells.push(CellRange {
+            lo: [interior.lo[0], interior.lo[1], 0],
+            hi: [interior.hi[0], interior.hi[1], interior.lo[2]],
+        });
+        shells.push(CellRange {
+            lo: [interior.lo[0], interior.lo[1], interior.hi[2]],
+            hi: [interior.hi[0], interior.hi[1], c[2]],
+        });
+    }
+    shells.retain(|s| !s.is_empty());
+    shells
+}
+
 /// A compute + storage target for one subdomain's fields.
 ///
 /// One time step, orchestrated by the solver, is:
 /// `collide` → halo exchange → `stream` (interior, then boundary) → `swap`
 /// → `apply_open_faces` → `update_moments`.
 pub trait Backend<L: Lattice, T: Real> {
-    /// Device-resident field storage.
+    /// Backend-owned field storage.
+    ///
+    /// This is intentionally a composite storage boundary owned by the
+    /// backend, not an alias for the hydrodynamic `f` populations. Today the
+    /// first member is the single distribution set (`f`, plus its ping-pong
+    /// partner and moment/mask side fields). Future multiphase/scalar work can
+    /// add additional distribution sets (`g`, `h`), per-cell properties, and
+    /// Lagrangian buffers to this associated type while the solver continues
+    /// to transfer through the host staging object at edit/read boundaries.
     type Fields;
 
     /// Allocate quiescent fields for a subdomain.
     fn alloc(&self, sub: &Subdomain) -> Self::Fields;
+
+    /// Copy the host staging state into backend-owned storage.
+    ///
+    /// CPU backends use the same SoA layout on both sides, so this is a
+    /// straight copy. Device backends strip/pack the host halo layout into
+    /// their native composite storage.
+    fn stage_in(&self, sub: &Subdomain, fields: &mut Self::Fields, host: &SoaFields<T>);
+
+    /// Copy backend-owned storage back into host staging.
+    ///
+    /// This is the synchronization point used by setup shims and diagnostics
+    /// that need population access. Moment-only diagnostics should prefer
+    /// [`Backend::read_moments`], and scalar reductions should prefer
+    /// [`Backend::reduce`], so device backends avoid unnecessary population
+    /// readbacks.
+    fn stage_out(&self, sub: &Subdomain, fields: &Self::Fields, host: &mut SoaFields<T>);
+
+    /// Whether this backend's streaming kernel handles the single-part
+    /// periodic halo itself. Transitional B-1 hook: stage 4 will make
+    /// `HaloExchange` generic over `Backend::Fields`; until then this lets the
+    /// monolithic GPU path use the common orchestrator without forcing a
+    /// host-mediated halo copy between collide and stream.
+    fn handles_single_part_periodic_halo(&self) -> bool {
+        false
+    }
+
+    /// Exchange post-collision population halos for backend-owned fields.
+    ///
+    /// CPU backends delegate to the current `HaloExchange<SoaFields>`
+    /// implementation. The monolithic GPU backend handles wrap/open-boundary
+    /// inputs in-kernel. B-1 stage 4 will move the halo trait itself to
+    /// `Backend::Fields`; this hook avoids host-mediated copies in the
+    /// meantime.
+    fn exchange_f<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [Self::Fields],
+    );
 
     /// TRT/BGK collision with Guo forcing over all core cells (in place).
     fn collide(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
@@ -119,6 +210,81 @@ pub trait Backend<L: Lattice, T: Real> {
 
     /// Recompute macroscopic moments from the populations.
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>);
+
+    /// Record/execute a span of whole steps. The default is exactly the
+    /// generic orchestrator step loop; asynchronous backends may override it
+    /// to keep their per-step hot loop inside backend-owned storage and
+    /// recorder state.
+    fn run_span<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [Self::Fields],
+        p: &StepParams<T>,
+        two_pass: bool,
+        probed_force: &mut [T; 3],
+        steps: usize,
+    ) {
+        for _ in 0..steps {
+            for i in 0..fields.len() {
+                self.collide(&subs[i], &mut fields[i], p);
+            }
+            self.exchange_f(exchange, subs, fields);
+            let mut pf = [T::zero(); 3];
+            for i in 0..fields.len() {
+                let sub = &subs[i];
+                let part_pf = if !two_pass {
+                    self.stream(sub, &mut fields[i], p, CellRange::full(sub))
+                } else {
+                    let c = sub.geom.core;
+                    let interior = CellRange {
+                        lo: [1, 1, if sub.geom.d == 3 { 1 } else { 0 }],
+                        hi: [
+                            c[0].saturating_sub(1),
+                            c[1].saturating_sub(1),
+                            if sub.geom.d == 3 {
+                                c[2].saturating_sub(1)
+                            } else {
+                                c[2]
+                            },
+                        ],
+                    };
+                    let mut part_pf = self.stream(sub, &mut fields[i], p, interior);
+                    for shell in boundary_shells(sub, interior) {
+                        let p2 = self.stream(sub, &mut fields[i], p, shell);
+                        part_pf = [part_pf[0] + p2[0], part_pf[1] + p2[1], part_pf[2] + p2[2]];
+                    }
+                    part_pf
+                };
+                pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
+            }
+            for i in 0..fields.len() {
+                let part_pf = self.apply_bouzidi(&subs[i], &mut fields[i], p);
+                pf = [pf[0] + part_pf[0], pf[1] + part_pf[1], pf[2] + part_pf[2]];
+            }
+            for field in fields.iter_mut() {
+                self.swap(field);
+            }
+            *probed_force = pf;
+            for i in 0..fields.len() {
+                self.apply_open_faces(&subs[i], &mut fields[i], p);
+            }
+            for i in 0..fields.len() {
+                self.update_moments(&subs[i], &mut fields[i], p);
+            }
+        }
+    }
+
+    /// Maximum number of steps the orchestrator should record before calling
+    /// [`Backend::finish_run_chunk`]. CPU backends execute immediately, so the
+    /// default runs the requested span as one chunk.
+    fn run_chunk_size(&self, _fields: &[Self::Fields]) -> usize {
+        usize::MAX
+    }
+
+    /// End-of-chunk hook used by asynchronous backends to submit recorded
+    /// device work and, when needed, block until that chunk is complete.
+    fn finish_run_chunk(&mut self, _fields: &[Self::Fields], _steps: usize) {}
 
     /// Backend-side reduction over fluid core cells, accumulated in `f64`
     /// in compact cell order (V1 diagnostic convention).
@@ -163,6 +329,23 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuScalar {
 
     fn alloc(&self, sub: &Subdomain) -> SoaFields<T> {
         SoaFields::new(L::Q, sub.geom)
+    }
+
+    fn stage_in(&self, _sub: &Subdomain, fields: &mut SoaFields<T>, host: &SoaFields<T>) {
+        *fields = host.clone();
+    }
+
+    fn stage_out(&self, _sub: &Subdomain, fields: &SoaFields<T>, host: &mut SoaFields<T>) {
+        *host = fields.clone();
+    }
+
+    fn exchange_f<H: HaloExchange<T>>(
+        &mut self,
+        exchange: &H,
+        subs: &[Subdomain],
+        fields: &mut [SoaFields<T>],
+    ) {
+        exchange.exchange_f::<L>(subs, fields);
     }
 
     fn collide(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
@@ -468,4 +651,27 @@ pub(crate) fn read_moments_impl<T: Real>(fields: &SoaFields<T>, out: &mut HostMo
     out.uy.extend_from_slice(&fields.uy);
     out.uz.clear();
     out.uz.extend_from_slice(&fields.uz);
+}
+
+/// Copy compact-core host moments into the corresponding part of a padded
+/// [`SoaFields`] host-staging object.
+#[cfg(feature = "gpu")]
+pub(crate) fn write_host_moments<T: Real>(
+    geom: LocalGeom,
+    moments: &HostMoments<T>,
+    host: &mut SoaFields<T>,
+) {
+    let mut c = 0usize;
+    for z in 0..geom.core[2] {
+        for y in 0..geom.core[1] {
+            for x in 0..geom.core[0] {
+                let ci = geom.cidx(x, y, z);
+                host.rho[ci] = moments.rho[c];
+                host.ux[ci] = moments.ux[c];
+                host.uy[ci] = moments.uy[c];
+                host.uz[ci] = moments.uz[c];
+                c += 1;
+            }
+        }
+    }
 }
