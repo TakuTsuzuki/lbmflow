@@ -53,7 +53,8 @@ pub mod prelude {
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{
-        build_wall_rims, partition, Diverged, GlobalSpec, Solver, SpecError, WallSpec,
+        build_wall_rims, partition, CheckpointError, Diverged, GlobalSpec, Solver, SpecError,
+        WallSpec,
     };
     pub use crate::subdomain::Subdomain;
 

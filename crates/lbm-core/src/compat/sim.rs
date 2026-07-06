@@ -34,7 +34,8 @@ use crate::fields::SoaFields;
 use crate::halo::LocalPeriodic;
 use crate::lattice::D2Q9;
 use crate::params::{CollisionKind, FaceBC};
-use crate::solver::{build_wall_rims, GlobalSpec, Solver, WallSpec};
+use crate::solver::{build_wall_rims, CheckpointError, GlobalSpec, Solver, WallSpec};
+use std::path::Path;
 
 pub use crate::backend::PARALLEL_MIN_CELLS;
 
@@ -167,6 +168,17 @@ impl<T: Real> Simulation<T> {
         for _ in 0..steps {
             self.step();
         }
+    }
+
+    /// Save a checkpoint through the V2 core backing this compat simulation.
+    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        self.sync_force_field();
+        self.solver.save(dir)
+    }
+
+    /// Restore a checkpoint into this already-built compat simulation.
+    pub fn restore(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        self.solver.restore(dir)
     }
 
     // ------------------------------------------------------------------

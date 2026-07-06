@@ -1226,3 +1226,16 @@ Scenario validation command:
 `cargo test -p lbm-scenario --release scenario_gravity_validation_rejects_bad_vectors_with_reason -- --nocapture`
 passed. It checks wrong-length JSON gravity arrays, NaN gravity components, and
 nonzero `gz` in 2D are rejected with field-specific reasons.
+## B-5 checkpoint/restart implementation (2026-07-06)
+
+Implemented single-rank checkpoint/restart with `manifest.json` plus
+`rank_0000.bin` TLV payloads. The saved payload copies deviation-form `f`
+bytes directly, stores the ping-pong partner as `STALE_STASH`, and stores
+compact moments so carried solid densities are not recomputed on restart.
+
+Evidence so far: `cargo test -p lbm-core checkpoint --release` green. The
+checkpoint test covers 50 -> save -> load -> 50 bit-exact equality against a
+100-step continuous run for f32/f64 and D2Q9/D3Q19 with body force and solids;
+explicit `CKPT_PAYLOAD_CORRUPT` and truncated-file rejection; explicit
+`CKPT_SCENARIO_MISMATCH`; byte preservation of `ftmp` stale storage; and a
+carried solid-cell `rho` value restored from the `MOMENTS` section.

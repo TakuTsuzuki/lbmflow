@@ -37,7 +37,18 @@ pub struct Diagnostics {
     pub tau: f64,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RunOptions {
+    pub save_every: Option<usize>,
+    pub checkpoint_dir: Option<PathBuf>,
+    pub restore: Option<PathBuf>,
+}
+
 pub fn run(sc: &Scenario, out_dir: &Path) -> Result<Manifest> {
+    run_with_options(sc, out_dir, &RunOptions::default())
+}
+
+pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> Result<Manifest> {
     fs::create_dir_all(out_dir)
         .with_context(|| format!("cannot create output directory: {}", out_dir.display()))?;
     let resolved = lbm_scenario::resolve(sc).map_err(anyhow::Error::msg)?;
@@ -51,14 +62,26 @@ pub fn run(sc: &Scenario, out_dir: &Path) -> Result<Manifest> {
     };
     if sc.is_3d() {
         return match lbm_scenario::build3d(sc)? {
-            Sim3Handle::F64(s) => run3d_t(sc, s, out_dir, units),
-            Sim3Handle::F32(s) => run3d_t(sc, s, out_dir, units),
+            Sim3Handle::F64(s) => run3d_t(sc, s, out_dir, units, options),
+            Sim3Handle::F32(s) => run3d_t(sc, s, out_dir, units, options),
         };
     }
     match lbm_scenario::build(sc)? {
-        SimHandle::F64(sim, mp) => run_t(sc, sim, mp, out_dir, units),
-        SimHandle::F32(sim, mp) => run_t(sc, sim, mp, out_dir, units),
+        SimHandle::F64(sim, mp) => run_t(sc, sim, mp, out_dir, units, options),
+        SimHandle::F32(sim, mp) => run_t(sc, sim, mp, out_dir, units, options),
     }
+}
+
+fn checkpoint_path(options: &RunOptions, step: usize) -> Option<PathBuf> {
+    let every = options.save_every?;
+    if every == 0 || step % every != 0 {
+        return None;
+    }
+    let root = options
+        .checkpoint_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("checkpoints"));
+    Some(root.join(format!("ckpt_{step}")))
 }
 
 struct CsvProbe {
@@ -92,7 +115,12 @@ fn run_t<T: Real>(
     mp: Option<ShanChen<T>>,
     out_dir: &Path,
     units: Option<lbm_scenario::UnitReport>,
+    options: &RunOptions,
 ) -> Result<Manifest> {
+    if let Some(dir) = &options.restore {
+        sim.restore(dir)
+            .with_context(|| format!("cannot restore checkpoint: {}", dir.display()))?;
+    }
     let mut files: Vec<String> = Vec::new();
     let mut probes: Vec<CsvProbe> = Vec::new();
     for p in &sc.probes {
@@ -264,6 +292,12 @@ fn run_t<T: Real>(
             if o.every > 0 && step % o.every == 0 {
                 files.push(write_output(&sim, o, i, step, out_dir)?);
             }
+        }
+
+        if let Some(path) = checkpoint_path(options, step) {
+            sim.save(&path)
+                .with_context(|| format!("cannot save checkpoint: {}", path.display()))?;
+            files.push(path.display().to_string());
         }
 
         if step % 1000 == 0 {
@@ -658,7 +692,12 @@ fn run3d_t<T: lbm_core::real::Real>(
     mut s: Solver3<T>,
     out_dir: &Path,
     units: Option<lbm_scenario::UnitReport>,
+    options: &RunOptions,
 ) -> Result<Manifest> {
+    if let Some(dir) = &options.restore {
+        s.restore(dir)
+            .with_context(|| format!("cannot restore checkpoint: {}", dir.display()))?;
+    }
     let dims = s.dims();
     let [nx, ny, nz] = dims;
     let mut files: Vec<String> = Vec::new();
@@ -754,6 +793,12 @@ fn run3d_t<T: lbm_core::real::Real>(
                     files.push(write_output3(&s, &f, o, step, out_dir)?);
                 }
             }
+        }
+
+        if let Some(path) = checkpoint_path(options, step) {
+            s.save(&path)
+                .with_context(|| format!("cannot save checkpoint: {}", path.display()))?;
+            files.push(path.display().to_string());
         }
 
         if step % 1000 == 0 {
