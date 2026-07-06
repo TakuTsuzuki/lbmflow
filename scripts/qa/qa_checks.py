@@ -539,6 +539,110 @@ def check_laplace_sigma(out_dir, cfg, args):
                     f"R_fit = {r_fit:.2f}, dp = {sigma / r_fit:.4g}")
 
 
+def _droplet_mask_stats(out_dir):
+    rho, nx, ny, _ = _final_field(out_dir, "rho")
+    lo, hi = min(rho), max(rho)
+    thr = 0.5 * (lo + hi)
+    cells = [(x, y) for y in range(ny) for x in range(nx) if rho[y * nx + x] > thr]
+    if not cells:
+        return None
+    area = len(cells)
+    cx = sum(x for x, _ in cells) / area
+    cy = sum(y for _, y in cells) / area
+    r_fit = math.sqrt(area / math.pi)
+    return rho, nx, ny, lo, hi, thr, cells, area, cx, cy, r_fit
+
+
+def check_droplet_radius_sanity(out_dir, cfg, args):
+    stats = _droplet_mask_stats(out_dir)
+    if stats is None:
+        return _finding("droplet radius/centering", False,
+                        "non-empty half-density droplet mask", "none found")
+    _, _, _, _, _, _, cells, area, cx, cy, r_fit = stats
+    init = cfg["scenario"]["init"]
+    r0 = init["r"]
+    cx0 = init["cx"]
+    cy0 = init["cy"]
+    dx = abs(cx - cx0)
+    dy = abs(cy - cy0)
+    ok = math.isfinite(r_fit) and r_fit > 0.0 and dx <= 1.0 and dy <= 1.0
+    return _finding("droplet radius/centering", ok,
+                    "finite positive area-fit radius and centroid within 1 cell",
+                    f"R_fit={r_fit:.2f}, R0={r0:.2f}, centroid=({cx:.2f},{cy:.2f}), "
+                    f"target=({cx0:.2f},{cy0:.2f}), area={area}")
+
+
+def check_pressure_plateaus(out_dir, cfg, args):
+    stats = _droplet_mask_stats(out_dir)
+    if stats is None:
+        return _finding("pressure plateaus", False,
+                        "non-empty half-density droplet mask", "none found")
+    rho, nx, ny, _, _, _, _, _, cx, cy, r_fit = stats
+    g = args["g"]
+    inner, outer = [], []
+    for y in range(ny):
+        for x in range(nx):
+            d = math.hypot(x - cx, y - cy)
+            p = _sc_pressure(rho[y * nx + x], g)
+            if d <= 0.5 * r_fit:
+                inner.append(p)
+            elif d >= r_fit + 10.0:
+                outer.append(p)
+    if not inner or not outer:
+        return _finding("pressure plateaus", False,
+                        "inner core and far-vapor pressure samples",
+                        f"inner={len(inner)} outer={len(outer)}")
+    p_in = sum(inner) / len(inner)
+    p_out = sum(outer) / len(outer)
+    dp = p_in - p_out
+    inner_span = max(inner) - min(inner)
+    outer_span = max(outer) - min(outer)
+    ok = dp > 0.0 and inner_span < abs(dp) and outer_span < abs(dp)
+    return _finding("pressure plateaus", ok,
+                    "inside pressure > outside and each plateau span < Laplace jump",
+                    f"p_in={p_in:.6g}, p_out={p_out:.6g}, dp={dp:.6g}, "
+                    f"inner_span={inner_span:.3g}, outer_span={outer_span:.3g}")
+
+
+def check_spurious_current_location(out_dir, cfg, args):
+    stats = _droplet_mask_stats(out_dir)
+    if stats is None:
+        return _finding("spurious-current location", False,
+                        "non-empty half-density droplet mask", "none found")
+    rho, nx, ny, lo, hi, _, _, _, cx, cy, r_fit = stats
+    speed, sx, sy, _ = _final_field(out_dir, "speed")
+    if (sx, sy) != (nx, ny):
+        return _finding("spurious-current location", False,
+                        "rho and speed grids have matching dimensions",
+                        f"rho={nx}x{ny}, speed={sx}x{sy}")
+    i, umax = max(enumerate(speed), key=lambda item: abs(item[1]))
+    x, y = i % nx, i // nx
+    radius_fraction = math.hypot(x - cx, y - cy) / max(r_fit, 1.0e-30)
+    liquid = [r > stats[5] for r in rho]
+    interface = []
+    for yy in range(ny):
+        for xx in range(nx):
+            here = liquid[yy * nx + xx]
+            neighbor_crosses = False
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                xn = (xx + dx) % nx
+                yn = (yy + dy) % ny
+                if liquid[yn * nx + xn] != here:
+                    neighbor_crosses = True
+                    break
+            if neighbor_crosses:
+                interface.append((xx, yy))
+    nearest = min(
+        max(min(abs(x - xi), nx - abs(x - xi)), min(abs(y - yi), ny - abs(y - yi)))
+        for xi, yi in interface
+    )
+    ok = nearest <= 1
+    return _finding("spurious-current location", ok,
+                    "max|u| lies on or adjacent to the half-density interface",
+                    f"max|u|={abs(umax):.4g} at ({x},{y}), "
+                    f"d/R_fit={radius_fraction:.3f}, nearest_interface_cells={nearest}")
+
+
 def check_contact_angle(out_dir, cfg, args):
     rho, nx, ny, _ = _final_field(out_dir, "rho")
     lo, hi = min(rho), max(rho)
@@ -583,7 +687,10 @@ CHECKS = {
     "z_mirror_symmetry": check_z_mirror_symmetry,
     "xy_mirror_symmetry": check_xy_mirror_symmetry,
     "spurious_current": check_spurious_current,
+    "spurious_current_location": check_spurious_current_location,
     "laplace_sigma": check_laplace_sigma,
+    "droplet_radius_sanity": check_droplet_radius_sanity,
+    "pressure_plateaus": check_pressure_plateaus,
     "contact_angle": check_contact_angle,
     "speed_scale": check_speed_scale,
 }
