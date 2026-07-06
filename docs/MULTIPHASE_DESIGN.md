@@ -89,9 +89,12 @@ impl ShanChen<T> {
 
 The multiphase kernels now run on D3Q27 with the cumulant central-moment
 collision on CpuSimd and Wgpu (commit `20d0e10`, cx/cumulant-s3). This lifts
-the higher-order isotropy of the lattice into SC/MCMP and removes the
-Galilean-invariance error of BGK at strong density gradients. Acceptance
-lives under the MF-alpha rows in `docs/paper/claims-ledger.md`.
+the higher-order isotropy of the lattice into SC/MCMP and reduces the
+velocity-dependent truncation error of BGK at strong density gradients.
+(Correction 2026-07-07: "removes the Galilean-invariance error" is NOT
+established — the D3Q19 cumulant correction has an open finite-frame
+Galilean-invariance holdout finding; see the PHYSICS.md 2026-07-07 entry.)
+Acceptance lives under the MF-alpha rows in `docs/paper/claims-ledger.md`.
 
 ## Still pending
 
