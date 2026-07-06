@@ -1,5 +1,5 @@
-use crate::particles::Particle;
 use crate::protocol::{ProtocolInput, Regime};
+use lbm_core::particles::DepositEvent;
 use serde::Serialize;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -28,14 +28,15 @@ pub struct Metrics {
 pub fn write_outputs(
     input: &ProtocolInput,
     regime: &Regime,
-    particles: &[Particle],
+    deposits: &[DepositEvent],
+    n_suspended: usize,
     n_extracted: usize,
     reservoir_velocity: &[[f64; 3]],
     tray_velocity: &[[f64; 3]],
 ) -> anyhow::Result<Metrics> {
     let outdir = input.output_dir();
     std::fs::create_dir_all(&outdir)?;
-    let bins = bin_counts(input, particles);
+    let bins = bin_counts(input, regime, deposits);
     if input.output.csv {
         write_density_csv(&outdir.join("density.csv"), input, &bins)?;
     }
@@ -66,7 +67,6 @@ pub fn write_outputs(
         / n.max(1.0);
     let cv = if mean > 0.0 { var.sqrt() / mean } else { 0.0 };
     let max = bins.iter().copied().max().unwrap_or(0) as f64;
-    let n_suspended = particles.iter().filter(|p| !p.deposited).count();
     let empty_bin_fraction =
         bins.iter().filter(|&&c| c == 0).count() as f64 / bins.len().max(1) as f64;
     let metrics = Metrics {
@@ -87,15 +87,17 @@ pub fn write_outputs(
     Ok(metrics)
 }
 
-fn bin_counts(input: &ProtocolInput, particles: &[Particle]) -> Vec<usize> {
+fn bin_counts(input: &ProtocolInput, regime: &Regime, deposits: &[DepositEvent]) -> Vec<usize> {
     let mx = input.target.partitions_x;
     let my = input.target.partitions_y;
     let mut bins = vec![0usize; mx * my];
-    for p in particles.iter().filter(|p| p.deposited) {
-        let i = ((p.pos[0] / input.target.width_m) * mx as f64)
+    for event in deposits {
+        let x_m = event.pos[0] * regime.dx;
+        let y_m = event.pos[1] * regime.dx;
+        let i = ((x_m / input.target.width_m) * mx as f64)
             .floor()
             .clamp(0.0, (mx - 1) as f64) as usize;
-        let j = ((p.pos[1] / input.target.depth_m) * my as f64)
+        let j = ((y_m / input.target.depth_m) * my as f64)
             .floor()
             .clamp(0.0, (my - 1) as f64) as usize;
         bins[j * mx + i] += 1;
