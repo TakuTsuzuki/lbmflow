@@ -3,10 +3,12 @@
 //! Design principles for agents: self-description (`lbm schema` / `lbm presets`),
 //! structured errors (JSON), determinism.
 
+mod capabilities;
 mod gallery;
 mod mcp;
 mod render;
 mod runner;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -26,6 +28,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print the supported lattices, collisions, precision/storage modes, and backends
+    Capabilities {
+        /// Emit stable machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run built-in verification checks
+    Verify {
+        /// Verification tier to run
+        #[arg(long, value_enum, default_value_t = verify::VerifyTier::Quick)]
+        tier: verify::VerifyTier,
+    },
     /// Run a scenario JSON and write results to the output directory
     Run {
         /// Scenario JSON file (`-` for stdin)
@@ -131,6 +145,13 @@ fn run_and_report(
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Capabilities { json } => {
+            capabilities::run(json)?;
+        }
+        Command::Verify { tier } => {
+            let code = verify::run(tier)?;
+            std::process::exit(code);
+        }
         Command::Run {
             scenario,
             out,
