@@ -160,6 +160,8 @@ impl<T: Real> Rotor<T> {
         let dx = x - self.cx;
         let dy = y - self.cy;
         let r2 = dx * dx + dy * dy;
+        // NOTE (ANOM-P4-009): the hub region r < r_hub is a HOLE — chi = 0,
+        // no penalization and no solid mask — not a rotating solid disc.
         if r2 < self.r_hub * self.r_hub || r2 > self.r_blade * self.r_blade {
             return T::zero();
         }
@@ -202,6 +204,9 @@ impl<T: Real> Rotor<T> {
     }
 
     /// Add this step's penalization force into `sim.force_field_mut()`.
+    ///
+    /// Contract (ANOM-P4-009): this ADDS into the force field — the caller
+    /// must clear/reset the field between steps, or forces accumulate.
     pub fn update_force(&mut self, sim: &mut Simulation<T>) {
         let omega = self.omega_eff(sim.time());
         let (nx, ny) = (sim.nx(), sim.ny());

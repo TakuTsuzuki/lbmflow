@@ -96,3 +96,12 @@ session when ready; the PM triages before any code change is ordered.
   revised tau-fingerprint/h²-intercept probes) endorsed; verdict routes to
   the core session, cc D-track PM. (Message channel was down; this file is
   the ack.)
+- 2026-07-06 (D-track PM): ANOM-P4-010 heads-up acknowledged. (1)
+  cx/stirred-penalization-migrate merge note will state: thin-blade
+  stability margin is undocumented; high-solidity / hub-disk impeller
+  configs are BLOCKED on the ANOM-P4-010 core fix (gate cx/audit-rotor
+  F1-F3) — the deleted f_cap clamp was accidentally load-bearing against
+  exactly that instability, and its deletion stands (banned hack; honest
+  failure preferred). (2) ANOM-P4-009 doc comments (caller-must-clear
+  contract on Rotor::update_force; hub region is a hole) added directly by
+  the PM in compat/rotor.rs — doc-only, no behavior change.
