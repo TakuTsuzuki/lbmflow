@@ -20,6 +20,7 @@ fn capabilities_json_is_machine_readable() {
         "collisions",
         "precisions",
         "backends",
+        "backendGravityFallback",
         "checkpoint",
         "particleCoupling",
     ] {
@@ -44,7 +45,16 @@ fn capabilities_json_is_machine_readable() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|b| b["name"] == "cpu" && b["compiled"] == true));
+        .any(|b| b["name"] == "cpu-scalar"
+            && b["compiled"] == true
+            && b["gravityBodyForce"] == true));
+    assert!(value["backends"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["name"] == "cpu-simd"
+            && b["compiled"] == true
+            && b["gravityBodyForce"] == true));
 }
 
 #[test]

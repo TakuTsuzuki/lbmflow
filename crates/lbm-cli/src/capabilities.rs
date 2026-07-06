@@ -1,68 +1,71 @@
 use anyhow::Result;
+use lbm_core::prelude::{Backend, CpuScalar, CpuSimd, D2Q9};
 use lbm_scenario::CollisionSpec;
 use serde::Serialize;
 
 // Static product facts: keep in sync with docs/LIMITATIONS.md.
-const STATIC_FACTS: StaticFacts = StaticFacts {
+pub const STATIC_FACTS: StaticFacts = StaticFacts {
     d3q27_open_face_restriction:
         "D3Q27 supports periodic, closed-wall, velocity-inlet, and pressure-outlet cases on CPU (NEBB closure, landed 2026-07-07); outflow/convective faces and GPU open faces are rejected explicitly",
-    checkpoint_scope: "single-rank",
+    checkpoint_scope: "multi-part and multi-rank",
     particle_coupling: "one-way",
 };
 
-struct StaticFacts {
-    d3q27_open_face_restriction: &'static str,
-    checkpoint_scope: &'static str,
-    particle_coupling: &'static str,
+pub struct StaticFacts {
+    pub d3q27_open_face_restriction: &'static str,
+    pub checkpoint_scope: &'static str,
+    pub particle_coupling: &'static str,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityMatrix {
-    lattices: Vec<LatticeCapability>,
-    collisions: CollisionCapabilities,
-    precisions: PrecisionCapabilities,
-    backends: Vec<BackendCapability>,
-    checkpoint: CheckpointCapability,
-    particle_coupling: &'static str,
+    pub lattices: Vec<LatticeCapability>,
+    pub collisions: CollisionCapabilities,
+    pub precisions: PrecisionCapabilities,
+    pub backends: Vec<BackendCapability>,
+    pub backend_gravity_fallback: &'static str,
+    pub checkpoint: CheckpointCapability,
+    pub particle_coupling: &'static str,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LatticeCapability {
-    name: &'static str,
-    dimension: u8,
-    status: &'static str,
-    restrictions: Vec<&'static str>,
+pub struct LatticeCapability {
+    pub name: &'static str,
+    pub dimension: u8,
+    pub status: &'static str,
+    pub restrictions: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CollisionCapabilities {
-    core: Vec<&'static str>,
-    scenario_path: Vec<&'static str>,
+pub struct CollisionCapabilities {
+    pub core: Vec<&'static str>,
+    pub scenario_path: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PrecisionCapabilities {
-    compute: Vec<&'static str>,
-    storage: Vec<&'static str>,
-    notes: Vec<&'static str>,
+pub struct PrecisionCapabilities {
+    pub compute: Vec<&'static str>,
+    pub storage: Vec<&'static str>,
+    pub notes: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BackendCapability {
-    name: &'static str,
-    compiled: bool,
-    notes: Vec<&'static str>,
+pub struct BackendCapability {
+    pub name: &'static str,
+    pub compiled: bool,
+    pub gravity_body_force: bool,
+    pub notes: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CheckpointCapability {
-    scope: &'static str,
+pub struct CheckpointCapability {
+    pub scope: &'static str,
 }
 
 pub fn run(json: bool) -> Result<()> {
@@ -75,7 +78,7 @@ pub fn run(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn matrix() -> CapabilityMatrix {
+pub fn matrix() -> CapabilityMatrix {
     CapabilityMatrix {
         lattices: vec![
             LatticeCapability {
@@ -108,21 +111,38 @@ fn matrix() -> CapabilityMatrix {
         },
         backends: vec![
             BackendCapability {
-                name: "cpu",
+                name: "cpu-scalar",
                 compiled: true,
-                notes: vec!["CpuScalar and CpuSimd are available in the core"],
+                gravity_body_force: cpu_scalar_gravity_body_force(),
+                notes: vec!["CpuScalar is always available in the core"],
+            },
+            BackendCapability {
+                name: "cpu-simd",
+                compiled: true,
+                gravity_body_force: cpu_simd_gravity_body_force(),
+                notes: vec!["CpuSimd is always available in the core"],
             },
             BackendCapability {
                 name: "gpu",
                 compiled: cfg!(feature = "gpu"),
-                notes: vec!["wgpu backend is compiled only with --features gpu"],
+                gravity_body_force: true,
+                notes: vec![
+                    "WgpuBackend is compiled only with --features gpu",
+                    "WgpuBackend supports backend-side rho*g composition when compiled",
+                ],
             },
             BackendCapability {
                 name: "mpi",
                 compiled: cfg!(feature = "mpi"),
-                notes: vec!["MPI support requires a native MPI toolchain and --features mpi"],
+                gravity_body_force: false,
+                notes: vec![
+                    "MPI support requires a native MPI toolchain and --features mpi",
+                    "MPI is a distribution layer; gravity composition follows the selected compute backend",
+                ],
             },
         ],
+        backend_gravity_fallback:
+            "Backends that do not support backend-side gravity use the host-staged force-field fallback",
         checkpoint: CheckpointCapability {
             scope: STATIC_FACTS.checkpoint_scope,
         },
@@ -135,16 +155,27 @@ fn scenario_collision_names() -> Vec<&'static str> {
         CollisionSpec::Bgk,
         CollisionSpec::Trt,
         CollisionSpec::CentralMoment,
+        CollisionSpec::DeprecatedCumulantAlias,
     ]
     .into_iter()
     .map(|collision| match collision {
         CollisionSpec::Bgk => "bgk",
         CollisionSpec::Trt => "trt",
         // Honored on the 3D D3Q19 CPU scenario path only; other paths
-        // reject it explicitly.
-        CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => "central_moment",
+        // reject it explicitly. `cumulant` is still accepted as a deprecated
+        // schema alias, so the capability output lists both accepted spellings.
+        CollisionSpec::CentralMoment => "central_moment",
+        CollisionSpec::DeprecatedCumulantAlias => "cumulant",
     })
     .collect()
+}
+
+fn cpu_scalar_gravity_body_force() -> bool {
+    <CpuScalar as Backend<D2Q9, f64>>::supports_gravity_body_force(&CpuScalar::default())
+}
+
+fn cpu_simd_gravity_body_force() -> bool {
+    <CpuSimd as Backend<D2Q9, f64>>::supports_gravity_body_force(&CpuSimd::default())
 }
 
 fn print_human(matrix: &CapabilityMatrix) {
@@ -182,10 +213,20 @@ fn print_human(matrix: &CapabilityMatrix) {
     }
     println!();
     println!("Backends");
-    println!("{:<10} {:<8} Notes", "name", "compiled");
+    println!(
+        "{:<12} {:<8} {:<15} Notes",
+        "name", "compiled", "gravity force"
+    );
     for b in &matrix.backends {
-        println!("{:<10} {:<8} {}", b.name, b.compiled, b.notes.join("; "));
+        println!(
+            "{:<12} {:<8} {:<15} {}",
+            b.name,
+            b.compiled,
+            b.gravity_body_force,
+            b.notes.join("; ")
+        );
     }
+    println!("  fallback: {}", matrix.backend_gravity_fallback);
     println!();
     println!("Checkpoint scope: {}", matrix.checkpoint.scope);
     println!("Particle coupling: {}", matrix.particle_coupling);
