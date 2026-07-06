@@ -1,5 +1,0 @@
-{"timestamp":"2026-07-05T12:40:00.000Z","type":"session_meta","payload":{"session_id":"eval-concurrent-a","id":"eval-concurrent-a","timestamp":"2026-07-05T12:40:00.000Z","cwd":"/tmp/lbmflow-eval/wt-cx-rphase-a2-a5","originator":"codex_exec","cli_version":"0.142.4","source":"exec","thread_source":"user","model_provider":"openai"}}
-{"timestamp":"2026-07-05T12:40:01.000Z","type":"turn_context","payload":{"cwd":"/tmp/lbmflow-eval/wt-cx-rphase-a2-a5","approval_policy":"never","sandbox_policy":{"mode":"workspace-write"},"model":"gpt-5"}}
-{"timestamp":"2026-07-05T12:41:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Bundled A-2 and A-5 because both edit crates/lbm-core/src/guards.rs."}}
-{"timestamp":"2026-07-05T12:47:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Implementation complete. Leaving verification to build-verify."}}
-{"timestamp":"2026-07-05T12:47:00.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"eval-turn-concurrent-a","last_agent_message":"Bundled A-2 and A-5 complete in wt-cx-rphase-a2-a5.","completed_at":1783255620,"duration_ms":420100,"time_to_first_token_ms":2800}}
