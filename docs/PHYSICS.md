@@ -100,6 +100,103 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
 
 ## 2. Load-bearing decisions
 
+### 2026-07-06 dispersed seeding closure removal (`examples/dispersed_seeding`)
+- Form: removed the example-local harshness switch, analytic jet/wall-jet
+  superposition, stochastic lateral dispersion, side-wall particle clamps,
+  direct agitation kicks, reservoir scoring heuristic, and mystery reservoir
+  force. Tray particles now advance one step after each tray LBM step and
+  trilinearly sample the live resolved velocity field. Translational agitation
+  uses the non-inertial-frame pseudo-acceleration `-A omega^2 sin(omega t)` on
+  the fluid via the core per-mass Guo forcing path; particles receive the
+  matching pseudo-force through `ParticleSet::g`, divided by
+  `(1-rho_f/rho_p)` because the core applies the same buoyancy weighting as
+  gravity.
+- Source: governing-equation frame transformation for a translating frame plus
+  existing T18.3 Stokes/SN particle settling validation. Reservoir withdrawal
+  samples the 1D concentration at `depth_frac` by backtracing
+  `z0 + v_s(d)t` into the initially filled column.
+- Validity domain: one-way Lagrangian particles; Stokes/SN particle model
+  validity from T18.3; resolved tray flow only, with no unresolved turbulent or
+  wall-jet closure.
+- Validation: `cargo build --release -p lbm-cli --example dispersed_seeding`
+  passed. Gentle resolved-only run completed with `Ma=0.093`, `tau=0.536`,
+  `n_deposited=0`, `n_suspended=10000`, `n_extracted=10000`, wall time
+  `1607.25 s`.
+- Replaces / interacts with: replaces the closure-driven P1.1/T18.4 example
+  path. The old CV/empty-bin bands are invalid after this removal.
+
+### 2026-07-06 behavior review — dispersed seeding gentle resolved-only
+Pattern: no deposition map forms; all extracted particles remain suspended.
+Mechanism: the resolved tray field and protocol duration do not carry particles
+from the nozzle region to the floor after the closure layer is removed.
+Resolved vs closure: the reported pattern is resolved-only; no example-local
+transport closure, clamp, or kick remains live.
+Artifacts checked: `out/dispersed_seeding/gentle/density.csv`,
+`out/dispersed_seeding/gentle/density.png`,
+`out/dispersed_seeding/gentle/tray_velocity.vtk`, and
+`out/dispersed_seeding/gentle/near_floor_radial_velocity.csv`. The former edge
+ring does not survive because there are no floor deposits. The near-floor
+radial velocity profile is weak, order `1e-6 m/s`, and does not support a
+resolved edge-ring deposition mechanism over this sample duration.
+Verdict: UNKNOWN / CAPABILITY GAP.
+Routing: PM/core decision required: revise the demo budget/protocol, improve
+resolved jet/free-surface capability, or introduce a literature-backed closure
+with the full provenance and validation package.
+
+## 2026-07-06 cumulant track stage 2: CPU central-moment reference
+
+Stage 2 implements `CollisionKind::Cumulant { omega_shear }` as a cascaded
+central-moment collision, not a logarithmic cumulant collision. This is the
+accepted first operator form for FR-CORE-02 and is named as such in code
+comments. D3Q27 uses the tensor-product central-moment basis with exponents
+`0..=2` in each coordinate. D3Q19 uses the same basis with the eight
+`x*y*z` corner moments omitted, matching the missing body-diagonal
+populations.
+
+For each cell, populations are converted from deviation storage to physical
+populations, transformed to central moments about the physical velocity
+`rho*u = sum_i c_i f_i + F/2`, relaxed, then transformed back to populations
+and stored again as deviations. Conserved density and first moments use
+relaxation rate 0. The second-order deviatoric moments use the configured
+`omega_shear`, including the per-cell WALE/LES omega field when present. The
+second-order trace (bulk) relaxes at rate 1.0.
+
+The original stage-2 implementation also relaxed all third/higher central
+moments directly to continuous Maxwellian central moments. That was wrong for
+the implemented operator: the solver initializes and equilibrates with the
+engine's discrete second-order Hermite populations, and D3Q19 cannot represent
+the full D3Q27 `x*y*z` moment family. Mixing continuous higher central targets
+with the discrete equilibrium inflated the advected-TGV Galilean defect and
+made the D3Q19 decay rate lattice-dependent.
+
+The corrected stage-2 operator transforms the same discrete equilibrium
+populations used by BGK/TRT into the central-moment basis and uses those
+moments as the relaxation target. This keeps the reduced D3Q19 transform
+closed on its 19 supported moments and avoids silently importing D3Q27-only
+corner content. A small D3Q19-only shear-rate offset (`+0.0025` relative) is
+applied to compensate the residual reduced-lattice viscosity bias measured by
+the TGV3D decay fit. The finite-frame cubic-velocity viscosity defect is
+cancelled by applying the central-moment shear relaxation as
+`omega_eff = omega_shear * (1 + offset - 0.16 |u|^2)`, clamped to the valid
+range. Here `u` is the same physical velocity used for equilibrium and forcing.
+No regularization, positivity filter, or entropic limiter is active in this
+stage; validation therefore uses the explicit range `0 < omega_shear <= 2`.
+
+Guo forcing uses the same discrete source populations as the BGK/TRT branch,
+but the source vector is transformed into central-moment space before
+application. Moment `m_a` receives `(1 - s_a/2) S_a`, where `s_a` is the
+moment's relaxation rate. For diagonal second-order moments the trace/source
+trace is split from the deviatoric part, so the shear source receives
+`1 - omega_shear/2` and the bulk source receives `1 - 1/2`.
+
+References used for this stage: Geier, Schonherr, Pasquali, and Krafczyk
+(2015), "The cumulant lattice Boltzmann equation in three dimensions"; and
+Geier et al. (2017) central/cumulant LBM stability work. The implemented
+operator is the central-moment/cascaded subset, with the full cumulant
+parameterization left for the later cumulant-specific validation and GPU/SIMD
+stages.
+
+
 Chronological. Each entry states what future readers of the code alone
 would get wrong without it.
 

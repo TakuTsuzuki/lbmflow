@@ -95,7 +95,6 @@ pub struct Regime {
     pub st: f64,
     pub fr: f64,
     pub tau: f64,
-    pub u_jet_si: f64,
     pub nozzle_d_m: f64,
     pub particle_tau_s: f64,
     pub settling_m_s: f64,
@@ -131,7 +130,10 @@ impl ProtocolInput {
         if nozzle_d_m <= 0.0 {
             anyhow::bail!("eject.nozzle_diameter_m must be positive");
         }
-        let rate_m3_s = eject.rate_ul_s.unwrap_or(0.0) * 1.0e-9;
+        let rate_m3_s = eject
+            .rate_ul_s
+            .ok_or_else(|| anyhow::anyhow!("eject.rate_uLs is required"))?
+            * 1.0e-9;
         let patch_area = std::f64::consts::PI * (0.5 * nozzle_d_m).powi(2) * points as f64;
         let u_jet_si = if rate_m3_s > 0.0 {
             rate_m3_s / patch_area
@@ -140,12 +142,18 @@ impl ProtocolInput {
         };
         let max_si = u_jet_si.max(self.settling_velocity_m_s());
         let dt_by_ma = if max_si > 0.0 {
+            // Low-Mach envelope: Ma = u*/c_s = u_si*dt/(dx*c_s). The frozen
+            // target is Ma <= 0.3, and 0.16 < 0.3/sqrt(3) keeps the selected
+            // advective velocity inside that hard guard with margin.
             0.16 * dx / max_si
         } else {
             1.0
         };
+        // Diffusive scaling: nu* = nu_phys*dt/dx^2 and tau = 3*nu* + 0.5.
+        // The 0.012 coefficient gives tau=0.536 for the water/tray envelope,
+        // above the frozen tau >= 0.51 guard while keeping Ma in the low band.
         let dt_by_tau = 0.012 * dx * dx / self.fluid.nu_m2s;
-        let dt = dt_by_ma.min(dt_by_tau).max(1.0e-6);
+        let dt = dt_by_ma.min(dt_by_tau);
         let nu_lattice = self.fluid.nu_m2s * dt / (dx * dx);
         let tau = 3.0 * nu_lattice + 0.5;
         let u_jet_lattice = u_jet_si * dt / dx;
@@ -181,7 +189,6 @@ impl ProtocolInput {
             st,
             fr,
             tau,
-            u_jet_si,
             nozzle_d_m,
             particle_tau_s,
             settling_m_s,
