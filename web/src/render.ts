@@ -132,6 +132,8 @@ export class FieldRenderer {
         const d = Math.abs(scalar[i]!);
         if (d > m) m = d;
       }
+      // Display-only colorbar normalization: the 0.7 vorticity scale and
+      // EMA smoothing below do not alter the computed vorticity field.
       target = Math.max(1e-4, m * (mode === "vorticity" ? 0.7 : 1));
     }
 
