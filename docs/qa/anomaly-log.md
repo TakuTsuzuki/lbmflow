@@ -160,3 +160,44 @@ against the implementation. The frozen stability envelope used 4 blades
   immediately — the observation gate works).
 - codex sandbox cannot commit in shared-.git worktrees (`index.lock` EPERM):
   2 of 4 orders needed PM-side commits. Fold into the dispatch Skill notes.
+
+---
+
+## Pass 3 — 2026-07-06, W-LES heavy characterization freeze
+
+Ran on `origin/main` 99bb32a (post B-1 + cx/acc + cx/wles + W-GRAV + W-ROT
+landings). No new anomalies; two frozen turbulence-tractability data points.
+
+### Frozen values (both #[ignore], measured on this pass)
+
+- **TGV64 nu_eff shift under WALE** (T15.4 setup, N=64, nu=0.02, u0=1.28e-4/N,
+  tstar=832 steps, ~35 s wall):
+  - nu_eff_off = 1.9977e-2, nu_eff_on = 1.9977e-2 → **dnu_rel = 6.60e-8**
+  - max nu_t (on) = 1.39e-8 (essentially null under diffusive scaling — the
+    intended WALE behavior for a small-strain resolved flow)
+  - Band frozen at 1e-6 (~15x headroom over measured value); the original
+    order allowed 1% which is far too loose for what WALE actually did here.
+- **Multimode stabilization existence proof** (deterministic 3-mode init,
+  N=48, nu=0.003, u0=0.10, U/nu=33, 20k steps, ~7 min wall total):
+  - LES-OFF diverged at step 200 (max|u| > 0.3 or non-finite)
+  - LES-ON completed 20000 steps: max|u| = 5.15e-4, max nu_t = 5.08e-6
+    (~0.17% of nu_0 — a real, non-trivial modeling contribution)
+  - Horizon extension: **100x** (200 → 20000 steps).
+
+### Honest scoping (what these do NOT prove)
+
+- **Turbulence ACCURACY is still open** — the Re_tau=180 channel vs DNS test
+  (T17/VR-STR-03) remains a skeleton. The paper's turbulence-accuracy claim
+  stays red on the claims ledger until that lands.
+- The multimode case proves *stabilization exists*, not that the stabilized
+  solution is quantitatively correct at that Re — it is a tractability seed,
+  not a validation.
+
+### Physics-honesty check on the WALE choice (bent-physics avoidance)
+
+The steady-Couette/Poiseuille null gate (measured max nu_t <= 1e-12) already
+proved WALE cannot leak into resolved pure-shear physics. TGV64 (small S^d
+regime, dnu_rel = 6.6e-8) confirms it does not touch the diffusive-limit
+scaling either. Multimode (large S^d) shows it activates as expected. Three
+regimes, three consistent behaviors — the WALE-over-Smagorinsky ruling holds
+by measurement, not just by cited theory.
