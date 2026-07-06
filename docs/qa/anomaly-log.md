@@ -369,3 +369,34 @@ N; the "D3Q19-only bias" story needs the revised probes. Revision order
 queued: tau-sweep to expose the omega-space correction's tau-dependent
 nu-space footprint, N-sweep at fixed Ma for D3Q27, spatial-error-modeled
 bands. 3.1 (B) vs (C) reclassification stays undecided until then.
+
+**ANOM-P4-008 — cumulant D3Q19 "+0.0025 viscosity offset" is a
+resolution-point calibration that corrupts the continuum limit — VERDICT
+(C), S2 (leaning S0: silent systematic viscosity bias at every N except the
+calibration point). Disposition: core-engine routing; acceptance gate =
+cx/audit-cumulant e2 canary (must pass with |a| <= 2e-3 after removal).**
+- Measured (Order E rev 2, heavy 3-point, N ∈ {24,32,48}, diffusive u0):
+  D3Q19 defects d(N) = nu_eff/nu − 1 = [+1.7035e-2, −5.943e-4, −1.3200e-2]
+  fit d = a + b/N² EXACTLY (all three points on the line): a = −2.3275e-2,
+  b = +23.22. D3Q27 control (offset = 0): d(N) = [+1.6224e-2, +9.080e-3,
+  +4.010e-3] → a27 = −6.9e-5 ≈ 0, b27 = 9.38 (pure spatial error).
+- The smoking gun: the D3Q19 intercept equals the offset's own nu-space
+  footprint −0.0025·2/(2−ω) = −2.333e-2 at ω = 1.7857 (nu = 0.02) — a
+  99.8% match. Therefore the UNCORRECTED D3Q19 cumulant has ~zero
+  resolution-independent bias; what the offset "fixed" at N=32 was the
+  ordinary O(h²) spatial error (b/N² = +2.27e-2 there), i.e. a constant
+  calibrated to cancel discretization error at one resolution. It
+  under-corrects at N=24 (+1.7e-2), over-corrects at N=48 (−1.3e-2), and
+  injects a tau-dependent −0.0025·2/(2−ω) viscosity error in the refined
+  limit. This is exactly the prime directive's banned class.
+- The −0.16·u² term: no clear nu_eff footprint at the predicted size
+  (cum−TRT slope differences +0.057/+0.081 vs ~0.37/0.11 predicted with the
+  <u²> = u0²/4 TGV weighting), but operator-intrinsic differences confound
+  the residual — needs a core-side ablation toggle; E1 is SPEC-GAP'd with
+  the N=48 dataset recorded. Its provenance inherits the same calibration
+  concern; recommend re-deriving or removing together with the offset.
+- Recommended core action: remove the +0.0025 offset; re-freeze TGV3D
+  acceptance with a resolution-aware criterion (the h²-intercept |a| ≤ 2e-3
+  in the audit file IS that criterion); decide the u² term by ablation.
+- E4 note: the correction family is orientation-consistent (spread
+  2.2e-10) — the defect is provenance/magnitude, not anisotropy.
