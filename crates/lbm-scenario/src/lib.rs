@@ -710,6 +710,11 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 "seed region is empty or outside the grid".to_string(),
             );
         }
+        warn(
+            "particles.model",
+            "particles use a one-way Schiller-Naumann drag model only: no reaction force, added mass, lift, Basset history, Faxen correction, stochastic LES dispersion, or particle-particle contact. Near-neutral finite-size, high mass-loading, and full-FSI particle claims are spec-only until two-way/resolved-particle validation lands"
+                .to_string(),
+        );
     }
     if sc.multiphase.is_some() && sc.physics.precision == Precision::F32 {
         warn(
@@ -2379,6 +2384,37 @@ mod tests {
             "{warnings:?}"
         );
         assert!(warnings.iter().any(|w| w.field == "edges"), "{warnings:?}");
+    }
+
+    #[test]
+    fn validate_downgrades_one_way_particle_model_claims() {
+        let mut sc = preset("cavity");
+        sc.physics.gravity = Some([0.0, -1.0e-5, 0.0]);
+        sc.particles = Some(ParticlesSpec {
+            count: 4,
+            d: 1.0,
+            rho_p: 1.01,
+            restitution: 0.0,
+            seed: SeedRegion {
+                x0: 8.0,
+                y0: 8.0,
+                x1: 16.0,
+                y1: 16.0,
+            },
+            output_every: 0,
+        });
+
+        let warnings = validate(&sc);
+        assert!(
+            warnings.iter().any(|w| {
+                w.field == "particles.model"
+                    && w.message.contains("one-way Schiller-Naumann")
+                    && w.message.contains("added mass")
+                    && w.message.contains("Near-neutral")
+                    && w.message.contains("full-FSI")
+            }),
+            "{warnings:?}"
+        );
     }
 
     fn preset(name: &str) -> Scenario {
