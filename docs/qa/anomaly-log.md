@@ -381,3 +381,15 @@ Rev-2 needed: d=6+ (v_stokes scales as d²), longer run, or gravity ×10
 (state Reynolds-limit tradeoffs). Mass conservation exact (n_deposited +
 n_suspended = 500). Not filing an ANOM — this is an experiment-design
 issue on my side to be fixed in the next revision.
+
+### T9b convective outflow rev 1: rest-frame setup mismatch (self-triaged)
+`main adcadcb`: convective-outflow reflection-coefficient sweep in a REST
+CHANNEL measured baseline Outflow R = 0.26 vs ConvectiveOutflow R ≈ 0.998
+at every u_conv ∈ {0.05..1.0}. Root cause (physics-honest self-triage,
+not a defect): ConvectiveOutflow advects populations at u_conv; the
+incoming disturbance is an ACOUSTIC wave traveling at cs = 1/√3 ≈ 0.577,
+so any u_conv well below cs under-advects and reflects near-hard-wall.
+Convective is designed for MEAN-FLOW use (u_conv ≈ local flow speed).
+Rev 2 dispatches with the correct setup (uniform-inlet channel + u_conv
+centered on u_in). Rev-1 test lands #[ignore]'d with the rationale
+recorded in-code.
