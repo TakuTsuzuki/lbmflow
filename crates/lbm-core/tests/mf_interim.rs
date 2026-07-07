@@ -226,7 +226,7 @@ mod mf_contract_tests {
     }
 
     #[test]
-    fn gravity_survives_shan_chen_force_overwrite_each_step() {
+    fn gravity_survives_shan_chen_additive_force_composition_each_step() {
         let mut sim = periodic_compat(64, 96);
         sim.init_with(|_, y| {
             let light_blob = (y as isize - 32).abs() <= 10;
@@ -245,6 +245,7 @@ mod mf_contract_tests {
             }
         }
         for _ in 0..250 {
+            sim.force_field_mut().fill([0.0; 2]);
             sc.update_force(&mut sim);
             sim.step();
         }

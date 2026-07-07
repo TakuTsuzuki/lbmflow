@@ -630,6 +630,7 @@ impl WasmSim {
             match &self.multiphase {
                 Some(mp) => {
                     for _ in 0..n {
+                        sim.force_field_mut().fill([0.0; 2]);
                         mp.update_force(sim);
                         sim.step();
                     }

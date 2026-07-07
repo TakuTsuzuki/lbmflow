@@ -614,12 +614,34 @@ the exact cell-by-cell clipped-set assertion.
   `gravity.rs::closed_box_gravity_forms_stable_hydrostatic_stratification`,
   `gravity.rs::gravity_channel_is_bit_identical_to_raw_rho_g_force_field`,
   `gravity.rs::vr_str_06_static_stratification_quiescent_all_lattices_and_precisions`,
-  and `gravity.rs::shan_chen_gravity_composes_with_force_overwrite_and_creates_buoyancy`.
+  and `gravity.rs::shan_chen_gravity_composes_with_additive_force_field_and_creates_buoyancy`.
   `cargo test -p lbm-core --test backend_simd_equiv --release`,
   `cargo test -p lbm-core --test t13_split_invariance --release`,
   `cargo test -p lbm-core --test t13_adversarial --release`, and
   `cargo test --workspace --release` passed. GPU build gate
   `cargo build -p lbm-core --release --features gpu` passed. Runtime GPU
+
+### 2026-07-07 Shan-Chen additive force-field composition (`compat::multiphase`)
+- Form: `F_cell(x,t) <- F_cell(x,t) + F_SC(x,t)` for SCMP and
+  `F_cell_sigma(x,t) <- F_cell_sigma(x,t) + F_MCMP_sigma(x,t)` for MCMP.
+  Callers clear/reset the caller-owned per-cell field once per step before
+  composing transient sources; all composed sources enter the existing Guo
+  source point together.
+- Source: resolved from the existing Shan-Chen interaction force and Guo
+  forcing composition invariant. This changes staging from overwrite to
+  addition; it adds no new physical force term, closure, branch, or constant.
+- Validity domain: same as the existing SCMP and MCMP Shan-Chen closures and
+  the existing per-cell Guo force-field path. Repeated calls without a
+  per-step clear intentionally accumulate source terms and are caller error,
+  matching the rotor source contract.
+- Validation:
+  `validation_multiphase.rs::t11_shan_chen_adds_to_existing_force_field_anom_p4_022`
+  asserts cell-by-cell `gravity + SC` composition and checks the composed field
+  is neither contribution alone.
+- Replaces / interacts with: replaces the old `copy_from_slice` staging in
+  `ShanChen::update_force` and `MultiComponent::update_forces`; composes with
+  rotor, raw per-cell sources, gravity, and uniform force through the existing
+  Guo path.
   equivalence is covered by ignored T14 test
   `t14_backend_equiv::t14_gravity_body_force_device_resident` and is
   BENCH-PENDING on a native GPU adapter.
@@ -1107,3 +1129,33 @@ viewer pass should use the B8 velocity field if spatial inspection is needed.
 Verdict: PHYSICAL within the marker-IBM validity domain; ANOM-P4-010 remains
 separate for volume penalization.
 Routing: none for ANOM-P4-001; ANOM-P4-010 stays routed separately.
+
+---
+
+### 2026-07-07 behavior review — ANOM-P4-016 MCMP i3 RT cutoff canary
+Pattern: after the ANOM-P4-022 additive-force fix, the i3 canary still fails.
+Mode 3 develops large downward bulk momentum (`p_total_y=-1.44e2` at step 10,
+`-1.11e3` at step 100), then a lower-wall velocity/density failure
+(`max|u|=4.013e3` at `heavy:(10,12)`, `rho_min=-6.009` at
+`heavy:(160,10)` by step 400). Mode 7 remains finite through step 400 but
+shows the same bulk-momentum signature and lower-wall high-speed locus.
+Mechanism: the hard i3 protocol applies gravity to the heavy component only
+inside a closed box, injecting a large nonzero net vertical body force; the
+closed-wall return flow becomes wall-adjacent and violates the low-Mach/density
+stability envelope before the intended mid-height RT cutoff behavior is
+measurable.
+Resolved vs closure: SC/MCMP interaction forces and Guo force ingestion are
+the existing documented closures/source path; no new term was introduced. The
+failure is driven by the test's per-component body-force protocol interacting
+with closed walls, not by the ANOM-P4-022 staging bug.
+Artifacts checked: lower-wall loci in diagnostic output; density maps
+`target/vv_rt_i3/rt_mode3_step400_heavy.pgm`,
+`target/vv_rt_i3/rt_mode3_step400_light.pgm`,
+`target/vv_rt_i3/rt_mode7_step400_heavy.pgm`, and
+`target/vv_rt_i3/rt_mode7_step400_light.pgm`.
+Verdict: UNKNOWN/SPEC-COUPLING. A physical fix requires a derived MCMP
+buoyancy forcing protocol (for example, a validated pressure-balanced or
+zero-net-force formulation) and a validation update; no mean-force
+subtraction or tuning was applied in this order.
+Routing: PM/spec decision for ANOM-P4-016; core implementation only after the
+forcing model is derived and accepted.

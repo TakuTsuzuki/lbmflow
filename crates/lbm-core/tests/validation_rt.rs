@@ -65,6 +65,8 @@ fn run_separation(g_ab: f64) -> SeparationStats {
     let mc = MultiComponent::new(g_ab);
     let m0 = total_mass(&a, &b);
     for _ in 0..5_000 {
+        a.force_field_mut().fill([0.0; 2]);
+        b.force_field_mut().fill([0.0; 2]);
         mc.update_forces(&mut a, &mut b);
         a.step();
         b.step();
@@ -95,6 +97,8 @@ fn measure_sigma_ab() -> f64 {
     });
     let mc = MultiComponent::new(G_AB_QUANT);
     for _ in 0..20_000 {
+        a.force_field_mut().fill([0.0; 2]);
+        b.force_field_mut().fill([0.0; 2]);
         mc.update_forces(&mut a, &mut b);
         a.step();
         b.step();
@@ -180,6 +184,8 @@ fn run_rt(nx: usize, ny: usize, steps: usize, sample_every: usize, sigma: f64) -
     let mut max_amp = fourier_amp(&heavy, TRACE);
     for it in 1..=(steps / sample_every) {
         for _ in 0..sample_every {
+            heavy.force_field_mut().fill([0.0; 2]);
+            light.force_field_mut().fill([0.0; 2]);
             mc.update_forces(&mut heavy, &mut light);
             heavy.step();
             light.step();
