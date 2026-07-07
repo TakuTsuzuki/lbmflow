@@ -1452,3 +1452,40 @@ Full-gate status in this sandbox:
   the run was later interrupted while continuing through long non-GPU validation
   tests. A subsequent targeted retry of
   `t14_probe_force_explicit_readback_cpu_gpu` also failed with `NoAdapter`.
+
+## R-Phase 2 C collision seam + ANOM-P2-001 force-ingestion fix (2026-07-07)
+
+The scalar BGK/TRT collision row now calls the `TrtGuo` operator through an
+abstract `Arith` sink (`ScalarArith`). The operator owns the second-order
+equilibrium, Guo source, TRT pair split, and cp/cm prefactors. The
+CentralMoment branch is intentionally untouched.
+
+ANOM-P2-001 is fixed by refreshing stored moments immediately after an exactly
+uniform per-cell force field is installed or cleared, and after gravity is set
+on all-fluid domains. This makes the equivalent uniform force-field path enter
+collision with the same Guo half-force velocity definition as the uniform-force
+path on step 1, while leaving nonuniform model force fields and wall-rim
+gravity/hydrostatic cases on their existing validated staging.
+
+Verification in this session:
+- `cargo check -p lbm-core`: passed.
+- `cargo test -p lbm-core uniform_force_impulse_matches_force_field_anom_p2_001 -- --nocapture`:
+  passed in debug; printed uniform=field=gravity=`1.000000000000e-7`.
+- `cargo test -p lbm-core --release uniform_force_impulse_matches_force_field_anom_p2_001 -- --nocapture`:
+  passed; printed uniform=field=gravity=`1.000000000000e-7`.
+- `cargo test -p lbm-core --release --test t13_split_invariance -- --nocapture`:
+  passed, including Shan-Chen native/compat bit-exactness and split invariance.
+- `cargo test -p lbm-core --release --test backend_simd_equiv -- --nocapture`:
+  passed 21/21 with the existing tolerance gates unchanged.
+- `cargo test -p lbm-core --release --test gravity -- --nocapture`: passed 9/9.
+- `cargo test --workspace --release --no-fail-fast; echo EXIT:$?`: passed with
+  `EXIT:0` after the operand-order and gravity-staging fixes.
+- `cargo test --workspace --release --features gpu --no-run`: passed; GPU/T14
+  runtime remains GPU-PENDING for this sandbox, but all GPU test binaries built.
+- `cargo test -p lbm-core --release --features gpu wgsl -- --nocapture`:
+  passed 9 WGSL generation/validation tests, including F32 byte-identity and
+  F16/CentralMoment Naga validation.
+- `cargo run --release -p lbm-core --example bench_backends -- --check --host-tag m5-max-sandbox --timestamp 2026-07-07T00:00:00Z`:
+  passed against `bench/baselines/m5-max-sandbox.json`; notable measured cases
+  included D2Q9 SIMD f32 1024²/12T = 490.2 MLUPS and D3Q19 SIMD f32
+  128³/12T = 119.6 MLUPS in the current loaded sandbox window.
