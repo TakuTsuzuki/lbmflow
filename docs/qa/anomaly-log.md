@@ -263,3 +263,16 @@ Culick mechanical σ (0.49×, P4-017), Jurin meniscus σcosθ (1.54×, this) —
 the lane-1.7 SC pressure-tensor audit is promoted to the highest-value W2
 item; its job is to derive which σ the SC pressure tensor actually
 delivers on curved menisci vs flat interfaces vs retracting rims.
+
+### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — S2,
+core-engine routing (found by the interaction matrix, lane 5.1)
+Steady-state discriminator confirms the leak persists after hydrostatic
+equilibration: uniform-force × patch +2.47e-5 mass/step, gravity × patch
+−7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale ~ F·A_patch.
+Mechanism candidate (pitfall family #1): the Zou-He patch reconstruction
+of unknown populations ignores the Guo half-force contribution, so each
+step leaks O(F) mass per patch cell. Neither T18.2 (patches, no force) nor
+the gravity suite (force, no patches) could see it — a pure
+pair-interaction defect, exactly what lane 5.1 exists for. Gate =
+cx/interaction-matrix (2 documented-red cells, interpretation rule in the
+asserts). All other 18 pairs PASS (or SKIP with stated reasons).
