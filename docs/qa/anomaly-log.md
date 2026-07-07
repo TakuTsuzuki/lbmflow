@@ -571,3 +571,13 @@ when the fix lands. S3 (bounded impact - most Bouzidi records fall on
 qd>=0.5 side for well-resolved obstacles). Route: core-engine, small
 one-file fix in bouzidi.rs qd<0.5 branch. Gate = cx/vv-bmw
 qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd.
+
+### Wen-2014 GALILEAN-INVARIANT PROBE — COVERED (radar #16 closed, pitfall #10 upgraded)
+Decisive one-step test on cx/vv-wenmxg (main): co-moving frame with u_0 =
+0.05 everywhere and BOTH walls MovingWall at u_0 measured F_probe_x =
+4.44e-16, vs Ladd conventional prediction ρ·u_0·nx = 1.6, vs Wen-invariant
+prediction 0. Signal/floor = 3.6e15. The current LBMFlow momentum-exchange
+implementation is Galilean-invariant (Wen 2014-class) — pitfall #10
+upgrades from PARTIAL to COVERED. Rotor/rotating-boundary force diagnostics
+in moving frames are therefore trustworthy from a Galilean-invariance
+standpoint; this closes a longstanding open concern in the pitfall list.
