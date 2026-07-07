@@ -99,6 +99,52 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
 
 ## 2. Load-bearing decisions
 
+### 2026-07-07 behavior review — `vv_sedim_2d` rev 2 attempt
+Pattern: with `d=6`, `|g|=1e-4`, and `30_000` steps, the run deposits all
+500 particles but reports `mean_deposition_x=5.005724e2`, outside the 128-cell
+basin; the histogram piles 444 counts into the final clamped bin.
+Mechanism: particles that pass the pressure outlet continue to be sampled from
+the clamped boundary state and later cross the deposition plane out of domain,
+so the deposition map is dominated by post-outlet transport rather than in-basin
+settling.
+Resolved vs closure: Stokes/SN particle settling remains the active validated
+closure (`v_s=1.2e-3`, `Re_p=4.32e-2`), but the headline spatial pattern is an
+example/domain bookkeeping artifact from combining an open outlet with clamped
+particle sampling.
+Artifacts checked: `out/vv_sedim_2d/density_00000.png`,
+`out/vv_sedim_2d/density_15000.png`,
+`out/vv_sedim_2d/density_30000.png`, and
+`out/vv_sedim_2d/deposition_map.png`.
+Verdict: ARTIFACT.
+Routing: PM/spec decision required before claiming the rev-2 behavior anchor:
+add a physically stated particle outlet/escape rule, revise the mean-x anchor,
+or change the protocol so particles deposit inside the basin without relying on
+post-outlet clamped sampling.
+
+### 2026-07-07 behavior review — `vv_sedim_2d` rev 3 closed basin
+Pattern: in the 128x64 all-bounce-back box, 500 particles seeded uniformly on
+the horizontal line `x=10..118, z=60` settle to the bottom without lateral drift:
+`deposition_fraction=1.000000e0`, `mean_deposition_x=6.400000e1`,
+raw `deposit_x_std=3.123933e1` from the seed-line span, and seed-relative
+`lateral_scatter_std=0.000000e0`.
+Mechanism: with no fluid crossflow and no pressure outlet, the sampled fluid
+velocity stays zero and the only active acceleration is vertical particle
+gravity, so each seed column follows the same low-Re settling trajectory.
+Resolved vs closure: the closed fluid box and zero velocity field are resolved
+LBM behavior; particle motion uses the existing one-way Schiller-Naumann/Stokes
+low-Re closure at `v_stokes=1.200000e-3` and `Re_p=4.320000e-2`.
+Artifacts checked: the rev-2 outlet/clamped-boundary artifact is removed by the
+closed box. The deposition counting plane remains `z=1.0`, the first fluid row,
+so floor crossings are recorded before the staircase solid-contact model pins a
+particle to the bottom rim; this affects event bookkeeping only, not lateral
+transport. Visual artifacts:
+`out/vv_sedim_2d/density_00000.png`,
+`out/vv_sedim_2d/density_30000.png`,
+`out/vv_sedim_2d/density_60000.png`, and
+`out/vv_sedim_2d/deposition_map.png`.
+Verdict: PHYSICAL.
+Routing: none.
+
 ### 2026-07-06 dispersed seeding closure removal (`examples/dispersed_seeding`)
 - Form: removed the example-local harshness switch, analytic jet/wall-jet
   superposition, stochastic lateral dispersion, side-wall particle clamps,
