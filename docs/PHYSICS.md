@@ -1281,3 +1281,35 @@ forcing model is derived and accepted.
   sum `1.843144e-18`.
   The frozen gates are final/initial `<1e-8` for BGK and `<1e-3` for TRT,
   leakage `<1e-12`, and max growth `<2`.
+
+### 2026-07-07 — Volume-penalization validity domain (ANOM-P4-010 / P4-027, V&V-ruled)
+
+Volume penalization of a rotating body (`compat::rotor`, `F = ρ·(implicit
+sizing)·(u_target − u*)`; the half-force-pinning `2ρχ` form was replaced with
+the physical-implicit sizing whose one-cell recurrence has |gain| ≤ 1) has a
+bounded validity domain, established by the rescoped rotor audit (F1–F6) and
+V&V cross-referee against the direct-forcing IBM:
+
+- **Domain = thin/porous structures AND short transients.** Coherent solid
+  interiors are out of domain: the F6 witness shows a full disc grows
+  detectably (crosses |u|=0.3 at step ~698 with the fixed sizing, vs ~96 with
+  the old sizing) rather than holding rigid — distributed Darcy drag cannot
+  enforce a rigid interior. Route coherent solids to rotating IBM (validated,
+  slip ~9e-4) or Bouzidi.
+- **Horizon caveat (ANOM-P4-027, S3).** Even a thin blade accumulates
+  Darcy-drag dissipation error at long horizons: with the fixed sizing the
+  thin-blade case is stable through ~6k steps (torque −6.19e-2, matching IBM
+  −4.17e-2 to cross_rel 0.39) but diverges to NaN at ~26–28k steps at moderate
+  resolution (was NaN at ~6k with the old sizing — the sizing fix is a strict
+  improvement, not a cure). Validity window ≈ < 20k steps at this resolution;
+  route long-time thin-blade studies to rotating IBM (stable indefinitely).
+- The IBM–penalization cross-model torque difference (~0.39 at moderate
+  resolution / before true steady state) is within the O(20–40%) distributed-
+  drag-vs-sharp-interface range of the Angot–Bruneau–Fabrie penalization
+  literature; not a defect.
+
+Ruling (V&V concur 2026-07-07): the sizing fix landed as a strict improvement;
+the audit F1–F3 are re-scoped as domain-boundary witnesses (#[ignore]'d,
+runnable), F5/F6 green, F4 thin-blade referee documented-red pending an
+acceptance criterion that states the short-horizon window. All rotor-audit
+items are mf-interim-gated and do not affect default landing gates.
