@@ -537,3 +537,23 @@ explicit small cos(k_z z) seed on u_r (eps=1e-4, k_z=2π/nz or 4π/nz,
 chosen to match λ_c=2(R_o-R_i)). If the seed still fails to grow at
 1.5*Ta_c, that IS a finding — rotating-boundary path filters the
 instability, and the light Couette pass doesn't cover this regime.
+
+### ANOM-P4-024 — thin-shell penalization filters axial modes (Taylor-Couette rev 2 real finding)
+Explicit axial seed (eps=1e-4, cos(k_z z) at k_z = 4π/nz matching λ_c=32
+= 2(R_o-R_i)) DAMPS through 5000 spectrum-window steps at every Ta:
+- Ta=0.5*Ta_c: 1.24e-5 → 2.10e-9 (5000x damping)
+- Ta=1.5*Ta_c: 4.15e-6 → 2.04e-8 (200x damping — should GROW here)
+- Ta=3.0*Ta_c: 2.08e-6 → 2.32e-7 (10x damping — should grow more)
+The rotating-boundary path (thin cylindrical shells via volume
+penalization) FILTERS axial instabilities at every Ta up to 3*Ta_c. S2
+characterization candidate (not a defect — physics-motivated: the
+penalization sizing damps small-amplitude perturbations near the moving
+boundary faster than Rayleigh instability can grow). Fits the P4-010
+disposition family (penalization ≈ Darcy drag): the "thin structure" is
+still coherent-solid at the axial-perturbation scale.
+Route: rev 3 = replace thin cylindrical shells with rotating IBM
+cylinders (now validated post-P4-001) as the physically appropriate
+rotating boundary for the wavy-vortex study; if IBM path grows the
+axial mode at 1.5*Ta_c, the finding confirms the penalization filter
+class limit + provides the corrected acceptance route. Documented-red
+until then; gate = cx/vv-tayc heavy.
