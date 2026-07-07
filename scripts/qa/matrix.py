@@ -387,10 +387,16 @@ CONFIGS = [
         "checks": [
             {"name": "spurious_current", "args": {"band": 5e-3},
              "source": "VALIDATION T11 (max|u| <= 5e-3; measured 1.26e-3 flat)"},
+            {"name": "spurious_current_location", "args": {},
+             "source": "V&V-MULTIPHASE behavior anchor: parasitic velocity should be localized at the diffuse interface"},
             {"name": "laplace_sigma", "args": {"g": -5.0, "band_rel": 0.15,
                                                "sigma_ref": 3.32e-2},
              "source": "VALIDATION T11 Laplace (sigma = 3.32e-2 +-10% slope, "
                        "+-5% per droplet; +-15% single-droplet combined)"},
+            {"name": "droplet_radius_sanity", "args": {},
+             "source": "V&V-MULTIPHASE behavior anchor: area-fit radius/centroid sanity for the T11 droplet"},
+            {"name": "pressure_plateaus", "args": {"g": -5.0},
+             "source": "V&V-MULTIPHASE behavior anchor: SC-EOS pressure plateau inside/outside the droplet"},
             {"name": "mass_drift", "args": {"region": "all", "band_per_1e4": 1e-10},
              "source": "VALIDATION T11 (total-mass drift <= 1e-10 rel)"},
             {"name": "xy_mirror_symmetry", "args": {"field": "rho", "band": 1e-9},
