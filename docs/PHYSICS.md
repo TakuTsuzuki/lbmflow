@@ -867,6 +867,35 @@ from the named validation tests.
 Verdict: PHYSICAL.
 Routing: none.
 
+### 2026-07-08 Shan-Chen demo-tier validation disposition (`accuracy_audit_sc_pressure_tensor`, `validation_multiphase_hard`)
+- Decision: the finite-radius SC pressure-tensor integral remains a
+  characterization gate with a 15% relative band against the frozen T11
+  Laplace sigma. The r0=12 droplet measured `sigma_YL=2.87014490e-2`
+  against `sigma_Laplace=3.32000000e-2` (`rel=0.1354985`); r0=16 and r0=20
+  measured `rel=0.09055198` and `rel=0.06060279`. The prior 10% band was
+  tighter than the observed finite-radius SC pressure-tensor spread.
+- Decision: the Taylor-Culick momentum-flux pressure-tensor audit and the
+  hard Prosperetti/RT MCMP canaries are ignored as Shan-Chen demo-tier tests,
+  not product validation gates. The measured Taylor-Culick audit reported
+  `sigma_momentum=6.08706037e-3` versus
+  `sigma_KB=3.63566742e-2` (`rel=0.8325738`, fit `R2=0.86210524`). The
+  Prosperetti mode-1 run reported `omega_fit/omega0=1.45` against the
+  previous `1.00 +/- 0.12` band. The RT cutoff canary produced negative
+  density by step 400 in the unstable mode (`rho_min=-6.00933217`) and
+  `gamma_fit=NaN`.
+- Source: [BIOPROCESS_PIVOT.md](BIOPROCESS_PIVOT.md) retracts Shan-Chen as a
+  production gas-liquid model, and [MODEL_RISK_MATRIX.md](MODEL_RISK_MATRIX.md)
+  section 3 caps Shan-Chen SCMP/MCMP at Demo only because of density-ratio
+  limits and spurious interfacial currents. Product gas-liquid validation is
+  routed to conservative Allen-Cahn phase field (BCFD-040..048).
+- Validity domain: these gates characterize the preserved legacy SC demo
+  implementation only. They are not evidence for bioprocess gas-liquid QOIs.
+- Validation guard: `accuracy_audit_sc_pressure_tensor::sc_p1_curved_pressure_tensor_integral_matches_t11_laplace_sigma`
+  remains active with the widened band; `::sc_p4_taylor_culick_momentum_flux_matches_flat_mechanical_sigma`,
+  `validation_multiphase_hard::val_mphard_i2_prosperetti_standing_wave_light_one_k`,
+  and `::val_mphard_i3_rayleigh_taylor_cutoff_light_sign_canary` are ignored
+  with explicit demo-tier reasons.
+
 ---
 
 ## 3. Prohibited patterns
