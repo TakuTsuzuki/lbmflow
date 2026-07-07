@@ -34,12 +34,11 @@
 //! Therefore sigma_i is {2 qd, 1/(2 qd)} and qd=1/2 must degenerate exactly
 //! to the existing half-way moving-wall rule.
 //!
-//! Current triage note, 2026-07-07: the qd < 1/2 branch is supported by the
-//! API but does not satisfy the off-grid Couette reference below. It currently
-//! imposes about sigma_i * U_wall (0.5 U_wall at qd=0.25). The exact-reference
-//! test is landed as ignored with ANOM-L1_7-001, and the default suite carries
-//! an active current-wrong pin so the eventual fix fails this file until the
-//! pin is retightened.
+//! ANOM-P4-025 fix note, 2026-07-07: the qd < 1/2 branch used to apply the
+//! moving-wall source only to the first interpolation point, imposing about
+//! sigma_i * U_wall (0.5 U_wall at qd=0.25). The implementation now applies
+//! the missing second-point share, and the all-qd exact-reference test below
+//! is part of the default suite.
 
 mod common;
 
@@ -184,7 +183,12 @@ fn couette_curve_agreement(
     )
 }
 
-fn assert_couette_curve(label: &str, qd: f64, scale: f64, rel_band: f64) {
+fn measure_couette_curve(
+    label: &str,
+    qd: f64,
+    scale: f64,
+    rel_band: f64,
+) -> common::metrics::CurveAgreement {
     let (agreement, profile) = couette_curve_agreement(qd, scale, rel_band);
     let (wall_lo, wall_hi) = couette_wall_positions(qd);
     let h = wall_hi - wall_lo;
@@ -195,6 +199,12 @@ fn assert_couette_curve(label: &str, qd: f64, scale: f64, rel_band: f64) {
         "{label}: qd={qd:.2}, H={h:.6}, scale={scale:.6}, ux_first={first:.12e}, ux_mid={mid:.12e}, ux_last={last:.12e}, max_rel_dev={:.12e}, worst_y_w={:.6}, frac_in_band={:.3}, band={rel_band:.12e}",
         agreement.max_rel_dev, agreement.worst_x, agreement.frac_in_band
     );
+    assert_monotone_profile(label, &profile);
+    agreement
+}
+
+fn assert_couette_curve(label: &str, qd: f64, scale: f64, rel_band: f64) {
+    let agreement = measure_couette_curve(label, qd, scale, rel_band);
     assert!(
         agreement.max_rel_dev <= rel_band,
         "{label}: qd={qd:.2} curve_agreement max_rel_dev={:.12e}, band={rel_band:.12e}, denominator=max(|scale*U_wall*y_w/H|, U_wall={U_WALL:.12e}); scale={scale:.6}",
@@ -205,7 +215,6 @@ fn assert_couette_curve(label: &str, qd: f64, scale: f64, rel_band: f64) {
         "{label}: qd={qd:.2} curve_agreement frac_in_band={:.6}, expected 1.0; denominator=max(|scale*U_wall*y_w/H|, U_wall={U_WALL:.12e}); scale={scale:.6}",
         agreement.frac_in_band
     );
-    assert_monotone_profile(label, &profile);
 }
 
 #[test]
@@ -257,26 +266,38 @@ fn qd_sweep_moving_wall_couette_matches_offgrid_linear_profile_for_supported_bra
 }
 
 #[test]
-fn qd_lt_half_current_wrong_pin_imposes_sigma_scaled_wall_speed() {
+fn qd_lt_half_moving_wall_matches_offgrid_linear_profile() {
     let qd = 0.25;
-    let sigma = 2.0 * qd;
     assert_couette_curve(
-        "ANOM-L1_7-001 current wrong qd<0.5 Bouzidi moving-wall pin",
+        "ANOM-P4-025 fixed qd<0.5 Bouzidi moving-wall Couette",
         qd,
-        sigma,
-        1.0e-2,
+        1.0,
+        2.0e-3,
     );
 }
 
 #[test]
-#[ignore = "ANOM-L1_7-001: qd<0.5 currently imposes about sigma_i*U_wall; enable after the Bouzidi moving-wall fix and delete/retighten the current-wrong pin"]
 fn qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd() {
+    let label = "lane 1.7 Bouzidi moving Couette exact all-qd";
+    let rel_band = 2.0e-3;
+    let mut errors = Vec::new();
     for qd in [0.25, 0.5, 0.75] {
-        assert_couette_curve(
-            "lane 1.7 Bouzidi moving Couette exact all-qd",
-            qd,
-            1.0,
-            2.0e-3,
-        );
+        errors.push((qd, measure_couette_curve(label, qd, 1.0, rel_band)));
     }
+    let summary = errors
+        .iter()
+        .map(|(qd, agreement)| {
+            format!(
+                "qd={qd:.2}: max_rel_dev={:.12e}, worst_y_w={:.6}, frac_in_band={:.3}",
+                agreement.max_rel_dev, agreement.worst_x, agreement.frac_in_band
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        errors.iter().all(
+            |(_, agreement)| agreement.max_rel_dev <= rel_band && agreement.frac_in_band == 1.0
+        ),
+        "{label}: qd sweep failed, band={rel_band:.12e}, per_qd_errors=[{summary}]"
+    );
 }
