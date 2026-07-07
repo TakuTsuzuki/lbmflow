@@ -126,7 +126,11 @@ pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> 
             anyhow::bail!(
                 "{}",
                 lbm_scenario::gpu_capability_error(sc)
-                    .unwrap_or("requested backend \"gpu\" is not wired to the 3D CLI runner yet")
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| {
+                        "requested backend \"gpu\" is not wired to the 3D CLI runner yet"
+                            .to_string()
+                    })
             );
         }
         return run_gpu2d(sc, lbm_scenario::build_gpu2d(sc)?, out_dir, units);

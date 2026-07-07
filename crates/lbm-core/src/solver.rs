@@ -160,6 +160,16 @@ impl<T: Real> Default for GlobalSpec<T> {
 /// before allocating, turning the previously-silent non-physical
 /// configurations (stale data on an uncovered face, ν = 0, periodic × open
 /// on one axis, …) into hard errors.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UnsupportedReason {
+    NotImplemented,
+    OutOfValidityRange { detail: String },
+    MissingDependency { depends_on: String },
+    EvidenceGateFailed { missing: Vec<String> },
+    DemoOnly { rationale: String },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpecError {
     /// Kinematic viscosity must be finite and > 0 (`tau = 3ν + 0.5 > 0.5`);
@@ -303,6 +313,8 @@ pub enum SpecError {
     UnsupportedOnGpu {
         /// Feature name.
         feature: &'static str,
+        /// Machine-readable reason for the rejection.
+        reason: UnsupportedReason,
     },
 }
 
@@ -393,7 +405,7 @@ impl std::fmt::Display for SpecError {
             SpecError::FacePatchOverlap { a, b } => {
                 write!(f, "face patches {a} and {b} overlap on the same face")
             }
-            SpecError::UnsupportedOnGpu { feature } => {
+            SpecError::UnsupportedOnGpu { feature, .. } => {
                 write!(f, "GPU backend does not yet support {feature}")
             }
         }
@@ -1416,13 +1428,17 @@ where
             } else {
                 "masked face patches"
             };
-            return Err(SpecError::UnsupportedOnGpu { feature });
+            return Err(SpecError::UnsupportedOnGpu {
+                feature,
+                reason: UnsupportedReason::NotImplemented,
+            });
         }
         let has_open_faces = spec.faces.iter().any(FaceBC::is_open)
             || spec.face_patches.iter().any(|patch| patch.bc.is_open());
         if L::D == 3 && L::Q == 27 && has_open_faces && !backend.supports_d3q27_open_faces() {
             return Err(SpecError::UnsupportedOnGpu {
                 feature: "D3Q27 open faces",
+                reason: UnsupportedReason::NotImplemented,
             });
         }
         let (omega_p, omega_m) = spec.collision.omegas(spec.nu);

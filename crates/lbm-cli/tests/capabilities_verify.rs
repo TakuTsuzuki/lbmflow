@@ -15,46 +15,32 @@ fn capabilities_json_is_machine_readable() {
     );
     let value: Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|e| panic!("capabilities output must be JSON ({e})"));
-    for key in [
-        "lattices",
-        "collisions",
-        "precisions",
-        "backends",
-        "backendGravityFallback",
-        "checkpoint",
-        "particleCoupling",
-    ] {
-        assert!(value.get(key).is_some(), "missing key {key}: {value}");
+    let capabilities = value["capabilities"]
+        .as_array()
+        .unwrap_or_else(|| panic!("capabilities must be an array: {value}"));
+    let expected = [
+        "single_phase_stirred_tank",
+        "rotating_ibm",
+        "passive_scalar",
+        "phase_field_vof",
+        "oxygen_kla",
+        "point_bubbles",
+        "pbm",
+        "cell_exposure",
+        "evidence_tier_report",
+    ];
+    assert_eq!(capabilities.len(), expected.len(), "{value}");
+    for id in expected {
+        let entry = capabilities
+            .iter()
+            .find(|entry| entry["id"] == id)
+            .unwrap_or_else(|| panic!("missing capability id {id}: {value}"));
+        assert_eq!(entry["status"], "unsupported", "{entry}");
+        assert!(entry["docs"]
+            .as_str()
+            .unwrap()
+            .starts_with("docs/PLAN.md#bcfd-"));
     }
-    assert!(value["lattices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|l| l["name"] == "d3q27"
-            && l["restrictions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|r| r.as_str().unwrap().contains("open faces"))));
-    assert!(value["collisions"]["scenarioPath"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|c| c == "bgk"));
-    assert!(value["backends"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|b| b["name"] == "cpu-scalar"
-            && b["compiled"] == true
-            && b["gravityBodyForce"] == true));
-    assert!(value["backends"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|b| b["name"] == "cpu-simd"
-            && b["compiled"] == true
-            && b["gravityBodyForce"] == true));
 }
 
 #[test]

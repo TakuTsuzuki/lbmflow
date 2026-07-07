@@ -6,6 +6,7 @@
 
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
+use lbm_core::solver::UnsupportedReason;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -162,6 +163,46 @@ const CENTRAL_MOMENT_2D_UNSUPPORTED: &str = "requested collision \"central_momen
 const CENTRAL_MOMENT_GPU2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 GPU scenario path; central_moment scenario exposure is limited to 3D CPU.";
 const GRID_LATTICE_2D_UNSUPPORTED: &str = "requested grid.lattice is only supported for 3D scenarios; 2D scenarios use D2Q9. Remove grid.lattice or set grid.nz > 1.";
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsupportedCapability {
+    pub message: String,
+    pub reason: UnsupportedReason,
+}
+
+impl UnsupportedCapability {
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: UnsupportedReason::NotImplemented,
+        }
+    }
+
+    pub fn out_of_validity_range(message: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: UnsupportedReason::OutOfValidityRange {
+                detail: detail.into(),
+            },
+        }
+    }
+
+    pub fn missing_dependency(message: impl Into<String>, depends_on: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: UnsupportedReason::MissingDependency {
+                depends_on: depends_on.into(),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for UnsupportedCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 /// Backend selected after applying explicit/auto policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -206,15 +247,23 @@ pub fn selected_backend(sc: &Scenario) -> BackendChoice {
     }
 }
 
-pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
+pub fn gpu_capability_error(sc: &Scenario) -> Option<UnsupportedCapability> {
     if sc.physics.precision == Precision::F64 {
-        return Some(GPU_F64_UNSUPPORTED);
+        return Some(UnsupportedCapability::out_of_validity_range(
+            GPU_F64_UNSUPPORTED,
+            "GPU scenario dispatch currently supports f32 storage/compute only",
+        ));
     }
     if sc.is_3d() && requested_storage(sc) == StorageSpec::F16 {
-        return Some(GPU_F16_3D_UNSUPPORTED);
+        return Some(UnsupportedCapability::out_of_validity_range(
+            GPU_F16_3D_UNSUPPORTED,
+            "GPU f16 storage is wired only for 2D D2Q9 scenarios",
+        ));
     }
     if sc.is_3d() && selected_lattice_3d(sc) == LatticeSpec::D3q27 && has_open_faces(sc) {
-        return Some(GPU_D3Q27_OPEN_FACES_UNSUPPORTED);
+        return Some(UnsupportedCapability::not_implemented(
+            GPU_D3Q27_OPEN_FACES_UNSUPPORTED,
+        ));
     }
     if sc.is_3d()
         && (sc.multiphase.is_some()
@@ -226,30 +275,42 @@ pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
                 .iter()
                 .any(|p| matches!(p, ProbeSpec::Force { .. })))
     {
-        return Some(GPU_3D_UNSUPPORTED);
+        return Some(UnsupportedCapability::not_implemented(GPU_3D_UNSUPPORTED));
     }
     None
 }
 
-pub fn strict_capability_error(sc: &Scenario) -> Option<&'static str> {
+pub fn strict_capability_error(sc: &Scenario) -> Option<UnsupportedCapability> {
     if !sc.is_3d() && sc.grid.lattice.is_some() {
-        return Some(GRID_LATTICE_2D_UNSUPPORTED);
+        return Some(UnsupportedCapability::out_of_validity_range(
+            GRID_LATTICE_2D_UNSUPPORTED,
+            "grid.lattice selects D3Q19/D3Q27 and is valid only when grid.nz > 1",
+        ));
     }
     if requested_backend(sc) == BackendSpec::Gpu
         && sc.is_3d()
         && selected_lattice_3d(sc) == LatticeSpec::D3q27
         && has_open_faces(sc)
     {
-        return Some(GPU_D3Q27_OPEN_FACES_UNSUPPORTED);
+        return Some(UnsupportedCapability::not_implemented(
+            GPU_D3Q27_OPEN_FACES_UNSUPPORTED,
+        ));
     }
     if requested_backend(sc) == BackendSpec::Cpu && requested_storage(sc) == StorageSpec::F16 {
-        return Some(GPU_F16_CPU_UNSUPPORTED);
+        return Some(UnsupportedCapability::missing_dependency(
+            GPU_F16_CPU_UNSUPPORTED,
+            "compute.backend gpu",
+        ));
     }
     if !sc.is_3d() && sc.physics.collision.is_central_moment() {
         if selected_backend(sc) == BackendChoice::Gpu {
-            return Some(CENTRAL_MOMENT_GPU2D_UNSUPPORTED);
+            return Some(UnsupportedCapability::not_implemented(
+                CENTRAL_MOMENT_GPU2D_UNSUPPORTED,
+            ));
         }
-        return Some(CENTRAL_MOMENT_2D_UNSUPPORTED);
+        return Some(UnsupportedCapability::not_implemented(
+            CENTRAL_MOMENT_2D_UNSUPPORTED,
+        ));
     }
     None
 }
@@ -811,11 +872,11 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
         }
     }
     if let Some(e) = strict_capability_error(sc) {
-        let field = if e.contains("storage") {
+        let field = if e.message.contains("storage") {
             "compute.storage"
-        } else if e.contains("backend") {
+        } else if e.message.contains("backend") {
             "compute.backend"
-        } else if e.contains("grid.lattice") {
+        } else if e.message.contains("grid.lattice") {
             "grid.lattice"
         } else {
             "physics.collision"
@@ -940,10 +1001,10 @@ pub enum BuildError {
     Core(ConfigError),
     /// Invalid SI unit conversion at the scenario boundary.
     Units(String),
-    /// Feature not available on the 2D scenario path (message is user-facing).
-    Unsupported(&'static str),
+    /// Feature not available on the 2D scenario path.
+    Unsupported(UnsupportedCapability),
     /// Explicit or auto-selected backend that cannot be honored.
-    BackendUnavailable(&'static str),
+    BackendUnavailable(UnsupportedCapability),
 }
 
 impl std::fmt::Display for BuildError {
@@ -1006,9 +1067,9 @@ pub enum Build3Error {
     /// Invalid SI unit conversion at the scenario boundary.
     Units(String),
     /// Explicit backend request that this scenario path cannot honor.
-    BackendUnavailable(&'static str),
-    /// Feature not available on the 3D engine (message is user-facing).
-    Unsupported(&'static str),
+    BackendUnavailable(UnsupportedCapability),
+    /// Feature not available on the 3D engine.
+    Unsupported(UnsupportedCapability),
 }
 
 impl std::fmt::Display for Build3Error {
@@ -1018,7 +1079,9 @@ impl std::fmt::Display for Build3Error {
             Build3Error::Spec(e) => write!(f, "{e}"),
             Build3Error::Units(e) => write!(f, "{e}"),
             Build3Error::BackendUnavailable(what) => write!(f, "{what}"),
-            Build3Error::Unsupported(what) => write!(f, "unsupported in 3D (nz > 1): {what}"),
+            Build3Error::Unsupported(what) => {
+                write!(f, "unsupported in 3D (nz > 1): {what}")
+            }
         }
     }
 }
@@ -1129,20 +1192,26 @@ where
 
     assert!(sc.is_3d(), "build3d requires grid.nz > 1");
     if sc.multiphase.is_some() {
-        return Err(Build3Error::Unsupported("multiphase (multiphase flow)"));
+        return Err(Build3Error::Unsupported(
+            UnsupportedCapability::not_implemented("multiphase (multiphase flow)"),
+        ));
     }
     if sc.rotor.is_some() {
         return Err(Build3Error::Unsupported(
-            "rotor (2D only in this increment; 3D rotor lands with the z-extruded evaluator)",
+            UnsupportedCapability::not_implemented(
+                "rotor (2D only in this increment; 3D rotor lands with the z-extruded evaluator)",
+            ),
         ));
     }
     if sc.particles.is_some() {
         return Err(Build3Error::Unsupported(
-            "particles (2D only in this increment)",
+            UnsupportedCapability::not_implemented("particles (2D only in this increment)"),
         ));
     }
     if !matches!(sc.init, InitSpec::Rest) {
-        return Err(Build3Error::Unsupported("init must be rest only"));
+        return Err(Build3Error::Unsupported(
+            UnsupportedCapability::not_implemented("init must be rest only"),
+        ));
     }
     if let Some(e) = strict_capability_error(sc) {
         return Err(Build3Error::BackendUnavailable(e));
@@ -1150,7 +1219,12 @@ where
     if selected_backend(sc) == BackendChoice::Gpu {
         #[cfg(not(feature = "gpu"))]
         if requested_backend(sc) == BackendSpec::Gpu {
-            return Err(Build3Error::BackendUnavailable(GPU_FEATURE_UNAVAILABLE));
+            return Err(Build3Error::BackendUnavailable(
+                UnsupportedCapability::missing_dependency(
+                    GPU_FEATURE_UNAVAILABLE,
+                    "lbm binary built with --features gpu",
+                ),
+            ));
         }
         #[cfg(feature = "gpu")]
         if let Some(e) = gpu_capability_error(sc) {
@@ -1322,7 +1396,9 @@ where
         };
         if !matches!(faces[face.index()], FaceBC::Velocity { .. }) {
             return Err(Build3Error::Unsupported(
-                "inletProfile can only be set on a velocityInlet edge",
+                UnsupportedCapability::not_implemented(
+                    "inletProfile can only be set on a velocityInlet edge",
+                ),
             ));
         }
         let (t1, t2) = face.tangents();
@@ -1357,7 +1433,7 @@ where
     {
         if !any_obstacle {
             return Err(Build3Error::Unsupported(
-                "the force probe requires obstacles",
+                UnsupportedCapability::not_implemented("the force probe requires obstacles"),
             ));
         }
         // Probe all obstacle solids (cells strictly inside the domain box,
@@ -1402,7 +1478,12 @@ pub fn build(sc: &Scenario) -> Result<SimHandle, BuildError> {
     if selected_backend(sc) == BackendChoice::Gpu {
         #[cfg(not(feature = "gpu"))]
         if requested_backend(sc) == BackendSpec::Gpu {
-            return Err(BuildError::BackendUnavailable(GPU_FEATURE_UNAVAILABLE));
+            return Err(BuildError::BackendUnavailable(
+                UnsupportedCapability::missing_dependency(
+                    GPU_FEATURE_UNAVAILABLE,
+                    "lbm binary built with --features gpu",
+                ),
+            ));
         }
         #[cfg(feature = "gpu")]
         if let Some(e) = gpu_capability_error(sc) {
@@ -1588,7 +1669,12 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
     };
     validate_inlet_profile_request(sc)?;
     if sc.is_3d() {
-        return Err(BuildError::Unsupported("build_gpu2d requires nz == 1"));
+        return Err(BuildError::Unsupported(
+            UnsupportedCapability::out_of_validity_range(
+                "build_gpu2d requires nz == 1",
+                "GPU 2D builder requires grid.nz == 1",
+            ),
+        ));
     }
     if let Some(e) = strict_capability_error(sc) {
         return Err(BuildError::BackendUnavailable(e));
@@ -1598,22 +1684,26 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
     }
     if sc.multiphase.is_some() {
         return Err(BuildError::Unsupported(
-            "GPU scenario dispatch does not support multiphase",
+            UnsupportedCapability::not_implemented(
+                "GPU scenario dispatch does not support multiphase",
+            ),
         ));
     }
     if sc.rotor.is_some() {
         return Err(BuildError::Unsupported(
-            "GPU scenario dispatch does not support rotor",
+            UnsupportedCapability::not_implemented("GPU scenario dispatch does not support rotor"),
         ));
     }
     if sc.particles.is_some() {
         return Err(BuildError::Unsupported(
-            "GPU scenario dispatch does not support particles",
+            UnsupportedCapability::not_implemented(
+                "GPU scenario dispatch does not support particles",
+            ),
         ));
     }
     if !matches!(sc.init, InitSpec::Rest) {
         return Err(BuildError::Unsupported(
-            "GPU scenario dispatch supports init rest only",
+            UnsupportedCapability::not_implemented("GPU scenario dispatch supports init rest only"),
         ));
     }
     let dims = [sc.grid.nx, sc.grid.ny, 1];
@@ -1703,20 +1793,26 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
             }
         }
     }
-    spec.validate(2, &solid)
-        .map_err(|e| BuildError::Unsupported(Box::leak(e.to_string().into_boxed_str())))?;
+    spec.validate(2, &solid).map_err(|e| {
+        BuildError::Unsupported(UnsupportedCapability::not_implemented(e.to_string()))
+    })?;
     let storage = match requested_storage(sc) {
         StorageSpec::F32 => lbm_core::gpu::GpuStorage::F32,
         StorageSpec::F16 => lbm_core::gpu::GpuStorage::F16,
     };
     let ctx = if storage == lbm_core::gpu::GpuStorage::F16 {
-        lbm_core::gpu::GpuContext::new_with_shader_f16(true)
-            .map_err(|_| BuildError::BackendUnavailable(GPU_F16_ADAPTER_UNAVAILABLE))
+        lbm_core::gpu::GpuContext::new_with_shader_f16(true).map_err(|_| {
+            BuildError::BackendUnavailable(UnsupportedCapability::missing_dependency(
+                GPU_F16_ADAPTER_UNAVAILABLE,
+                "GPU adapter with SHADER_F16",
+            ))
+        })
     } else {
         lbm_core::gpu::GpuContext::new().map_err(|_| {
-            BuildError::BackendUnavailable(
+            BuildError::BackendUnavailable(UnsupportedCapability::missing_dependency(
                 "requested backend \"gpu\" is unavailable: no usable GPU adapter was found",
-            )
+                "usable GPU adapter",
+            ))
         })
     }?;
     let backend = lbm_core::gpu::WgpuBackend::<D2Q9>::with_config(
@@ -2174,7 +2270,13 @@ mod tests {
             g_wall: 0.0,
             wall_rho: None,
         });
-        assert!(matches!(build3d(&mp), Err(Build3Error::Unsupported(_))));
+        match build3d(&mp) {
+            Err(Build3Error::Unsupported(e)) => {
+                assert_eq!(e.reason, UnsupportedReason::NotImplemented);
+                assert!(e.to_string().contains("multiphase"));
+            }
+            _ => panic!("expected structured unsupported error"),
+        }
         // Unpaired z periodicity is a config error.
         let mut unpaired = duct3d();
         unpaired.edges.back = Some(EdgeSpec::Periodic);
@@ -2261,6 +2363,7 @@ mod tests {
     fn d3q27_rejects_unsupported_scenario_combinations_precisely() {
         let mut gpu_open = duct3d();
         gpu_open.grid.lattice = Some(LatticeSpec::D3q27);
+        gpu_open.physics.precision = Precision::F32;
         gpu_open.edges.left = EdgeSpec::VelocityInlet { u: [0.02, 0.0] };
         gpu_open.edges.right = EdgeSpec::PressureOutlet { rho: 1.0 };
         gpu_open.compute = Some(ComputeSpec {
@@ -2271,6 +2374,8 @@ mod tests {
         assert!(err.contains("grid.lattice \"d3q27\""), "{err}");
         assert!(err.contains("open faces"), "{err}");
         assert!(err.contains("CPU-only"), "{err}");
+        let structured = gpu_capability_error(&gpu_open).expect("gpu capability error");
+        assert_eq!(structured.reason, UnsupportedReason::NotImplemented);
         assert!(validate(&gpu_open).iter().any(|w| {
             w.field == "compute.backend" && w.message.contains("grid.lattice \"d3q27\"")
         }));
