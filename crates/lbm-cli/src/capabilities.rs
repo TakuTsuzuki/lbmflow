@@ -66,10 +66,10 @@ impl CapabilityRegistry {
                     "Conservative Allen-Cahn path is not yet implemented",
                     "docs/PLAN.md#bcfd-040",
                 ),
-                unsupported(
+                experimental(
                     "oxygen_kla",
                     "Oxygen transport and kLa",
-                    "Oxygen scalar and kLa QOI are not yet implemented",
+                    "BCFD-050..053 oxygen scalar, Henry flux, kLa fit, and OUR hooks implemented; VB-06 not yet green",
                     "docs/PLAN.md#bcfd-050",
                 ),
                 unsupported(

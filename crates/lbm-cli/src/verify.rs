@@ -75,10 +75,10 @@ pub fn report(tier: VerifyTier) -> (Value, i32) {
 fn run_quick_checks() -> Result<u32, Value> {
     let registry = CapabilityRegistry::new();
     let ids = unsupported_capabilities();
-    if registry.iter().count() != 9 || ids.len() != 6 {
+    if registry.iter().count() != 9 || ids.len() != 5 {
         return Err(json!({
             "check": "capability_registry",
-            "message": "capability registry must contain 9 BCFD entries and 6 unsupported entries",
+            "message": "capability registry must contain 9 BCFD entries and 5 unsupported entries",
             "capabilities": ids,
         }));
     }
@@ -253,7 +253,7 @@ mod tests {
                 .as_array()
                 .expect("unsupported_capabilities should be an array")
                 .len(),
-            6
+            5
         );
         assert_eq!(report["validation_tier"], "screening");
         assert!(report["build_features"]

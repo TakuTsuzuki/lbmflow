@@ -103,6 +103,8 @@ fn parses_valid_aerated_stirred_tank_with_resolved_gas() {
     scenario["fluids"]["gas_density_kg_m3"] = json!(1.2);
     scenario["fluids"]["gas_viscosity_pa_s"] = json!(1.8e-5);
     scenario["fluids"]["surface_tension_n_m"] = json!(0.072);
+    scenario["fluids"]["oxygen_diffusivity_m2_per_s"] = json!(2.0e-9);
+    scenario["fluids"]["henry_constant"] = json!(1.0e-5);
     scenario["physics"] = json!([
         {
             "kind": "resolved_phase_field",
@@ -112,15 +114,57 @@ fn parses_valid_aerated_stirred_tank_with_resolved_gas() {
         },
         {
             "kind": "oxygen",
-            "henry_constant": 1.0,
-            "interfacial_flux_model": "henry_equilibrium",
-            "our_model": "none"
+            "partial_pressure_o2_pa": 21000.0,
+            "k_l_model": { "kind": "constant", "value_m_per_s": 1.0e-5 },
+            "our_model": { "kind": "none" }
         }
     ]);
     scenario["qoi"]["gas_holdup"] = json!({});
     scenario["qoi"]["kla"] = json!({});
 
     parse_value(scenario).expect("valid resolved-gas scenario should parse");
+}
+
+#[test]
+fn rejects_oxygen_without_henry_constant() {
+    let mut scenario = base_scenario();
+    scenario["fluids"]["oxygen_diffusivity_m2_per_s"] = json!(2.0e-9);
+    scenario["physics"] = json!([{
+        "kind": "oxygen",
+        "k_l_model": { "kind": "constant", "value_m_per_s": 1.0e-5 },
+        "our_model": { "kind": "none" }
+    }]);
+
+    let err = parse_value(scenario).expect_err("oxygen without Henry must reject");
+    assert!(matches!(
+        err.reason,
+        UnsupportedReason::OutOfValidityRange { .. }
+    ));
+    assert!(err.message.contains("henry_constant"));
+}
+
+#[test]
+fn evidence_tier_rejects_uncalibrated_kla() {
+    let mut scenario = base_scenario();
+    scenario["credibility_tier"] = json!("evidence");
+    scenario["fluids"]["oxygen_diffusivity_m2_per_s"] = json!(2.0e-9);
+    scenario["fluids"]["henry_constant"] = json!(1.0e-5);
+    scenario["physics"] = json!([{
+        "kind": "oxygen",
+        "k_l_model": { "kind": "constant", "value_m_per_s": 1.0e-5 },
+        "our_model": { "kind": "none" }
+    }]);
+    scenario["qoi"]["kla"] = json!({});
+    scenario["qoi"]["calibration_dataset_id"] = json!("cal-001");
+    scenario["qoi"]["holdout_dataset_id"] = json!("hold-001");
+
+    let err = parse_value(scenario).expect_err("uncalibrated evidence kLa must reject");
+    assert_eq!(
+        err.reason,
+        UnsupportedReason::EvidenceGateFailed {
+            missing: vec!["calibrated_kL_table".to_string()]
+        }
+    );
 }
 
 #[test]

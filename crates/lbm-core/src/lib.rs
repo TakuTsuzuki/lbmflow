@@ -44,11 +44,13 @@ pub mod kla;
 pub mod lattice;
 pub mod les;
 pub mod materials;
+pub mod oxygen;
 pub mod params;
 pub mod particles;
 pub mod pbm;
 pub mod phase_field;
 pub mod qoi;
+pub mod reaction;
 pub mod real;
 pub mod rotating_ibm;
 pub mod scalar;
@@ -96,6 +98,11 @@ pub mod prelude {
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
     pub use crate::materials::{MaterialFields, MaterialSample};
+    pub use crate::oxygen::{
+        apply_interfacial_flux_sources, clip_negative_concentrations, henry_equilibrium,
+        interfacial_area_density, oxygen_source_step, OxygenDiagnostics, OxygenError,
+        OxygenFluxLedger, OxygenState, OXYGEN_SCALAR_NAME,
+    };
     pub use crate::params::{
         CollisionKind, FaceBC, FacePatch, MaterialModel, MaterialParamError,
         PhaseFieldMixtureParams, Reduction, SourceKind, SourceRegion, StepParams,
@@ -109,9 +116,13 @@ pub mod prelude {
         ClippingPolicy, PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams,
     };
     pub use crate::qoi::{
-        compartment_cv, mixing_time_from_cv, power_qois, scalar_cv, CompartmentCv,
-        MixingTimeResult, PowerQoiInput, PowerQoiResult, QoiAccumulatorSnapshot,
-        QoiCheckpointState, SkippedQoi,
+        compartment_cv, dynamic_gassing_kla_fit, dynamic_gassing_window_default,
+        mixing_time_from_cv, power_qois, scalar_cv, CompartmentCv, KlaDynamicFitOutcome,
+        KlaDynamicFitResult, KlaFitMethod, KlaFitWindow, MixingTimeResult, PowerQoiInput,
+        PowerQoiResult, QoiAccumulatorSnapshot, QoiCheckpointState, SkippedQoi,
+    };
+    pub use crate::reaction::{
+        apply_oxygen_reaction_source, oxygen_uptake_rate, OurLedger, OurModel, ReactionError,
     };
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};

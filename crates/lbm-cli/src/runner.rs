@@ -1029,6 +1029,14 @@ where
     {
         active_models.push(ActiveModelTag::PassiveScalar);
     }
+    if sc
+        .physics
+        .models
+        .iter()
+        .any(|m| matches!(m, PhysicsModel::Oxygen { .. }))
+    {
+        active_models.push(ActiveModelTag::Oxygen);
+    }
 
     let mut torque_csv = fs::File::create(out_dir.join("torque_force.csv"))?;
     writeln!(

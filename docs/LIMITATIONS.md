@@ -32,7 +32,7 @@ Every row cites either a code location (source of truth) or a doc entry.
 | Passive scalar transport | Unsupported | Scalar distribution not yet allocated (BCFD-010, BCFD-034). | BCFD-010 |
 | Phase-field VOF (Allen-Cahn) | Unsupported | Not implemented; Shan-Chen is not a substitute (demo-only). | BCFD-040 |
 | Sparger gas injection | Unsupported | Depends on BCFD-022 + BCFD-046. | — |
-| Oxygen transport / kLa | Unsupported | Depends on BCFD-050..052. | — |
+| Oxygen transport / kLa | Experimental | BCFD-050..053 hooks landed; VB-06 and calibrated kL evidence gate still block Engineering/Evidence claims. | `crates/lbm-core/src/oxygen.rs`, `crates/lbm-core/src/reaction.rs` |
 | Point bubbles / PBM | Unsupported | M3 work. | — |
 | Cell / microcarrier exposure | Unsupported | M2 work; BCFD-060..063. | — |
 | UQ / sweep runner | Unsupported | M2 work; BCFD-083. | — |

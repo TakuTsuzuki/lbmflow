@@ -1816,6 +1816,103 @@ require the future VB group.
   with actual ADE evolution. Hydro-only runs stay on the existing path, pinned
   by `solver.rs::tests::hydro_only_path_is_bit_identical`.
 
+### 2026-07-08 oxygen scalar and Henry equilibrium (`crates/lbm-core/src/oxygen.rs`)
+- Form: oxygen is the named scalar `oxygen` over the BCFD-034 ADE path.
+  Liquid concentration is `C_L`; equilibrium concentration is
+  `C* = H p_O2`, using scenario-provided `fluids.henry_constant` and an
+  explicit oxygen partial pressure (`21_000 Pa` only when the oxygen model
+  does not override `partial_pressure_o2_pa`). Missing or non-positive Henry
+  constant is a structured scenario error.
+- Source: Henry's law for dilute gas solubility; convention follows the
+  BCFD-051 ticket wording `C* = H p_O2`. Henry convention ambiguity is called
+  out by Sander (2015), "Compilation of Henry's law constants", Atmos. Chem.
+  Phys. 15:4399.
+- Validity domain: dilute oxygen in the liquid phase, isothermal Henry
+  constant, known gas partial pressure, liquid-phase-only scalar transport.
+  Gas-side depletion, temperature dependence, salinity/activity corrections,
+  and multicomponent gas balance are not implemented in BCFD-050/051.
+- Validation: `oxygen::tests::oxygen_scalar_name_is_stable_for_ade_registration`,
+  `::uniform_oxygen_remains_uniform_without_sources`,
+  `::pure_diffusive_flux_points_down_concentration_gradient`,
+  `::henry_boundary_concentration_uses_scenario_inputs`, and
+  `::invalid_henry_is_rejected`; scenario parser test
+  `bioprocess_parse::rejects_oxygen_without_henry_constant`.
+- Replaces / interacts with: consumes the existing scalar ADE transport; adds
+  no scalar feedback to momentum and no hidden Henry default.
+
+### 2026-07-08 resolved-interface oxygen kL/a source (`crates/lbm-core/src/oxygen.rs`)
+- Form: local interfacial area density is
+  `a_local = 6 |grad(phi)| phi(1-phi) (4/W)` and oxygen source is
+  `S = kL a_local (C* - C_L)`. The mass-transfer ledger records
+  `int S dV`, the last-step transferred amount, cumulative transferred
+  amount, and active interface-cell count. kL models are explicit:
+  `Constant`, `PenetrationTheoryPlaceholder`, or `Calibrated`; Evidence tier
+  rejects every non-calibrated kL.
+- Source: diffuse-interface delta approximation from the conservative
+  Allen-Cahn tanh interface already used in the phase-field model; the film
+  source follows the standard first-order gas-liquid mass-transfer model
+  used for kLa reporting in stirred tanks (Garcia-Ochoa and Gomez 2009,
+  Biotechnol. Adv. 27:153-176). The penetration-theory option is a named
+  engineering placeholder after Higbie (1935), not an implemented
+  correlation.
+- Validity domain: resolved Allen-Cahn interface with bounded `0 <= phi <= 1`
+  and positive interface width; finite non-negative interfacial area density;
+  constant kL is smoke/Experimental only; Engineering/Evidence requires a
+  calibrated kL table and independent validation.
+- Validation: `oxygen::tests::interfacial_flux_is_zero_when_area_or_driving_force_is_zero`,
+  `::closed_system_ledger_matches_integral_source`, and
+  `::evidence_tier_rejects_uncalibrated_kl`; scenario parser test
+  `bioprocess_parse::evidence_tier_rejects_uncalibrated_kla`.
+- Replaces / interacts with: extends the BCFD-047/PBM kLa bookkeeping with a
+  resolved-interface oxygen source. It does not make Shan-Chen production
+  gas-liquid or uncalibrated kL evidence-grade.
+
+### 2026-07-08 dynamic-gassing kLa fit (`crates/lbm-core/src/qoi.rs`)
+- Form: for time series `C(t)`, fit
+  `ln(C* - C) = b - kLa t` over a declared window, defaulting to the last
+  60% of the run. Output includes `kla_1_per_s`, `kla_1_per_hr`, `fit_r2`,
+  fitting-window bounds, method `dynamic_gassing_fit`, and analytical 95%
+  slope CI when available. Fits skip with reason when the window is invalid,
+  the data are steady, fewer than three non-equilibrium samples exist, the
+  fitted kLa is negative/non-finite, or `R2 < 0.9`.
+- Source: integrated first-order dynamic-gassing model
+  `dC/dt = kLa(C* - C)`, standard in oxygen-transfer characterization; see
+  Garcia-Ochoa and Gomez (2009) for bioreactor oxygen-transfer review and
+  Danckwerts (1951) for surface-renewal mass-transfer framing.
+- Validity domain: well-mixed scalar average, steady interfacial area and kL
+  during the fit window, known fixed `C*`, non-equilibrium data with
+  monotone approach to saturation. Under-mixed tanks require future
+  compartment-wise kLa rather than this global fit.
+- Validation: `qoi::tests::synthetic_exponential_uptake_fit_recovers_kla_within_5_percent`,
+  `::bad_kla_fit_window_is_rejected_with_skip_reason`,
+  `::equilibrium_kla_data_is_rejected`, and unit conversion assertion to
+  `1/hr`.
+- Replaces / interacts with: complements the integral `int kL a dV` source
+  ledger; it reports a QOI from concentration history rather than altering
+  scalar transport.
+
+### 2026-07-08 OUR reaction-source hooks (`crates/lbm-core/src/reaction.rs`)
+- Form: oxygen uptake rate options are
+  `Constant { our_kmol_m3_s }`,
+  `Monod { our_max, ks, c_ref }` with
+  `OUR = our_max (C_L/c_ref)/(ks + C_L/c_ref)`, and
+  `CellDensityScaled { specific_our, cell_density_field }` with
+  `OUR = specific_our * cell_density`. The reaction step subtracts
+  `OUR dt` from `C_L`, clips only when the update would go negative, and
+  reports `clipped_fraction` plus cumulative kmol consumed.
+- Source: constant uptake is a declared process-source term; Monod saturation
+  follows Monod (1949), "The Growth of Bacterial Cultures"; cell-density
+  scaling follows the definition of specific OUR multiplied by cell density.
+- Validity domain: finite non-negative concentrations and rates; Monod `ks`
+  and `c_ref` positive; cell-density-scaled mode requires an explicit
+  density field supplied by the caller. The non-negative guard is a diagnosed
+  inventory bound, not a silent source absorber.
+- Validation: `reaction::tests::constant_our_gives_linear_depletion_closed_uniform_field`,
+  `::zero_our_has_no_effect`, `::negative_concentration_guard_fires`, and
+  `::source_ledger_matches_consumption_integral`.
+- Replaces / interacts with: adds reaction hooks to the oxygen scalar path;
+  no biomass-growth kinetics engine or feedback to hydrodynamics is implied.
+
 ### 2026-07-08 central-finite-difference stress and shear QOI (`crates/lbm-core/src/stress.rs`)
 - Form: velocity moments in SI units are differentiated with second-order
   central finite differences on fluid neighbours; one-sided differences are

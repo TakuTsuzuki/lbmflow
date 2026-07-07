@@ -31,7 +31,7 @@ fn limitations_lists_every_registry_capability_label() {
 
     for entry in registry.iter() {
         let expected_status = match entry.id {
-            "single_phase_stirred_tank" | "rotating_ibm" | "passive_scalar" => {
+            "single_phase_stirred_tank" | "rotating_ibm" | "passive_scalar" | "oxygen_kla" => {
                 CapabilityStatus::Experimental
             }
             _ => CapabilityStatus::Unsupported,

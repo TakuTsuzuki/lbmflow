@@ -23,7 +23,7 @@ fn capabilities_json_is_machine_readable() {
         ("rotating_ibm", "experimental"),
         ("passive_scalar", "experimental"),
         ("phase_field_vof", "unsupported"),
-        ("oxygen_kla", "unsupported"),
+        ("oxygen_kla", "experimental"),
         ("point_bubbles", "unsupported"),
         ("pbm", "unsupported"),
         ("cell_exposure", "unsupported"),
@@ -73,7 +73,7 @@ fn verify_quick_json_has_machine_readable_shape() {
         .any(|feature| feature == "default"));
     assert_eq!(
         value["unsupported_capabilities"].as_array().unwrap().len(),
-        6,
+        5,
         "{value}"
     );
     assert!(value["failure"].is_null(), "{value}");

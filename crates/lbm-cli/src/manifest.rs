@@ -76,6 +76,7 @@ pub enum ActiveModelTag {
     RotatingIbm,
     Particles,
     PassiveScalar,
+    Oxygen,
     PhaseFieldMixture,
 }
 

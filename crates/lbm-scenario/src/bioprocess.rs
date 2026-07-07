@@ -40,6 +40,14 @@ impl BioprocessScenario {
             ));
         }
 
+        if self.physics.has_oxygen() {
+            validate_positive_optional(
+                self.fluids.oxygen_diffusivity_m2_per_s,
+                "oxygen_diffusivity_m2_per_s",
+            )?;
+            validate_positive_optional(self.fluids.henry_constant, "henry_constant")?;
+        }
+
         if self.reactor.has_spargers() && !self.physics.has_gas_model() {
             return Err(BioprocessScenarioError::unsupported(
                 "spargers require a gas model in physics",
@@ -58,6 +66,22 @@ impl BioprocessScenario {
                     missing: vec!["calibration_and_holdout_dataset_registry".to_string()],
                 },
             ));
+        }
+
+        if self.credibility_tier == CredibilityTier::Evidence && self.qoi.kla.is_some() {
+            let calibrated = self
+                .physics
+                .oxygen_kl_model()
+                .or_else(|| self.qoi.kla.as_ref().and_then(|q| q.k_l_model.as_ref()))
+                .is_some_and(KlModelSpec::is_calibrated);
+            if !calibrated {
+                return Err(BioprocessScenarioError::unsupported(
+                    "evidence-tier kLa requires calibrated kL",
+                    UnsupportedReason::EvidenceGateFailed {
+                        missing: vec!["calibrated_kL_table".to_string()],
+                    },
+                ));
+            }
         }
 
         if let Some(sparger) = self.reactor.non_gas_sparger() {
@@ -154,6 +178,21 @@ impl BioprocessScenario {
         };
         scenario.validate()?;
         Ok(scenario)
+    }
+}
+
+fn validate_positive_optional(
+    value: Option<f64>,
+    field: &'static str,
+) -> Result<(), BioprocessScenarioError> {
+    match value {
+        Some(v) if v.is_finite() && v > 0.0 => Ok(()),
+        _ => Err(BioprocessScenarioError::unsupported(
+            format!("oxygen physics requires fluids.{field} to be finite and > 0"),
+            UnsupportedReason::OutOfValidityRange {
+                detail: format!("fluids.{field} must be provided for oxygen physics"),
+            },
+        )),
     }
 }
 
@@ -844,6 +883,13 @@ impl PhysicsSpec {
     fn has_degassing_outlet(&self) -> bool {
         self.models.iter().any(PhysicsModel::has_degassing_outlet)
     }
+
+    fn oxygen_kl_model(&self) -> Option<&KlModelSpec> {
+        self.models.iter().find_map(|model| match model {
+            PhysicsModel::Oxygen { k_l_model, .. } => Some(k_l_model),
+            _ => None,
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for PhysicsSpec {
@@ -893,9 +939,10 @@ pub enum PhysicsModel {
         initial_pulse: Option<PulseSpec>,
     },
     Oxygen {
-        henry_constant: f64,
-        interfacial_flux_model: OxygenFluxModel,
-        our_model: OurModel,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial_pressure_o2_pa: Option<f64>,
+        k_l_model: KlModelSpec,
+        our_model: OurModelSpec,
     },
     CellTracer {
         count: u32,
@@ -985,20 +1032,22 @@ pub struct PulseSpec {
     pub concentration: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OxygenFluxModel {
-    HenryEquilibrium,
-    ConstantKl,
-    InterfacialArea,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OurModel {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OurModelSpec {
     None,
-    Constant,
-    Monod,
+    Constant {
+        our_kmol_m3_s: f64,
+    },
+    Monod {
+        our_max: f64,
+        ks: f64,
+        c_ref: f64,
+    },
+    CellDensityScaled {
+        specific_our: f64,
+        cell_density_field: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1047,24 +1096,29 @@ pub struct GasHoldupQoiOpts {}
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct BubbleSizeQoiOpts {}
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct KlaQoiOpts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub k_l_model: Option<KlModelSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fitting_window_start_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fitting_window_end_s: Option<f64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KlModelSpec {
-    Constant {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        table_ref: Option<String>,
-    },
-    PenetrationTheoryPlaceholder,
-    Calibrated {
-        table_ref: String,
-    },
+    Constant { value_m_per_s: f64 },
+    PenetrationTheoryPlaceholder { note: String },
+    Calibrated { table_ref: String },
+}
+
+impl KlModelSpec {
+    fn is_calibrated(&self) -> bool {
+        matches!(self, Self::Calibrated { table_ref } if !table_ref.is_empty())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1232,7 +1286,10 @@ mod tests {
             models: vec![PhysicsModel::ResolvedPhaseField {
                 interface_width_m: 0.05,
                 mobility_m2_per_s: 1.0e-8,
+                clipping_policy: None,
                 contact_angle_deg: None,
+                dynamic_contact_angle: None,
+                top_boundary: None,
             }],
         };
         let err = scenario.validate().unwrap_err();

@@ -328,7 +328,10 @@ fn bioprocess_schema() -> Value {
                             "kind": { "const": "resolved_phase_field" },
                             "interface_width_m": { "type": "number" },
                             "mobility_m2_per_s": { "type": "number" },
-                            "contact_angle_deg": { "type": ["number", "null"] }
+                            "clipping_policy": { "type": ["object", "null"] },
+                            "contact_angle_deg": { "type": ["number", "null"] },
+                            "dynamic_contact_angle": { "type": ["object", "null"] },
+                            "top_boundary": { "type": ["object", "null"] }
                         }
                     },
                     {
@@ -353,18 +356,12 @@ fn bioprocess_schema() -> Value {
                     {
                         "type": "object",
                         "additionalProperties": false,
-                        "required": ["kind", "henry_constant", "interfacial_flux_model", "our_model"],
+                        "required": ["kind", "k_l_model", "our_model"],
                         "properties": {
                             "kind": { "const": "oxygen" },
-                            "henry_constant": { "type": "number" },
-                            "interfacial_flux_model": {
-                                "type": "string",
-                                "enum": ["henry_equilibrium", "constant_kl", "interfacial_area"]
-                            },
-                            "our_model": {
-                                "type": "string",
-                                "enum": ["none", "constant", "monod"]
-                            }
+                            "partial_pressure_o2_pa": { "type": ["number", "null"] },
+                            "k_l_model": { "$ref": "#/$defs/KlModelSpec" },
+                            "our_model": { "$ref": "#/$defs/OurModelSpec" }
                         }
                     },
                     {
@@ -420,12 +417,97 @@ fn bioprocess_schema() -> Value {
                     "mixing": { "type": ["object", "null"], "additionalProperties": false },
                     "gas_holdup": { "type": ["object", "null"], "additionalProperties": false },
                     "bubble_size": { "type": ["object", "null"], "additionalProperties": false },
-                    "kla": { "type": ["object", "null"], "additionalProperties": false },
+                    "kla": {
+                        "oneOf": [
+                            { "type": "null" },
+                            { "$ref": "#/$defs/KlaQoiOpts" }
+                        ]
+                    },
                     "shear_exposure": { "type": ["object", "null"], "additionalProperties": false },
                     "oxygen_exposure": { "type": ["object", "null"], "additionalProperties": false },
                     "calibration_dataset_id": { "type": ["string", "null"] },
                     "holdout_dataset_id": { "type": ["string", "null"] }
                 }
+            },
+            "KlaQoiOpts": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "k_l_model": { "$ref": "#/$defs/KlModelSpec" },
+                    "fitting_window_start_s": { "type": ["number", "null"] },
+                    "fitting_window_end_s": { "type": ["number", "null"] }
+                }
+            },
+            "KlModelSpec": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "value_m_per_s"],
+                        "properties": {
+                            "kind": { "const": "constant" },
+                            "value_m_per_s": { "type": "number" }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "note"],
+                        "properties": {
+                            "kind": { "const": "penetration_theory_placeholder" },
+                            "note": { "type": "string" }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "table_ref"],
+                        "properties": {
+                            "kind": { "const": "calibrated" },
+                            "table_ref": { "type": "string" }
+                        }
+                    }
+                ]
+            },
+            "OurModelSpec": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind"],
+                        "properties": { "kind": { "const": "none" } }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "our_kmol_m3_s"],
+                        "properties": {
+                            "kind": { "const": "constant" },
+                            "our_kmol_m3_s": { "type": "number" }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "our_max", "ks", "c_ref"],
+                        "properties": {
+                            "kind": { "const": "monod" },
+                            "our_max": { "type": "number" },
+                            "ks": { "type": "number" },
+                            "c_ref": { "type": "number" }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "specific_our", "cell_density_field"],
+                        "properties": {
+                            "kind": { "const": "cell_density_scaled" },
+                            "specific_our": { "type": "number" },
+                            "cell_density_field": { "type": "string" }
+                        }
+                    }
+                ]
             },
             "RunSpec": {
                 "type": "object",
