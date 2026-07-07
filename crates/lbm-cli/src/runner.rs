@@ -1,6 +1,11 @@
 //! Scenario execution: probes, snapshots, divergence/steady detection,
 //! machine-readable manifest.
 
+pub use crate::manifest::Manifest;
+use crate::manifest::{
+    active_models_for_legacy, capability_report, lattice_id, precision_id, scenario_hash,
+    BackendId, CollisionProvenance, Diagnostics, LatticeId, Provenance, MANIFEST_PATH,
+};
 use crate::render::{write_png_scaled, Colormap};
 use anyhow::{Context, Result};
 use lbm_core::compat::multiphase::ShanChen;
@@ -9,55 +14,10 @@ use lbm_core::prelude::Lattice;
 use lbm_scenario::{
     FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, Sim3Handle, SimHandle, Solver3,
 };
-use serde::Serialize;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Manifest {
-    pub scenario: String,
-    pub status: String, // completed | steady | diverged
-    pub steps_run: u64,
-    pub wall_seconds: f64,
-    pub mlups: f64,
-    pub diagnostics: Diagnostics,
-    pub provenance: Provenance,
-    pub warnings: Vec<lbm_scenario::Warning>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub units: Option<lbm_scenario::LegacyUnitReport>,
-    pub files: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Provenance {
-    pub backend: lbm_scenario::BackendChoice,
-    pub lattice: String,
-    pub collision: CollisionProvenance,
-    pub precision: lbm_scenario::Precision,
-    pub storage: lbm_scenario::StorageSpec,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollisionProvenance {
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub magic: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub omega_shear: Option<f64>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Diagnostics {
-    pub total_mass: f64,
-    pub max_speed: f64,
-    pub tau: f64,
-}
 
 fn provenance(
     sc: &Scenario,
@@ -193,6 +153,16 @@ fn run_gpu2d(
     let dims = sim.dims();
     let manifest = Manifest {
         scenario: sc.name.clone(),
+        scenario_hash: scenario_hash(sc)?,
+        manifest_path: MANIFEST_PATH.to_string(),
+        bioprocess_schema_version: None,
+        backend: BackendId::Gpu,
+        lattice: LatticeId::D2q9,
+        precision: precision_id(sc.physics.precision),
+        active_models: active_models_for_legacy(sc),
+        qoi_methods: Vec::new(),
+        unit_report: None,
+        capability_report: capability_report(),
         status: "completed".to_string(),
         steps_run: total as u64,
         wall_seconds: wall,
@@ -213,7 +183,7 @@ fn run_gpu2d(
         files,
     };
     fs::write(
-        out_dir.join("manifest.json"),
+        out_dir.join(MANIFEST_PATH),
         serde_json::to_string_pretty(&manifest)?,
     )?;
     Ok(manifest)
@@ -259,12 +229,14 @@ fn write_output_gpu2d(
                 colormap_for(o.field),
                 None,
                 1,
+                Some(MANIFEST_PATH),
             )?;
             Ok(name)
         }
         OutputFormat::Csv => {
             let name = format!("{kind_name}_{step}.csv");
             let mut file = fs::File::create(out_dir.join(&name))?;
+            writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
             for y in 0..ny {
                 let row: Vec<String> = (0..nx).map(|x| format!("{}", values[y * nx + x])).collect();
                 writeln!(file, "{}", row.join(","))?;
@@ -290,6 +262,7 @@ fn write_particles(
     let name = format!("particles_{step}.csv");
     let mut file = fs::File::create(out_dir.join(&name))?;
     writeln!(file, "id,x,y,z,vx,vy,vz,exposure")?;
+    writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
     for (i, p) in ps.particles.iter().enumerate() {
         writeln!(
             file,
@@ -320,6 +293,7 @@ fn run_t<T: Real>(
                 let path = out_dir.join("force.csv");
                 let mut file = fs::File::create(&path)?;
                 writeln!(file, "step,fx,fy")?;
+                writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
                 files.push("force.csv".into());
                 probes.push(CsvProbe {
                     every: every.max(1),
@@ -333,6 +307,7 @@ fn run_t<T: Real>(
                 let path = out_dir.join(&name);
                 let mut file = fs::File::create(&path)?;
                 writeln!(file, "step,ux,uy,rho")?;
+                writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
                 files.push(name);
                 probes.push(CsvProbe {
                     every: every.max(1),
@@ -369,6 +344,7 @@ fn run_t<T: Real>(
         let path = out_dir.join("torque.csv");
         let mut f = fs::File::create(&path)?;
         writeln!(f, "step,torque,torqueIntegral")?;
+        writeln!(f, "# manifest_path={MANIFEST_PATH}")?;
         files.push("torque.csv".into());
         Some(f)
     } else {
@@ -539,6 +515,16 @@ fn run_t<T: Real>(
         .fold(0.0f64, f64::max);
     let manifest = Manifest {
         scenario: sc.name.clone(),
+        scenario_hash: scenario_hash(sc)?,
+        manifest_path: MANIFEST_PATH.to_string(),
+        bioprocess_schema_version: None,
+        backend: BackendId::Cpu,
+        lattice: LatticeId::D2q9,
+        precision: precision_id(sc.physics.precision),
+        active_models: active_models_for_legacy(sc),
+        qoi_methods: Vec::new(),
+        unit_report: None,
+        capability_report: capability_report(),
         status: status.to_string(),
         steps_run: executed as u64,
         wall_seconds: wall,
@@ -559,7 +545,7 @@ fn run_t<T: Real>(
         files,
     };
     fs::write(
-        out_dir.join("manifest.json"),
+        out_dir.join(MANIFEST_PATH),
         serde_json::to_string_pretty(&manifest)?,
     )?;
     Ok(manifest)
@@ -707,6 +693,7 @@ fn write_output<T: Real>(
                 colormap_for(o.field),
                 None,
                 1,
+                Some(MANIFEST_PATH),
             )?;
             Ok(name)
         }
@@ -715,7 +702,7 @@ fn write_output<T: Real>(
             let mut file = fs::File::create(out_dir.join(&name))?;
             writeln!(
                 file,
-                "# {kind_name}, nx={nx}, ny={ny}, row-major y*nx+x, step={step}"
+                "# {kind_name}, nx={nx}, ny={ny}, row-major y*nx+x, step={step}, manifest_path={MANIFEST_PATH}"
             )?;
             for y in 0..ny {
                 let row: Vec<String> = (0..nx).map(|x| format!("{}", values[y * nx + x])).collect();
@@ -726,7 +713,14 @@ fn write_output<T: Real>(
         }
         OutputFormat::Vtk => {
             let name = format!("{kind_name}_{step}.vtk");
-            write_vtk(&out_dir.join(&name), &kind_name, step, [nx, ny, 1], &values)?;
+            write_vtk(
+                &out_dir.join(&name),
+                &kind_name,
+                step,
+                [nx, ny, 1],
+                &values,
+                MANIFEST_PATH,
+            )?;
             Ok(name)
         }
     }
@@ -741,12 +735,16 @@ fn write_vtk(
     step: usize,
     dims: [usize; 3],
     values: &[f64],
+    manifest_path: &str,
 ) -> Result<()> {
     let [nx, ny, nz] = dims;
     debug_assert_eq!(values.len(), nx * ny * nz);
     let mut file = std::io::BufWriter::new(fs::File::create(path)?);
     writeln!(file, "# vtk DataFile Version 3.0")?;
-    writeln!(file, "LBMFlow {kind_name} step={step}")?;
+    writeln!(
+        file,
+        "LBMFlow {kind_name} step={step} manifest_path={manifest_path}"
+    )?;
     writeln!(file, "ASCII")?;
     writeln!(file, "DATASET STRUCTURED_POINTS")?;
     writeln!(file, "DIMENSIONS {nx} {ny} {nz}")?;
@@ -865,6 +863,7 @@ where
                 colormap_for(o.field),
                 None,
                 1,
+                Some(MANIFEST_PATH),
             )?;
             Ok(name)
         }
@@ -876,7 +875,7 @@ where
             let mut file = fs::File::create(out_dir.join(&name))?;
             writeln!(
                 file,
-                "# {kind_name}, nx={nx}, ny={ny}, z-slice z={zmid} of nz={nz}, row-major y*nx+x, step={step}"
+                "# {kind_name}, nx={nx}, ny={ny}, z-slice z={zmid} of nz={nz}, row-major y*nx+x, step={step}, manifest_path={MANIFEST_PATH}"
             )?;
             for y in 0..ny {
                 let row: Vec<String> = (0..nx).map(|x| format!("{}", slice[y * nx + x])).collect();
@@ -886,7 +885,14 @@ where
         }
         OutputFormat::Vtk => {
             let name = format!("{kind_name}_{step}.vtk");
-            write_vtk(&out_dir.join(&name), &kind_name, step, dims, &values)?;
+            write_vtk(
+                &out_dir.join(&name),
+                &kind_name,
+                step,
+                dims,
+                &values,
+                MANIFEST_PATH,
+            )?;
             Ok(name)
         }
     }
@@ -924,6 +930,7 @@ where
                 let path = out_dir.join("force.csv");
                 let mut file = fs::File::create(&path)?;
                 writeln!(file, "step,fx,fy,fz")?;
+                writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
                 files.push("force.csv".into());
                 probes.push(Probe3 {
                     every: every.max(1),
@@ -942,6 +949,7 @@ where
                 let path = out_dir.join(&name);
                 let mut file = fs::File::create(&path)?;
                 writeln!(file, "step,ux,uy,uz,rho")?;
+                writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
                 files.push(name);
                 probes.push(Probe3 {
                     every: every.max(1),
@@ -1060,6 +1068,16 @@ where
             .fold(0.0f64, f64::max);
     let manifest = Manifest {
         scenario: sc.name.clone(),
+        scenario_hash: scenario_hash(sc)?,
+        manifest_path: MANIFEST_PATH.to_string(),
+        bioprocess_schema_version: None,
+        backend: BackendId::Cpu,
+        lattice: lattice_id(lattice),
+        precision: precision_id(sc.physics.precision),
+        active_models: active_models_for_legacy(sc),
+        qoi_methods: Vec::new(),
+        unit_report: None,
+        capability_report: capability_report(),
         status: status.to_string(),
         steps_run: executed as u64,
         wall_seconds: wall,
@@ -1080,7 +1098,7 @@ where
         files,
     };
     fs::write(
-        out_dir.join("manifest.json"),
+        out_dir.join(MANIFEST_PATH),
         serde_json::to_string_pretty(&manifest)?,
     )?;
     Ok(manifest)
@@ -1198,13 +1216,91 @@ mod tests {
         // Probe CSVs: 3D force has fz, 3D point has uz.
         let force = fs::read_to_string(dir.join("force.csv")).unwrap();
         assert!(force.starts_with("step,fx,fy,fz\n"), "{force}");
-        assert_eq!(force.lines().count(), 1 + 4, "{force}");
+        assert!(force.contains("manifest_path=manifest.json"), "{force}");
+        assert_eq!(force.lines().count(), 1 + 1 + 4, "{force}");
         let point = fs::read_to_string(dir.join("point_16_6_5.csv")).unwrap();
         assert!(point.starts_with("step,ux,uy,uz,rho\n"), "{point}");
+        assert!(point.contains("manifest_path=manifest.json"), "{point}");
         // The inflow reached the probe point: ux > 0 in the wake row.
         let last = point.lines().last().unwrap();
         let ux: f64 = last.split(',').nth(1).unwrap().parse().unwrap();
         assert!(ux.is_finite());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manifest_snapshot_for_legacy_scenario_matches_baseline() {
+        let sc: Scenario = serde_json::from_str(
+            r#"{
+                "name": "legacy-manifest-snapshot",
+                "grid": { "nx": 10, "ny": 8 },
+                "physics": { "nu": 0.05, "precision": "f64" },
+                "edges": {
+                    "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                    "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" }
+                },
+                "run": { "steps": 1 }
+            }"#,
+        )
+        .unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("lbm_legacy_manifest_test_{}", std::process::id()));
+        let manifest = run(&sc, &dir).unwrap();
+        let value = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(value["scenario"], "legacy-manifest-snapshot");
+        assert_eq!(value["manifestPath"], "manifest.json");
+        assert!(value["scenarioHash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert_eq!(value["bioprocessSchemaVersion"], serde_json::Value::Null);
+        assert_eq!(value["backend"], "cpu");
+        assert_eq!(value["lattice"], "d2q9");
+        assert_eq!(value["precision"], "f64");
+        assert_eq!(value["activeModels"], serde_json::json!(["single_phase"]));
+        assert_eq!(value["qoiMethods"], serde_json::json!([]));
+        assert!(value.get("unitReport").is_none());
+        assert!(value["capabilityReport"].as_array().unwrap().len() >= 8);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn output_files_reference_manifest_path() {
+        let sc: Scenario = serde_json::from_str(
+            r#"{
+                "name": "manifest-path-outputs",
+                "grid": { "nx": 12, "ny": 8 },
+                "physics": { "nu": 0.05 },
+                "edges": {
+                    "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                    "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" }
+                },
+                "run": { "steps": 1 },
+                "outputs": [
+                    { "field": "rho", "format": "csv", "every": 0 },
+                    { "field": "speed", "format": "vtk", "every": 0 },
+                    { "field": "rho", "format": "png", "every": 0 }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("lbm_manifest_path_test_{}", std::process::id()));
+        let manifest = run(&sc, &dir).unwrap();
+        assert_eq!(manifest.manifest_path, "manifest.json");
+        let csv = fs::read_to_string(dir.join("rho_1.csv")).unwrap();
+        assert!(csv.contains("manifest_path=manifest.json"), "{csv}");
+        let vtk = fs::read_to_string(dir.join("speed_1.vtk")).unwrap();
+        assert!(vtk.contains("manifest_path=manifest.json"), "{vtk}");
+
+        let decoder = png::Decoder::new(fs::File::open(dir.join("rho_1.png")).unwrap());
+        let reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        let found = info
+            .uncompressed_latin1_text
+            .iter()
+            .any(|chunk| chunk.keyword == "manifest_path" && chunk.text == "manifest.json");
+        assert!(found, "PNG manifest_path text chunk missing");
         fs::remove_dir_all(&dir).ok();
     }
 

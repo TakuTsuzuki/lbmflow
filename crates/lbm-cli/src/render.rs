@@ -97,6 +97,7 @@ pub fn write_png_scaled(
     cmap: Colormap,
     vmax: Option<f64>,
     scale: usize,
+    manifest_path: Option<&str>,
 ) -> Result<()> {
     let anchors: &[[u8; 3]] = match cmap {
         Colormap::Viridis => &VIRIDIS,
@@ -148,6 +149,9 @@ pub fn write_png_scaled(
     let mut enc = png::Encoder::new(BufWriter::new(file), ow as u32, oh as u32);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
+    if let Some(path) = manifest_path {
+        enc.add_text_chunk("manifest_path".to_string(), path.to_string())?;
+    }
     let mut writer = enc.write_header()?;
     writer.write_image_data(&buf)?;
     Ok(())

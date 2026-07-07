@@ -5,6 +5,7 @@
 
 mod capabilities;
 mod gallery;
+mod manifest;
 mod mcp;
 mod render;
 mod runner;
