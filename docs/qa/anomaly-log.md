@@ -250,3 +250,17 @@ re-tagged GATED — needs MCMP per-component sources (capability gap) or
 MF-gamma phase-field gas inflow (VR-STR-02 sparger unit test is the
 planned home). Routing package = branch cx/vv-sparger (example + report +
 PNGs). The STOP-rule/honesty machinery worked as designed.
+
+### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — S2,
+core-engine routing (found by the interaction matrix, lane 5.1)
+Steady-state discriminator confirms the leak persists after hydrostatic
+equilibration: uniform-force × patch +2.47e-5 mass/step, gravity × patch
+−7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale ~ F·A_patch.
+Mechanism candidate (pitfall family #1): the Zou-He patch reconstruction
+of unknown populations ignores the Guo half-force contribution, so each
+step leaks O(F) mass per patch cell. Neither T18.2 (patches, no force)
+nor the gravity suite (force, no patches) could see it — a pure
+pair-interaction defect, exactly what lane 5.1 exists for. Gate =
+cx/interaction-matrix (2 documented-red cells with the interpretation
+rule in the assert). All other 18 pairs PASS (or SKIP with stated
+API-incompatibility reasons); rotor pairs pass under mf-interim.
