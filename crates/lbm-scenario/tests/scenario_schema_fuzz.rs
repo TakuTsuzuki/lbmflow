@@ -287,7 +287,12 @@ fn legal_case(case_index: usize, rng: &mut Lcg) -> Scenario {
     Scenario {
         version: 0,
         name: format!("g3-legal-{case_index:02}"),
-        grid: Grid { nx, ny, nz: 1 },
+        grid: Grid {
+            nx,
+            ny,
+            nz: 1,
+            lattice: None,
+        },
         physics: Physics {
             nu,
             collision: if rng.bool() {
