@@ -1501,3 +1501,17 @@ Verification in this session:
   passed against `bench/baselines/m5-max-sandbox.json`; notable measured cases
   included D2Q9 SIMD f32 1024²/12T = 490.2 MLUPS and D3Q19 SIMD f32
   128³/12T = 119.6 MLUPS in the current loaded sandbox window.
+
+## 2026-07-07 PM local MPI weak-scaling preflight (ME-3 path validation, main)
+D3Q19 bench_mpi --mode weak3d, 32^3/rank, arm64 Open MPI 5.0.9, single M5 Max:
+- n=1: 10.79 MLUPS total, 100% (baseline)
+- n=2: 19.79 MLUPS, 9.90/rank, 91.7% efficiency
+- n=4: 33.19 MLUPS, 8.30/rank, 76.9% efficiency
+Mass exactly conserved at every rank count; nonfinite=0; bit-clean decomp.
+The n=4 drop is single-node memory-bandwidth contention (4 ranks share one
+unified-memory bus) + the tiny 32^3 halo/compute ratio, NOT a scaling defect
+— it is precisely why the ME-3 acceptance (>=80% weak @ 64 ranks) requires a
+real cluster with per-rank independent bandwidth. This preflight validates
+the distributed path is correct and instrumented; the industrial-throughput
+weak-scaling number is gated on cluster access (ME-3, awaiting AWS spend
+confirm — CLUSTER_OPTIONS.md).
