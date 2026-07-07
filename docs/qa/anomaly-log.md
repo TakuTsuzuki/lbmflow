@@ -259,18 +259,30 @@ the lane-1.7 SC pressure-tensor audit is promoted to the highest-value W2
 item; its job is to derive which σ the SC pressure tensor actually
 delivers on curved menisci vs flat interfaces vs retracting rims.
 
-### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — S2,
-core-engine routing (found by the interaction matrix, lane 5.1)
-Steady-state discriminator confirms the leak persists after hydrostatic
-equilibration: uniform-force × patch +2.47e-5 mass/step, gravity × patch
-−7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale ~ F·A_patch.
-Mechanism candidate (pitfall family #1): the Zou-He patch reconstruction
-of unknown populations ignores the Guo half-force contribution, so each
-step leaks O(F) mass per patch cell. Neither T18.2 (patches, no force) nor
-the gravity suite (force, no patches) could see it — a pure
-pair-interaction defect, exactly what lane 5.1 exists for. Gate =
-cx/interaction-matrix (2 documented-red cells, interpretation rule in the
-asserts). All other 18 pairs PASS (or SKIP with stated reasons).
+### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — FIXED
+in `cx/fix-p4-021`
+Original measurement: steady-state discriminator confirmed persistent leak
+after hydrostatic equilibration: uniform-force × patch +2.47e-5 mass/step,
+gravity × patch −7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale
+~F·A_patch. Root cause: the Zou-He patch reconstruction of unknown
+populations ignored the Guo half-force contribution, so it imposed raw
+momentum `rho*u_prescribed`; the subsequent `moments_row` half-force shift
+reported physical velocity `u_prescribed + F/(2 rho)` and created secular
+mass drift.
+
+Fix: D2Q9, D3Q19, D3Q27, and generated WGSL `bc` closures now reconstruct on
+raw Guo momentum `rho*u_phys - F/2` (implemented as the equivalent
+pre-force velocity `v = u_phys - F/(2 rho)`, with analytic handling for
+`F = F0 + rho*g`). Whole-face Zou-He and T18.2 face patches share this
+closure. Zero-force branch remains bit-identical to the legacy D2Q9 formula.
+
+Evidence: `zou_he_force.rs` passes for D2Q9/D3Q19/D3Q27 with uniform force
+plus gravity; `kernels::tests::zou_he_d2q9_zero_force_matches_legacy_formula_bitwise`
+passes; `feature_interaction_conservation_matrix` passes, flipping the two
+documented red cells green while preserving the other cells' PASS/SKIP
+status. GPU kernel text changed only in the `bc` reconstruction; F32
+collision byte-identity scope was not widened or narrowed. Native GPU suites
+remain PM-run.
 
 ### Lane 2.1 mutation-testing extension CLOSED (merge 8c26f14)
 10-mutant matrix all CAUGHT: Guo-source sign, moving-wall factor 2, D2Q9
@@ -294,14 +306,12 @@ add-into with a documented "SC contribution overwrites its own footprint"
 convention, or require callers to compose after SC in a single documented
 order.
 
-### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec)
+### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec) — CLOSED
 Zou-He closures at kernels.rs:754-773 (D2Q9), 941-954 (D3Q19), 828-867
-(D3Q27) reconstruct unknowns from raw populations and use caller-passed u
-verbatim — NO (1−ω/2)·Guo-source term at the face. Applied macroscopic
-velocity is therefore u_prescribed + F/(2ρ), and mass leaks as F·A_patch
-per step — matches ANOM-P4-021 measurement exactly. The two lanes now
-converge on the same fix locus. Core routing package includes the
-derivation.
+(D3Q27) reconstructed unknowns from raw populations and used caller-passed u
+verbatim. Applied macroscopic velocity was therefore
+u_prescribed + F/(2ρ), and mass leaked as F·A_patch per step — matching the
+interaction-matrix measurement. Closed by the raw-Guo-momentum closure above.
 
 ### Documentation drift found (lane 3.2 residuals, S3)
 - PHYSICS.md T11 σ entry does not acknowledge P4-014/017 mechanical-σ

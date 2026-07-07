@@ -47,7 +47,9 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
   virtual wall density unlocks the full 0–180° range on the same solver.
 - **Open BC — Zou-He, single implementation** parameterized by face normal
   `(n, t)`. Handles velocity and pressure faces on all four (2D) / six (3D)
-  faces via one formula; see doc comments in `params.rs` / `kernels.rs`.
+  faces via one formula; with body force, it closes on the Guo raw momentum
+  `rho u - F/2` so velocity faces prescribe physical velocity. See doc
+  comments in `params.rs` / `kernels.rs`.
 - **Open BC — convective outflow with mass-drift correction** (`params.rs`,
   `kernels.rs::convective_outflow`). The naive `f = (f_prev + λ f_int)/(1+λ)`
   drifts to NaN; the live implementation re-pins edge density to the
@@ -415,6 +417,40 @@ impinging-jet class of scenarios.
   restriction only for D3Q27 velocity inlet / pressure outlet. D2Q9 and
   D3Q19 keep their existing code paths. The D3Q27 outflow and convective
   closures remain unimplemented rather than inheriting a new model silently.
+
+### 2026-07-07 Guo-force-consistent Zou-He closure (`kernels.rs::zou_he_face_selected`)
+- Form: velocity and pressure Zou-He faces reconstruct unknown populations
+  from the raw boundary velocity
+  `v = u_phys - F/(2 rho)`, where `F = F0 + rho g` is the same composed Guo
+  force used by collision and `moments_row`. For velocity faces,
+  `rho (1 - v_n) = S0 + 2 S- + 1` gives
+  `rho = (S0 + 2 S- + 1 - F0_n/2) / (1 - u_n + g_n/2)`;
+  reconstruction then uses `rho v_n` and `rho v_t`. For pressure faces,
+  `rho` is prescribed, `v_n = 1 - (S0 + 2 S- + 1)/rho`, and zero physical
+  tangential velocity is enforced by `v_t = -F_t/(2 rho)`. This is the
+  pre-force-population form equivalent to adding the Guo source correction
+  to the NEBB closure, but it preserves the existing no-force arithmetic
+  exactly.
+- Source: resolved from the engine's Guo moment convention
+  `rho u = sum_q c_q f_q + F/2` and the existing Zou-He/Hecht-Harting
+  moment closure. No empirical coefficient is introduced.
+- Validity domain: planar axis-aligned D2Q9, D3Q19, and D3Q27 velocity and
+  pressure faces, including masked face patches, under the existing
+  one-open-axis and low-Mach prescribed-speed guards. The correction uses the
+  backend-composed single-phase force `F0 + rho g`; other closures must feed
+  the same Guo force path before this boundary pass.
+- Validation: `crates/lbm-core/tests/zou_he_force.rs` passes for D2Q9,
+  D3Q19, and D3Q27 with uniform force plus per-mass gravity
+  (max velocity-face error `1.388e-17` or lower). Kernel unit
+  `zou_he_d2q9_zero_force_matches_legacy_formula_bitwise` pins the zero-force
+  D2Q9 branch against the legacy formula. The interaction matrix
+  `feature_interaction_conservation_matrix` flips the uniform-force ×
+  face-patch and gravity × face-patch cells green while the other feature
+  pairs remain green/skip as documented.
+- Replaces / interacts with: fixes ANOM-P4-021. Whole-face Zou-He and T18.2
+  face patches share `zou_he_face_selected`, so both paths receive the same
+  correction. The generated GPU `bc` kernel mirrors the same raw-velocity
+  closure; the F32 collision byte-identity scope is unchanged.
 
 ### 2026-07-07 behavior review — D3Q27 open rectangular duct
 Pattern: the duct run is predominantly unidirectional in `x`; transverse
