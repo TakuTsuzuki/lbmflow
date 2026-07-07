@@ -5,6 +5,7 @@ use crate::render::{write_png_scaled, Colormap};
 use anyhow::{Context, Result};
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
+use lbm_core::prelude::Lattice;
 use lbm_scenario::{
     FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, Sim3Handle, SimHandle, Solver3,
 };
@@ -136,8 +137,10 @@ pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> 
     }
     if sc.is_3d() {
         return match lbm_scenario::build3d(sc)? {
-            Sim3Handle::F64(s) => run3d_t(sc, s, out_dir, units, options),
-            Sim3Handle::F32(s) => run3d_t(sc, s, out_dir, units, options),
+            Sim3Handle::D3Q19F64(s) => run3d_t(sc, s, "D3Q19", out_dir, units, options),
+            Sim3Handle::D3Q19F32(s) => run3d_t(sc, s, "D3Q19", out_dir, units, options),
+            Sim3Handle::D3Q27F64(s) => run3d_t(sc, s, "D3Q27", out_dir, units, options),
+            Sim3Handle::D3Q27F32(s) => run3d_t(sc, s, "D3Q27", out_dir, units, options),
         };
     }
     match lbm_scenario::build(sc)? {
@@ -770,7 +773,11 @@ struct Fields3 {
     nu: f64,
 }
 
-fn gather3<T: lbm_core::real::Real>(s: &Solver3<T>) -> Fields3 {
+fn gather3<L, T>(s: &Solver3<L, T>) -> Fields3
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
     let to64 = |v: Vec<T>| v.into_iter().map(|x| x.as_f64()).collect::<Vec<f64>>();
     Fields3 {
         ux: to64(s.gather_ux()),
@@ -819,13 +826,17 @@ fn field_values3(f: &Fields3, dims: [usize; 3], kind: FieldKind) -> Vec<f64> {
     }
 }
 
-fn write_output3<T: lbm_core::real::Real>(
-    s: &Solver3<T>,
+fn write_output3<L, T>(
+    s: &Solver3<L, T>,
     f: &Fields3,
     o: &OutputSpec,
     step: usize,
     out_dir: &Path,
-) -> Result<String> {
+) -> Result<String>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
     let dims = s.dims();
     let [nx, ny, nz] = dims;
     let kind_name = format!("{:?}", o.field).to_lowercase();
@@ -877,13 +888,18 @@ fn write_output3<T: lbm_core::real::Real>(
     }
 }
 
-fn run3d_t<T: lbm_core::real::Real>(
+fn run3d_t<L, T>(
     sc: &Scenario,
-    mut s: Solver3<T>,
+    mut s: Solver3<L, T>,
+    lattice: &str,
     out_dir: &Path,
     units: Option<lbm_scenario::UnitReport>,
     options: &RunOptions,
-) -> Result<Manifest> {
+) -> Result<Manifest>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
     if let Some(dir) = &options.restore {
         s.restore(dir)
             .with_context(|| format!("cannot restore checkpoint: {}", dir.display()))?;
@@ -1052,7 +1068,7 @@ fn run3d_t<T: lbm_core::real::Real>(
         provenance: provenance(
             sc,
             lbm_scenario::BackendChoice::Cpu,
-            "D3Q19",
+            lattice,
             lbm_scenario::StorageSpec::F32,
         ),
         warnings: lbm_scenario::validate(sc),
@@ -1231,6 +1247,41 @@ mod tests {
         assert!(text.contains("\"provenance\""), "{text}");
         assert!(text.contains("\"lattice\": \"D3Q19\""), "{text}");
         assert!(text.contains("\"kind\": \"central_moment\""), "{text}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manifest_records_d3q27_lattice_provenance() {
+        let sc: Scenario = serde_json::from_str(
+            r#"{
+                "name": "manifest-d3q27",
+                "grid": { "nx": 10, "ny": 8, "nz": 6, "lattice": "d3q27" },
+                "physics": { "nu": 0.05, "precision": "f64" },
+                "compute": { "backend": "cpu" },
+                "edges": {
+                    "left": { "type": "velocityInlet", "u": [0.02, 0.0] },
+                    "right": { "type": "pressureOutlet", "rho": 1.0 },
+                    "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                    "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+                },
+                "run": { "steps": 3 },
+                "outputs": [ { "field": "speed", "format": "vtk", "every": 0 } ]
+            }"#,
+        )
+        .unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("lbm_manifest_d3q27_test_{}", std::process::id()));
+        let manifest = run(&sc, &dir).unwrap();
+        assert_eq!(manifest.status, "completed");
+        assert_eq!(manifest.provenance.lattice, "D3Q27");
+        assert_eq!(
+            manifest.provenance.backend,
+            lbm_scenario::BackendChoice::Cpu
+        );
+        assert!(manifest.files.contains(&"speed_3.vtk".to_string()));
+
+        let text = fs::read_to_string(dir.join("manifest.json")).unwrap();
+        assert!(text.contains("\"lattice\": \"D3Q27\""), "{text}");
         fs::remove_dir_all(&dir).ok();
     }
 }

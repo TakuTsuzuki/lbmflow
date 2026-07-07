@@ -747,6 +747,7 @@ mod tests {
                 nx: 16,
                 ny: 16,
                 nz: 1,
+                lattice: None,
             },
             physics: Physics {
                 nu: 0.02,

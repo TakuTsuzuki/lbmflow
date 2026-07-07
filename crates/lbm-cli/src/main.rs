@@ -249,12 +249,13 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
 {
   "version": 0,
   "name": "my-sim",                       // output directory name
-  "grid": { "nx": 128, "ny": 128 },        // add "nz": 64 to run in 3D (D3Q19)
-                                           //   (omitted or 1 = 2D; 3D restrictions at the end)
+  "grid": { "nx": 128, "ny": 128 },        // add "nz": 64 to run in 3D
+                                           //   optional 3D "lattice": "d3q19" | "d3q27"
+                                           //   absent lattice = d3q19; omitted/1 nz = 2D D2Q9
   "physics": {
     "nu": 0.02,                            // kinematic viscosity (lattice units); tau = 3*nu + 0.5
     "collision": { "type": "trt" },        // "trt" (recommended) | "bgk" | "central_moment"
-                                           //   central_moment is currently exposed only on 3D D3Q19 CPU
+                                           //   central_moment is currently exposed only on 3D CPU
     "force": [0.0, 0.0],                   // uniform body force (e.g. gravity; z component 0 in 3D)
     "precision": "f64"                     // "f32" | "f64"
   },
@@ -319,8 +320,11 @@ const SCHEMA_DOC: &str = r#"Scenario JSON (v0) — lbm run <file.json>
 }
 
 3D (nz > 1) restrictions: single-phase only (no multiphase), init must be rest.
-compute.backend must be cpu/auto in the current CLI runner. Engine is the V2 core (D3Q19).
-CentralMoment collision is exposed on this 3D D3Q19 CPU path.
+grid.lattice may be "d3q19" (default) or "d3q27"; D3Q27 supports CPU periodic, closed-wall,
+velocity-inlet, pressure-outlet, outflow, and convective faces. D3Q27 GPU open-face scenarios
+are rejected explicitly.
+compute.backend must be cpu/auto in the current CLI runner. Engine is the V2 core (D3Q19/D3Q27).
+CentralMoment collision is exposed on this 3D CPU path.
 compute.storage f16 is GPU-storage-only and is rejected for CPU, 3D, and no-gpu-feature builds.
 
 Results: <out>/manifest.json (status/steps/mlups/diagnostics/provenance/warnings/units/file list)
