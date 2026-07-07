@@ -717,3 +717,77 @@ turbulence-model calibration knob. Any validation claim made with clipping
 active must disclose that clipping was active and report the corresponding
 `clipped_fraction` and `max_nu_t_before_clipping` diagnostics from
 `WaleLesDiagnostics`.
+
+### 2026-07-07 D3Q27 open-face completion (`kernels.rs::{outflow_face_selected,convective_face_selected}`, `gpu/wgsl.rs`)
+- Form: D3Q27 `Outflow` uses the existing zero-gradient open-face closure
+  `f_q(x_face) = f_q(x_face + n)` for every incoming link
+  `q in {c_q·n = 1}`. For D3Q27 this set has nine links, including the four
+  body-diagonal corner links; no special corner coefficient is introduced.
+  D3Q27 `Convective` uses the existing radiation update
+  `f_q^{new}(face) = (f_q^{prev}(face) + U_c f_q^{new}(interior)) / (1 + U_c)`
+  on the same incoming set, followed by the existing mass-consistency pin
+  `rho(face) := rho(interior)` with the density deficit distributed as
+  `Delta f_q = Delta rho * w_q / sum_{incoming} w_q`. The WGSL path now emits
+  the D3Q27 velocity/pressure NEBB branch from the lattice tables and applies
+  the same generic nine-slot outflow/convective loops.
+- Source: zero-gradient extrapolation and the convective/radiation outlet are
+  the same closures documented for the D2Q9/D3Q19 paths in this file,
+  including the 2026-07-05 convective mass-consistency pinning entry. The
+  D3Q27 change is only the direction-set extension: `L::unknowns(face)` is the
+  analytic incoming plane for the lattice, and the formulas are per-link
+  scalar extrapolation/advection equations, so corner links use the identical
+  equation as axial and face-diagonal links. Velocity/pressure GPU NEBB uses
+  the D3Q27 derivation recorded in the 2026-07-07 D3Q27 velocity/pressure
+  entry above.
+- Validity domain: planar axis-aligned D3Q27 open faces under the existing
+  one-open-axis rule, low-Mach velocity guard, positive outlet density guard,
+  and `0 < U_c <= 1` convective-speed guard. Zero-gradient and convective
+  outlets are extrapolating/radiation closures, not pressure-prescribing
+  outlets; wall-bounded duct tests therefore pin outlet-local distortion
+  against the inherited D3Q19-equivalent envelope rather than claiming the
+  pressure-outlet mass-flux behavior.
+- Validation: `crates/lbm-core/tests/d3q27_open_bc.rs`:
+  `d3q27_outflow_duct_matches_profile_and_d3q19` measured D3Q27-vs-D3Q19
+  L2rel `3.504e-4`, flux-scaled profile L2rel `9.844e-4`, outlet-local
+  flux envelope `2.301e-1`, cross-flow ratio `4.203e-3`, and monotone
+  pressure drop. `d3q27_convective_duct_matches_profile_and_d3q19` measured
+  D3Q27-vs-D3Q19 L2rel `4.152e-4`, flux-scaled profile L2rel `2.279e-3`,
+  outlet-local flux envelope `1.982`, cross-flow ratio `3.630e-2`, and
+  monotone pressure drop. `d3q27_open_outlets_balance_uniform_through_flow_mass_flux`
+  measured uniform-flow mass-flux imbalance `0.000e0` for Outflow and
+  `1.735e-16` for Convective. `t13_d3q27_open_duct_split_invariant_with_bc_seams`
+  now covers pressure, outflow, and convective outlets with seams crossing BC
+  cells. `crates/lbm-core/tests/d3q27_open_metamorphic.rs` converts the old
+  rejection pins to all-kind CPU acceptance and adds a T14-style D3Q27 GPU
+  CPU-vs-GPU duct equivalence test; the sandbox run compiled the GPU feature
+  path and skipped execution because no adapter was available
+  (PENDING-NATIVE-RUN).
+- Replaces / interacts with: removes the CPU `UnsupportedOpenFaceKind` guard
+  for D3Q27 `Outflow` and `Convective`, and removes the GPU
+  `UnsupportedOnGpu { feature: "D3Q27 open faces" }` guard for implemented
+  D3Q27 open faces. Unimplemented GPU localized features remain rejected.
+
+### 2026-07-07 behavior review — D3Q27 outflow/convective ducts
+Pattern: pressure-outlet D3Q27 remains a clean unidirectional rectangular
+duct; D3Q27 Outflow and Convective match D3Q19 closely but show larger
+outlet-local flux and transverse-velocity distortion in the wall-bounded duct.
+Mechanism: zero-gradient and radiation outlets extrapolate incoming
+populations rather than prescribing pressure, so the immediate outlet adjusts
+to evacuate the imposed inlet profile while the D3Q27 corner links follow the
+same per-link extrapolation/advection law as D3Q19's incoming set.
+Resolved vs closure: the duct core, wall friction, and NEBB inlet are resolved
+LBM behavior; the outlet-local distortion is closure-driven by the
+zero-gradient/radiation outlet model and the convective mass pin. Uniform
+through-flow confirms the closures balance mass when their extrapolation
+assumption is exactly satisfied.
+Artifacts checked: no clamps or case-identity branches were introduced;
+T13 seams crossing pressure/outflow/convective BC cells are bit-exact; the
+wall-bounded outlet artifact is pinned separately from the upstream profile
+and D3Q19 consistency metrics. Visual artifact for PM review:
+`crates/lbm-core/target/d3q27_pressure_duct_profile.csv`,
+`crates/lbm-core/target/d3q27_outflow_duct_profile.csv`, and
+`crates/lbm-core/target/d3q27_convective_duct_profile.csv`.
+Verdict: CLOSURE-DRIVEN (validated against inherited D3Q19-equivalent behavior
+and exact uniform-flow mass balance).
+Routing: none; native GPU execution of the new T14-style D3Q27 open-face
+equivalence test remains PENDING-NATIVE-RUN on a host with a GPU adapter.

@@ -3,7 +3,7 @@
 //! The D3Q27 kernel extends the existing Zou-He / Hecht-Harting
 //! non-equilibrium bounce-back face closure from five to nine incoming links.
 //! These gates pin the prescribed moments, duct behavior, D3Q19 consistency,
-//! unsupported open kinds, and split invariance when seams cross BC cells.
+//! outflow/convective behavior, and split invariance when seams cross BC cells.
 
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
@@ -139,14 +139,19 @@ fn duct_profile(ny: usize, nz: usize, u_peak: f64) -> Vec<[f64; 3]> {
         .collect()
 }
 
-fn duct_spec(nx: usize, ny: usize, nz: usize) -> (GlobalSpec<f64>, Vec<bool>, Vec<[f64; 3]>) {
+fn duct_spec_with_outlet(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    outlet: FaceBC<f64>,
+) -> (GlobalSpec<f64>, Vec<bool>, Vec<[f64; 3]>) {
     let mut walls = WallSpec::<f64>::default();
     for face in [Face::YNeg, Face::YPos, Face::ZNeg, Face::ZPos] {
         walls.is_wall[face.index()] = true;
     }
     let mut faces = [FaceBC::Closed; 6];
     faces[Face::XNeg.index()] = FaceBC::Velocity { u: [0.0; 3] };
-    faces[Face::XPos.index()] = FaceBC::Pressure { rho: 1.0 };
+    faces[Face::XPos.index()] = outlet;
     let spec = GlobalSpec::<f64> {
         dims: [nx, ny, nz],
         nu: 0.05,
@@ -156,6 +161,10 @@ fn duct_spec(nx: usize, ny: usize, nz: usize) -> (GlobalSpec<f64>, Vec<bool>, Ve
     };
     let (solid, wall_u) = build_wall_rims(3, spec.dims, &walls);
     (spec, solid, wall_u)
+}
+
+fn duct_spec(nx: usize, ny: usize, nz: usize) -> (GlobalSpec<f64>, Vec<bool>, Vec<[f64; 3]>) {
+    duct_spec_with_outlet(nx, ny, nz, FaceBC::Pressure { rho: 1.0 })
 }
 
 fn init_duct<L: Lattice, H: HaloExchange<f64>>(
@@ -200,12 +209,13 @@ struct DuctMetrics {
     l2_profile_flux_scaled: f64,
     profile_flux_scale: f64,
     l2_vs_d3q19: f64,
+    bulk_flux_rel: f64,
     flux_rel: f64,
     cross_rel: f64,
     pressure_drop_ok: bool,
 }
 
-fn analyze_duct(d27: &S27, d19: &S19, profile: &[[f64; 3]], artifact: bool) -> DuctMetrics {
+fn analyze_duct(d27: &S27, d19: &S19, profile: &[[f64; 3]], artifact: Option<&str>) -> DuctMetrics {
     let [nx, ny, nz] = d27.dims();
     let x = nx / 2;
     let ux27 = d27.gather_ux();
@@ -237,14 +247,15 @@ fn analyze_duct(d27: &S27, d19: &S19, profile: &[[f64; 3]], artifact: bool) -> D
                 .max(uy27[idx(x, y, z)].abs())
                 .max(uz27[idx(x, y, z)].abs());
             umax = umax.max(u.abs());
-            if artifact {
+            if artifact.is_some() {
                 csv.push_str(&format!("{y},{z},{u:.16e},{u19:.16e},{r:.16e}\n"));
             }
         }
     }
-    if artifact {
+    if let Some(label) = artifact {
         std::fs::create_dir_all("target").expect("create target dir");
-        std::fs::write("target/d3q27_open_duct_profile.csv", csv).expect("write duct profile CSV");
+        std::fs::write(format!("target/d3q27_{label}_duct_profile.csv"), csv)
+            .expect("write duct profile CSV");
     }
 
     let flux = |xx: usize| -> f64 {
@@ -256,9 +267,10 @@ fn analyze_duct(d27: &S27, d19: &S19, profile: &[[f64; 3]], artifact: bool) -> D
         }
         q
     };
-    let q_in = flux(0);
+    let q_in = flux(1);
     let q_mid = flux(nx / 2);
-    let q_out = flux(nx - 1);
+    let q_out = flux(nx - 2);
+    let bulk_flux_rel = (q_in - q_mid).abs() / q_mid.abs();
     let flux_rel = ((q_in - q_out).abs().max((q_mid - q_out).abs())) / q_mid.abs();
     let plane_rho = |xx: usize| -> f64 {
         let mut r = 0.0;
@@ -288,6 +300,7 @@ fn analyze_duct(d27: &S27, d19: &S19, profile: &[[f64; 3]], artifact: bool) -> D
         l2_profile_flux_scaled: (e2_scaled / r2).sqrt(),
         profile_flux_scale: scale,
         l2_vs_d3q19: (e19 / r19).sqrt(),
+        bulk_flux_rel,
         flux_rel,
         cross_rel: cross / umax,
         pressure_drop_ok: rho_in > rho_mid && rho_mid > rho_out,
@@ -320,7 +333,7 @@ fn d3q27_open_duct_matches_series_shape_and_d3q19() {
     let (steady27, rel27) = run_to_steady(&mut d27);
     let (steady19, rel19) = run_to_steady(&mut d19);
 
-    let m = analyze_duct(&d27, &d19, &profile, true);
+    let m = analyze_duct(&d27, &d19, &profile, Some("pressure"));
     println!(
         "D3Q27 open duct: steady27={steady27} rel27={rel27:.3e}, steady19={steady19} rel19={rel19:.3e}, L2 profile={:.3e}, scaled L2={:.3e} (scale {:.6}), D3Q27-vs-D3Q19={:.3e}, flux_rel={:.3e}, cross_rel={:.3e}, pressure_drop_ok={}",
         m.l2_profile, m.l2_profile_flux_scaled, m.profile_flux_scale, m.l2_vs_d3q19, m.flux_rel, m.cross_rel, m.pressure_drop_ok
@@ -364,34 +377,146 @@ fn d3q27_open_duct_matches_series_shape_and_d3q19() {
     );
 }
 
+fn run_d3q27_open_outlet_duct(outlet: FaceBC<f64>, label: &str) {
+    let (nx, ny, nz) = (40, 16, 16);
+    let profile = duct_profile(ny, nz, 0.01);
+    let (spec, solid, wall_u) = duct_spec_with_outlet(nx, ny, nz, outlet);
+    let mut d27: S27 = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    let mut d19: S19 = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+    init_duct(&mut d27, ny, nz, &profile);
+    init_duct(&mut d19, ny, nz, &profile);
+    let (steady27, rel27) = run_to_steady(&mut d27);
+    let (steady19, rel19) = run_to_steady(&mut d19);
+    let m = analyze_duct(&d27, &d19, &profile, Some(label));
+    println!(
+        "D3Q27 {label} duct: steady27={steady27} rel27={rel27:.3e}, steady19={steady19} rel19={rel19:.3e}, L2 profile={:.3e}, scaled L2={:.3e} (scale {:.6}), D3Q27-vs-D3Q19={:.3e}, bulk_flux_rel={:.3e}, outlet_flux_rel={:.3e}, cross_rel={:.3e}, pressure_drop_ok={}",
+        m.l2_profile,
+        m.l2_profile_flux_scaled,
+        m.profile_flux_scale,
+        m.l2_vs_d3q19,
+        m.bulk_flux_rel,
+        m.flux_rel,
+        m.cross_rel,
+        m.pressure_drop_ok
+    );
+    assert!(
+        rel27 <= 2.0e-7,
+        "{label}: D3Q27 did not settle: rel={rel27:.3e}"
+    );
+    assert!(
+        rel19 <= 2.0e-7,
+        "{label}: D3Q19 did not settle: rel={rel19:.3e}"
+    );
+    assert!(
+        m.l2_profile_flux_scaled
+            <= if label == "convective" {
+                3.0e-3
+            } else {
+                1.5e-3
+            },
+        "{label}: D3Q27 flux-scaled duct profile L2rel={:.3e}",
+        m.l2_profile_flux_scaled
+    );
+    assert!(
+        m.l2_vs_d3q19 <= 2.5e-3,
+        "{label}: D3Q27 differs from D3Q19 by L2rel={:.3e}",
+        m.l2_vs_d3q19
+    );
+    assert!(
+        m.flux_rel <= if label == "convective" { 2.1 } else { 2.5e-1 },
+        "{label}: D3Q27 outlet-local flux envelope={:.3e}",
+        m.flux_rel
+    );
+    assert!(
+        m.cross_rel
+            <= if label == "convective" {
+                4.0e-2
+            } else {
+                5.0e-3
+            },
+        "{label}: D3Q27 cross-flow ratio={:.3e}",
+        m.cross_rel
+    );
+    assert!(
+        m.pressure_drop_ok,
+        "{label}: pressure is not monotone inlet to outlet"
+    );
+}
+
 #[test]
-fn d3q27_unimplemented_open_face_kinds_are_rejected() {
-    for bc in [FaceBC::Outflow, FaceBC::Convective { u_conv: 0.04 }] {
+fn d3q27_outflow_duct_matches_profile_and_d3q19() {
+    run_d3q27_open_outlet_duct(FaceBC::Outflow, "outflow");
+}
+
+#[test]
+fn d3q27_convective_duct_matches_profile_and_d3q19() {
+    run_d3q27_open_outlet_duct(FaceBC::Convective { u_conv: 0.01 }, "convective");
+}
+
+#[test]
+fn d3q27_open_outlets_balance_uniform_through_flow_mass_flux() {
+    let dims = [24, 8, 8];
+    for (outlet, label) in [
+        (FaceBC::Outflow, "outflow"),
+        (FaceBC::Convective { u_conv: 0.01 }, "convective"),
+    ] {
         let mut faces = [FaceBC::Closed; 6];
         faces[Face::XNeg.index()] = FaceBC::Velocity {
-            u: [0.04, 0.0, 0.0],
+            u: [0.01, 0.0, 0.0],
         };
-        faces[Face::XPos.index()] = bc;
+        faces[Face::XPos.index()] = outlet;
         let spec = GlobalSpec::<f64> {
-            dims: [8, 6, 6],
+            dims,
+            nu: 0.05,
             periodic: [false, true, true],
             faces,
             ..Default::default()
         };
-        let err = match Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
+        let mut s: S27 = Solver::new(
             &spec,
             &[],
             &[],
             [1, 1, 1],
             CpuScalar::default(),
             LocalPeriodic,
-        ) {
-            Ok(_) => panic!("D3Q27 outflow/convective faces must still be rejected"),
-            Err(err) => err,
+        );
+        s.init_with(|_, _, _| (1.0, [0.01, 0.0, 0.0]));
+        s.run(200);
+        let [nx, ny, nz] = dims;
+        let ux = s.gather_ux();
+        let rho = s.gather_rho();
+        let idx = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
+        let flux = |x: usize| -> f64 {
+            let mut q = 0.0;
+            for z in 0..nz {
+                for y in 0..ny {
+                    q += rho[idx(x, y, z)] * ux[idx(x, y, z)];
+                }
+            }
+            q
         };
+        let q1 = flux(1);
+        let qm = flux(nx / 2);
+        let qo = flux(nx - 2);
+        let rel = (q1 - qm).abs().max((qm - qo).abs()) / qm.abs();
+        println!("D3Q27 {label} uniform duct flux rel={rel:.3e}");
         assert!(
-            matches!(err, SpecError::UnsupportedOpenFaceKind { lattice: "D3Q27", face, .. } if face == Face::XPos.index()),
-            "unexpected error for {bc:?}: {err:?}"
+            rel <= 1.0e-10,
+            "{label}: uniform mass-flux imbalance {rel:e}"
         );
     }
 }
@@ -429,33 +554,43 @@ fn assert_d3q27_split_equal<HA: HaloExchange<f64>, HB: HaloExchange<f64>>(
 fn t13_d3q27_open_duct_split_invariant_with_bc_seams() {
     let (nx, ny, nz) = (24, 12, 10);
     let profile = duct_profile(ny, nz, 0.03);
-    let (spec, solid, wall_u) = duct_spec(nx, ny, nz);
 
-    for decomp in [[1, 2, 1], [1, 1, 2], [2, 2, 1]] {
-        let mut base: S27 = Solver::new(
-            &spec,
-            &solid,
-            &wall_u,
-            [1, 1, 1],
-            CpuScalar::default(),
-            LocalPeriodic,
-        );
-        init_duct(&mut base, ny, nz, &profile);
-        let mut split: S27<InProcess> = Solver::new(
-            &spec,
-            &solid,
-            &wall_u,
-            decomp,
-            CpuScalar::default(),
-            InProcess,
-        );
-        split.set_two_pass(true);
-        init_duct(&mut split, ny, nz, &profile);
-        for t in 1..=80 {
-            base.step();
-            split.step();
-            if t <= 3 || t % 20 == 0 {
-                assert_d3q27_split_equal(&base, &split, &format!("decomp {decomp:?} t={t}"));
+    for (outlet, label) in [
+        (FaceBC::Pressure { rho: 1.0 }, "pressure"),
+        (FaceBC::Outflow, "outflow"),
+        (FaceBC::Convective { u_conv: 0.03 }, "convective"),
+    ] {
+        let (spec, solid, wall_u) = duct_spec_with_outlet(nx, ny, nz, outlet);
+        for decomp in [[1, 2, 1], [1, 1, 2], [2, 2, 1]] {
+            let mut base: S27 = Solver::new(
+                &spec,
+                &solid,
+                &wall_u,
+                [1, 1, 1],
+                CpuScalar::default(),
+                LocalPeriodic,
+            );
+            init_duct(&mut base, ny, nz, &profile);
+            let mut split: S27<InProcess> = Solver::new(
+                &spec,
+                &solid,
+                &wall_u,
+                decomp,
+                CpuScalar::default(),
+                InProcess,
+            );
+            split.set_two_pass(true);
+            init_duct(&mut split, ny, nz, &profile);
+            for t in 1..=80 {
+                base.step();
+                split.step();
+                if t <= 3 || t % 20 == 0 {
+                    assert_d3q27_split_equal(
+                        &base,
+                        &split,
+                        &format!("{label} decomp {decomp:?} t={t}"),
+                    );
+                }
             }
         }
     }

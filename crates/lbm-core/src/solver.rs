@@ -619,32 +619,6 @@ impl<T: Real> GlobalSpec<T> {
                 });
             }
         }
-        if L::D == 3 && L::Q == 27 {
-            for face in Face::ALL {
-                match self.faces[face.index()] {
-                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
-                    FaceBC::Outflow | FaceBC::Convective { .. } => {
-                        return Err(SpecError::UnsupportedOpenFaceKind {
-                            lattice: lattice_name::<L>(),
-                            face: face.index(),
-                            kind: face_bc_name(self.faces[face.index()]),
-                        });
-                    }
-                }
-            }
-            for patch in &self.face_patches {
-                match patch.bc {
-                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
-                    FaceBC::Outflow | FaceBC::Convective { .. } => {
-                        return Err(SpecError::UnsupportedOpenFaceKind {
-                            lattice: lattice_name::<L>(),
-                            face: patch.face,
-                            kind: face_bc_name(patch.bc),
-                        });
-                    }
-                }
-            }
-        }
         Ok(())
     }
 
@@ -818,16 +792,6 @@ fn hash_face_bc<T: Real>(h: &mut u64, bc: FaceBC<T>) {
             hash_u64(h, 4);
             hash_real(h, u_conv);
         }
-    }
-}
-
-fn face_bc_name<T: Real>(bc: FaceBC<T>) -> &'static str {
-    match bc {
-        FaceBC::Closed => "Closed",
-        FaceBC::Velocity { .. } => "Velocity",
-        FaceBC::Pressure { .. } => "Pressure",
-        FaceBC::Outflow => "Outflow",
-        FaceBC::Convective { .. } => "Convective",
     }
 }
 
@@ -4243,7 +4207,7 @@ mod tests {
     }
 
     #[test]
-    fn d3q27_rejects_unimplemented_open_face_kinds_before_build() {
+    fn d3q27_accepts_all_open_face_kinds_before_build() {
         let mut faces = [FaceBC::<f64>::Closed; 6];
         faces[Face::XNeg.index()] = FaceBC::Velocity {
             u: [0.02, 0.0, 0.0],
@@ -4255,26 +4219,16 @@ mod tests {
             faces,
             ..Default::default()
         };
-        assert!(matches!(
-            spec.validate_lattice::<D3Q27>(&[]),
-            Err(SpecError::UnsupportedOpenFaceKind {
-                lattice: "D3Q27",
-                face,
-                ..
-            })
-            if face == Face::XPos.index()
-        ));
-        assert!(matches!(
-            Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
-                &spec,
-                &[],
-                &[],
-                [1, 1, 1],
-                CpuScalar::default(),
-                LocalPeriodic,
-            ),
-            Err(SpecError::UnsupportedOpenFaceKind { .. })
-        ));
+        assert!(spec.validate_lattice::<D3Q27>(&[]).is_ok());
+        assert!(Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .is_ok());
     }
 
     #[test]

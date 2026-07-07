@@ -1,9 +1,8 @@
 //! Adversarial metamorphic gates for D3Q27 open-face NEBB.
 //!
 //! These tests do not validate a new flow model. They pin coordinate
-//! equivariance, mirror equivariance, sign reversal, unsupported open-kind
-//! rejection coverage, and the explicit GPU rejection until a D3Q27 GPU
-//! open-face path is deliberately implemented.
+//! equivariance, mirror equivariance, sign reversal, open-kind acceptance
+//! coverage, and D3Q27 GPU open-face CPU-vs-GPU equivalence.
 
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
@@ -298,11 +297,15 @@ fn d3q27_open_duct_inlet_profile_sign_anchor_reverses_flow() {
 }
 
 #[test]
-fn d3q27_unimplemented_open_face_kinds_are_rejected_on_every_face() {
+fn d3q27_open_face_kinds_are_accepted_on_every_face() {
     for face in Face::ALL {
-        for (bc, kind) in [
-            (FaceBC::Outflow, "Outflow"),
-            (FaceBC::Convective { u_conv: 0.04 }, "Convective"),
+        for bc in [
+            FaceBC::Velocity {
+                u: velocity(face.axis(), if face.is_neg() { 0.02 } else { -0.02 }),
+            },
+            FaceBC::Pressure { rho: 1.0 },
+            FaceBC::Outflow,
+            FaceBC::Convective { u_conv: 0.04 },
         ] {
             let mut faces = [FaceBC::Closed; 6];
             faces[face.index()] = bc;
@@ -324,19 +327,9 @@ fn d3q27_unimplemented_open_face_kinds_are_rejected_on_every_face() {
                 faces,
                 ..Default::default()
             };
-            let err = spec
-                .validate_lattice::<D3Q27>(&[])
-                .expect_err("D3Q27 must reject unsupported open face kinds");
             assert!(
-                matches!(
-                    err,
-                    SpecError::UnsupportedOpenFaceKind {
-                        lattice: "D3Q27",
-                        face: got_face,
-                        kind: got_kind,
-                    } if got_face == face.index() && got_kind == kind
-                ),
-                "unexpected error for {face:?} {bc:?}: {err:?}"
+                spec.validate_lattice::<D3Q27>(&[]).is_ok(),
+                "D3Q27 should accept {face:?} {bc:?}"
             );
         }
     }
@@ -351,9 +344,9 @@ fn gpu_ctx_or_skip() -> Option<std::sync::Arc<GpuContext>> {
         Ok(ctx) => Some(ctx.clone()),
         Err(e) => {
             if std::env::var_os("LBM_REQUIRE_GPU").is_some() {
-                panic!("D3Q27 GPU open-face rejection test requires an adapter: {e}");
+                panic!("D3Q27 GPU open-face equivalence test requires an adapter: {e}");
             }
-            eprintln!("skipping D3Q27 GPU open-face rejection test: no adapter ({e})");
+            eprintln!("skipping D3Q27 GPU open-face equivalence test: no adapter ({e})");
             None
         }
     }
@@ -361,52 +354,93 @@ fn gpu_ctx_or_skip() -> Option<std::sync::Arc<GpuContext>> {
 
 #[cfg(feature = "gpu")]
 #[test]
-fn d3q27_gpu_open_faces_are_explicitly_rejected() {
+fn d3q27_gpu_open_faces_match_cpu_for_all_supported_kinds() {
     let Some(ctx) = gpu_ctx_or_skip() else {
         return;
     };
 
-    let dims = [8, 7, 6];
-    let mut walls = WallSpec::<f32>::default();
-    for face in [Face::YNeg, Face::YPos, Face::ZNeg, Face::ZPos] {
-        walls.is_wall[face.index()] = true;
-    }
-    let mut faces = [FaceBC::Closed; 6];
-    faces[Face::XNeg.index()] = FaceBC::Velocity {
-        u: [0.02, 0.0, 0.0],
-    };
-    faces[Face::XPos.index()] = FaceBC::Pressure { rho: 1.0 };
-    let spec = GlobalSpec::<f32> {
-        dims,
-        nu: 0.05,
-        periodic: [false, false, false],
-        faces,
-        ..Default::default()
-    };
-    let (solid, wall_u) = build_wall_rims(3, dims, &walls);
-    let backend = WgpuBackend::<D3Q27>::new(ctx);
-    let err = match Solver::<D3Q27, f32, WgpuBackend<D3Q27>, LocalPeriodic>::try_new(
-        &spec,
-        &solid,
-        &wall_u,
-        [1, 1, 1],
-        backend,
-        LocalPeriodic,
-    ) {
-        Ok(_) => panic!("GPU D3Q27 open faces must remain explicitly rejected"),
-        Err(err) => err,
-    };
-    assert!(
-        matches!(
-            err,
-            SpecError::UnsupportedOnGpu {
-                feature: "D3Q27 open faces"
-            }
+    for (outlet, label) in [
+        (FaceBC::Pressure { rho: 1.0 }, "pressure"),
+        (FaceBC::Outflow, "outflow"),
+        (
+            FaceBC::Convective {
+                u_conv: U_PEAK as f32,
+            },
+            "convective",
         ),
-        "unexpected GPU D3Q27 open-face rejection: {err:?}"
-    );
-    assert_eq!(
-        err.to_string(),
-        "GPU backend does not yet support D3Q27 open faces"
-    );
+    ] {
+        let dims = [18, 10, 8];
+        let mut walls = WallSpec::<f32>::default();
+        for face in [Face::YNeg, Face::YPos, Face::ZNeg, Face::ZPos] {
+            walls.is_wall[face.index()] = true;
+        }
+        let mut faces = [FaceBC::Closed; 6];
+        faces[Face::XNeg.index()] = FaceBC::Velocity {
+            u: [U_PEAK as f32, 0.0, 0.0],
+        };
+        faces[Face::XPos.index()] = outlet;
+        let spec = GlobalSpec::<f32> {
+            dims,
+            nu: 0.05,
+            periodic: [false, false, false],
+            faces,
+            ..Default::default()
+        };
+        let (solid, wall_u) = build_wall_rims(3, dims, &walls);
+        let mut cpu = Solver::<D3Q27, f32, CpuScalar, LocalPeriodic>::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let mut gpu = Solver::<D3Q27, f32, WgpuBackend<D3Q27>, LocalPeriodic>::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            WgpuBackend::<D3Q27>::new(ctx.clone()),
+            LocalPeriodic,
+        );
+        let [_nx, ny, nz] = dims;
+        let profile = (0..nz)
+            .flat_map(|z| {
+                (0..ny).map(move |y| [profile_speed(y, z, ny, nz, U_PEAK, 0.0) as f32, 0.0, 0.0])
+            })
+            .collect::<Vec<_>>();
+        cpu.set_inlet_profile(Face::XNeg, &profile);
+        gpu.set_inlet_profile(Face::XNeg, &profile);
+        cpu.init_with(|_, y, z| {
+            (
+                1.0,
+                [profile_speed(y, z, ny, nz, U_PEAK, 0.0) as f32, 0.0, 0.0],
+            )
+        });
+        gpu.init_with(|_, y, z| {
+            (
+                1.0,
+                [profile_speed(y, z, ny, nz, U_PEAK, 0.0) as f32, 0.0, 0.0],
+            )
+        });
+        for _ in 0..3 {
+            cpu.run(25);
+            gpu.run(25);
+        }
+        let mut dr = 0.0f64;
+        let mut du = 0.0f64;
+        let cr = cpu.gather_rho();
+        let gr = gpu.gather_rho();
+        let cu = [cpu.gather_ux(), cpu.gather_uy(), cpu.gather_uz()];
+        let gu = [gpu.gather_ux(), gpu.gather_uy(), gpu.gather_uz()];
+        for i in 0..cr.len() {
+            dr = dr.max((cr[i] as f64 - gr[i] as f64).abs());
+            for a in 0..3 {
+                du = du.max((cu[a][i] as f64 - gu[a][i] as f64).abs());
+            }
+        }
+        eprintln!("D3Q27 GPU {label}: rho_abs={dr:.3e} u_abs={du:.3e}");
+        assert!(dr <= 1.0e-4, "{label}: D3Q27 GPU rho abs {dr:e}");
+        assert!(du <= 1.0e-5, "{label}: D3Q27 GPU ux abs {du:e}");
+    }
 }
