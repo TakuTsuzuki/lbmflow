@@ -558,18 +558,21 @@ axial mode at 1.5*Ta_c, the finding confirms the penalization filter
 class limit + provides the corrected acceptance route. Documented-red
 until then; gate = cx/vv-tayc heavy.
 
-### ANOM-P4-025 (formerly L1_7-001) — Bouzidi moving-wall qd<0.5 imposes σ·U_wall instead of U_wall
+### ANOM-P4-025 (formerly L1_7-001) — FIXED 2026-07-07 — Bouzidi moving-wall qd<0.5 imposed σ·U_wall instead of U_wall
 Native Bouzidi supports moving walls (wall_u[wall_ref] path); qd=0.5
 degenerates to half-way MW bitwise; qd≥0.5 Couette profile matches
 analytic within 2e-3. BUT qd<0.5 branch scales the wall speed by
 sigma = 2*qd ≈ 0.5 at qd=0.25 (measured ~0.5·U_wall vs expected 1.0·U_wall).
 This is the missing (sigma_i · 2·w_q · rho · c·u_wall / cs²) correction on
 the qd<0.5 second-point interpolation branch — see Bouzidi 2001 §4;
-symmetric qd>0.5 gets it right, qd<0.5 was skipped. Current-wrong-value
-pin: qd=0.25 imposes σ·U_wall; #[ignore]'d all-qd exact test flips green
-when the fix lands. S3 (bounded impact - most Bouzidi records fall on
-qd>=0.5 side for well-resolved obstacles). Route: core-engine, small
-one-file fix in bouzidi.rs qd<0.5 branch. Gate = cx/vv-bmw
+symmetric qd>0.5 gets it right, qd<0.5 was skipped.
+
+Fix: `bouzidi.rs::apply_bouzidi_impl` now applies the moving-wall source to
+both qd<0.5 interpolation points:
+`sigma*(f_q(x_f)+W) + (1-sigma)*(f_q(x_f-c_q)+W)`, with
+`W = 2 w_q rho (c_opp·u_wall)/cs²`. The current-wrong-value pin was
+retightened to the exact off-grid Couette line, and the all-qd sweep is
+unignored. Gate = cx/vv-bmw
 qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd.
 
 ### Wen-2014 GALILEAN-INVARIANT PROBE — COVERED (radar #16 closed, pitfall #10 upgraded)

@@ -293,7 +293,18 @@ pub(crate) fn apply_bouzidi_impl<L: Lattice, T: Real>(
                 padded_coord(fields.geom, cell, 2) - c[2] as isize,
             );
             let a = two * rec.qd;
-            a * fq + (one - a) * fields.f[q * np + ff] + a * wall_term
+            // BFL qd<1/2 reconstructs the post-reflection value at x_f by
+            // interpolating between the wall-reflected population at x_f and
+            // the same reflected population at the second fluid node x_f-c_q:
+            //
+            //   sigma f_q(x_f) + (1-sigma) f_q(x_f-c_q)
+            //     + [sigma + (1-sigma)] 2 w_q rho (c_opp . u_w) / cs^2
+            //
+            // with sigma = 2 qd and cs^2 = 1/3. Applying the moving-wall
+            // correction only to the first interpolation point would impose
+            // sigma*u_w. The second-point term supplies the missing
+            // (1-sigma) share, so the wall velocity is u_w for every qd<1/2.
+            a * (fq + wall_term) + (one - a) * (fields.f[q * np + ff] + wall_term)
         } else {
             let a = one / (two * rec.qd);
             a * fq + (one - a) * fields.f[qb * np + cell] + a * wall_term

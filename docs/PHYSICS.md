@@ -78,7 +78,10 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
   swap `ρ` for `ρ(φ)` without touching collision or BC kernels (see §2
   "W-GRAV composition point").
 - **Bouzidi 2nd-order interpolated bounce-back** for curved walls
-  (`bouzidi.rs`), from Bouzidi-Firdaouss-Lallemand 2001.
+  (`bouzidi.rs`), from Bouzidi-Firdaouss-Lallemand 2001. Moving walls add
+  the Ladd momentum source at every interpolated reflected point; for the
+  qd < 1/2 two-fluid-node branch this means the first and second interpolation
+  points together contribute `2 w_q rho (c_opp·u_w)/cs²`.
 - **Rotating bodies** — two paths: volume penalization (`F = 2ρχ(u_target − u*)`,
   algebraic no-overshoot at χ=1 with a finite spin-up ramp) and marker-based
   direct-forcing IBM (Uhlmann sequence + Wang multi-direct-forcing
@@ -100,6 +103,28 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
 ---
 
 ## 2. Load-bearing decisions
+
+### 2026-07-07 Bouzidi qd<1/2 moving-wall second-point correction (`bouzidi.rs::apply_bouzidi_impl`)
+- Form: for `qd < 1/2` with a second fluid node,
+  `f_opp = sigma*(f_q(x_f)+W) + (1-sigma)*(f_q(x_f-c_q)+W)`,
+  where `sigma = 2 qd` and
+  `W = 2 w_q rho (c_opp·u_w)/cs² = 6 w_q rho (c_opp·u_w)` for D2Q9/D3Q19/D3Q27.
+- Source: Bouzidi-Firdaouss-Lallemand (2001) interpolated bounce-back with
+  the same moving-wall equilibrium shift as the existing half-way moving-wall
+  rule. The old implementation applied `W` only at the first interpolation
+  point, imposing `sigma*u_w` instead of `u_w`.
+- Validity domain: Bouzidi links with `0 < qd < 1`, local density from the
+  adjacent fluid cell, and wall speeds inside the existing `MAX_SPEED` limit.
+  The correction is active only for moving walls; static-wall behavior is
+  byte-identical because `W = 0`.
+- Validation:
+  `crates/lbm-core/tests/accuracy_audit_bouzidi_moving.rs::qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd`
+  checks `qd={0.25,0.5,0.75}` against the off-grid Couette line with
+  `max_rel_dev <= 2e-3`, and
+  `::qd_half_moving_wall_is_bitwise_half_way_moving_wall` preserves the
+  `qd=0.5` half-way moving-wall bitwise degeneracy.
+- Replaces / interacts with: fixes ANOM-P4-025 without changing collision,
+  static Bouzidi walls, or the half-way moving-wall branch.
 
 ### 2026-07-07 behavior review — `vv_sedim_2d` rev 2 attempt
 Pattern: with `d=6`, `|g|=1e-4`, and `30_000` steps, the run deposits all
