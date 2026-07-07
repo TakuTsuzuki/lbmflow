@@ -9,7 +9,7 @@ promises.
 
 | Area | Current limitation | Evidence |
 |---|---|---|
-| D3Q27 open faces | Velocity inlet and pressure outlet landed 2026-07-07 (NEBB moment closure, CPU backends; moment exactness at machine precision, duct gates, T13 seam invariance — see PHYSICS.md entry). Still rejected explicitly: D3Q27 `Outflow` and `Convective` faces (`UnsupportedOpenFaceKind`) and all D3Q27 open faces on the GPU path. | `crates/lbm-core/tests/d3q27_open_bc.rs`, `crates/lbm-core/src/kernels.rs` (NEBB), PHYSICS.md 2026-07-07 entry |
+| D3Q27 open faces | D3Q27 supports CPU full boundary coverage including periodic, closed-wall, velocity-inlet, pressure-outlet, outflow, and convective open faces; GPU open faces are rejected explicitly; scenario JSON exposure landed 2026-07-07. | `crates/lbm-core/tests/d3q27_open_bc.rs`, `crates/lbm-core/src/kernels.rs` (NEBB), `crates/lbm-scenario/src/lib.rs` (`LatticeSpec`, `GPU_D3Q27_OPEN_FACES_UNSUPPORTED`), PHYSICS.md 2026-07-07 entry |
 | Curved walls | Curved-wall helpers are analytic Bouzidi circle and sphere records, plus an explicit low-level link hook for validation. They are not a general geometry importer. | `crates/lbm-core/src/bouzidi.rs:47-56`, `crates/lbm-core/src/bouzidi.rs:105-114`, `crates/lbm-core/src/solver.rs:1865-1896`, `crates/lbm-core/src/solver.rs:1919-1923` |
 | Geometry import | Scenario obstacles are built-in primitives (`circle`, `rect`, `sphere`). STL/CAD import is outside the current solver spec; no voxelization import path is exposed by the scenario schema. | `crates/lbm-scenario/src/lib.rs:306-320`, `docs/REQ_STIRRED_REACTOR.md:568-571` |
 
@@ -27,7 +27,7 @@ promises.
 | Area | Current limitation | Evidence |
 |---|---|---|
 | FP16 storage | FP16 is a capacity/throughput mode, not a validation-grade long-transient reference mode. Distribution storage narrows to f16 while arithmetic remains f32; steady flows re-converge, but long transients accumulate storage rounding. | `crates/lbm-core/src/gpu/backend.rs:142-148`, `crates/lbm-core/tests/t16_fp16_storage.rs:15-23`, `docs/PHYSICS.md:313-324`, `docs/PERFORMANCE.md:59-62` |
-| Scenario schema | Scenario JSON exposes `collision: bgk | trt | cumulant` and `compute.storage: f32 | f16`, but with narrow honored paths: cumulant only on 3D D3Q19 CPU scenarios; f16 only on 2D D2Q9 GPU scenarios (SHADER_F16 adapter required). All other combinations are rejected with explicit errors — no silent fallback. Scenario-level lattice selection (D3Q27) and MPI hints remain unexposed. | `crates/lbm-scenario/src/lib.rs` (`CollisionSpec`, `StorageSpec`, `CUMULANT_*`/`GPU_F16_*` errors), manifest `provenance` in `crates/lbm-cli/src/runner.rs` |
+| Scenario schema | Scenario JSON exposes `grid.lattice: d3q19 | d3q27` for 3D scenarios, `collision: bgk | trt | cumulant`, and `compute.storage: f32 | f16`, but with narrow honored paths: D3Q27 is CPU-only for open-face scenario dispatch, cumulant only on 3D CPU scenarios, and f16 only on 2D D2Q9 GPU scenarios (SHADER_F16 adapter required). All other combinations are rejected with explicit errors — no silent fallback. MPI hints remain unexposed. | `crates/lbm-scenario/src/lib.rs` (`LatticeSpec`, `CollisionSpec`, `StorageSpec`, `GPU_D3Q27_OPEN_FACES_UNSUPPORTED`/`GPU_F16_*` errors), manifest `provenance` in `crates/lbm-cli/src/runner.rs` |
 
 ## 4. Particles
 

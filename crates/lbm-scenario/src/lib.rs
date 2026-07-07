@@ -60,11 +60,14 @@ pub struct Scenario {
 pub struct Grid {
     pub nx: usize,
     pub ny: usize,
-    /// Cells along z. Omitted or 1 = 2D (D2Q9); > 1 = 3D (D3Q19, runs on
-    /// the V2 core). Not serialised for 2D scenarios, so existing files
-    /// round-trip byte-identically.
+    /// Cells along z. Omitted or 1 = 2D (D2Q9); > 1 = 3D. Not serialised for
+    /// 2D scenarios, so existing files round-trip byte-identically.
     #[serde(default = "default_nz", skip_serializing_if = "is_default_nz")]
     pub nz: usize,
+    /// Optional 3D lattice selector. Absent means D3Q19, preserving the
+    /// historical scenario path exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lattice: Option<LatticeSpec>,
 }
 
 fn default_nz() -> usize {
@@ -77,10 +80,31 @@ fn is_default_nz(nz: &usize) -> bool {
 }
 
 impl Scenario {
-    /// Whether this scenario runs on the 3D (D3Q19) engine.
+    /// Whether this scenario runs on the 3D engine.
     pub fn is_3d(&self) -> bool {
         self.grid.nz > 1
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LatticeSpec {
+    #[default]
+    D3q19,
+    D3q27,
+}
+
+impl LatticeSpec {
+    pub fn name(self) -> &'static str {
+        match self {
+            LatticeSpec::D3q19 => "D3Q19",
+            LatticeSpec::D3q27 => "D3Q27",
+        }
+    }
+}
+
+pub fn selected_lattice_3d(sc: &Scenario) -> LatticeSpec {
+    sc.grid.lattice.unwrap_or_default()
 }
 
 /// Compute-target selection (ARCHITECTURE_V2 §3). All fields optional.
@@ -130,11 +154,13 @@ const GPU_F16_FEATURE_UNAVAILABLE: &str = "requested compute.storage \"f16\" is 
 #[cfg(feature = "gpu")]
 const GPU_F16_ADAPTER_UNAVAILABLE: &str = "requested compute.storage \"f16\" is unavailable: no usable GPU adapter with SHADER_F16 was found. Use compute.storage \"f32\" or run on a GPU adapter that supports shader-f16.";
 const GPU_F64_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for physics.precision f64; GPU scenario dispatch currently supports f32 storage/compute only. Use physics.precision \"f32\" or compute.backend \"cpu\".";
-const GPU_3D_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for this 3D scenario: unsupported 3D GPU scenario combinations are f64 precision, multiphase, rotor, particles, non-rest init, force probes, and non-f32 storage. Use compute.backend \"cpu\" or simplify the scenario.";
+const GPU_3D_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for this 3D scenario: unsupported 3D GPU scenario combinations are f64 precision, multiphase, rotor, particles, non-rest init, force probes, non-f32 storage, and D3Q27 open faces. Use compute.backend \"cpu\" or simplify the scenario.";
+const GPU_D3Q27_OPEN_FACES_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for grid.lattice \"d3q27\" with open faces; D3Q27 open-face scenario dispatch is CPU-only. Use compute.backend \"cpu\", grid.lattice \"d3q19\", or remove open faces.";
 const GPU_F16_CPU_UNSUPPORTED: &str = "requested compute.storage \"f16\" is unsupported for compute.backend \"cpu\"; f16 distribution storage requires the GPU backend.";
 const GPU_F16_3D_UNSUPPORTED: &str = "requested compute.storage \"f16\" is unsupported for the 3D scenario path: GPU storage selection is currently wired only for 2D D2Q9 GPU scenarios.";
-const CENTRAL_MOMENT_2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 compat scenario path; central_moment is exposed only on the 3D D3Q19 native CPU scenario path.";
-const CENTRAL_MOMENT_GPU2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 GPU scenario path; central_moment scenario exposure is limited to 3D D3Q19 CPU.";
+const CENTRAL_MOMENT_2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 compat scenario path; central_moment is exposed only on the 3D native CPU scenario path.";
+const CENTRAL_MOMENT_GPU2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 GPU scenario path; central_moment scenario exposure is limited to 3D CPU.";
+const GRID_LATTICE_2D_UNSUPPORTED: &str = "requested grid.lattice is only supported for 3D scenarios; 2D scenarios use D2Q9. Remove grid.lattice or set grid.nz > 1.";
 
 /// Backend selected after applying explicit/auto policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -187,6 +213,9 @@ pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
     if sc.is_3d() && requested_storage(sc) == StorageSpec::F16 {
         return Some(GPU_F16_3D_UNSUPPORTED);
     }
+    if sc.is_3d() && selected_lattice_3d(sc) == LatticeSpec::D3q27 && has_open_faces(sc) {
+        return Some(GPU_D3Q27_OPEN_FACES_UNSUPPORTED);
+    }
     if sc.is_3d()
         && (sc.multiphase.is_some()
             || sc.rotor.is_some()
@@ -203,6 +232,16 @@ pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
 }
 
 pub fn strict_capability_error(sc: &Scenario) -> Option<&'static str> {
+    if !sc.is_3d() && sc.grid.lattice.is_some() {
+        return Some(GRID_LATTICE_2D_UNSUPPORTED);
+    }
+    if requested_backend(sc) == BackendSpec::Gpu
+        && sc.is_3d()
+        && selected_lattice_3d(sc) == LatticeSpec::D3q27
+        && has_open_faces(sc)
+    {
+        return Some(GPU_D3Q27_OPEN_FACES_UNSUPPORTED);
+    }
     if requested_backend(sc) == BackendSpec::Cpu && requested_storage(sc) == StorageSpec::F16 {
         return Some(GPU_F16_CPU_UNSUPPORTED);
     }
@@ -213,6 +252,20 @@ pub fn strict_capability_error(sc: &Scenario) -> Option<&'static str> {
         return Some(CENTRAL_MOMENT_2D_UNSUPPORTED);
     }
     None
+}
+
+fn edge_is_open(s: &EdgeSpec) -> bool {
+    matches!(
+        s,
+        EdgeSpec::VelocityInlet { .. }
+            | EdgeSpec::PressureOutlet { .. }
+            | EdgeSpec::Outflow
+            | EdgeSpec::ConvectiveOutflow { .. }
+    )
+}
+
+fn has_open_faces(sc: &Scenario) -> bool {
+    face_specs(&sc.edges).iter().any(edge_is_open)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -762,6 +815,8 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
             "compute.storage"
         } else if e.contains("backend") {
             "compute.backend"
+        } else if e.contains("grid.lattice") {
+            "grid.lattice"
         } else {
             "physics.collision"
         };
@@ -912,19 +967,28 @@ impl From<ConfigError> for BuildError {
 
 // ---------------------------------------------------------------- build (3D)
 
-/// The 3D engine type behind a scenario: V2 core, D3Q19, CPU backend,
-/// monolithic decomposition (ARCHITECTURE_V2; `compute.backend: "cpu"`).
-pub type Solver3<T> = lbm_core::solver::Solver<
-    lbm_core::lattice::D3Q19,
-    T,
-    lbm_core::backend::CpuScalar,
-    lbm_core::halo::LocalPeriodic,
->;
+/// The 3D engine type behind a scenario: V2 core, selected 3D lattice, CPU
+/// backend, monolithic decomposition (ARCHITECTURE_V2; `compute.backend: "cpu"`).
+pub type Solver3<L, T> =
+    lbm_core::solver::Solver<L, T, lbm_core::backend::CpuScalar, lbm_core::halo::LocalPeriodic>;
+pub type Solver3D19<T> = Solver3<lbm_core::lattice::D3Q19, T>;
+pub type Solver3D27<T> = Solver3<lbm_core::lattice::D3Q27, T>;
 
 /// A built 3D simulation, precision-erased for the runner.
 pub enum Sim3Handle {
-    F32(Solver3<f32>),
-    F64(Solver3<f64>),
+    D3Q19F32(Solver3D19<f32>),
+    D3Q19F64(Solver3D19<f64>),
+    D3Q27F32(Solver3D27<f32>),
+    D3Q27F64(Solver3D27<f64>),
+}
+
+impl Sim3Handle {
+    pub fn lattice_name(&self) -> &'static str {
+        match self {
+            Sim3Handle::D3Q19F32(_) | Sim3Handle::D3Q19F64(_) => "D3Q19",
+            Sim3Handle::D3Q27F32(_) | Sim3Handle::D3Q27F64(_) => "D3Q27",
+        }
+    }
 }
 
 /// Build error for 3D scenarios: either a core configuration error (same
@@ -1020,7 +1084,7 @@ fn face_specs(e: &EdgesSpec) -> [EdgeSpec; 6] {
     ]
 }
 
-/// Build a 3D (D3Q19) simulation from a scenario with `grid.nz > 1`.
+/// Build a 3D simulation from a scenario with `grid.nz > 1`.
 ///
 /// Feature scope (minimal wiring, COMPETITIVE_SPEC M-C): single phase,
 /// `init: rest`, CPU backend. Boundary semantics mirror the 2D contract:
@@ -1037,13 +1101,27 @@ pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
         Err(e) => return Err(Build3Error::Units(e)),
     };
     validate_inlet_profile_request(sc)?;
-    Ok(match sc.physics.precision {
-        Precision::F32 => Sim3Handle::F32(build3d_t::<f32>(sc)?),
-        Precision::F64 => Sim3Handle::F64(build3d_t::<f64>(sc)?),
+    Ok(match (selected_lattice_3d(sc), sc.physics.precision) {
+        (LatticeSpec::D3q19, Precision::F32) => {
+            Sim3Handle::D3Q19F32(build3d_t::<lbm_core::lattice::D3Q19, f32>(sc)?)
+        }
+        (LatticeSpec::D3q19, Precision::F64) => {
+            Sim3Handle::D3Q19F64(build3d_t::<lbm_core::lattice::D3Q19, f64>(sc)?)
+        }
+        (LatticeSpec::D3q27, Precision::F32) => {
+            Sim3Handle::D3Q27F32(build3d_t::<lbm_core::lattice::D3Q27, f32>(sc)?)
+        }
+        (LatticeSpec::D3q27, Precision::F64) => {
+            Sim3Handle::D3Q27F64(build3d_t::<lbm_core::lattice::D3Q27, f64>(sc)?)
+        }
     })
 }
 
-fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build3Error> {
+fn build3d_t<L, T>(sc: &Scenario) -> Result<Solver3<L, T>, Build3Error>
+where
+    L: lbm_core::lattice::Lattice,
+    T: lbm_core::real::Real,
+{
     use lbm_core::prelude::{
         build_wall_rims, CollisionKind, CpuScalar, Face, FaceBC, GlobalSpec, LocalPeriodic, Solver,
         WallSpec,
@@ -1181,7 +1259,7 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     // Surfaces a typed error here; `Solver::new` re-checks as a last-line
     // panic guard.
     spec.validate(3, &solid)?;
-    let mut s: Solver3<T> = Solver::new(
+    let mut s: Solver3<L, T> = Solver::new(
         &spec,
         &solid,
         &wall_u,
@@ -1703,6 +1781,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nx: 128,
             ny: 128,
             nz: 1,
+            lattice: None,
         },
         physics: Physics {
             nu: 0.02,
@@ -1749,6 +1828,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nx: 440,
             ny: 164,
             nz: 1,
+            lattice: None,
         },
         physics: Physics {
             nu: 0.04,
@@ -1807,6 +1887,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nx: 128,
             ny: 128,
             nz: 1,
+            lattice: None,
         },
         physics: Physics {
             nu: 1.0 / 6.0,
@@ -1862,6 +1943,7 @@ pub fn presets() -> Vec<(&'static str, &'static str, Scenario)> {
             nx: 160,
             ny: 100,
             nz: 1,
+            lattice: None,
         },
         physics: Physics {
             nu: 1.0 / 6.0,
@@ -2063,7 +2145,7 @@ mod tests {
         assert!(sc.is_3d());
         // Builds and steps on the V2 core.
         match build3d(&sc).unwrap() {
-            Sim3Handle::F64(mut s) => {
+            Sim3Handle::D3Q19F64(mut s) => {
                 s.run(3);
                 let u = s.u(6, 5, 5);
                 assert!(u[0].is_finite());
@@ -2122,6 +2204,135 @@ mod tests {
             r: 2.0,
         }];
         assert!(build(&sphere2d).is_err());
+    }
+
+    #[test]
+    fn d3q27_lattice_schema_roundtrip_and_cpu_run() {
+        let text = r#"{
+            "name": "duct3d-d3q27",
+            "grid": { "nx": 12, "ny": 10, "nz": 8, "lattice": "d3q27" },
+            "physics": { "nu": 0.08, "force": [1e-6, 0.0] },
+            "compute": { "backend": "cpu" },
+            "edges": {
+                "left": { "type": "velocityInlet", "u": [0.02, 0.0] },
+                "right": { "type": "pressureOutlet", "rho": 1.0 },
+                "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+            },
+            "run": { "steps": 4 }
+        }"#;
+        let sc: Scenario = serde_json::from_str(text).unwrap();
+        assert_eq!(selected_lattice_3d(&sc), LatticeSpec::D3q27);
+        let json = serde_json::to_string(&sc).unwrap();
+        assert!(json.contains("\"lattice\":\"d3q27\""), "{json}");
+        let back: Scenario = serde_json::from_str(&json).unwrap();
+        assert_eq!(selected_lattice_3d(&back), LatticeSpec::D3q27);
+        match build3d(&back).unwrap() {
+            Sim3Handle::D3Q27F64(mut s) => {
+                s.run(back.run.steps);
+                assert_eq!(s.time(), 4);
+                assert!(s.u(6, 5, 4)[0].is_finite());
+            }
+            _ => panic!("expected f64 D3Q27"),
+        }
+    }
+
+    #[test]
+    fn absent_lattice_is_bit_identical_to_explicit_d3q19() {
+        let mut absent = duct3d();
+        absent.run.steps = 0;
+        assert_eq!(absent.grid.lattice, None);
+        let mut explicit = absent.clone();
+        explicit.grid.lattice = Some(LatticeSpec::D3q19);
+
+        let (mut a, mut b) = match (build3d(&absent).unwrap(), build3d(&explicit).unwrap()) {
+            (Sim3Handle::D3Q19F64(a), Sim3Handle::D3Q19F64(b)) => (a, b),
+            _ => panic!("expected f64 D3Q19 solvers"),
+        };
+        a.run(5);
+        b.run(5);
+        assert_eq!(a.gather_rho(), b.gather_rho());
+        assert_eq!(a.gather_ux(), b.gather_ux());
+        assert_eq!(a.gather_uy(), b.gather_uy());
+        assert_eq!(a.gather_uz(), b.gather_uz());
+    }
+
+    #[test]
+    fn d3q27_rejects_unsupported_scenario_combinations_precisely() {
+        let mut gpu_open = duct3d();
+        gpu_open.grid.lattice = Some(LatticeSpec::D3q27);
+        gpu_open.edges.left = EdgeSpec::VelocityInlet { u: [0.02, 0.0] };
+        gpu_open.edges.right = EdgeSpec::PressureOutlet { rho: 1.0 };
+        gpu_open.compute = Some(ComputeSpec {
+            backend: BackendSpec::Gpu,
+            storage: StorageSpec::F32,
+        });
+        let err = build_check(&gpu_open).unwrap_err();
+        assert!(err.contains("grid.lattice \"d3q27\""), "{err}");
+        assert!(err.contains("open faces"), "{err}");
+        assert!(err.contains("CPU-only"), "{err}");
+        assert!(validate(&gpu_open).iter().any(|w| {
+            w.field == "compute.backend" && w.message.contains("grid.lattice \"d3q27\"")
+        }));
+
+        let mut lattice_on_2d = preset("cavity");
+        lattice_on_2d.grid.lattice = Some(LatticeSpec::D3q27);
+        let err = build_check(&lattice_on_2d).unwrap_err();
+        assert!(err.contains("2D scenarios use D2Q9"), "{err}");
+
+        let mut mp = duct3d();
+        mp.grid.lattice = Some(LatticeSpec::D3q27);
+        mp.multiphase = Some(MultiphaseSpec {
+            g: -5.0,
+            g_wall: 0.0,
+            wall_rho: None,
+        });
+        let err = match build3d(&mp) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("D3Q27 multiphase should fail"),
+        };
+        assert!(err.contains("multiphase"), "{err}");
+
+        let mut particles = duct3d();
+        particles.grid.lattice = Some(LatticeSpec::D3q27);
+        particles.particles = Some(ParticlesSpec {
+            count: 1,
+            d: 1.0,
+            rho_p: 2.0,
+            restitution: 0.0,
+            seed: SeedRegion {
+                x0: 2.0,
+                y0: 2.0,
+                x1: 3.0,
+                y1: 3.0,
+            },
+            output_every: 0,
+        });
+        let err = match build3d(&particles) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("D3Q27 particles should fail"),
+        };
+        assert!(err.contains("particles"), "{err}");
+
+        let mut rotor = duct3d();
+        rotor.grid.lattice = Some(LatticeSpec::D3q27);
+        rotor.rotor = Some(RotorSpec {
+            cx: 6.0,
+            cy: 5.0,
+            n_blades: 4,
+            r_hub: 1.0,
+            r_blade: 2.0,
+            thickness: 1.0,
+            omega: 0.01,
+            chi: 1.0,
+            ramp_steps: 0,
+            theta0: 0.0,
+        });
+        let err = match build3d(&rotor) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("D3Q27 rotor should fail"),
+        };
+        assert!(err.contains("rotor"), "{err}");
     }
 
     #[test]
@@ -2391,7 +2602,7 @@ mod tests {
         .unwrap();
         sc.physics.collision = CollisionSpec::CentralMoment;
         match build3d(&sc).unwrap() {
-            Sim3Handle::F64(mut s) => {
+            Sim3Handle::D3Q19F64(mut s) => {
                 s.run(sc.run.steps);
                 assert_eq!(s.time(), 1);
                 assert!(s.u(2, 2, 2)[0].is_finite());
@@ -2463,7 +2674,7 @@ mod tests {
         )
         .unwrap();
         match build3d(&sc).unwrap() {
-            Sim3Handle::F64(mut s) => {
+            Sim3Handle::D3Q19F64(mut s) => {
                 s.run(2);
                 // Duct-type product profile: node (y, z) carries
                 // umax f(y) f(z), enforced exactly by the Zou-He face.
