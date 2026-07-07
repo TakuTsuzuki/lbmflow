@@ -19,9 +19,9 @@
 //!   saturating the CPU. Background runs live inside this process: keep the
 //!   MCP connection open until `run_status` reports a terminal state.
 
-use crate::runner;
+use crate::{report, runner};
 use anyhow::Result;
-use lbm_scenario::Scenario;
+use lbm_scenario::{BioprocessScenario, Scenario};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -287,6 +287,17 @@ fn scenario_schema() -> Value {
     })
 }
 
+fn bioprocess_scenario_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "LBMFlow BioprocessScenario v1. Use lbm schema --bioprocess for the full schema.",
+        "required": ["version", "name", "credibility_tier", "reactor", "fluids", "operation", "physics", "qoi", "run", "outputs"],
+        "properties": {
+            "version": { "const": "bioprocess-1.0" }
+        }
+    })
+}
+
 fn tools_list() -> Value {
     json!({ "tools": [
         {
@@ -347,12 +358,79 @@ fn tools_list() -> Value {
             "name": "get_schema",
             "description": "Return the complete format reference for scenario JSON (v0).",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "validate_bioprocess_scenario",
+            "description": "Validate a BioprocessScenario and return structured unit-feasibility JSON. Errors include remediation text.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "scenario": bioprocess_scenario_schema() },
+                "required": ["scenario"]
+            }
+        },
+        {
+            "name": "run_bioprocess_scenario",
+            "description": "Run a BioprocessScenario synchronously and return the manifest JSON plus outDir.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "scenario": bioprocess_scenario_schema(),
+                    "outDir": { "type": "string", "description": "output directory (default out/<name>)" }
+                },
+                "required": ["scenario"]
+            }
+        },
+        {
+            "name": "get_bioprocess_qoi",
+            "description": "Read qoi.json from a bioprocess run directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "runDir": { "type": "string" } },
+                "required": ["runDir"]
+            }
+        },
+        {
+            "name": "generate_bioprocess_report",
+            "description": "Generate report.md for a bioprocess run directory and return the path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "runDir": { "type": "string" } },
+                "required": ["runDir"]
+            }
+        },
+        {
+            "name": "check_evidence_gate",
+            "description": "Run the mechanical BCFD-091 evidence gate for a bioprocess run directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "runDir": { "type": "string" } },
+                "required": ["runDir"]
+            }
         }
     ]})
 }
 
 fn text_result(text: String) -> Value {
     json!({ "content": [{ "type": "text", "text": text }] })
+}
+
+fn json_text_result(value: Value) -> Result<Value> {
+    Ok(text_result(serde_json::to_string_pretty(&value)?))
+}
+
+fn tool_error_json(code: &str, message: impl Into<String>, remediation: &str) -> Value {
+    let payload = json!({
+        "ok": false,
+        "error": {
+            "code": code,
+            "message": message.into(),
+            "remediation": remediation
+        }
+    });
+    json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&payload).expect("error JSON serializes") }],
+        "isError": true
+    })
 }
 
 /// Extract `{ scenario, outDir? }` shared by run_scenario / start_run.
@@ -368,6 +446,42 @@ fn scenario_args(args: &Value) -> Result<(Scenario, PathBuf)> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("out").join(&sc.name));
     Ok((sc, out_dir))
+}
+
+fn bioprocess_scenario_args(args: &Value) -> Result<(BioprocessScenario, PathBuf)> {
+    let scenario_value = args
+        .get("scenario")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing scenario"))?;
+    let text = serde_json::to_string(&scenario_value)?;
+    let sc = BioprocessScenario::from_json_str(&text).map_err(|err| {
+        anyhow::anyhow!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ok": false,
+                "error": {
+                    "code": "invalid_bioprocess_scenario",
+                    "message": err.message,
+                    "reason": err.reason,
+                    "remediation": "Run validate_bioprocess_scenario first and compare the input with `lbm schema --bioprocess`."
+                }
+            }))
+            .unwrap()
+        )
+    })?;
+    let out_dir = args
+        .get("outDir")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("out").join(&sc.name));
+    Ok((sc, out_dir))
+}
+
+fn run_dir_arg(args: &Value) -> Result<PathBuf> {
+    args.get("runDir")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("missing runDir"))
 }
 
 fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
@@ -453,6 +567,124 @@ fn tools_call(params: &Value, registry: &Arc<RunRegistry>) -> Result<Value> {
             ))?))
         }
         "get_schema" => Ok(text_result(crate::SCHEMA_DOC.to_string())),
+        "validate_bioprocess_scenario" => {
+            let scenario_value = match args.get("scenario").cloned() {
+                Some(value) => value,
+                None => {
+                    return Ok(tool_error_json(
+                        "missing_scenario",
+                        "scenario argument is required",
+                        "Pass {\"scenario\": <BioprocessScenario>} with version bioprocess-1.0.",
+                    ));
+                }
+            };
+            let text = serde_json::to_string(&scenario_value)?;
+            let scenario = match BioprocessScenario::from_json_str(&text) {
+                Ok(scenario) => scenario,
+                Err(err) => {
+                    return Ok(tool_error_json(
+                        "invalid_bioprocess_scenario",
+                        format!("{} ({:?})", err.message, err.reason),
+                        "Compare the input with `lbm schema --bioprocess`; unsupported combinations must be changed, not silently downgraded.",
+                    ));
+                }
+            };
+            match scenario.unit_report_with_diagnostics() {
+                Ok(unit_report) => json_text_result(json!({
+                    "ok": unit_report.feasibility.rejections.is_empty(),
+                    "unit_report": unit_report,
+                    "remediation": if unit_report.feasibility.rejections.is_empty() {
+                        Value::Null
+                    } else {
+                        json!("Resolve every feasibility rejection before running; warnings may remain at Screening tier.")
+                    }
+                })),
+                Err(err) => Ok(tool_error_json(
+                    "unit_feasibility_failed",
+                    err.message,
+                    "Adjust units, grid, dt, or requested physics until feasibility diagnostics pass.",
+                )),
+            }
+        }
+        "run_bioprocess_scenario" => match bioprocess_scenario_args(&args) {
+            Ok((sc, out_dir)) => {
+                let manifest = runner::run_bioprocess_single_phase(&sc, &out_dir)?;
+                json_text_result(json!({
+                    "ok": true,
+                    "outDir": out_dir,
+                    "manifest": manifest
+                }))
+            }
+            Err(err) => Ok(tool_error_json(
+                "invalid_bioprocess_run_request",
+                err.to_string(),
+                "Validate the scenario first with validate_bioprocess_scenario; only bioprocess-1.0 scenarios are accepted here.",
+            )),
+        },
+        "get_bioprocess_qoi" => {
+            let run_dir = match run_dir_arg(&args) {
+                Ok(path) => path,
+                Err(err) => {
+                    return Ok(tool_error_json(
+                        "missing_run_dir",
+                        err.to_string(),
+                        "Pass {\"runDir\": \"path/to/run\"}; the directory must contain qoi.json.",
+                    ));
+                }
+            };
+            let path = run_dir.join(lbm_scenario::QOI_BUNDLE_JSON);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let qoi: Value = serde_json::from_slice(&bytes)?;
+                    json_text_result(json!({ "ok": true, "runDir": run_dir, "qoi": qoi }))
+                }
+                Err(err) => Ok(tool_error_json(
+                    "missing_qoi_json",
+                    format!("{}: {err}", path.display()),
+                    "Run `lbm bioprocess run <scenario>` with outputs.emit_qoi_json=true, or pass the correct runDir.",
+                )),
+            }
+        }
+        "generate_bioprocess_report" => {
+            let run_dir = match run_dir_arg(&args) {
+                Ok(path) => path,
+                Err(err) => {
+                    return Ok(tool_error_json(
+                        "missing_run_dir",
+                        err.to_string(),
+                        "Pass {\"runDir\": \"path/to/run\"}; the directory must contain qoi.json and manifest.json.",
+                    ));
+                }
+            };
+            match report::generate_report(&run_dir) {
+                Ok(path) => json_text_result(json!({ "ok": true, "reportPath": path })),
+                Err(err) => Ok(tool_error_json(
+                    "report_generation_failed",
+                    err.to_string(),
+                    "Ensure the run directory contains qoi.json, manifest.json, and scenario.json when available.",
+                )),
+            }
+        }
+        "check_evidence_gate" => {
+            let run_dir = match run_dir_arg(&args) {
+                Ok(path) => path,
+                Err(err) => {
+                    return Ok(tool_error_json(
+                        "missing_run_dir",
+                        err.to_string(),
+                        "Pass {\"runDir\": \"path/to/run\"}; evidence checking reads qoi.json and manifest.json.",
+                    ));
+                }
+            };
+            match report::evidence_check(&run_dir) {
+                Ok(result) => json_text_result(json!({ "ok": true, "evidenceGate": result })),
+                Err(err) => Ok(tool_error_json(
+                    "evidence_gate_failed_to_run",
+                    err.to_string(),
+                    "Ensure qoi.json and manifest.json exist; add calibration, holdout, UQ, sensitivity, and limitation artefacts to the manifest.",
+                )),
+            }
+        }
         other => anyhow::bail!("unknown tool: {other}"),
     }
 }
@@ -605,5 +837,48 @@ mod tests {
     fn unknown_run_id_yields_none() {
         let reg = RunRegistry::new(4);
         assert!(reg.status_json("run-99-ghost").is_none());
+    }
+
+    #[test]
+    fn bioprocess_tools_are_listed_with_input_schemas() {
+        let listed = tools_list();
+        let tools = listed["tools"].as_array().unwrap();
+        for name in [
+            "validate_bioprocess_scenario",
+            "run_bioprocess_scenario",
+            "get_bioprocess_qoi",
+            "generate_bioprocess_report",
+            "check_evidence_gate",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("missing MCP tool {name}: {tools:?}"));
+            assert!(
+                tool["inputSchema"].is_object(),
+                "tool {name} must carry an input schema: {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn bioprocess_tool_errors_include_remediation() {
+        let reg = RunRegistry::new(4);
+        let result = tools_call(
+            &json!({
+                "name": "get_bioprocess_qoi",
+                "arguments": {}
+            }),
+            &reg,
+        )
+        .unwrap();
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let payload: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload["ok"], false);
+        assert!(payload["error"]["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("runDir"));
     }
 }

@@ -123,6 +123,24 @@ enum PresetAction {
 
 #[derive(Subcommand)]
 enum BioprocessAction {
+    /// Validate a bioprocess scenario and emit structured JSON
+    Validate {
+        /// Bioprocess scenario JSON file (`-` for stdin)
+        scenario: String,
+    },
+    /// Run a bioprocess scenario and emit the manifest as structured JSON
+    Run {
+        /// Bioprocess scenario JSON file (`-` for stdin)
+        scenario: String,
+        /// Output directory (default: out/<scenario name>)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Print qoi.json from a bioprocess run directory
+    Qoi {
+        /// Run directory containing qoi.json
+        run_dir: PathBuf,
+    },
     /// Generate report.md from a bioprocess run directory
     Report {
         /// Run directory containing qoi.json and manifest.json
@@ -143,6 +161,11 @@ enum BioprocessAction {
         /// Output directory for scaleup_window.json
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Check the evidence gate for a bioprocess run directory
+    EvidenceCheck {
+        /// Run directory containing qoi.json and manifest.json
+        run_dir: PathBuf,
     },
 }
 
@@ -316,20 +339,106 @@ fn main() -> Result<()> {
             mcp::serve()?;
         }
         Command::Bioprocess { action } => match action {
+            BioprocessAction::Validate { scenario } => {
+                let code = validate::run(&scenario, true)?;
+                std::process::exit(code);
+            }
+            BioprocessAction::Run { scenario, out } => match load_run_scenario(&scenario)? {
+                LoadedRunScenario::Legacy(_) => {
+                    print_bioprocess_error_json(
+                        "legacy_scenario_not_bioprocess",
+                        "lbm bioprocess run only accepts BioprocessScenario version bioprocess-1.0",
+                        "Use `lbm run` for legacy demo scenarios, or `lbm schema --bioprocess` to author a bioprocess scenario.",
+                    )?;
+                    std::process::exit(1);
+                }
+                LoadedRunScenario::Bioprocess(sc) => {
+                    let out_dir = out.unwrap_or_else(|| PathBuf::from("out").join(&sc.name));
+                    let manifest = runner::run_bioprocess_single_phase(&sc, &out_dir)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "ok": true,
+                            "out_dir": out_dir,
+                            "manifest": manifest
+                        }))?
+                    );
+                }
+            },
+            BioprocessAction::Qoi { run_dir } => {
+                let qoi_path = run_dir.join(lbm_scenario::QOI_BUNDLE_JSON);
+                let qoi: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(&qoi_path)
+                        .with_context(|| format!("cannot read: {}", qoi_path.display()))?,
+                )?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "run_dir": run_dir,
+                        "qoi": qoi
+                    }))?
+                );
+            }
             BioprocessAction::Report { run_dir } => {
                 let path = report::generate_report(&run_dir)?;
-                println!("{}", path.display());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "run_dir": run_dir,
+                        "report_path": path
+                    }))?
+                );
             }
             BioprocessAction::Sweep { sweep, out } => {
                 let path = sweep::run(&sweep, out)?;
-                println!("{}", path.display());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "sweep_summary_path": path
+                    }))?
+                );
             }
             BioprocessAction::Scaleup { request, out } => {
                 let path = scaleup::run(&request, out)?;
-                println!("{}", path.display());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "scaleup_window_path": path
+                    }))?
+                );
+            }
+            BioprocessAction::EvidenceCheck { run_dir } => {
+                let result = report::evidence_check(&run_dir)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "run_dir": run_dir,
+                        "evidence_gate": result
+                    }))?
+                );
             }
         },
     }
+    Ok(())
+}
+
+fn print_bioprocess_error_json(code: &str, message: &str, remediation: &str) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "ok": false,
+            "error": {
+                "code": code,
+                "message": message,
+                "remediation": remediation
+            }
+        }))?
+    );
     Ok(())
 }
 

@@ -235,6 +235,83 @@ fn c4_mcp_lists_tools_over_stdio() {
     println!("C4 MCP tools: {names:?}");
     assert!(!names.is_empty(), "MCP tools/list returned no tools");
     assert!(names.contains(&"run_scenario"), "MCP tools: {names:?}");
+    for expected in [
+        "validate_bioprocess_scenario",
+        "run_bioprocess_scenario",
+        "get_bioprocess_qoi",
+        "generate_bioprocess_report",
+        "check_evidence_gate",
+    ] {
+        assert!(names.contains(&expected), "MCP tools: {names:?}");
+    }
+}
+
+#[test]
+fn c5_bioprocess_subcommands_dispatch_with_structured_json() {
+    let run_dir = test_out_dir("bioprocess_dispatch");
+    let _ = fs::remove_dir_all(&run_dir);
+    fs::create_dir_all(&run_dir).unwrap();
+    fs::write(
+        run_dir.join("qoi.json"),
+        serde_json::to_vec_pretty(&json!({
+            "validation_status": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        run_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "scenario": "fixture",
+            "scenarioHash": "sha256:fixture",
+            "activeModels": [],
+            "provenance": {}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let qoi = Command::new(lbm_bin())
+        .args(["bioprocess", "qoi"])
+        .arg(&run_dir)
+        .output()
+        .expect("run lbm bioprocess qoi");
+    assert!(
+        qoi.status.success(),
+        "bioprocess qoi failed: {}",
+        String::from_utf8_lossy(&qoi.stderr)
+    );
+    let qoi_json: Value = serde_json::from_slice(&qoi.stdout).unwrap();
+    assert_eq!(qoi_json["ok"], true);
+    assert_eq!(qoi_json["qoi"]["validation_status"], json!([]));
+
+    let evidence = Command::new(lbm_bin())
+        .args(["bioprocess", "evidence-check"])
+        .arg(&run_dir)
+        .output()
+        .expect("run lbm bioprocess evidence-check");
+    assert!(
+        evidence.status.success(),
+        "bioprocess evidence-check failed: {}",
+        String::from_utf8_lossy(&evidence.stderr)
+    );
+    let evidence_json: Value = serde_json::from_slice(&evidence.stdout).unwrap();
+    assert_eq!(evidence_json["ok"], true);
+    assert!(evidence_json["evidence_gate"].is_array());
+
+    let report = Command::new(lbm_bin())
+        .args(["bioprocess", "report"])
+        .arg(&run_dir)
+        .output()
+        .expect("run lbm bioprocess report");
+    assert!(
+        report.status.success(),
+        "bioprocess report failed: {}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let report_json: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report_json["ok"], true);
+    assert!(run_dir.join("report.md").is_file());
 }
 
 fn vtk_preset_run() -> Result<PresetRun, String> {
