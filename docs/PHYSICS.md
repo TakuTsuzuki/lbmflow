@@ -104,6 +104,107 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
 
 ## 2. Load-bearing decisions
 
+### 2026-07-08 cell tracer massless advection (`cells.rs::CellTracerPopulation::step`)
+- Form: each tracer samples the resolved velocity at its position and advances
+  `x_{n+1} = x_n + u(x_n) dt`; if the proposed endpoint is solid, it uses the
+  existing particle staircase wall-contact reflection path. The recorded
+  fields are `gamma_dot`, `mu gamma_dot`, and optional oxygen concentration
+  sampled on the trajectory.
+- Source: massless Lagrangian tracer limit of `dx/dt = u(x,t)`. This is a
+  resolved-flow sampling rule, not a calibrated closure.
+- Validity domain: cell density close enough to liquid density that inertia,
+  lift, deformation, and near-wall cell mechanics are not decision variables;
+  closed vessels represented by the existing one-cell solid rim.
+- Validation:
+  `crates/lbm-core/src/cells.rs::tests::uniform_flow_advects_tracers_analytically`,
+  `::deterministic_seeding_matches_seed_and_changes_with_seed`,
+  `::tracer_count_preserved_and_sampled_fields_recorded`, and
+  `::closed_vessel_solid_boundary_reflects_tracer`.
+- Replaces / interacts with: uses `ParticleSet::step_massless` for the
+  transport/contact machinery; finite-inertia cells must use microcarrier mode.
+
+### 2026-07-08 shear damage exposure integral (`damage.rs::ShearDamageModel`)
+- Form: for stress-threshold mode,
+  `E = integral max(0, tau - tau_c)^m dt`; shear-rate threshold mode uses
+  `gamma_dot` in place of `tau`; epsilon threshold is a placeholder that errors
+  until an epsilon field is supplied. `tau_c` and `m` are scenario inputs and
+  must come from the cell-line/scenario calibration record before evidence
+  claims are allowed.
+- Source: scenario/literature-supplied threshold exposure model recorded in
+  `SPEC_BIOPROCESS_CORE.md` section 4 and `MODEL_RISK_MATRIX.md` section 5;
+  `CREDIBILITY_BIOPROCESS.md` requires calibration/holdout separation for
+  evidence-tier damage claims.
+- Validity domain: screening/engineering damage-risk ranking only unless
+  `tau_c` and `m` are calibrated for the cell line and independent holdout data
+  exist; constant exponent over the reported stress range.
+- Validation:
+  `crates/lbm-core/src/damage.rs::tests::constant_shear_exposure_matches_analytic`,
+  `::below_threshold_gives_zero_exactly`,
+  `::percentile_reducer_reports_distribution_not_max_alone`, and
+  `::halved_dt_is_time_step_invariant_for_constant_shear`.
+- Replaces / interacts with: consumes BCFD-032 viscous-stress/shear-rate
+  fields sampled by cell tracers; reports percentiles, max,
+  fraction-above-threshold, and residence time, never max alone.
+
+### 2026-07-08 microcarrier Schiller-Naumann one-way mode (`microcarrier.rs`, `particles.rs::particle_velocity_dt`)
+- Form: finite-size particles use implicit Euler on
+  `dv/dt = (u - v)/tau_p + (1 - rho_f/rho_p) g`, with
+  `tau_p = rho_p d^2 / (18 rho_f nu f(Re_p))` and
+  `f(Re_p) = 1 + 0.15 Re_p^0.687`; `Re_p = |u-v| d / nu` is rejected when it
+  exceeds 800.
+- Source: Schiller and Naumann drag correction for isolated spheres, reducing
+  to Stokes drag as `Re_p -> 0`; buoyancy follows the density-corrected
+  gravity term already used by the particle module.
+- Validity domain: isolated microcarriers, one-way/two-way coupling only,
+  no particle-particle collisions or four-way coupling; `Re_p <= 800` and
+  mass loading guarded separately for two-way mode.
+- Validation:
+  `crates/lbm-core/src/microcarrier.rs::tests::terminal_velocity_matches_stokes_limit_within_five_percent`,
+  `::quiescent_tank_settling_moves_down_and_conserves_count`, and
+  `::invalid_reynolds_is_rejected`; existing
+  `crates/lbm-core/tests/t18_3_particle_settling.rs::t18_3_single_particle_terminal_velocity_matches_schiller_naumann`
+  remains green.
+- Replaces / interacts with: extends the existing one-way `ParticleSet`
+  mechanism with `dt`-aware stepping and microcarrier suspension metrics.
+
+### 2026-07-08 microcarrier drag reaction scatter (`microcarrier.rs::scatter_drag_reaction_forces`)
+- Form: each particle drag force `F_p` is scattered to the liquid as
+  `-F_p` with trilinear cloud-in-cell weights over the surrounding grid nodes;
+  the ledger reports `sum F_particle + sum F_liquid_reaction`.
+- Source: Newton's third law applied to the drag force already used by the
+  particle equation, with first-order conservative cloud-in-cell deposition.
+- Validity domain: two-way point-particle reaction only; scenarios with
+  `mass_loading > 0.1` are rejected until a four-way/collision model exists.
+  Particles outside the grid are rejected rather than silently clamped.
+- Validation:
+  `crates/lbm-core/src/microcarrier.rs::tests::two_way_scatter_ledger_is_equal_and_opposite`,
+  `::single_particle_uniform_flow_drag_points_with_slip`,
+  `::mass_loading_guard_rejects_until_four_way_exists`, and
+  `::two_way_disabled_leaves_one_way_particle_update_bit_identical`.
+- Replaces / interacts with: feeds `Solver::set_particle_reaction_force_field_values`,
+  which delegates to the existing compact per-cell Guo force field without
+  changing solver step order.
+
+### 2026-07-08 behavior review — BCFD-U cell/microcarrier synthetic checks
+Pattern: massless tracers in uniform flow translate along straight parallel
+paths, and finite-size microcarriers in a quiescent tank move downward under
+buoyancy-corrected gravity while conserving particle count.
+Mechanism: tracers follow `dx/dt = u`; microcarriers settle because the
+Schiller-Naumann/Stokes drag balance approaches a downward terminal velocity
+when `rho_p > rho_f`.
+Resolved vs closure: tracer paths are resolved-flow sampling only; the
+microcarrier settling rate is closure-driven by Schiller-Naumann drag, reducing
+to the validated Stokes limit in the low-`Re_p` test.
+Artifacts checked: wall contact in
+`cells.rs::tests::closed_vessel_solid_boundary_reflects_tracer`, count
+conservation in `microcarrier.rs::tests::quiescent_tank_settling_moves_down_and_conserves_count`,
+and visual artifact `target/bcfd_u_cells/bcfd_u_cells_behavior.png`.
+Verdict: PHYSICAL for the synthetic uniform-flow tracer and low-`Re_p`
+settling checks; CLOSURE-DRIVEN for quantitative microcarrier settling outside
+the Stokes limit.
+Routing: none for BCFD-060/061/062/063 unit gates; evidence-tier damage claims
+remain blocked on cell-line calibration and holdout data.
+
 ### 2026-07-07 Bouzidi qd<1/2 moving-wall second-point correction (`bouzidi.rs::apply_bouzidi_impl`)
 - Form: for `qd < 1/2` with a second fluid node,
   `f_opp = sigma*(f_q(x_f)+W) + (1-sigma)*(f_q(x_f-c_q)+W)`,

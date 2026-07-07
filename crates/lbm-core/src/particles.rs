@@ -24,8 +24,10 @@
 //! axis-corrected point is fluid. With restitution 0, particles can rest in
 //! contact under gravity while still responding to later tangential drag.
 
+use serde::{Deserialize, Serialize};
+
 /// State of one Lagrangian particle in lattice units.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Particle {
     pub pos: [f64; 3],
     pub vel: [f64; 3],
@@ -35,7 +37,7 @@ pub struct Particle {
 }
 
 /// Record emitted when a particle crosses a deposition floor.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DepositEvent {
     pub pos: [f64; 3],
     pub particle: Particle,
@@ -62,14 +64,14 @@ impl std::fmt::Display for ParticleError {
 impl std::error::Error for ParticleError {}
 
 /// Fluid sample at a particle position.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sample {
     pub u: [f64; 3],
     pub solid: bool,
 }
 
 /// One-way particle container and fluid parameters in lattice units.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParticleSet {
     pub particles: Vec<Particle>,
     pub rho_f: f64,
@@ -106,6 +108,21 @@ impl ParticleSet {
         F: Fn([f64; 3]) -> Sample,
         E: Fn([f64; 3]) -> f64,
     {
+        self.step_dt(sample, exposure_rate, 1.0)
+    }
+
+    /// Advances all finite-inertia particles by `dt` lattice time.
+    pub fn step_dt<F, E>(
+        &mut self,
+        sample: F,
+        exposure_rate: Option<E>,
+        dt: f64,
+    ) -> Result<(), ParticleError>
+    where
+        F: Fn([f64; 3]) -> Sample,
+        E: Fn([f64; 3]) -> f64,
+    {
+        assert!(dt.is_finite() && dt > 0.0, "dt must be finite and positive");
         assert!(self.rho_f > 0.0, "fluid density must be positive");
         assert!(self.nu > 0.0, "kinematic viscosity must be positive");
         assert!(
@@ -119,17 +136,55 @@ impl ParticleSet {
 
             let s = sample(p.pos);
             if let Some(rate) = &exposure_rate {
-                p.exposure += rate(p.pos);
+                p.exposure += rate(p.pos) * dt;
             }
 
-            let v_new = particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g)
-                .map_err(|re| ParticleError {
-                    particle_index,
-                    re,
-                    re_max: SCHILLER_NAUMANN_RE_MAX,
-                })?;
-            let pos_new = add(p.pos, v_new);
+            let v_new =
+                particle_velocity_dt(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g, dt)
+                    .map_err(|re| ParticleError {
+                        particle_index,
+                        re,
+                        re_max: SCHILLER_NAUMANN_RE_MAX,
+                    })?;
+            let pos_new = add(p.pos, scale(v_new, dt));
 
+            if sample(pos_new).solid {
+                let (pos, vel) =
+                    resolve_solid_contact(p.pos, pos_new, v_new, self.restitution, &sample);
+                p.pos = pos;
+                p.vel = vel;
+            } else {
+                p.pos = pos_new;
+                p.vel = v_new;
+            }
+        }
+        Ok(())
+    }
+
+    /// Advances massless tracers by following the sampled fluid velocity.
+    pub fn step_massless<F, E>(
+        &mut self,
+        sample: F,
+        exposure_rate: Option<E>,
+        dt: f64,
+    ) -> Result<(), ParticleError>
+    where
+        F: Fn([f64; 3]) -> Sample,
+        E: Fn([f64; 3]) -> f64,
+    {
+        assert!(dt.is_finite() && dt > 0.0, "dt must be finite and positive");
+        assert!(
+            (0.0..=1.0).contains(&self.restitution),
+            "restitution must be in [0, 1]"
+        );
+
+        for p in &mut self.particles {
+            let s = sample(p.pos);
+            if let Some(rate) = &exposure_rate {
+                p.exposure += rate(p.pos) * dt;
+            }
+            let v_new = s.u;
+            let pos_new = add(p.pos, scale(v_new, dt));
             if sample(pos_new).solid {
                 let (pos, vel) =
                     resolve_solid_contact(p.pos, pos_new, v_new, self.restitution, &sample);
@@ -180,20 +235,21 @@ impl ParticleSet {
                 p.exposure += rate(p.pos);
             }
 
-            let v_new =
-                match particle_velocity(p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g) {
-                    Ok(v) => v,
-                    Err(re) => {
-                        suspended.push(p);
-                        suspended.extend(iter.map(|(_, p)| p));
-                        self.particles = suspended;
-                        return Err(ParticleError {
-                            particle_index,
-                            re,
-                            re_max: SCHILLER_NAUMANN_RE_MAX,
-                        });
-                    }
-                };
+            let v_new = match particle_velocity_dt(
+                p.vel, s.u, p.d, p.rho_p, self.rho_f, self.nu, self.g, 1.0,
+            ) {
+                Ok(v) => v,
+                Err(re) => {
+                    suspended.push(p);
+                    suspended.extend(iter.map(|(_, p)| p));
+                    self.particles = suspended;
+                    return Err(ParticleError {
+                        particle_index,
+                        re,
+                        re_max: SCHILLER_NAUMANN_RE_MAX,
+                    });
+                }
+            };
             let pos_new = add(p.pos, v_new);
 
             if let Some(pos) = floor_crossing(p.pos, pos_new, floor_z) {
@@ -229,9 +285,9 @@ impl Default for ParticleSet {
     }
 }
 
-const SCHILLER_NAUMANN_RE_MAX: f64 = 800.0;
+pub const SCHILLER_NAUMANN_RE_MAX: f64 = 800.0;
 
-fn particle_velocity(
+pub fn particle_velocity_dt(
     v: [f64; 3],
     u: [f64; 3],
     d: f64,
@@ -239,6 +295,7 @@ fn particle_velocity(
     rho_f: f64,
     nu: f64,
     g: [f64; 3],
+    dt: f64,
 ) -> Result<[f64; 3], f64> {
     let slip = sub(u, v);
     let re = norm(slip) * d / nu;
@@ -248,12 +305,12 @@ fn particle_velocity(
 
     let mut out = [0.0; 3];
     for a in 0..3 {
-        out[a] = (tau_p * v[a] + u[a] + tau_p * g_eff[a]) / (tau_p + 1.0);
+        out[a] = (tau_p * v[a] + dt * u[a] + tau_p * dt * g_eff[a]) / (tau_p + dt);
     }
     Ok(out)
 }
 
-fn schiller_naumann_drag_correction(re: f64) -> Result<f64, f64> {
+pub fn schiller_naumann_drag_correction(re: f64) -> Result<f64, f64> {
     if re > SCHILLER_NAUMANN_RE_MAX {
         return Err(re);
     }

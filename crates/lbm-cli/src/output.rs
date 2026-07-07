@@ -3,6 +3,32 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ExposureDistributionOutput {
+    pub p50: f64,
+    pub p90: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub max: f64,
+    pub fraction_above_threshold: f64,
+    pub residence_time_above_threshold_s: f64,
+}
+
+impl From<lbm_core::damage::ExposureDistribution> for ExposureDistributionOutput {
+    fn from(value: lbm_core::damage::ExposureDistribution) -> Self {
+        Self {
+            p50: value.p50,
+            p90: value.p90,
+            p95: value.p95,
+            p99: value.p99,
+            max: value.max,
+            fraction_above_threshold: value.fraction_above_threshold,
+            residence_time_above_threshold_s: value.residence_time_above_threshold_s,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {

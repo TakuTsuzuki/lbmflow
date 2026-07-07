@@ -381,7 +381,46 @@ fn bioprocess_schema() -> Value {
                             "seed": { "type": "integer", "minimum": 0 },
                             "record_shear": { "type": "boolean" },
                             "record_oxygen": { "type": "boolean" },
-                            "damage_model": { "type": ["object", "null"] }
+                            "damage_model": {
+                                "anyOf": [
+                                    { "$ref": "#/$defs/DamageModelSpec" },
+                                    { "type": "null" }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+            "DamageModelSpec": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "threshold_pa", "exponent"],
+                        "properties": {
+                            "kind": { "const": "threshold" },
+                            "threshold_pa": { "type": "number", "minimum": 0 },
+                            "exponent": { "type": "number", "exclusiveMinimum": 0 }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "threshold_1_s", "exponent"],
+                        "properties": {
+                            "kind": { "const": "gamma_dot_threshold" },
+                            "threshold_1_s": { "type": "number", "minimum": 0 },
+                            "exponent": { "type": "number", "exclusiveMinimum": 0 }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "threshold_w_kg", "exponent"],
+                        "properties": {
+                            "kind": { "const": "energy_dissipation_threshold" },
+                            "threshold_w_kg": { "type": "number", "minimum": 0 },
+                            "exponent": { "type": "number", "exclusiveMinimum": 0 }
                         }
                     }
                 ]
@@ -395,7 +434,46 @@ fn bioprocess_schema() -> Value {
                     "seed": { "type": "integer", "minimum": 0 },
                     "record_shear": { "type": "boolean" },
                     "record_oxygen": { "type": "boolean" },
-                    "damage_model": { "type": ["object", "null"] }
+                    "damage_model": {
+                        "anyOf": [
+                            { "$ref": "#/$defs/DamageModelSpec" },
+                            { "type": "null" }
+                        ]
+                    },
+                    "microcarriers": {
+                        "anyOf": [
+                            { "$ref": "#/$defs/MicrocarrierSpec" },
+                            { "type": "null" }
+                        ]
+                    }
+                }
+            },
+            "MicrocarrierSpec": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["count", "seed", "diameter_m", "density_kg_m3", "restitution"],
+                "properties": {
+                    "count": { "type": "integer", "minimum": 0 },
+                    "seed": { "type": "integer", "minimum": 0 },
+                    "diameter_m": { "type": "number", "exclusiveMinimum": 0 },
+                    "density_kg_m3": { "type": "number", "exclusiveMinimum": 0 },
+                    "restitution": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "max_re_p": { "type": ["number", "null"], "minimum": 0, "maximum": 800 },
+                    "two_way": {
+                        "anyOf": [
+                            { "$ref": "#/$defs/TwoWayMicrocarrierSpec" },
+                            { "type": "null" }
+                        ]
+                    }
+                }
+            },
+            "TwoWayMicrocarrierSpec": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["enabled", "mass_loading"],
+                "properties": {
+                    "enabled": { "type": "boolean" },
+                    "mass_loading": { "type": "number", "minimum": 0, "maximum": 0.1 }
                 }
             },
             "QoiSpec": {

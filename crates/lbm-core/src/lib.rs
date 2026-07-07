@@ -29,6 +29,7 @@ pub mod bubbles;
 pub mod cells;
 mod collision;
 pub mod compat;
+pub mod damage;
 #[cfg(feature = "mpi")]
 pub mod dist;
 pub mod divergence;
@@ -44,6 +45,7 @@ pub mod kla;
 pub mod lattice;
 pub mod les;
 pub mod materials;
+pub mod microcarrier;
 pub mod oxygen;
 pub mod params;
 pub mod particles;
@@ -78,6 +80,13 @@ pub mod prelude {
         bubble_volume_from_diameter, validate_bubble_diameter, Bubble, BubbleError, BubbleSet,
         MomentumCouplingLedger, SpargerBubbleInjector, POINT_BUBBLE_ALPHA_G_MAX,
     };
+    pub use crate::cells::{
+        CellCheckpointSection, CellFieldSample, CellTracer, CellTracerPopulation,
+    };
+    pub use crate::damage::{
+        exposure_distribution, DamageIncrement, DamageModelError, DamageThreshold,
+        ExposureDistribution, ShearDamageModel,
+    };
     pub use crate::divergence::{DivergenceError, PhaseDiag};
     pub use crate::fields::{DistributionKind, LocalGeom, ScalarDistribution, SoaFields};
     pub use crate::free_surface::{DegassingLedger, FreeSurfaceError, TopBoundaryMode};
@@ -98,6 +107,11 @@ pub mod prelude {
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
     pub use crate::materials::{MaterialFields, MaterialSample};
+    pub use crate::microcarrier::{
+        drag_force_on_particle, scatter_drag_reaction_forces, terminal_velocity_stokes,
+        validate_mass_loading, validate_reynolds, MicrocarrierError, MicrocarrierPopulation,
+        ParticleDragForce, SuspensionMetrics, TwoWayScatterReport, TWO_WAY_MASS_LOADING_MAX,
+    };
     pub use crate::oxygen::{
         apply_interfacial_flux_sources, clip_negative_concentrations, henry_equilibrium,
         interfacial_area_density, oxygen_source_step, OxygenDiagnostics, OxygenError,

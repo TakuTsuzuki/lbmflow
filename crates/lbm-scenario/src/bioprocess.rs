@@ -125,6 +125,10 @@ impl BioprocessScenario {
             ));
         }
 
+        if let Some(cells) = &self.cells {
+            cells.validate()?;
+        }
+
         Ok(())
     }
 
@@ -1054,6 +1058,8 @@ pub enum OurModelSpec {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DamageModelSpec {
     Threshold { threshold_pa: f64, exponent: f64 },
+    GammaDotThreshold { threshold_1_s: f64, exponent: f64 },
+    EnergyDissipationThreshold { threshold_w_kg: f64, exponent: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1064,6 +1070,124 @@ pub struct CellsSpec {
     pub record_shear: bool,
     pub record_oxygen: bool,
     pub damage_model: Option<DamageModelSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microcarriers: Option<MicrocarrierSpec>,
+}
+
+impl CellsSpec {
+    fn validate(&self) -> Result<(), BioprocessScenarioError> {
+        if let Some(model) = &self.damage_model {
+            model.validate()?;
+        }
+        if let Some(microcarriers) = &self.microcarriers {
+            microcarriers.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl DamageModelSpec {
+    fn validate(&self) -> Result<(), BioprocessScenarioError> {
+        let (parameter, threshold, exponent) = match *self {
+            Self::Threshold {
+                threshold_pa,
+                exponent,
+            } => ("threshold_pa", threshold_pa, exponent),
+            Self::GammaDotThreshold {
+                threshold_1_s,
+                exponent,
+            } => ("threshold_1_s", threshold_1_s, exponent),
+            Self::EnergyDissipationThreshold {
+                threshold_w_kg,
+                exponent,
+            } => ("threshold_w_kg", threshold_w_kg, exponent),
+        };
+        if !(threshold.is_finite() && threshold >= 0.0 && exponent.is_finite() && exponent > 0.0) {
+            return Err(BioprocessScenarioError::unsupported(
+                "cell damage model requires finite non-negative threshold and positive exponent",
+                UnsupportedReason::OutOfValidityRange {
+                    detail: format!("{parameter}={threshold:e}, exponent={exponent:e}"),
+                },
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct MicrocarrierSpec {
+    pub count: u32,
+    pub seed: u64,
+    pub diameter_m: f64,
+    pub density_kg_m3: f64,
+    pub restitution: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_re_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub two_way: Option<TwoWayMicrocarrierSpec>,
+}
+
+impl MicrocarrierSpec {
+    fn validate(&self) -> Result<(), BioprocessScenarioError> {
+        if !(self.diameter_m.is_finite() && self.diameter_m > 0.0) {
+            return Err(out_of_range("microcarrier diameter_m must be positive"));
+        }
+        if !(self.density_kg_m3.is_finite() && self.density_kg_m3 > 0.0) {
+            return Err(out_of_range("microcarrier density_kg_m3 must be positive"));
+        }
+        if !(self.restitution.is_finite() && (0.0..=1.0).contains(&self.restitution)) {
+            return Err(out_of_range("microcarrier restitution must be in [0, 1]"));
+        }
+        if let Some(re) = self.max_re_p {
+            if !(re.is_finite() && (0.0..=800.0).contains(&re)) {
+                return Err(BioprocessScenarioError::unsupported(
+                    "microcarrier Schiller-Naumann mode requires Re_p <= 800",
+                    UnsupportedReason::OutOfValidityRange {
+                        detail: format!("max_re_p={re:e} exceeds 800"),
+                    },
+                ));
+            }
+        }
+        if let Some(two_way) = &self.two_way {
+            two_way.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct TwoWayMicrocarrierSpec {
+    pub enabled: bool,
+    pub mass_loading: f64,
+}
+
+impl TwoWayMicrocarrierSpec {
+    fn validate(&self) -> Result<(), BioprocessScenarioError> {
+        if !(self.mass_loading.is_finite() && self.mass_loading >= 0.0) {
+            return Err(out_of_range(
+                "microcarrier mass_loading must be finite and non-negative",
+            ));
+        }
+        if self.enabled && self.mass_loading > 0.1 {
+            return Err(BioprocessScenarioError::unsupported(
+                "two-way microcarrier coupling rejects mass_loading > 0.1 until four-way coupling exists",
+                UnsupportedReason::OutOfValidityRange {
+                    detail: format!("mass_loading={:e} exceeds 0.1", self.mass_loading),
+                },
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn out_of_range(message: impl Into<String>) -> BioprocessScenarioError {
+    let message = message.into();
+    BioprocessScenarioError::unsupported(
+        message.clone(),
+        UnsupportedReason::OutOfValidityRange { detail: message },
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1297,5 +1421,75 @@ mod tests {
             err.reason,
             UnsupportedReason::OutOfValidityRange { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_invalid_damage_model_parameters() {
+        let mut scenario = base_scenario(stirred_tank(None, vec![]));
+        scenario.cells = Some(CellsSpec {
+            count: 10,
+            seed: 1,
+            record_shear: true,
+            record_oxygen: false,
+            damage_model: Some(DamageModelSpec::Threshold {
+                threshold_pa: 0.2,
+                exponent: 0.0,
+            }),
+            microcarriers: None,
+        });
+        let err = scenario.validate().unwrap_err();
+        assert!(matches!(
+            err.reason,
+            UnsupportedReason::OutOfValidityRange { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_microcarrier_reynolds_above_schiller_naumann_domain() {
+        let mut scenario = base_scenario(stirred_tank(None, vec![]));
+        scenario.cells = Some(CellsSpec {
+            count: 0,
+            seed: 1,
+            record_shear: true,
+            record_oxygen: false,
+            damage_model: None,
+            microcarriers: Some(MicrocarrierSpec {
+                count: 12,
+                seed: 2,
+                diameter_m: 1.0e-4,
+                density_kg_m3: 1030.0,
+                restitution: 0.0,
+                max_re_p: Some(801.0),
+                two_way: None,
+            }),
+        });
+        let err = scenario.validate().unwrap_err();
+        assert!(err.message.contains("Re_p <= 800"));
+    }
+
+    #[test]
+    fn rejects_two_way_mass_loading_above_guard() {
+        let mut scenario = base_scenario(stirred_tank(None, vec![]));
+        scenario.cells = Some(CellsSpec {
+            count: 0,
+            seed: 1,
+            record_shear: true,
+            record_oxygen: false,
+            damage_model: None,
+            microcarriers: Some(MicrocarrierSpec {
+                count: 12,
+                seed: 2,
+                diameter_m: 1.0e-4,
+                density_kg_m3: 1030.0,
+                restitution: 0.0,
+                max_re_p: Some(10.0),
+                two_way: Some(TwoWayMicrocarrierSpec {
+                    enabled: true,
+                    mass_loading: 0.11,
+                }),
+            }),
+        });
+        let err = scenario.validate().unwrap_err();
+        assert!(err.message.contains("mass_loading > 0.1"));
     }
 }
