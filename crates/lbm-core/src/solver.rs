@@ -1683,6 +1683,56 @@ where
         params
     }
 
+    fn refresh_moments_after_force_change(&mut self) {
+        self.stage_in_if_dirty();
+        let params_with_gravity;
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        let params = if backend_gravity {
+            params_with_gravity = self.params_with_backend_gravity();
+            &params_with_gravity
+        } else {
+            &self.params
+        };
+        for i in 0..self.parts.len() {
+            self.backend
+                .update_moments(&self.subs[i], &mut self.parts[i], params);
+        }
+        self.device_ahead = true;
+    }
+
+    fn force_field_is_uniform(&self) -> bool {
+        let mut first = None;
+        for fields in &self.host_parts {
+            let Some(ff) = fields.force_field.as_ref() else {
+                return false;
+            };
+            for &v in ff {
+                match first {
+                    Some(base) if v != base => return false,
+                    Some(_) => {}
+                    None => first = Some(v),
+                }
+            }
+        }
+        first.is_some()
+    }
+
+    fn core_has_solids(&self) -> bool {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let g = sub.geom;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        if fields.solid[g.pidx(x, y, z)] {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
     /// open faces → moments).
     pub fn step(&mut self) {
@@ -2090,16 +2140,30 @@ where
             }
         }
         self.host_dirty = true;
+        if self.force_field_is_uniform() {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     /// Drop the per-cell body force field on every owned part (subsequent
     /// steps run force-free unless [`GlobalSpec::force`] is nonzero).
     pub fn clear_body_force_field(&mut self) {
         self.stage_out_all();
+        let had_force_field = self
+            .host_parts
+            .iter()
+            .any(|fields| fields.force_field.is_some());
+        if !had_force_field {
+            return;
+        }
+        let refresh = self.force_field_is_uniform();
         for fields in self.host_parts.iter_mut() {
             fields.force_field = None;
         }
         self.host_dirty = true;
+        if refresh {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     /// Add a rotating rigid-body direct-forcing IBM source to the current
@@ -2315,6 +2379,9 @@ where
     pub fn set_gravity(&mut self, g: [T; 3]) {
         self.stage_out_all();
         self.gravity = Some(g);
+        if !self.core_has_solids() {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     /// Prescribe a per-node inlet profile on a `Velocity` face, `values`
@@ -2657,6 +2724,9 @@ where
             }
         }
         self.host_dirty = true;
+        if self.force_field_is_uniform() {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     fn write_part_checkpoint(

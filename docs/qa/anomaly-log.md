@@ -13,16 +13,6 @@ context in commits 82946d3 / cd3999f / 20d0e10).
 
 ## OPEN — core-engine fix pending
 
-### ANOM-P2-001 — uniform-force vs per-cell force-field transient impulse mismatch
-- Severity: **S2** (steady-state invisible; transients wrong).
-- Cited in: `crates/lbm-core/tests/mf_interim.rs:265`,
-  `crates/lbm-core/tests/accuracy_audit.rs:471` (`#[ignore]` current-wrong-value
-  pin — flips at R2-C fix).
-- Measured (32×24, tau=1, TRT Λ=3/16, F=3e-7): uniform u(1)=1.5F (exact Guo);
-  force-field u(1)=0.9286F — 1/(2 tau_minus)·F = 4/7 F impulse deficit.
-- Disposition: fold into R2-C mechanical TRT port (order text in
-  `scratchpad/order-r2c.txt`).
-
 ### ANOM-P4-001 — time-stepped direct-forcing IBM diverges in default config
 - Severity: **S1**.
 - Gate: `cx/audit-ibm` B1–B8 (currently RED / NaN).
@@ -124,6 +114,11 @@ Retained pointers only; details in git history:
   cumulant; rename or implement true cumulants (D-track owns the routing).
 - Particle SN validity clamp at Re_p=800 is silent; add
   debug_assert→warn/documented saturation at API surface.
+- **ANOM-P2-001** — FIXED in R2-C v2 for equivalent uniform per-cell forcing.
+  Exactly uniform force-field installs/clears, plus gravity on all-fluid
+  domains, refresh moments through the same Guo half-force definition before
+  collision as uniform force. Regression:
+  `crates/lbm-core/tests/accuracy_audit.rs::uniform_force_impulse_matches_force_field_anom_p2_001`.
 
 ---
 

@@ -24,6 +24,7 @@ pub mod backend;
 pub mod backend_simd;
 pub mod bench_regression;
 pub mod bouzidi;
+mod collision;
 pub mod compat;
 #[cfg(feature = "mpi")]
 pub mod dist;

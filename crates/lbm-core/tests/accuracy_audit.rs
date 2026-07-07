@@ -468,24 +468,22 @@ fn forcing_path_gravity_and_force_field_one_step_match() {
 }
 
 #[test]
-#[ignore = "expected failure until R2-C fixes ANOM-P2-001; then this current-wrong-value pin must fail loudly and be retightened"]
-fn uniform_force_impulse_current_wrong_value_pin_anom_p2_001() {
+fn uniform_force_impulse_matches_force_field_anom_p2_001() {
     let uniform = one_step_momentum_gain_force_path("uniform");
     let field = one_step_momentum_gain_force_path("field");
-    // ANOM-P2-001 calibration: at tau=1 TRT, the uniform-force path currently
-    // injects a different step-1 impulse than the per-cell force field /
-    // gravity path, even though steady slopes match. In this observable
-    // (post-step momentum gain after subtracting each path's own half-force
-    // initial momentum), the current wrong uniform/field ratio is 7/3. This
-    // assertion pins that wrong value so a correct R2-C implementation breaks
-    // the test and forces the band to be tightened to equality.
-    let ratio = uniform / field;
-    println!("ACC force path ANOM-P2-001: uniform={uniform:.12e}, field={field:.12e}, ratio={ratio:.12e}");
+    let gravity = one_step_momentum_gain_force_path("gravity");
+    println!("ACC force path ANOM-P2-001 fixed: uniform={uniform:.12e}, field={field:.12e}, gravity={gravity:.12e}");
     assert_close(
-        ratio,
-        7.0 / 3.0,
-        2.0e-2,
-        "current wrong uniform/field impulse ratio",
+        uniform,
+        field,
+        1.0e-14,
+        "uniform vs force_field one-step impulse",
+    );
+    assert_close(
+        uniform,
+        gravity,
+        1.0e-14,
+        "uniform vs gravity one-step impulse",
     );
 }
 

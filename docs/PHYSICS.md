@@ -707,3 +707,25 @@ sign only to the viscous term — the Reynolds term needs the same fold
 warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
 the equilibrium ceiling, stress residual 34%) — equilibration is delta-
 dependent; 50 Te equilibrates it (measurements above).
+
+---
+
+### 2026-07-07 Guo force-field ingestion timing (`crates/lbm-core/src/solver.rs:refresh_moments_after_force_change`)
+- Form: after an exactly uniform per-cell force field is installed or cleared
+  (and after gravity is set on all-fluid domains), stored moments are refreshed
+  with the same physical velocity definition used by uniform forcing:
+  `u = (m + F/2) / rho`, where `F` is the composed Guo body force.
+- Source: resolved Guo forcing contract already used by `moments_row` and the
+  uniform-force initialization path; this removes ANOM-P2-001's inconsistent
+  late force-field staging rather than adding a new closure.
+- Validity domain: BGK/TRT Guo forcing paths in this engine for equivalent
+  uniform force-field ingestion. Nonuniform model force fields and wall-rim
+  gravity/hydrostatic cases keep their validated pre-existing staging.
+- Validation: `crates/lbm-core/tests/accuracy_audit.rs::uniform_force_impulse_matches_force_field_anom_p2_001`
+  asserts uniform force, equivalent per-cell force field, and equivalent
+  gravity have identical step-1 momentum impulse to `1e-14`; T13 split
+  invariance and `backend_simd_equiv` were rerun unchanged.
+- Replaces / interacts with: replaces the previous equivalent uniform
+  force-field path that collided step 1 from stale moments and lost the
+  transient `1/(2 tau_minus) * F` contribution while steady slopes remained
+  correct.

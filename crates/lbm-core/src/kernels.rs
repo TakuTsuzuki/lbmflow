@@ -21,6 +21,7 @@
 //! concurrent callers touch disjoint cell columns (each row is written by
 //! exactly one call).
 
+use crate::collision::{Collision, ScalarArith, TrtGuo};
 use crate::fields::LocalGeom;
 use crate::lattice::{Face, Lattice, Q_MAX};
 use crate::params::{KParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION};
@@ -137,11 +138,6 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
     omega: Option<&[T]>,
     p: &KParams<T>,
 ) {
-    let three = T::r(3.0);
-    let f45 = T::r(4.5);
-    let f15 = T::r(1.5);
-    let nine = T::r(9.0);
-    let half = T::r(0.5);
     let force_on = p.force_on(ff.is_some());
     for x in 0..rho.len() {
         if solid[x] {
@@ -150,58 +146,15 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
         let r = rho[x];
         let u = [ux[x], uy[x], uz[x]];
         let fv = p.force_at(ff, x, r);
-        let mut usq = u[0] * u[0];
-        for d in 1..L::D {
-            usq = usq + u[d] * u[d];
-        }
-        let mut uf = u[0] * fv[0];
-        for d in 1..L::D {
-            uf = uf + u[d] * fv[d];
-        }
-        let drho = r - T::one();
-        let mut feq = [T::zero(); Q_MAX];
-        let mut src = [T::zero(); Q_MAX];
-        for q in 0..L::Q {
-            let mut cu = p.cr[q][0] * u[0];
-            for d in 1..L::D {
-                cu = cu + p.cr[q][d] * u[d];
-            }
-            feq[q] = p.wr[q] * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
-            if force_on {
-                let mut cf = p.cr[q][0] * fv[0];
-                for d in 1..L::D {
-                    cf = cf + p.cr[q][d] * fv[d];
-                }
-                src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);
-            }
-        }
         let i = pb + x;
-        // SAFETY: row-disjoint dispatch (see RawSlice contract).
-        unsafe {
-            let op = omega.map_or(p.omega_p, |v| v[x]);
-            let cp = if omega.is_some() {
-                T::one() - op / T::r(2.0)
-            } else {
-                p.cp
-            };
-            let i0 = L::REST * np + i;
-            let f0 = f.get(i0);
-            f.set(i0, f0 - op * (f0 - feq[L::REST]) + cp * src[L::REST]);
-            for &(a, b) in L::PAIRS {
-                let (ia, ib) = (a * np + i, b * np + i);
-                let (fa, fb) = (f.get(ia), f.get(ib));
-                let fp = half * (fa + fb);
-                let fm = half * (fa - fb);
-                let ep = half * (feq[a] + feq[b]);
-                let em = half * (feq[a] - feq[b]);
-                let sp = half * (src[a] + src[b]);
-                let sm = half * (src[a] - src[b]);
-                let rp = op * (fp - ep);
-                let rm = p.omega_m * (fm - em);
-                f.set(ia, fa - rp - rm + cp * sp + p.cm * sm);
-                f.set(ib, fb - rp + rm + cp * sp - p.cm * sm);
-            }
-        }
+        let op = omega.map_or(p.omega_p, |v| v[x]);
+        let cp = if omega.is_some() {
+            T::one() - op / T::r(2.0)
+        } else {
+            p.cp
+        };
+        let mut arith = ScalarArith::new(f, np, i, r, u, fv, op, cp, force_on, p);
+        TrtGuo::relax::<_, L>(&mut arith);
     }
 }
 
