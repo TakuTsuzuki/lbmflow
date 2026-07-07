@@ -57,7 +57,7 @@ impl BioprocessScenario {
             ));
         }
 
-        self.qoi.validate_dataset_references()?;
+        self.qoi.validate()?;
 
         if self.credibility_tier == CredibilityTier::Evidence && !self.qoi.has_evidence_refs() {
             return Err(BioprocessScenarioError::unsupported(
@@ -1224,6 +1224,14 @@ pub struct QoiSpec {
 }
 
 impl QoiSpec {
+    fn validate(&self) -> Result<(), BioprocessScenarioError> {
+        self.validate_dataset_references()?;
+        if let Some(gas) = &self.gas_holdup {
+            gas.validate()?;
+        }
+        Ok(())
+    }
+
     fn has_evidence_refs(&self) -> bool {
         let legacy = self.calibration_dataset_id.is_some() && self.holdout_dataset_id.is_some();
         legacy
@@ -1301,9 +1309,28 @@ pub struct PowerQoiOpts {}
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct MixingQoiOpts {}
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct GasHoldupQoiOpts {}
+pub struct GasHoldupQoiOpts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+}
+
+impl GasHoldupQoiOpts {
+    fn validate(&self) -> Result<(), BioprocessScenarioError> {
+        if let Some(threshold) = self.threshold {
+            if !(threshold.is_finite() && (0.0..1.0).contains(&threshold)) {
+                return Err(BioprocessScenarioError::unsupported(
+                    "gas holdup threshold must be finite and in [0, 1)",
+                    UnsupportedReason::OutOfValidityRange {
+                        detail: format!("qoi.gas_holdup.threshold={threshold}"),
+                    },
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -1542,6 +1569,45 @@ mod tests {
             err.reason,
             UnsupportedReason::OutOfValidityRange { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_sparger_inlet_phase_other_than_gas() {
+        let mut scenario = base_scenario(stirred_tank(
+            None,
+            vec![SpargerSpec::Ring {
+                center_z_m: 0.1,
+                outer_radius_m: 0.2,
+                orifice_count: 4,
+                orifice_diameter_m: 0.04,
+                raw_phi_boundary_fields: Vec::new(),
+                gas_volumetric_flow_m3_per_s: Some(1.0e-5),
+                vvm: None,
+                inlet_phase: InletPhase::Other("liquid".to_string()),
+            }],
+        ));
+        scenario.physics = PhysicsSpec {
+            models: vec![PhysicsModel::ResolvedPhaseField {
+                interface_width_m: 0.05,
+                mobility_m2_per_s: 1.0e-8,
+                clipping_policy: None,
+                contact_angle_deg: None,
+                dynamic_contact_angle: None,
+                top_boundary: None,
+            }],
+        };
+        let err = scenario.validate().unwrap_err();
+        assert!(err.message.contains("inlet phase must be gas"));
+    }
+
+    #[test]
+    fn rejects_invalid_gas_holdup_threshold() {
+        let mut scenario = base_scenario(stirred_tank(None, vec![]));
+        scenario.qoi.gas_holdup = Some(GasHoldupQoiOpts {
+            threshold: Some(1.0),
+        });
+        let err = scenario.validate().unwrap_err();
+        assert!(err.message.contains("gas holdup threshold"));
     }
 
     #[test]

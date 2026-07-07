@@ -237,8 +237,67 @@ pub struct GasQoiSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gas_holdup: Option<QoiScalar>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_holdup_raw: Option<GasHoldupQoi>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_holdup_thresholded: Option<GasHoldupQoi>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compartments: Vec<GasHoldupQoi>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub d32_m: Option<QoiScalar>,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GasHoldupQoi {
+    pub value: Option<f64>,
+    pub gas_volume_m3: Option<f64>,
+    pub cell_count: usize,
+    pub threshold: Option<f64>,
+    pub averaging_volume: String,
+    pub provenance: QoiProvenance,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<SkippedQoi>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasHoldupReport {
+    pub raw: GasHoldupQoi,
+    pub thresholded: Option<GasHoldupQoi>,
+    pub compartments: Vec<GasHoldupQoi>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GasHoldupError {
+    Shape(String),
+    InvalidPhi { index: usize, value: f64 },
+    InvalidThreshold(f64),
+    EmptyAveragingVolume(String),
+}
+
+impl std::fmt::Display for GasHoldupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shape(message) => f.write_str(message),
+            Self::InvalidPhi { index, value } => {
+                write!(
+                    f,
+                    "phi[{index}]={value} is outside the resolved [0, 1] phase range"
+                )
+            }
+            Self::InvalidThreshold(value) => {
+                write!(
+                    f,
+                    "gas holdup threshold must be finite and in [0, 1), got {value}"
+                )
+            }
+            Self::EmptyAveragingVolume(region) => {
+                write!(f, "gas holdup averaging volume {region} contains no cells")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GasHoldupError {}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -679,6 +738,208 @@ pub fn compartment_cv(
         .collect()
 }
 
+pub fn resolved_gas_holdup(
+    dims: [usize; 3],
+    phi: Option<&[f64]>,
+    solid: &[bool],
+    dx_m: f64,
+    threshold: Option<f64>,
+    impeller_center_z: Option<f64>,
+    time_window: &str,
+) -> Result<GasHoldupReport, GasHoldupError> {
+    let n = dims[0] * dims[1] * dims[2];
+    if solid.len() != n {
+        return Err(GasHoldupError::Shape(format!(
+            "solid mask length {} does not match cell count {n}",
+            solid.len()
+        )));
+    }
+    let provenance = gas_holdup_provenance("working_volume", threshold, time_window);
+    let Some(phi) = phi else {
+        let skipped = GasHoldupQoi {
+            value: None,
+            gas_volume_m3: None,
+            cell_count: 0,
+            threshold,
+            averaging_volume: "working_volume".to_string(),
+            provenance,
+            skipped: Some(SkippedQoi {
+                qoi: "gas_holdup".to_string(),
+                reason: "phase field is not enabled".to_string(),
+            }),
+        };
+        return Ok(GasHoldupReport {
+            raw: skipped,
+            thresholded: None,
+            compartments: Vec::new(),
+        });
+    };
+    if phi.len() != n {
+        return Err(GasHoldupError::Shape(format!(
+            "phi length {} does not match cell count {n}",
+            phi.len()
+        )));
+    }
+    if !(dx_m.is_finite() && dx_m > 0.0) {
+        return Err(GasHoldupError::Shape(format!(
+            "dx_m must be finite and > 0 for gas holdup (got {dx_m})"
+        )));
+    }
+    if let Some(t) = threshold {
+        if !(t.is_finite() && (0.0..1.0).contains(&t)) {
+            return Err(GasHoldupError::InvalidThreshold(t));
+        }
+    }
+    for (i, &p) in phi.iter().enumerate() {
+        if solid[i] {
+            continue;
+        }
+        if !(p.is_finite() && (0.0..=1.0).contains(&p)) {
+            return Err(GasHoldupError::InvalidPhi { index: i, value: p });
+        }
+    }
+
+    let include: Vec<bool> = solid.iter().map(|&s| !s).collect();
+    let raw = gas_holdup_for_mask(phi, &include, dx_m, None, "working_volume", time_window)?;
+    let thresholded = match threshold {
+        Some(t) => Some(gas_holdup_for_mask(
+            phi,
+            &include,
+            dx_m,
+            Some(t),
+            "working_volume",
+            time_window,
+        )?),
+        None => None,
+    };
+    let compartments = gas_holdup_compartments(
+        dims,
+        phi,
+        solid,
+        dx_m,
+        threshold,
+        impeller_center_z,
+        time_window,
+    )?;
+    Ok(GasHoldupReport {
+        raw,
+        thresholded,
+        compartments,
+    })
+}
+
+fn gas_holdup_compartments(
+    dims: [usize; 3],
+    phi: &[f64],
+    solid: &[bool],
+    dx_m: f64,
+    threshold: Option<f64>,
+    impeller_center_z: Option<f64>,
+    time_window: &str,
+) -> Result<Vec<GasHoldupQoi>, GasHoldupError> {
+    let n = dims[0] * dims[1] * dims[2];
+    let mut top = vec![false; n];
+    let mut bulk = vec![false; n];
+    let mut near = vec![false; n];
+    for z in 0..dims[2] {
+        for y in 0..dims[1] {
+            for x in 0..dims[0] {
+                let i = idx(dims, x, y, z);
+                if solid[i] {
+                    continue;
+                }
+                let zn = (z as f64 + 0.5) / dims[2] as f64;
+                if zn >= 2.0 / 3.0 {
+                    top[i] = true;
+                } else if impeller_center_z
+                    .is_some_and(|z_near| ((z as f64 + 0.5) - z_near).abs() <= dims[2] as f64 / 6.0)
+                {
+                    near[i] = true;
+                } else {
+                    bulk[i] = true;
+                }
+            }
+        }
+    }
+    [
+        ("compartment_top", top),
+        ("compartment_bulk", bulk),
+        ("compartment_near_impeller", near),
+    ]
+    .into_iter()
+    .filter(|(_, mask)| mask.iter().any(|&inside| inside))
+    .map(|(name, mask)| gas_holdup_for_mask(phi, &mask, dx_m, threshold, name, time_window))
+    .collect()
+}
+
+fn gas_holdup_for_mask(
+    phi: &[f64],
+    include: &[bool],
+    dx_m: f64,
+    threshold: Option<f64>,
+    averaging_volume: &str,
+    time_window: &str,
+) -> Result<GasHoldupQoi, GasHoldupError> {
+    let mut gas_sum = 0.0;
+    let mut count = 0usize;
+    for (&p, &inside) in phi.iter().zip(include) {
+        if !inside {
+            continue;
+        }
+        let alpha_g = 1.0 - p;
+        if threshold.is_some_and(|t| alpha_g <= t) {
+            continue;
+        }
+        gas_sum += alpha_g;
+        count += 1;
+    }
+    if count == 0 {
+        if threshold.is_some() {
+            return Ok(GasHoldupQoi {
+                value: Some(0.0),
+                gas_volume_m3: Some(0.0),
+                cell_count: 0,
+                threshold,
+                averaging_volume: averaging_volume.to_string(),
+                provenance: gas_holdup_provenance(averaging_volume, threshold, time_window),
+                skipped: None,
+            });
+        }
+        return Err(GasHoldupError::EmptyAveragingVolume(
+            averaging_volume.to_string(),
+        ));
+    }
+    let cell_volume = dx_m * dx_m * dx_m;
+    Ok(GasHoldupQoi {
+        value: Some(gas_sum / count as f64),
+        gas_volume_m3: Some(gas_sum * cell_volume),
+        cell_count: count,
+        threshold,
+        averaging_volume: averaging_volume.to_string(),
+        provenance: gas_holdup_provenance(averaging_volume, threshold, time_window),
+        skipped: None,
+    })
+}
+
+fn gas_holdup_provenance(
+    averaging_volume: &str,
+    threshold: Option<f64>,
+    time_window: &str,
+) -> QoiProvenance {
+    let method = match threshold {
+        Some(t) => format!("resolved_phase_field; alpha_g = 1 - phi; alpha_g > {t}"),
+        None => "resolved_phase_field; alpha_g = 1 - phi".to_string(),
+    };
+    QoiProvenance::new(
+        vec!["phi".to_string()],
+        time_window,
+        averaging_volume,
+        "dimensionless",
+        method,
+        ValidationTier::Screening,
+    )
+}
+
 fn idx(dims: [usize; 3], x: usize, y: usize, z: usize) -> usize {
     (z * dims[1] + y) * dims[0] + x
 }
@@ -814,6 +1075,72 @@ mod tests {
         assert!(comps
             .iter()
             .any(|c| c.name == "near_impeller" && c.cv.is_some()));
+    }
+
+    #[test]
+    fn synthetic_phi_field_gives_expected_gas_holdup_raw_and_thresholded() {
+        let dims = [2, 2, 2];
+        let phi = vec![1.0, 0.96, 0.90, 0.50, 1.0, 1.0, 1.0, 1.0];
+        let solid = vec![false; phi.len()];
+        let report = resolved_gas_holdup(
+            dims,
+            Some(&phi),
+            &solid,
+            0.01,
+            Some(0.05),
+            None,
+            "final_step",
+        )
+        .unwrap();
+        let raw = report.raw.value.unwrap();
+        assert!(
+            (raw - (0.0 + 0.04 + 0.10 + 0.50) / 8.0).abs() < 1.0e-12,
+            "raw gas holdup must average alpha_g over the full working volume"
+        );
+        let thresholded = report.thresholded.unwrap();
+        assert!(
+            (thresholded.value.unwrap() - (0.10 + 0.50) / 2.0).abs() < 1.0e-12,
+            "thresholded gas holdup must average only alpha_g above the threshold"
+        );
+        assert_eq!(thresholded.threshold, Some(0.05));
+        assert!(report
+            .compartments
+            .iter()
+            .any(|c| { c.averaging_volume == "compartment_top" && c.value.is_some() }));
+    }
+
+    #[test]
+    fn missing_phase_field_returns_skipped_gas_holdup_with_reason() {
+        let solid = vec![false; 8];
+        let report = resolved_gas_holdup(
+            [2, 2, 2],
+            None,
+            &solid,
+            0.01,
+            Some(0.05),
+            None,
+            "final_step",
+        )
+        .unwrap();
+        assert!(report.raw.value.is_none());
+        assert!(report.raw.skipped.unwrap().reason.contains("phase field"));
+    }
+
+    #[test]
+    fn gas_holdup_rejects_phi_outside_resolved_fraction_range() {
+        let phi = vec![1.01; 8];
+        let solid = vec![false; 8];
+        let err = resolved_gas_holdup(
+            [2, 2, 2],
+            Some(&phi),
+            &solid,
+            0.01,
+            None,
+            None,
+            "final_step",
+        )
+        .unwrap_err();
+        assert!(matches!(err, GasHoldupError::InvalidPhi { .. }));
     }
 
     fn test_provenance(units: &str, method: &str) -> QoiProvenance {

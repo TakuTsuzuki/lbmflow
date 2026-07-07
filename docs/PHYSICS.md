@@ -2013,6 +2013,69 @@ require the future VB group.
   resolved-interface oxygen source. It does not make Shan-Chen production
   gas-liquid or uncalibrated kL evidence-grade.
 
+### 2026-07-08 resolved sparger gas injection (`crates/lbm-core/src/sparger.rs`)
+- Form: for each injection step, requested gas volume is `V_g = Q_g dt`.
+  The source is distributed uniformly over the resolved sparger-orifice fluid
+  cells as `alpha_g <- alpha_g + V_g / (N_orifice dx^3)`, equivalently
+  `phi <- phi - V_g / (N_orifice dx^3)`. The operation is rejected if the
+  orifice resolution is below the BCFD-022 floor or if the requested step
+  volume exceeds local liquid capacity; no clipping is used to absorb excess
+  transport.
+- Source: finite-volume conservation of the declared gas volumetric flow into
+  resolved phase fraction. The orifice resolution floor is the BCFD-022
+  geometry requirement `orifice_diameter / dx >= 3`, reused unchanged here.
+- Validity domain: resolved phase-field gas injection only, bounded
+  `0 <= phi <= 1`, positive `Q_g`, positive `dt`, positive `dx`, and
+  resolved sparger-orifice masks. Point-bubble injection uses the separate
+  BCFD-070+ path.
+- Validation:
+  `crates/lbm-core/tests/bcfd_046_sparger_injection.rs::ring_sparger_gas_injection_decreases_phi_only_on_orifice_cells`,
+  `::gas_volume_ledger_matches_q_times_t_within_two_percent`, and
+  `::resolved_injection_rejects_under_resolved_orifice`; scenario validation
+  rejects raw phi boundary fields and non-gas sparger inlet phases.
+- Replaces / interacts with: consumes BCFD-022 sparger masks and BCFD-040
+  phase fraction. The ledger records requested/injected volume and a pressure
+  consistency residual for manifest provenance.
+
+### 2026-07-08 resolved gas-holdup QOI (`crates/lbm-core/src/qoi.rs`)
+- Form: local gas fraction is `alpha_g = 1 - phi`. Raw global gas holdup is
+  `epsilon_g = average(alpha_g)` over non-solid working-volume cells.
+  Thresholded gas holdup averages only cells with `alpha_g > threshold`;
+  compartment values reuse the BCFD-035 top / bulk / near-impeller partition.
+- Source: direct volume fraction bookkeeping from the conservative
+  phase-field variable, with no fitted coefficient.
+- Validity domain: resolved phase-field runs with finite bounded `phi` and
+  declared working-volume masks. Missing phase field emits a skipped QOI with
+  provenance; invalid phi or invalid threshold is rejected.
+- Validation:
+  `crates/lbm-core/src/qoi.rs::tests::synthetic_phi_field_gives_expected_gas_holdup_raw_and_thresholded`,
+  `::missing_phase_field_returns_skipped_gas_holdup_with_reason`, and
+  `::gas_holdup_rejects_phi_outside_resolved_fraction_range`.
+- Replaces / interacts with: feeds BCFD-080 `QoiBundle::gas` and the CLI
+  `gas_holdup.json` / `qoi_gas.csv` output. It does not include point-bubble
+  or hybrid gas bookkeeping.
+
+### 2026-07-08 behavior review — BCFD-048 phase-field validation smoke
+Pattern: planar interfaces remain present and bounded in a periodic domain;
+neutral wall-contact smoke remains mirror-symmetric; sparger injection lowers
+`phi` only at declared orifice cells while the ledger tracks `Q_g t`.
+Mechanism: the Allen-Cahn phase update preserves the diffuse interface at
+rest, neutral contact angle imposes zero wall-normal bias at 90 degrees, and
+the sparger source is a finite-volume gas-fraction increment on the orifice
+mask.
+Resolved vs closure: phase transport and gas holdup are resolved
+phase-fraction bookkeeping; the resolved sparger source is a boundary source
+from declared volumetric flow, not a calibrated closure. The oxygen
+interfacial-area delta approximation remains the live closure for later kLa
+source terms.
+Artifacts checked: Laplace heavy validation writes
+`target/bcfd_048/laplace_phi_r16.pgm`; quick smoke tests check bounds,
+symmetry, and ledger residuals. No wall or outlet accumulation artifact is
+introduced by the direct orifice-mask source.
+Verdict: PHYSICAL for the smoke-test mechanisms; Engineering-tier Laplace and
+advected-droplet quantitative claims remain tied to the ignored heavy tests.
+Routing: none.
+
 ### 2026-07-08 dynamic-gassing kLa fit (`crates/lbm-core/src/qoi.rs`)
 - Form: for time series `C(t)`, fit
   `ln(C* - C) = b - kLa t` over a declared window, defaulting to the last

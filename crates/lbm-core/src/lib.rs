@@ -59,6 +59,7 @@ pub mod rotating_ibm;
 pub mod scalar;
 pub mod scaleup;
 pub mod solver;
+pub mod sparger;
 pub mod stress;
 pub mod subdomain;
 pub mod surface_tension;
@@ -138,7 +139,8 @@ pub mod prelude {
     };
     pub use crate::qoi::{
         compartment_cv, dynamic_gassing_kla_fit, dynamic_gassing_window_default,
-        mixing_time_from_cv, power_qois, scalar_cv, CompartmentCv, KlaDynamicFitOutcome,
+        mixing_time_from_cv, power_qois, resolved_gas_holdup, scalar_cv, CompartmentCv,
+        GasHoldupError, GasHoldupQoi, GasHoldupReport, GasQoiSection, KlaDynamicFitOutcome,
         KlaDynamicFitResult, KlaFitMethod, KlaFitWindow, MixingQoiSection, MixingTimeResult,
         PowerQoiInput, PowerQoiResult, PowerQoiSection, QoiAccumulatorSnapshot, QoiBundle,
         QoiCheckpointState, QoiInterval, QoiPercentiles, QoiProvenance, QoiScalar,
@@ -157,6 +159,10 @@ pub mod prelude {
     pub use crate::solver::{
         build_wall_rims, partition, CheckpointError, Diverged, GlobalSpec, Solver,
         SolverFeatureError, SpecError, WallSpec,
+    };
+    pub use crate::sparger::{
+        apply_resolved_gas_injection, ResolvedGasInjectionSpec, SpargerGasLedger,
+        SpargerPressureDiagnostic,
     };
     pub use crate::stress::{
         compute_stress_field, percentile_summary, wall_shear_proxy, PercentileSummary, StressCell,

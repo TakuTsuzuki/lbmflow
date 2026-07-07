@@ -109,3 +109,14 @@ pub fn write_qoi_bundle_json(
     fs::write(out_dir.join(name), bytes)?;
     Ok(name.to_string())
 }
+
+pub fn write_gas_holdup_qoi_json(
+    section: &lbm_core::qoi::GasQoiSection,
+    out_dir: &Path,
+) -> std::io::Result<String> {
+    let name = "gas_holdup.json";
+    let bytes = serde_json::to_vec_pretty(section)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(out_dir.join(name), bytes)?;
+    Ok(name.to_string())
+}

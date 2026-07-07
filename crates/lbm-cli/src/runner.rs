@@ -262,6 +262,7 @@ fn run_gpu2d(
             max_speed,
             tau: 3.0 * sc.physics.nu + 0.5,
             phase_field: None,
+            sparger_pressure: Vec::new(),
         },
         mpi_ranks: Vec::new(),
         provenance: provenance(
@@ -626,6 +627,7 @@ fn run_t<T: Real>(
             max_speed,
             tau: sim.tau(),
             phase_field: None,
+            sparger_pressure: Vec::new(),
         },
         mpi_ranks: Vec::new(),
         provenance: provenance(
@@ -1026,6 +1028,14 @@ where
     )?;
     files.push("scenario.json".to_string());
     let mut active_models = vec![ActiveModelTag::SinglePhase, ActiveModelTag::RotatingIbm];
+    if sc.physics.models.iter().any(|m| {
+        matches!(
+            m,
+            PhysicsModel::ResolvedPhaseField { .. } | PhysicsModel::Hybrid { .. }
+        )
+    }) {
+        active_models.push(ActiveModelTag::PhaseFieldMixture);
+    }
     if sc
         .physics
         .models
@@ -1191,6 +1201,23 @@ where
             ),
         });
     }
+    if sc.qoi.gas_holdup.is_some() {
+        let (gas_files, gas_section) =
+            write_gas_holdup_qois(sc, &mut solver, &unit_report, &solid, out_dir)?;
+        files.extend(gas_files);
+        qoi_bundle.gas = Some(gas_section);
+        qoi_methods.push(QoiMethodDescriptor {
+            qoi: "gas_holdup".to_string(),
+            method: "resolved_phase_field: epsilon_g = average(1 - phi)".to_string(),
+            input_fields: vec!["phi".to_string()],
+            provenance: QoiProvenance::new(
+                vec!["phi".to_string()],
+                "final_step",
+                "dimensionless",
+                "screening",
+            ),
+        });
+    }
     qoi_bundle.validation_status = validation_status_for_bundle(&qoi_bundle);
     files.extend(write_empty_bioprocess_qoi_csvs(out_dir)?);
     if sc.outputs.emit_qoi_json {
@@ -1232,6 +1259,7 @@ where
             max_speed,
             tau: solver.tau(),
             phase_field: None,
+            sparger_pressure: Vec::new(),
         },
         provenance: Provenance {
             backend: lbm_scenario::BackendChoice::Cpu,
@@ -1914,6 +1942,115 @@ where
     ))
 }
 
+fn write_gas_holdup_qois<L, T>(
+    sc: &BioprocessScenario,
+    solver: &mut CoreSolver<L, T, CpuScalar, LocalPeriodic>,
+    unit_report: &lbm_scenario::UnitReport,
+    solid: &[bool],
+    out_dir: &Path,
+) -> Result<(Vec<String>, lbm_core::qoi::GasQoiSection)>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
+    let dims = [
+        sc.run.grid_nx as usize,
+        sc.run.grid_ny as usize,
+        sc.run.grid_nz as usize,
+    ];
+    let threshold = sc.qoi.gas_holdup.as_ref().and_then(|opts| opts.threshold);
+    let phi = solver
+        .gather_phi()
+        .ok()
+        .map(|values| values.into_iter().map(|v| v.as_f64()).collect::<Vec<_>>());
+    let report = lbm_core::qoi::resolved_gas_holdup(
+        dims,
+        phi.as_deref(),
+        solid,
+        unit_report.lattice.dx_m,
+        threshold,
+        first_impeller_center_z_lu(sc, unit_report),
+        "final_step",
+    )?;
+    let gas_holdup = Some(lbm_core::qoi::QoiScalar {
+        value: report.raw.value,
+        interval: None,
+        provenance: report.raw.provenance.clone(),
+        skipped: report.raw.skipped.clone(),
+    });
+    let section = lbm_core::qoi::GasQoiSection {
+        gas_holdup,
+        gas_holdup_raw: Some(report.raw),
+        gas_holdup_thresholded: report.thresholded,
+        compartments: report.compartments,
+        d32_m: None,
+    };
+    let json_name = crate::output::write_gas_holdup_qoi_json(&section, out_dir)?;
+    let csv_name = write_gas_holdup_csv(&section, out_dir)?;
+    Ok((vec![json_name, csv_name], section))
+}
+
+fn write_gas_holdup_csv(section: &lbm_core::qoi::GasQoiSection, out_dir: &Path) -> Result<String> {
+    let name = lbm_scenario::QOI_GAS_CSV;
+    let mut csv = fs::File::create(out_dir.join(name))?;
+    writeln!(
+        csv,
+        "qoi,value,gas_volume_m3,cell_count,threshold,averaging_volume,units,method,time_window,status,reason"
+    )?;
+    writeln!(csv, "# manifest_path={MANIFEST_PATH}")?;
+    if let Some(raw) = &section.gas_holdup_raw {
+        write_gas_holdup_row(&mut csv, "gas_holdup_raw", raw)?;
+    }
+    if let Some(thresholded) = &section.gas_holdup_thresholded {
+        write_gas_holdup_row(&mut csv, "gas_holdup_thresholded", thresholded)?;
+    }
+    for compartment in &section.compartments {
+        write_gas_holdup_row(&mut csv, "gas_holdup_compartment", compartment)?;
+    }
+    Ok(name.to_string())
+}
+
+fn write_gas_holdup_row(
+    csv: &mut fs::File,
+    qoi: &str,
+    value: &lbm_core::qoi::GasHoldupQoi,
+) -> Result<()> {
+    let units = value.provenance.units.as_deref().unwrap_or("dimensionless");
+    let method = value
+        .provenance
+        .method
+        .as_deref()
+        .unwrap_or("resolved_phase_field");
+    let time_window = value
+        .provenance
+        .averaging_window
+        .as_deref()
+        .unwrap_or("final_step");
+    let status = if value.skipped.is_some() {
+        "skipped"
+    } else {
+        "measured"
+    };
+    let reason = value
+        .skipped
+        .as_ref()
+        .map(|s| s.reason.as_str())
+        .unwrap_or("");
+    let scalar = value.value.map(csv_f64).unwrap_or_default();
+    let gas_volume = value.gas_volume_m3.map(csv_f64).unwrap_or_default();
+    let threshold = value.threshold.map(csv_f64).unwrap_or_default();
+    writeln!(
+        csv,
+        "{qoi},{scalar},{gas_volume},{},{threshold},{},{units},{method},{time_window},{status},{reason}",
+        value.cell_count, value.averaging_volume
+    )?;
+    Ok(())
+}
+
+fn csv_f64(value: f64) -> String {
+    format!("{value:.12e}")
+}
+
 fn first_impeller_center_z_lu(
     sc: &BioprocessScenario,
     unit_report: &lbm_scenario::UnitReport,
@@ -2407,6 +2544,7 @@ where
             max_speed,
             tau: s.tau(),
             phase_field: None,
+            sparger_pressure: Vec::new(),
         },
         mpi_ranks: Vec::new(),
         provenance: provenance(

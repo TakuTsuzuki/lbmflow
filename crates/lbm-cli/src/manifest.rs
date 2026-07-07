@@ -192,6 +192,8 @@ pub struct Diagnostics {
     pub tau: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase_field: Option<lbm_core::phase_field::PhaseFieldDiagnostics>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sparger_pressure: Vec<lbm_core::sparger::SpargerPressureDiagnostic>,
 }
 
 pub fn scenario_hash<T: Serialize>(scenario: &T) -> Result<String, serde_json::Error> {
@@ -245,6 +247,7 @@ mod tests {
             max_speed: 0.0,
             tau: 1.0,
             phase_field: None,
+            sparger_pressure: Vec::new(),
         }
     }
 

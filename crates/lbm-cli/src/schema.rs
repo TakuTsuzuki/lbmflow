@@ -493,7 +493,12 @@ fn bioprocess_schema() -> Value {
                 "properties": {
                     "power": { "type": ["object", "null"], "additionalProperties": false },
                     "mixing": { "type": ["object", "null"], "additionalProperties": false },
-                    "gas_holdup": { "type": ["object", "null"], "additionalProperties": false },
+                    "gas_holdup": {
+                        "oneOf": [
+                            { "type": "null" },
+                            { "$ref": "#/$defs/GasHoldupQoiOpts" }
+                        ]
+                    },
                     "bubble_size": { "type": ["object", "null"], "additionalProperties": false },
                     "kla": {
                         "oneOf": [
@@ -505,6 +510,13 @@ fn bioprocess_schema() -> Value {
                     "oxygen_exposure": { "type": ["object", "null"], "additionalProperties": false },
                     "calibration_dataset_id": { "type": ["string", "null"] },
                     "holdout_dataset_id": { "type": ["string", "null"] }
+                }
+            },
+            "GasHoldupQoiOpts": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "threshold": { "type": ["number", "null"], "minimum": 0, "exclusiveMaximum": 1 }
                 }
             },
             "KlaQoiOpts": {
