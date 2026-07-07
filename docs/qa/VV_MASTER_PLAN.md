@@ -133,7 +133,11 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 ## Axis 8 — Interface/tooling V&V (product surface)
 
 - 8.1 **W2** Scenario schema round-trip + fuzz.
-- 8.2 **W3** WASM/GUI parity vs native.
+- 8.2 **W3** WASM/GUI parity vs native — harness landed 2026-07-07:
+  native exporter `wasm_native_parity_export`, comparator
+  `scripts/qa/wasm_parity_check.py`, workflow guide
+  `docs/qa/wasm-native-parity-guide.md`; operator WASM build/snapshot run
+  remains pending.
 - 8.3 **W3** CLI/MCP contract tests (presets/gallery/VTK/manifest schema).
 - 8.4 **W3** Units V&V extension — SI↔lattice across all constructors.
 
