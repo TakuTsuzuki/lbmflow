@@ -40,6 +40,8 @@ cd web && npm run build                   # GUI (tsc strict + vite)
 
 - [PLAN.md](docs/PLAN.md) — milestones M-A…M-F, current queue ·
   [VALIDATION.md](docs/VALIDATION.md) — acceptance criteria (T1…T15.x)
+- [LIMITATIONS.md](docs/LIMITATIONS.md) — release-facing trust boundary
+  (what is NOT supported/validated today; keep in sync with claims)
 - [PHYSICS.md](docs/PHYSICS.md) — physics decisions + experiment log
   (update whenever you change physics)
 - [ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md) — dimension × lattice ×

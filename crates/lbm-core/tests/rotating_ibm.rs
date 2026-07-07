@@ -107,6 +107,38 @@ fn direct_forcing_iterations_reduce_marker_slip_and_conserve_momentum() {
 }
 
 #[test]
+fn rotating_cylinder_torque_flips_with_omega_sign() {
+    let body_pos = RotatingBody::circle_2d([24.0, 24.0], 8.0, 0.003, 96);
+    let body_neg = RotatingBody::circle_2d([24.0, 24.0], 8.0, -0.003, 96);
+    let cfg = DirectForcingConfig {
+        max_iterations: 4,
+        slip_tolerance: 1.0e-3,
+        kernel_radius: 2,
+        relaxation: 1.0,
+    };
+
+    let mut pos = periodic_solver(48, 48, [1, 1, 1]);
+    let mut neg = periodic_solver(48, 48, [1, 1, 1]);
+    let d_pos = pos.apply_rotating_ibm(&body_pos, cfg);
+    let d_neg = neg.apply_rotating_ibm(&body_neg, cfg);
+
+    println!(
+        "IBM torque sign symmetry: torque_pos={:.6e}, torque_neg={:.6e}, slip_pos={:.6e}, slip_neg={:.6e}",
+        d_pos.torque[2], d_neg.torque[2], d_pos.slip_max_rel, d_neg.slip_max_rel
+    );
+    assert!(
+        d_pos.torque[2] * d_neg.torque[2] < 0.0,
+        "opposite rotations must produce opposite torque signs"
+    );
+    let rel = (d_pos.torque[2] + d_neg.torque[2]).abs() / d_pos.torque[2].abs();
+    assert!(rel < 1.0e-12, "torque sign symmetry rel={rel:e}");
+    assert!(
+        (d_pos.slip_max_rel - d_neg.slip_max_rel).abs() < 1.0e-15,
+        "opposite rotations should have identical slip magnitudes"
+    );
+}
+
+#[test]
 fn marker_straddling_partition_seam_is_bit_identical() {
     let body = RotatingBody::circle_2d([32.0, 32.0], 9.0, 0.0025, 120);
     let cfg = DirectForcingConfig {

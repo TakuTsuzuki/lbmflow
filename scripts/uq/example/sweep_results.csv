@@ -1,0 +1,173 @@
+run.comboIndex,run.repeat,run.id,run.outputDir,run.scenarioPath,run.parameterLabel,run.returnCode,run.stdout,run.stderr,run.wallSeconds,param.physics.nu,param.grid.nx,param.grid.ny,qoi.manifest.status,qoi.manifest.stepsRun,qoi.manifest.wallSeconds,qoi.manifest.mlups,qoi.manifest.totalMass,qoi.manifest.maxSpeed,qoi.manifest.tau,qoi.manifest.warningCount,qoi.probe.point_16_16.sampleCount,qoi.probe.point_16_16.ux.last,qoi.probe.point_16_16.ux.mean,qoi.probe.point_16_16.ux.std,qoi.probe.point_16_16.ux.min,qoi.probe.point_16_16.ux.max,qoi.probe.point_16_16.uy.last,qoi.probe.point_16_16.uy.mean,qoi.probe.point_16_16.uy.std,qoi.probe.point_16_16.uy.min,qoi.probe.point_16_16.uy.max,qoi.probe.point_16_16.rho.last,qoi.probe.point_16_16.rho.mean,qoi.probe.point_16_16.rho.std,qoi.probe.point_16_16.rho.min,qoi.probe.point_16_16.rho.max,qoi.field.speed.cellCount,qoi.field.speed.rms,qoi.field.speed.sum,qoi.field.speed.last,qoi.field.speed.mean,qoi.field.speed.std,qoi.field.speed.min,qoi.field.speed.max,qoi.field.speed.kineticEnergy
+0,0,run_0000_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0000_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0000_rep_00/scenario.json,physics_nu=0.01;grid_nx=33;grid_ny=33,0,"{
+  ""scenario"": ""uq-cavity-small_run_0000_rep_00"",
+  ""status"": ""completed"",
+  ""stepsRun"": 1000,
+  ""wallSeconds"": 0.210833084,
+  ""mlups"": 5.165223499742573,
+  ""diagnostics"": {
+    ""totalMass"": 961.0,
+    ""maxSpeed"": 0.08551363296791853,
+    ""tau"": 0.53
+  },
+  ""provenance"": {
+    ""backend"": ""cpu"",
+    ""lattice"": ""D2Q9"",
+    ""collision"": {
+      ""kind"": ""trt"",
+      ""magic"": 0.1875
+    },
+    ""precision"": ""f64"",
+    ""storage"": ""f32""
+  },
+  ""warnings"": [
+    {
+      ""field"": ""physics.nu"",
+      ""message"": ""tau = 0.530 is close to the stability limit (below 0.55). Increase the viscosity or the resolution""
+    }
+  ],
+  ""files"": [
+    ""point_16_16.csv"",
+    ""speed_1000.csv""
+  ]
+}",,0.24311170889995992,0.01,33,33,completed,1000,0.210833084,5.165223499742573,961.0,0.08551363296791853,0.53,1,20,-0.009917237759098094,-0.006508661649961821,0.002456550427134684,-0.010639450632978316,-0.002078753707450067,0.0045236821111462764,0.0017865067803947015,0.001414302196240261,3.3523962914609435e-05,0.0045236821111462764,1.000048706636142,1.000024253824123,3.156801726721971e-05,0.9999284434512627,1.000058223796331,1089,0.018925051149880443,11.981055741600336,0.0,0.011001887733333642,0.015405647174131704,0.0,0.08551363296791853,0.19501679197843436
+1,0,run_0001_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0001_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0001_rep_00/scenario.json,physics_nu=0.01;grid_nx=49;grid_ny=49,0,"{
+  ""scenario"": ""uq-cavity-small_run_0001_rep_00"",
+  ""status"": ""completed"",
+  ""stepsRun"": 1000,
+  ""wallSeconds"": 0.3076335,
+  ""mlups"": 7.80474168125383,
+  ""diagnostics"": {
+    ""totalMass"": 2209.0,
+    ""maxSpeed"": 0.08865818515785447,
+    ""tau"": 0.53
+  },
+  ""provenance"": {
+    ""backend"": ""cpu"",
+    ""lattice"": ""D2Q9"",
+    ""collision"": {
+      ""kind"": ""trt"",
+      ""magic"": 0.1875
+    },
+    ""precision"": ""f64"",
+    ""storage"": ""f32""
+  },
+  ""warnings"": [
+    {
+      ""field"": ""physics.nu"",
+      ""message"": ""tau = 0.530 is close to the stability limit (below 0.55). Increase the viscosity or the resolution""
+    }
+  ],
+  ""files"": [
+    ""point_16_16.csv"",
+    ""speed_1000.csv""
+  ]
+}",,0.33865891699679196,0.01,49,49,completed,1000,0.3076335,7.80474168125383,2209.0,0.08865818515785447,0.53,1,20,-0.0020059793974219475,-0.0019715683779071716,0.0008670240839981556,-0.003322119203370991,-4.493035469798065e-08,0.0018306440943153535,0.0011030404391068316,0.0005062361830637102,9.386606689458965e-08,0.0019376690616895822,1.000711372551605,1.0000098149089642,0.0005636986469140196,0.9990846109822071,1.0009815445812884,2401,0.017053045916920778,21.399090855504845,0.0,0.008912574283842085,0.01454168031936893,0.0,0.08865818515785447,0.34911305324105235
+2,0,run_0002_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0002_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0002_rep_00/scenario.json,physics_nu=0.02;grid_nx=33;grid_ny=33,0,"{
+  ""scenario"": ""uq-cavity-small_run_0002_rep_00"",
+  ""status"": ""completed"",
+  ""stepsRun"": 1000,
+  ""wallSeconds"": 0.144358459,
+  ""mlups"": 7.543721424734799,
+  ""diagnostics"": {
+    ""totalMass"": 961.0,
+    ""maxSpeed"": 0.0888715065481567,
+    ""tau"": 0.56
+  },
+  ""provenance"": {
+    ""backend"": ""cpu"",
+    ""lattice"": ""D2Q9"",
+    ""collision"": {
+      ""kind"": ""trt"",
+      ""magic"": 0.1875
+    },
+    ""precision"": ""f64"",
+    ""storage"": ""f32""
+  },
+  ""warnings"": [],
+  ""files"": [
+    ""point_16_16.csv"",
+    ""speed_1000.csv""
+  ]
+}",,0.17101695900782943,0.02,33,33,completed,1000,0.144358459,7.543721424734799,961.0,0.0888715065481567,0.56,0,20,-0.015169198620876071,-0.010403558378568488,0.003885589486597908,-0.016167736888736066,-0.0035788992108414194,0.005976778462729337,0.0026975102414835916,0.001973961778898432,6.61513841069743e-05,0.005976778462729337,0.9998615710562491,0.9999558737359833,6.594816081747872e-05,0.999849141982928,1.0000599169666298,1089,0.02142727476072501,14.681748166180368,0.0,0.01348186241155222,0.01666200536976203,0.0,0.0888715065481567,0.24999525244918783
+3,0,run_0003_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0003_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0003_rep_00/scenario.json,physics_nu=0.02;grid_nx=49;grid_ny=49,0,"{
+  ""scenario"": ""uq-cavity-small_run_0003_rep_00"",
+  ""status"": ""completed"",
+  ""stepsRun"": 1000,
+  ""wallSeconds"": 0.313122417,
+  ""mlups"": 7.667927524971807,
+  ""diagnostics"": {
+    ""totalMass"": 2209.0,
+    ""maxSpeed"": 0.09135404290929634,
+    ""tau"": 0.56
+  },
+  ""provenance"": {
+    ""backend"": ""cpu"",
+    ""lattice"": ""D2Q9"",
+    ""collision"": {
+      ""kind"": ""trt"",
+      ""magic"": 0.1875
+    },
+    ""precision"": ""f64"",
+    ""storage"": ""f32""
+  },
+  ""warnings"": [],
+  ""files"": [
+    ""point_16_16.csv"",
+    ""speed_1000.csv""
+  ]
+}",,0.33887674985453486,0.02,49,49,completed,1000,0.313122417,7.667927524971807,2209.0,0.09135404290929634,0.56,0,20,-0.003370856504242399,-0.0029980286165167793,0.001297695978296844,-0.004971947249939125,-2.167574550618388e-07,0.002777135204536206,0.0016995378805437747,0.0007654826109616418,4.56504090939156e-07,0.00281438462408074,1.0009281384200823,1.0000431504321143,0.0007868215555386481,0.9987903977460849,1.00152705576815,2401,0.019678803225882998,27.383901417254787,0.0,0.011405206754375171,0.016040065841230727,0.0,0.09135404290929634,0.46489998333182925
+4,0,run_0004_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0004_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0004_rep_00/scenario.json,physics_nu=0.04;grid_nx=33;grid_ny=33,0,"{
+  ""scenario"": ""uq-cavity-small_run_0004_rep_00"",
+  ""status"": ""completed"",
+  ""stepsRun"": 1000,
+  ""wallSeconds"": 0.133889792,
+  ""mlups"": 8.133555095820896,
+  ""diagnostics"": {
+    ""totalMass"": 961.0000000000001,
+    ""maxSpeed"": 0.09039663578500254,
+    ""tau"": 0.62
+  },
+  ""provenance"": {
+    ""backend"": ""cpu"",
+    ""lattice"": ""D2Q9"",
+    ""collision"": {
+      ""kind"": ""trt"",
+      ""magic"": 0.1875
+    },
+    ""precision"": ""f64"",
+    ""storage"": ""f32""
+  },
+  ""warnings"": [],
+  ""files"": [
+    ""point_16_16.csv"",
+    ""speed_1000.csv""
+  ]
+}",,0.16373604186810553,0.04,33,33,completed,1000,0.133889792,8.133555095820896,961.0000000000001,0.09039663578500254,0.62,0,20,-0.018216188838891027,-0.014499874412593535,0.004404390839155752,-0.019357192782632735,-0.005685019444976278,0.004561536449659252,0.002795839747487274,0.0015678444859075532,0.00011695889558567048,0.004561536449659252,0.9996325280189273,0.9998113609421541,0.00013489688670235972,0.9996133035891127,1.0000738343024649,1089,0.023089740523010095,16.667161468802888,0.0,0.015305015122867666,0.01729645475232089,0.0,0.09039663578500254,0.2902926159351543
+5,0,run_0005_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0005_rep_00,/private/tmp/claude-501/-Users-taku-projects---------/3c1d3aa3-68fa-436d-8a19-a0b15ec65356/scratchpad/uq-runs/run_0005_rep_00/scenario.json,physics_nu=0.04;grid_nx=49;grid_ny=49,0,"{
+  ""scenario"": ""uq-cavity-small_run_0005_rep_00"",
+  ""status"": ""completed"",
+  ""stepsRun"": 1000,
+  ""wallSeconds"": 0.468421417,
+  ""mlups"": 5.125726349954661,
+  ""diagnostics"": {
+    ""totalMass"": 2209.0,
+    ""maxSpeed"": 0.09297797176725826,
+    ""tau"": 0.62
+  },
+  ""provenance"": {
+    ""backend"": ""cpu"",
+    ""lattice"": ""D2Q9"",
+    ""collision"": {
+      ""kind"": ""trt"",
+      ""magic"": 0.1875
+    },
+    ""precision"": ""f64"",
+    ""storage"": ""f32""
+  },
+  ""warnings"": [],
+  ""files"": [
+    ""point_16_16.csv"",
+    ""speed_1000.csv""
+  ]
+}",,0.49045633408240974,0.04,49,49,completed,1000,0.468421417,5.125726349954661,2209.0,0.09297797176725826,0.62,0,20,-0.005712231336418456,-0.004528588090039786,0.0019070925863093747,-0.0073335716600751236,-1.5665176084014327e-06,0.004095547221347508,0.002595884892541479,0.001125753966151386,3.3361657605198506e-06,0.004095547221347508,1.0010470256370831,1.0000670049020068,0.0010355212194413889,0.9986685293434583,1.0020262791467247,2401,0.022024652381062645,33.38094377099193,0.0,0.013902933682212381,0.017085529791691926,0.0,0.09297797176725826,0.5823449176642315

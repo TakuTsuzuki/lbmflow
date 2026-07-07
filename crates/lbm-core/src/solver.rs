@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
-const CKPT_FORMAT_VERSION: u32 = 1;
+const CKPT_FORMAT_VERSION: u32 = 2;
 const CKPT_MAGIC: &[u8; 8] = b"LBMKPT\0\0";
 const SEC_F_PRIMARY: u32 = 1;
 const SEC_STALE_STASH: u32 = 2;
@@ -71,7 +71,7 @@ impl From<serde_json::Error> for CheckpointError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CheckpointManifest {
+pub(crate) struct CheckpointManifest {
     kind: String,
     format_version: u32,
     step: u64,
@@ -87,14 +87,15 @@ struct CheckpointManifest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CheckpointRank {
-    rank: usize,
-    file: String,
-    origin: [usize; 3],
-    core: [usize; 3],
-    bytes: u64,
-    payload_hash: String,
-    mask_hash: String,
+pub(crate) struct CheckpointRank {
+    pub(crate) rank: usize,
+    pub(crate) part: usize,
+    pub(crate) file: String,
+    pub(crate) origin: [usize; 3],
+    pub(crate) core: [usize; 3],
+    pub(crate) bytes: u64,
+    pub(crate) payload_hash: String,
+    pub(crate) mask_hash: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -176,8 +177,8 @@ pub enum SpecError {
         /// Offending value.
         magic: f64,
     },
-    /// Cumulant/central-moment shear relaxation must be finite and in range.
-    InvalidCumulantRate {
+    /// Central-moment shear relaxation must be finite and in range.
+    InvalidCentralMomentRate {
         /// Offending value.
         omega_shear: f64,
     },
@@ -230,13 +231,23 @@ pub enum SpecError {
         /// The axis extent.
         extent: usize,
     },
-    /// Open-face kernels currently support only the 3-unknown D2Q9 and
-    /// 5-unknown D3Q19 closures.
+    /// Open-face kernels support D2Q9/D3Q19 open types, and D3Q27 velocity /
+    /// pressure faces only.
     UnsupportedOpenFaceLattice {
         /// Lattice name.
         lattice: &'static str,
         /// Number of unknown populations on each straight face.
         unknowns: usize,
+    },
+    /// This lattice has an open-face kernel, but not for the requested face
+    /// kind.
+    UnsupportedOpenFaceKind {
+        /// Lattice name.
+        lattice: &'static str,
+        /// The offending face index.
+        face: usize,
+        /// Boundary kind name.
+        kind: &'static str,
     },
     /// A volume-source region is outside the domain or touches a global face.
     SourceRegionNotInterior {
@@ -307,9 +318,9 @@ impl std::fmt::Display for SpecError {
             SpecError::InvalidMagic { magic } => {
                 write!(f, "TRT magic must be finite and > 0 (got {magic})")
             }
-            SpecError::InvalidCumulantRate { omega_shear } => write!(
+            SpecError::InvalidCentralMomentRate { omega_shear } => write!(
                 f,
-                "cumulant omega_shear must be finite and in (0, 2] (got {omega_shear})"
+                "central_moment omega_shear must be finite and in (0, 2] (got {omega_shear})"
             ),
             SpecError::DomainTooSmall { dims } => write!(
                 f,
@@ -348,8 +359,17 @@ impl std::fmt::Display for SpecError {
             ),
             SpecError::UnsupportedOpenFaceLattice { lattice, unknowns } => write!(
                 f,
-                "{lattice} has {unknowns} unknown populations per open face; D3Q27 open-face \
-                 support is stage-4 work"
+                "{lattice} has {unknowns} unknown populations per open face; no open-face \
+                 closure is implemented for this lattice"
+            ),
+            SpecError::UnsupportedOpenFaceKind {
+                lattice,
+                face,
+                kind,
+            } => write!(
+                f,
+                "{lattice} open face {face} uses {kind}, but this lattice currently supports \
+                 only velocity inlet and pressure outlet open faces"
             ),
             SpecError::SourceRegionNotInterior { source, lo, hi } => write!(
                 f,
@@ -429,9 +449,9 @@ impl<T: Real> GlobalSpec<T> {
                     return Err(SpecError::InvalidMagic { magic });
                 }
             }
-            CollisionKind::Cumulant { omega_shear } => {
+            CollisionKind::CentralMoment { omega_shear } => {
                 if !omega_shear.is_finite() || !(omega_shear > 0.0 && omega_shear <= 2.0) {
-                    return Err(SpecError::InvalidCumulantRate { omega_shear });
+                    return Err(SpecError::InvalidCentralMomentRate { omega_shear });
                 }
             }
             CollisionKind::Bgk => {}
@@ -592,11 +612,37 @@ impl<T: Real> GlobalSpec<T> {
             self.faces[neg.index()].is_open() || self.faces[pos.index()].is_open()
         }) {
             let unknowns = L::unknowns(Face::ALL[0]).len();
-            if unknowns != 3 && unknowns != 5 {
+            if unknowns != 3 && unknowns != 5 && unknowns != 9 {
                 return Err(SpecError::UnsupportedOpenFaceLattice {
                     lattice: lattice_name::<L>(),
                     unknowns,
                 });
+            }
+        }
+        if L::D == 3 && L::Q == 27 {
+            for face in Face::ALL {
+                match self.faces[face.index()] {
+                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
+                    FaceBC::Outflow | FaceBC::Convective { .. } => {
+                        return Err(SpecError::UnsupportedOpenFaceKind {
+                            lattice: lattice_name::<L>(),
+                            face: face.index(),
+                            kind: face_bc_name(self.faces[face.index()]),
+                        });
+                    }
+                }
+            }
+            for patch in &self.face_patches {
+                match patch.bc {
+                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
+                    FaceBC::Outflow | FaceBC::Convective { .. } => {
+                        return Err(SpecError::UnsupportedOpenFaceKind {
+                            lattice: lattice_name::<L>(),
+                            face: patch.face,
+                            kind: face_bc_name(patch.bc),
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -775,6 +821,16 @@ fn hash_face_bc<T: Real>(h: &mut u64, bc: FaceBC<T>) {
     }
 }
 
+fn face_bc_name<T: Real>(bc: FaceBC<T>) -> &'static str {
+    match bc {
+        FaceBC::Closed => "Closed",
+        FaceBC::Velocity { .. } => "Velocity",
+        FaceBC::Pressure { .. } => "Pressure",
+        FaceBC::Outflow => "Outflow",
+        FaceBC::Convective { .. } => "Convective",
+    }
+}
+
 fn spec_hash<T: Real, L: Lattice>(
     spec: &GlobalSpec<T>,
     _solid: &[bool],
@@ -793,7 +849,7 @@ fn spec_hash<T: Real, L: Lattice>(
             hash_u64(&mut h, 2);
             hash_f64(&mut h, magic);
         }
-        CollisionKind::Cumulant { omega_shear } => {
+        CollisionKind::CentralMoment { omega_shear } => {
             hash_u64(&mut h, 3);
             hash_f64(&mut h, omega_shear);
         }
@@ -841,7 +897,7 @@ fn spec_hash<T: Real, L: Lattice>(
     h
 }
 
-fn decomp_hash(subs: &[Subdomain], periodic: [bool; 3]) -> u64 {
+pub(crate) fn decomp_hash(subs: &[Subdomain], periodic: [bool; 3]) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     hash_u64(&mut h, subs.len() as u64);
     for v in periodic {
@@ -1008,17 +1064,17 @@ fn read_rank_file(path: &Path) -> Result<(RankHeader, BTreeMap<u32, Vec<u8>>), C
         ));
     }
     let format_ver = read_u32(&bytes, &mut pos)?;
-    if format_ver > CKPT_FORMAT_VERSION {
+    if format_ver != CKPT_FORMAT_VERSION {
         return Err(CheckpointError::new(
-            "CKPT_TOO_NEW",
-            format!("rank file format {format_ver} is newer than supported {CKPT_FORMAT_VERSION}"),
+            "CKPT_VERSION_MISMATCH",
+            format!("rank file format_version {format_ver} differs from supported {CKPT_FORMAT_VERSION}"),
         ));
     }
     let endian = read_u8(&bytes, &mut pos)?;
     if endian != 0 {
         return Err(CheckpointError::new(
             "CKPT_BAD_MAGIC",
-            "cross-endian checkpoints are not supported by format v1",
+            "cross-endian checkpoints are not supported by this checkpoint format",
         ));
     }
     let dtype = read_u8(&bytes, &mut pos)?;
@@ -1386,12 +1442,20 @@ where
             };
             return Err(SpecError::UnsupportedOnGpu { feature });
         }
+        let has_open_faces = spec.faces.iter().any(FaceBC::is_open)
+            || spec.face_patches.iter().any(|patch| patch.bc.is_open());
+        if L::D == 3 && L::Q == 27 && has_open_faces && !backend.supports_d3q27_open_faces() {
+            return Err(SpecError::UnsupportedOnGpu {
+                feature: "D3Q27 open faces",
+            });
+        }
         let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
         let params = StepParams {
             collision: spec.collision,
             omega_p,
             omega_m,
             force: spec.force,
+            gravity: None,
             faces: spec.faces,
             sources: spec.sources.clone(),
             face_patches: spec.face_patches.clone(),
@@ -1600,25 +1664,95 @@ where
         self.time += 1;
         self.device_ahead = true;
         self.backend.finish_run_chunk(&self.parts, 1);
+        self.refresh_probed_force();
         self.stage_out_all();
         self.unstage_gravity(gravity_stage);
         self.stage_in_if_dirty();
+    }
+
+    fn refresh_probed_force(&mut self) {
+        self.probed_force = self.parts.iter().fold([T::zero(); 3], |a, field| {
+            let b = self.backend.read_probed_force(field);
+            [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+        });
+    }
+
+    fn params_with_backend_gravity(&self) -> StepParams<T> {
+        let mut params = self.params.clone();
+        params.gravity = self.gravity;
+        params
+    }
+
+    fn refresh_moments_after_force_change(&mut self) {
+        self.stage_in_if_dirty();
+        let params_with_gravity;
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        let params = if backend_gravity {
+            params_with_gravity = self.params_with_backend_gravity();
+            &params_with_gravity
+        } else {
+            &self.params
+        };
+        for i in 0..self.parts.len() {
+            self.backend
+                .update_moments(&self.subs[i], &mut self.parts[i], params);
+        }
+        self.device_ahead = true;
+    }
+
+    fn force_field_is_uniform(&self) -> bool {
+        let mut first = None;
+        for fields in &self.host_parts {
+            let Some(ff) = fields.force_field.as_ref() else {
+                return false;
+            };
+            for &v in ff {
+                match first {
+                    Some(base) if v != base => return false,
+                    Some(_) => {}
+                    None => first = Some(v),
+                }
+            }
+        }
+        first.is_some()
+    }
+
+    fn core_has_solids(&self) -> bool {
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let g = sub.geom;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        if fields.solid[g.pidx(x, y, z)] {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
     /// open faces → moments).
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
-        if self.gravity.is_some() {
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        if self.gravity.is_some() && !backend_gravity {
             self.run_staged_step();
             return;
         }
         self.stage_in_if_dirty();
+        let params = if backend_gravity {
+            self.params_with_backend_gravity()
+        } else {
+            self.params.clone()
+        };
         self.backend.run_span(
             &self.exchange,
             &self.subs,
             &mut self.parts,
-            &self.params,
+            &params,
             self.two_pass,
             &mut self.probed_force,
             1,
@@ -1626,6 +1760,7 @@ where
         self.time += 1;
         self.device_ahead = true;
         self.backend.finish_run_chunk(&self.parts, 1);
+        self.refresh_probed_force();
         if !self.backend.handles_single_part_periodic_halo() {
             self.stage_out_all();
         }
@@ -1633,7 +1768,8 @@ where
 
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
-        if self.gravity.is_some() {
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        if self.gravity.is_some() && !backend_gravity {
             for _ in 0..steps {
                 self.step();
             }
@@ -1641,6 +1777,11 @@ where
         }
         self.sync_masks_if_dirty();
         self.stage_in_if_dirty();
+        let params = if backend_gravity {
+            self.params_with_backend_gravity()
+        } else {
+            self.params.clone()
+        };
         let mut remaining = steps;
         while remaining > 0 {
             let chunk = self
@@ -1652,7 +1793,7 @@ where
                 &self.exchange,
                 &self.subs,
                 &mut self.parts,
-                &self.params,
+                &params,
                 self.two_pass,
                 &mut self.probed_force,
                 chunk,
@@ -1660,6 +1801,7 @@ where
             self.time += chunk as u64;
             self.device_ahead = true;
             self.backend.finish_run_chunk(&self.parts, chunk);
+            self.refresh_probed_force();
             if !self.backend.handles_single_part_periodic_halo() {
                 self.stage_out_all();
             }
@@ -1705,7 +1847,17 @@ where
 
     /// Toggle the interior/boundary two-pass streaming split.
     pub fn set_two_pass(&mut self, on: bool) {
+        assert!(
+            !on || self.backend.supports_two_pass(),
+            "selected backend does not support two-pass streaming"
+        );
         self.two_pass = on;
+    }
+
+    /// Whether the selected backend supports the interior/boundary streaming
+    /// split used by two-pass overlap experiments.
+    pub fn supports_two_pass(&self) -> bool {
+        self.backend.supports_two_pass()
     }
 
     // ------------------------------------------------------------------
@@ -1988,16 +2140,30 @@ where
             }
         }
         self.host_dirty = true;
+        if self.force_field_is_uniform() {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     /// Drop the per-cell body force field on every owned part (subsequent
     /// steps run force-free unless [`GlobalSpec::force`] is nonzero).
     pub fn clear_body_force_field(&mut self) {
         self.stage_out_all();
+        let had_force_field = self
+            .host_parts
+            .iter()
+            .any(|fields| fields.force_field.is_some());
+        if !had_force_field {
+            return;
+        }
+        let refresh = self.force_field_is_uniform();
         for fields in self.host_parts.iter_mut() {
             fields.force_field = None;
         }
         self.host_dirty = true;
+        if refresh {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     /// Add a rotating rigid-body direct-forcing IBM source to the current
@@ -2062,6 +2228,11 @@ where
                         if let Some(ff) = fields.force_field.as_ref() {
                             for (a, fa) in force.iter_mut().enumerate() {
                                 *fa += ff[c][a].as_f64();
+                            }
+                        }
+                        if let Some(gvec) = self.gravity {
+                            for (a, fa) in force.iter_mut().enumerate() {
+                                *fa += rho[gi].as_f64() * gvec[a].as_f64();
                             }
                         }
                         let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
@@ -2208,6 +2379,9 @@ where
     pub fn set_gravity(&mut self, g: [T; 3]) {
         self.stage_out_all();
         self.gravity = Some(g);
+        if !self.core_has_solids() {
+            self.refresh_moments_after_force_change();
+        }
     }
 
     /// Prescribe a per-node inlet profile on a `Velocity` face, `values`
@@ -2541,34 +2715,27 @@ where
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
-                        let gi =
-                            ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
-                                * self.dims[0]
-                                + (sub.origin[0] + x);
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
                         buf[g.cidx(x, y, z)] = values[gi];
                     }
                 }
             }
         }
         self.host_dirty = true;
+        if self.force_field_is_uniform() {
+            self.refresh_moments_after_force_change();
+        }
     }
 
-    /// Save a single-rank checkpoint directory (`manifest.json` +
-    /// `rank_0000.bin`). Populations are stored as raw deviation bytes, with
-    /// the ping-pong partner preserved so open-boundary stale slots resume
-    /// exactly.
-    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
-        self.stage_out_all();
-        if self.host_parts.len() != 1 {
-            return Err(CheckpointError::new(
-                "CKPT_UNSUPPORTED",
-                "single-node checkpoint currently expects one local rank/part",
-            ));
-        }
-        let dir = dir.as_ref();
-        std::fs::create_dir_all(dir)?;
-        let fields = &self.host_parts[0];
-        let sub = &self.subs[0];
+    fn write_part_checkpoint(
+        dir: &Path,
+        rank: usize,
+        part: usize,
+        sub: &Subdomain,
+        fields: &SoaFields<T>,
+    ) -> Result<CheckpointRank, CheckpointError> {
         let np = fields.geom.n_padded();
         let nc = fields.geom.n_core();
 
@@ -2631,25 +2798,34 @@ where
         bin.extend_from_slice(&payload);
         write_u64(&mut bin, payload_hash);
 
-        let rank_file = "rank_0000.bin";
-        let rank_path = dir.join(rank_file);
+        let rank_file = format!("rank_{rank:04}_part_{part:04}.bin");
+        let rank_path = dir.join(&rank_file);
         let mut file = std::fs::File::create(&rank_path)?;
         file.write_all(&bin)?;
 
-        let rank = CheckpointRank {
-            rank: 0,
-            file: rank_file.to_string(),
+        Ok(CheckpointRank {
+            rank,
+            part,
+            file: rank_file,
             origin: sub.origin,
             core: sub.geom.core,
             bytes: bin.len() as u64,
             payload_hash: hash_string(payload_hash),
             mask_hash: hash_string(part_mask_hash(fields)),
-        };
+        })
+    }
+
+    pub(crate) fn checkpoint_manifest(
+        &self,
+        nranks: usize,
+        ranks: Vec<CheckpointRank>,
+        decomp_hash: u64,
+    ) -> CheckpointManifest {
         let mut reserved = BTreeMap::new();
         reserved.insert("rng".to_string(), false);
         reserved.insert("particles".to_string(), false);
         reserved.insert("stats".to_string(), false);
-        let manifest = CheckpointManifest {
+        CheckpointManifest {
             kind: "lbmflow-checkpoint".to_string(),
             format_version: CKPT_FORMAT_VERSION,
             step: self.time,
@@ -2658,16 +2834,64 @@ where
             lattice: lattice_name::<L>().to_string(),
             global: self.dims,
             scenario_hash: hash_string(self.current_spec_hash()),
-            decomp_hash: hash_string(decomp_hash(&self.subs, self.periodic)),
-            nranks: 1,
-            ranks: vec![rank],
+            decomp_hash: hash_string(decomp_hash),
+            nranks,
+            ranks,
             reserved,
-        };
+        }
+    }
+
+    pub(crate) fn write_checkpoint_manifest(
+        dir: impl AsRef<Path>,
+        manifest: &CheckpointManifest,
+    ) -> Result<(), CheckpointError> {
         std::fs::write(
-            dir.join("manifest.json"),
+            dir.as_ref().join("manifest.json"),
             serde_json::to_string_pretty(&manifest)?,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn save_owned_parts_for_checkpoint(
+        &mut self,
+        dir: impl AsRef<Path>,
+        rank: usize,
+        part_ids: &[usize],
+    ) -> Result<Vec<CheckpointRank>, CheckpointError> {
+        self.stage_out_all();
+        if part_ids.len() != self.host_parts.len() {
+            return Err(CheckpointError::new(
+                "CKPT_DECOMP_MISMATCH",
+                format!(
+                    "checkpoint part id list has {} entries for {} owned parts",
+                    part_ids.len(),
+                    self.host_parts.len()
+                ),
+            ));
+        }
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let mut out = Vec::with_capacity(self.host_parts.len());
+        for ((sub, fields), &part) in self
+            .subs
+            .iter()
+            .zip(self.host_parts.iter())
+            .zip(part_ids.iter())
+        {
+            out.push(Self::write_part_checkpoint(dir, rank, part, sub, fields)?);
+        }
+        Ok(out)
+    }
+
+    /// Save a checkpoint directory (`manifest.json` plus one payload per
+    /// owned part). Single-process split runs keep all part payloads under
+    /// rank 0 and require the same partition layout on restart.
+    pub fn save(&mut self, dir: impl AsRef<Path>) -> Result<(), CheckpointError> {
+        let dir = dir.as_ref();
+        let part_ids: Vec<usize> = (0..self.host_parts.len()).collect();
+        let ranks = self.save_owned_parts_for_checkpoint(dir, 0, &part_ids)?;
+        let manifest = self.checkpoint_manifest(1, ranks, decomp_hash(&self.subs, self.periodic));
+        Self::write_checkpoint_manifest(dir, &manifest)
     }
 
     /// Load a single-rank checkpoint into a freshly rebuilt solver. The caller
@@ -2725,11 +2949,11 @@ where
                 format!("manifest kind is {}", manifest.kind),
             ));
         }
-        if manifest.format_version > CKPT_FORMAT_VERSION {
+        if manifest.format_version != CKPT_FORMAT_VERSION {
             return Err(CheckpointError::new(
-                "CKPT_TOO_NEW",
+                "CKPT_VERSION_MISMATCH",
                 format!(
-                    "checkpoint format_version {} is newer than supported {}",
+                    "checkpoint format_version {} differs from supported {}",
                     manifest.format_version, CKPT_FORMAT_VERSION
                 ),
             ));
@@ -2774,6 +2998,87 @@ where
             ));
         }
         let current_decomp = hash_string(decomp_hash(&self.subs, self.periodic));
+        self.load_into_with_layout(dir, manifest, current_decomp, 1, 0)
+    }
+
+    #[cfg_attr(not(feature = "mpi"), allow(dead_code))]
+    pub(crate) fn restore_distributed_checkpoint(
+        &mut self,
+        dir: impl AsRef<Path>,
+        expected_decomp_hash: u64,
+        nranks: usize,
+        rank: usize,
+    ) -> Result<(), CheckpointError> {
+        let expected = self.current_spec_hash();
+        let dir = dir.as_ref();
+        let manifest_text = std::fs::read_to_string(dir.join("manifest.json"))?;
+        let manifest: CheckpointManifest = serde_json::from_str(&manifest_text)?;
+        if manifest.kind != "lbmflow-checkpoint" {
+            return Err(CheckpointError::new(
+                "CKPT_BAD_MAGIC",
+                format!("manifest kind is {}", manifest.kind),
+            ));
+        }
+        if manifest.format_version != CKPT_FORMAT_VERSION {
+            return Err(CheckpointError::new(
+                "CKPT_VERSION_MISMATCH",
+                format!(
+                    "checkpoint format_version {} differs from supported {}",
+                    manifest.format_version, CKPT_FORMAT_VERSION
+                ),
+            ));
+        }
+        if manifest.dtype != dtype_name::<T>() {
+            return Err(CheckpointError::new(
+                "CKPT_DTYPE_MISMATCH",
+                format!(
+                    "checkpoint dtype {} differs from run dtype {}",
+                    manifest.dtype,
+                    dtype_name::<T>()
+                ),
+            ));
+        }
+        if manifest.lattice != lattice_name::<L>() {
+            return Err(CheckpointError::new(
+                "CKPT_LATTICE_MISMATCH",
+                format!(
+                    "checkpoint lattice {} differs from run lattice {}",
+                    manifest.lattice,
+                    lattice_name::<L>()
+                ),
+            ));
+        }
+        if manifest.global != self.dims {
+            return Err(CheckpointError::new(
+                "CKPT_GEOM_MISMATCH",
+                format!(
+                    "checkpoint global {:?} differs from run {:?}",
+                    manifest.global, self.dims
+                ),
+            ));
+        }
+        let expected = hash_string(expected);
+        if manifest.scenario_hash != expected {
+            return Err(CheckpointError::new(
+                "CKPT_SCENARIO_MISMATCH",
+                format!(
+                    "scenario_hash differed: checkpoint={} current={expected}",
+                    manifest.scenario_hash
+                ),
+            ));
+        }
+        let current_decomp = hash_string(expected_decomp_hash);
+        self.load_into_with_layout(dir, manifest, current_decomp, nranks, rank)
+    }
+
+    fn load_into_with_layout(
+        &mut self,
+        dir: &Path,
+        manifest: CheckpointManifest,
+        current_decomp: String,
+        expected_nranks: usize,
+        current_rank: usize,
+    ) -> Result<(), CheckpointError> {
         if manifest.decomp_hash != current_decomp {
             return Err(CheckpointError::new(
                 "CKPT_DECOMP_MISMATCH",
@@ -2783,107 +3088,133 @@ where
                 ),
             ));
         }
-        if manifest.nranks != 1 || manifest.ranks.len() != 1 || self.host_parts.len() != 1 {
+        if manifest.nranks != expected_nranks {
+            return Err(CheckpointError::new(
+                "CKPT_RANK_MISMATCH",
+                format!(
+                    "checkpoint rank count {} differs from current {}",
+                    manifest.nranks, expected_nranks
+                ),
+            ));
+        }
+        let mut entries: Vec<&CheckpointRank> = manifest
+            .ranks
+            .iter()
+            .filter(|entry| entry.rank == current_rank)
+            .collect();
+        entries.sort_by_key(|entry| entry.part);
+        if entries.len() != self.host_parts.len() {
             return Err(CheckpointError::new(
                 "CKPT_DECOMP_MISMATCH",
-                "B-5 checkpoint load supports exactly one rank and one local part",
-            ));
-        }
-        let rank = &manifest.ranks[0];
-        let sub = &self.subs[0];
-        if rank.origin != sub.origin || rank.core != sub.geom.core {
-            return Err(CheckpointError::new(
-                "CKPT_GEOM_MISMATCH",
                 format!(
-                    "rank geometry differed: checkpoint origin={:?} core={:?}, current origin={:?} core={:?}",
-                    rank.origin, rank.core, sub.origin, sub.geom.core
-                ),
-            ));
-        }
-        let current_mask = hash_string(part_mask_hash(&self.host_parts[0]));
-        if rank.mask_hash != current_mask {
-            return Err(CheckpointError::new(
-                "CKPT_MASK_MISMATCH",
-                format!(
-                    "mask_hash differed: checkpoint={} current={current_mask}",
-                    rank.mask_hash
+                    "checkpoint has {} payload parts for rank {}, current owner has {}",
+                    entries.len(),
+                    current_rank,
+                    self.host_parts.len()
                 ),
             ));
         }
 
-        let (header, payload) = read_rank_file(&dir.join(&rank.file))?;
-        if header.dtype != (if dtype_name::<T>() == "f32" { 0 } else { 1 }) {
-            return Err(CheckpointError::new(
-                "CKPT_DTYPE_MISMATCH",
-                "rank file dtype differs from requested run precision",
-            ));
-        }
-        if header.lattice_id != lattice_id::<L>()
-            || header.q != L::Q as u16
-            || header.d != L::D as u16
+        for ((entry, sub), fields) in entries
+            .into_iter()
+            .zip(self.subs.iter())
+            .zip(self.host_parts.iter_mut())
         {
-            return Err(CheckpointError::new(
-                "CKPT_LATTICE_MISMATCH",
-                "rank file lattice metadata differs from requested lattice",
-            ));
-        }
-        let fields = &mut self.host_parts[0];
-        let np = fields.geom.n_padded();
-        let nc = fields.geom.n_core();
-        if header.np != np as u64 || header.n_core != nc as u64 {
-            return Err(CheckpointError::new(
-                "CKPT_GEOM_MISMATCH",
-                format!(
-                    "rank file np/n_core {}/{} differs from current {np}/{nc}",
-                    header.np, header.n_core
-                ),
-            ));
-        }
-        if hash_string(header.payload_hash) != rank.payload_hash {
-            return Err(CheckpointError::new(
-                "CKPT_PAYLOAD_CORRUPT",
-                format!(
-                    "rank payload hash {} differs from manifest {}",
-                    hash_string(header.payload_hash),
-                    rank.payload_hash
-                ),
-            ));
-        }
-
-        let f = required_section(&payload, SEC_F_PRIMARY, "F_PRIMARY")?;
-        fields.f = read_real_bytes(f, L::Q * np)?;
-        let ftmp = required_section(&payload, SEC_STALE_STASH, "STALE_STASH")?;
-        fields.ftmp = read_real_bytes(ftmp, L::Q * np)?;
-        let moments = required_section(&payload, SEC_MOMENTS, "MOMENTS")?;
-        let vals = read_real_bytes(moments, 4 * nc)?;
-        fields.rho.copy_from_slice(&vals[0..nc]);
-        fields.ux.copy_from_slice(&vals[nc..2 * nc]);
-        fields.uy.copy_from_slice(&vals[2 * nc..3 * nc]);
-        fields.uz.copy_from_slice(&vals[3 * nc..4 * nc]);
-        if let Some(solid) = payload.get(&SEC_SOLID) {
-            if solid.len() != fields.solid.len() {
+            if entry.origin != sub.origin || entry.core != sub.geom.core {
                 return Err(CheckpointError::new(
                     "CKPT_GEOM_MISMATCH",
-                    "solid section length differs from current padded geometry",
+                    format!(
+                        "part geometry differed: checkpoint rank={} part={} origin={:?} core={:?}, current origin={:?} core={:?}",
+                        entry.rank, entry.part, entry.origin, entry.core, sub.origin, sub.geom.core
+                    ),
                 ));
             }
-            let loaded: Vec<bool> = solid.iter().map(|&v| v != 0).collect();
-            if loaded != fields.solid {
+            let current_mask = hash_string(part_mask_hash(fields));
+            if entry.mask_hash != current_mask {
                 return Err(CheckpointError::new(
                     "CKPT_MASK_MISMATCH",
-                    "serialized solid mask differs from rebuilt mask",
+                    format!(
+                        "mask_hash differed for rank={} part={}: checkpoint={} current={current_mask}",
+                        entry.rank, entry.part, entry.mask_hash
+                    ),
                 ));
             }
-        }
-        if let Some(force) = payload.get(&SEC_FORCE_FIELD) {
-            let vals = read_real_bytes(force, 3 * nc)?;
-            let mut ff = vec![[T::zero(); 3]; nc];
-            for c in 0..nc {
-                ff[c] = [vals[3 * c], vals[3 * c + 1], vals[3 * c + 2]];
+
+            let (header, payload) = read_rank_file(&dir.join(&entry.file))?;
+            if header.dtype != (if dtype_name::<T>() == "f32" { 0 } else { 1 }) {
+                return Err(CheckpointError::new(
+                    "CKPT_DTYPE_MISMATCH",
+                    "rank file dtype differs from requested run precision",
+                ));
             }
-            fields.force_field = Some(ff);
+            if header.lattice_id != lattice_id::<L>()
+                || header.q != L::Q as u16
+                || header.d != L::D as u16
+            {
+                return Err(CheckpointError::new(
+                    "CKPT_LATTICE_MISMATCH",
+                    "rank file lattice metadata differs from requested lattice",
+                ));
+            }
+            let np = fields.geom.n_padded();
+            let nc = fields.geom.n_core();
+            if header.np != np as u64 || header.n_core != nc as u64 {
+                return Err(CheckpointError::new(
+                    "CKPT_GEOM_MISMATCH",
+                    format!(
+                        "rank file np/n_core {}/{} differs from current {np}/{nc}",
+                        header.np, header.n_core
+                    ),
+                ));
+            }
+            if hash_string(header.payload_hash) != entry.payload_hash {
+                return Err(CheckpointError::new(
+                    "CKPT_PAYLOAD_CORRUPT",
+                    format!(
+                        "rank payload hash {} differs from manifest {}",
+                        hash_string(header.payload_hash),
+                        entry.payload_hash
+                    ),
+                ));
+            }
+
+            let f = required_section(&payload, SEC_F_PRIMARY, "F_PRIMARY")?;
+            fields.f = read_real_bytes(f, L::Q * np)?;
+            let ftmp = required_section(&payload, SEC_STALE_STASH, "STALE_STASH")?;
+            fields.ftmp = read_real_bytes(ftmp, L::Q * np)?;
+            let moments = required_section(&payload, SEC_MOMENTS, "MOMENTS")?;
+            let vals = read_real_bytes(moments, 4 * nc)?;
+            fields.rho.copy_from_slice(&vals[0..nc]);
+            fields.ux.copy_from_slice(&vals[nc..2 * nc]);
+            fields.uy.copy_from_slice(&vals[2 * nc..3 * nc]);
+            fields.uz.copy_from_slice(&vals[3 * nc..4 * nc]);
+            if let Some(solid) = payload.get(&SEC_SOLID) {
+                if solid.len() != fields.solid.len() {
+                    return Err(CheckpointError::new(
+                        "CKPT_GEOM_MISMATCH",
+                        "solid section length differs from current padded geometry",
+                    ));
+                }
+                let loaded: Vec<bool> = solid.iter().map(|&v| v != 0).collect();
+                if loaded != fields.solid {
+                    return Err(CheckpointError::new(
+                        "CKPT_MASK_MISMATCH",
+                        "serialized solid mask differs from rebuilt mask",
+                    ));
+                }
+            }
+            if let Some(force) = payload.get(&SEC_FORCE_FIELD) {
+                let vals = read_real_bytes(force, 3 * nc)?;
+                let mut ff = vec![[T::zero(); 3]; nc];
+                for c in 0..nc {
+                    ff[c] = [vals[3 * c], vals[3 * c + 1], vals[3 * c + 2]];
+                }
+                fields.force_field = Some(ff);
+            } else {
+                fields.force_field = None;
+            }
+            fields.fused = None;
         }
-        fields.fused = None;
         self.time = manifest.step;
         self.probed_force = [T::zero(); 3];
         self.host_dirty = true;
@@ -2896,6 +3227,15 @@ where
     /// step (V1 `probed_force`).
     pub fn probed_force(&self) -> [T; 3] {
         self.probed_force
+    }
+
+    /// Explicit backend readback of the momentum-exchange force on probed
+    /// solids during the most recent completed step.
+    pub fn read_probed_force(&self) -> [T; 3] {
+        self.parts.iter().fold([T::zero(); 3], |a, field| {
+            let b = self.backend.read_probed_force(field);
+            [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+        })
     }
 
     /// Density at a global cell.
@@ -2964,27 +3304,37 @@ where
     /// Local partial sums behind [`Solver::total_momentum`] (see
     /// [`Solver::local_mass_partials`] for the distributed contract).
     pub fn local_momentum_partials(&self) -> [f64; 3] {
+        let params_with_gravity;
+        let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
+        let params = if backend_gravity {
+            params_with_gravity = self.params_with_backend_gravity();
+            &params_with_gravity
+        } else {
+            &self.params
+        };
         let mut p = [0.0f64; 3];
         for (sub, fields) in self.subs.iter().zip(self.parts.iter()) {
             for (a, pa) in p.iter_mut().enumerate() {
                 *pa += self
                     .backend
-                    .reduce(sub, fields, &self.params, Reduction::Momentum(a));
+                    .reduce(sub, fields, params, Reduction::Momentum(a));
             }
         }
-        if let Some(g) = self.gravity {
-            for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
-                let geo = sub.geom;
-                for z in 0..geo.core[2] {
-                    for y in 0..geo.core[1] {
-                        for x in 0..geo.core[0] {
-                            let pi = geo.pidx(x, y, z);
-                            if fields.solid[pi] {
-                                continue;
-                            }
-                            let rho = fields.rho[geo.cidx(x, y, z)].as_f64();
-                            for a in 0..3 {
-                                p[a] += 0.5 * rho * g[a].as_f64();
+        if !backend_gravity {
+            if let Some(g) = self.gravity {
+                for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+                    let geo = sub.geom;
+                    for z in 0..geo.core[2] {
+                        for y in 0..geo.core[1] {
+                            for x in 0..geo.core[0] {
+                                let pi = geo.pidx(x, y, z);
+                                if fields.solid[pi] {
+                                    continue;
+                                }
+                                let rho = fields.rho[geo.cidx(x, y, z)].as_f64();
+                                for a in 0..3 {
+                                    p[a] += 0.5 * rho * g[a].as_f64();
+                                }
                             }
                         }
                     }
@@ -3075,7 +3425,14 @@ where
         let c = g.cidx(x, y, z);
         let r = fields.rho[c];
         let u = [fields.ux[c], fields.uy[c], fields.uz[c]];
-        let kp = KParams::new::<L>(&self.params);
+        let params_with_gravity;
+        let params = if self.gravity.is_some() {
+            params_with_gravity = self.params_with_backend_gravity();
+            &params_with_gravity
+        } else {
+            &self.params
+        };
+        let kp = KParams::new::<L>(params);
         let feq = equilibrium::<L, T>(&kp, r, u);
         let np = g.n_padded();
         let mut pi_neq = [T::zero(); 6];
@@ -3091,14 +3448,7 @@ where
             pi_neq[4] = pi_neq[4] + cx * cz * fneq;
             pi_neq[5] = pi_neq[5] + cy * cz * fneq;
         }
-        let force = match fields.force_field.as_ref() {
-            Some(ff) => [
-                self.params.force[0] + ff[c][0],
-                self.params.force[1] + ff[c][1],
-                self.params.force[2] + ff[c][2],
-            ],
-            None => self.params.force,
-        };
+        let force = kp.force_at(fields.force_field.as_deref(), c, r);
         let half = T::r(0.5);
         // FR-STRESS-01 rev.4: Pi_force = -(dt/2)(uF + Fu), dt=1, so
         // Pi_neq_corr = Pi_neq_raw - Pi_force = Pi_neq_raw + 0.5(uF + Fu).
@@ -3319,12 +3669,14 @@ mod tests {
         }
     }
 
-    fn assert_solver_bits_eq<L, T>(
-        a: &Solver<L, T, CpuScalar, LocalPeriodic>,
-        b: &Solver<L, T, CpuScalar, LocalPeriodic>,
+    fn assert_solver_bits_eq<L, T, HA, HB>(
+        a: &Solver<L, T, CpuScalar, HA>,
+        b: &Solver<L, T, CpuScalar, HB>,
     ) where
         L: Lattice,
         T: Real,
+        HA: HaloExchange<T>,
+        HB: HaloExchange<T>,
     {
         assert_eq!(a.time(), b.time());
         assert_eq!(a.dims(), b.dims());
@@ -3417,6 +3769,124 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_multi_part_roundtrip_bit_exact() {
+        let spec = GlobalSpec::<f64> {
+            dims: [24, 18, 1],
+            nu: 0.04,
+            periodic: [true, true, false],
+            force: [1.0e-6, -2.0e-6, 0.0],
+            ..Default::default()
+        };
+        let mut solid = vec![false; spec.dims[0] * spec.dims[1]];
+        solid[(spec.dims[1] / 2) * spec.dims[0] + spec.dims[0] / 2] = true;
+        let wall_u = vec![[0.0f64; 3]; solid.len()];
+        let decomp = [2, 2, 1];
+        let mut continuous: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            decomp,
+            CpuScalar::default(),
+            InProcess,
+        );
+        let mut resumed: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            decomp,
+            CpuScalar::default(),
+            InProcess,
+        );
+        let init = |x: usize, y: usize, _z: usize| {
+            let kx = 2.0 * std::f64::consts::PI / spec.dims[0] as f64;
+            let ky = 2.0 * std::f64::consts::PI / spec.dims[1] as f64;
+            (
+                1.0 + 0.002 * (kx * x as f64).cos() * (ky * y as f64).sin(),
+                [
+                    0.02 * (kx * x as f64).sin(),
+                    -0.015 * (ky * y as f64).cos(),
+                    0.0,
+                ],
+            )
+        };
+        continuous.init_with(init);
+        resumed.init_with(init);
+        continuous.run(20);
+        resumed.run(7);
+        let dir = tmp_ckpt("split-roundtrip");
+        resumed.save(&dir).unwrap();
+        let mut loaded: Solver<D2Q9, f64, CpuScalar, InProcess> = Solver::load(
+            &dir,
+            &spec,
+            &solid,
+            &wall_u,
+            decomp,
+            CpuScalar::default(),
+            InProcess,
+        )
+        .unwrap();
+        loaded.run(13);
+        assert_solver_bits_eq(&continuous, &loaded);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_layout_and_version_mismatch_are_precise() {
+        let spec = GlobalSpec::<f32> {
+            dims: [24, 16, 1],
+            nu: 0.05,
+            periodic: [true, true, false],
+            force: [5.0e-7, 0.0, 0.0],
+            ..Default::default()
+        };
+        let mut s: Solver<D2Q9, f32, CpuScalar, InProcess> =
+            Solver::new(&spec, &[], &[], [2, 2, 1], CpuScalar::default(), InProcess);
+        s.run(4);
+        let dir = tmp_ckpt("layout-version");
+        s.save(&dir).unwrap();
+
+        let err = match Solver::<D2Q9, f32, CpuScalar, InProcess>::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [4, 1, 1],
+            CpuScalar::default(),
+            InProcess,
+        ) {
+            Ok(_) => panic!("changed decomposition must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "CKPT_DECOMP_MISMATCH");
+        assert!(err.message.contains("decomp_hash differed"));
+
+        let manifest_path = dir.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["format_version"] = serde_json::Value::from(1);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = match Solver::<D2Q9, f32, CpuScalar, InProcess>::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [2, 2, 1],
+            CpuScalar::default(),
+            InProcess,
+        ) {
+            Ok(_) => panic!("old checkpoint version must reject checkpoint load"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "CKPT_VERSION_MISMATCH");
+        assert!(err.message.contains("format_version 1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn checkpoint_reports_truncated_payload_and_spec_mismatch() {
         let spec = GlobalSpec::<f32> {
             dims: [12, 10, 1],
@@ -3453,7 +3923,7 @@ mod tests {
         assert_eq!(err.code, "CKPT_SCENARIO_MISMATCH");
         assert!(err.message.contains("scenario_hash differed"));
 
-        let rank = dir.join("rank_0000.bin");
+        let rank = dir.join("rank_0000_part_0000.bin");
         let clean_rank = std::fs::read(&rank).unwrap();
         let mut corrupt = clean_rank.clone();
         let flip_at = corrupt.len() / 2;
@@ -3843,7 +4313,7 @@ mod tests {
     }
 
     #[test]
-    fn d3q27_rejects_open_faces_before_build() {
+    fn d3q27_rejects_unimplemented_open_face_kinds_before_build() {
         let mut faces = [FaceBC::<f64>::Closed; 6];
         faces[Face::XNeg.index()] = FaceBC::Velocity {
             u: [0.02, 0.0, 0.0],
@@ -3857,10 +4327,12 @@ mod tests {
         };
         assert!(matches!(
             spec.validate_lattice::<D3Q27>(&[]),
-            Err(SpecError::UnsupportedOpenFaceLattice {
+            Err(SpecError::UnsupportedOpenFaceKind {
                 lattice: "D3Q27",
-                unknowns: 9,
+                face,
+                ..
             })
+            if face == Face::XPos.index()
         ));
         assert!(matches!(
             Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
@@ -3871,7 +4343,7 @@ mod tests {
                 CpuScalar::default(),
                 LocalPeriodic,
             ),
-            Err(SpecError::UnsupportedOpenFaceLattice { .. })
+            Err(SpecError::UnsupportedOpenFaceKind { .. })
         ));
     }
 

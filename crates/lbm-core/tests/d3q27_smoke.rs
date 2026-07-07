@@ -1,5 +1,5 @@
 //! D3Q27 stage-1 smoke tests: closed-wall BGK/TRT kernels, wall rims,
-//! moving-wall bounce-back, and the explicit open-face scope guard.
+//! moving-wall bounce-back, and the explicit unimplemented-open-kind guard.
 
 use lbm_core::prelude::*;
 
@@ -71,7 +71,7 @@ fn d3q27_closed_box_stays_finite_and_conserves_mass() {
 }
 
 #[test]
-fn d3q27_open_face_returns_unsupported_lattice_error() {
+fn d3q27_outflow_still_returns_unsupported_kind_error() {
     let mut faces = [FaceBC::Closed; 6];
     faces[Face::XNeg.index()] = FaceBC::Velocity {
         u: [0.02, 0.0, 0.0],
@@ -97,19 +97,22 @@ fn d3q27_open_face_returns_unsupported_lattice_error() {
     assert!(
         matches!(
             err,
-            SpecError::UnsupportedOpenFaceLattice {
+            SpecError::UnsupportedOpenFaceKind {
                 lattice: "D3Q27",
-                unknowns: 9
+                face,
+                ..
             }
+            if face == Face::XPos.index()
         ),
-        "expected UnsupportedOpenFaceLattice(D3Q27, 9), got {err:?}"
+        "expected UnsupportedOpenFaceKind(D3Q27, XPos Outflow), got {err:?}"
     );
 }
 
 #[test]
 fn d3q27_moving_lid_box_produces_nonzero_circulation() {
     let n = 16usize;
-    let (spec, solid, wall_u) = all_wall_box(n, Some([0.08, 0.0, 0.0]));
+    let lid_speed = 0.08;
+    let (spec, solid, wall_u) = all_wall_box(n, Some([lid_speed, 0.0, 0.0]));
     let mut s: Solver27 = Solver::new(
         &spec,
         &solid,
@@ -133,8 +136,10 @@ fn d3q27_moving_lid_box_produces_nonzero_circulation() {
         circulation += s.u(hi, y, z)[1] - s.u(lo, y, z)[1];
     }
     let below_lid = s.u(n / 2, n - 2, n / 2);
+    let ux_rel_lid = below_lid[0] / lid_speed;
+    let circulation_rel_lid = circulation.abs() / lid_speed;
     println!(
-        "D3Q27 lid box: circulation={circulation:.6e}, ux below lid={:.6e}, mass rel={rel:.3e}",
+        "D3Q27 lid box: circulation={circulation:.6e}, circulation/lid={circulation_rel_lid:.3e}, ux below lid={:.6e}, ux/lid={ux_rel_lid:.3e}, lid speed={lid_speed:.3e}, mass rel={rel:.3e}",
         below_lid[0]
     );
     assert!(
@@ -150,8 +155,19 @@ fn d3q27_moving_lid_box_produces_nonzero_circulation() {
         "D3Q27 moving lid must produce nonzero circulation, got {circulation:e}"
     );
     assert!(
+        (0.25..=1.0).contains(&circulation_rel_lid),
+        "D3Q27 moving-lid circulation must be O(lid speed): circulation={circulation:e}, lid_speed={lid_speed:e}, circulation/lid={circulation_rel_lid:e}"
+    );
+    assert!(
         below_lid[0] > 1.0e-4,
         "D3Q27 moving lid must drag fluid in +x, got ux={}",
         below_lid[0]
+    );
+    assert!(
+        (0.25..=1.0).contains(&ux_rel_lid),
+        "D3Q27 moving-lid ux must be O(lid speed) and not exceed the lid: ux={}, lid_speed={}, ux/lid={}",
+        below_lid[0],
+        lid_speed,
+        ux_rel_lid
     );
 }

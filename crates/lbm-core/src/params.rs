@@ -9,6 +9,12 @@ use crate::real::Real;
 /// re-exports this so there is a single source of truth).
 pub const MAX_SPEED: f64 = 0.3;
 
+/// Compile-time ablation switch for the unresolved central-moment
+/// velocity-dependent shear-rate modifier. Default is off, meaning normal
+/// builds keep the pending `-0.16 |u|^2` term; set true only for the
+/// ANOM-P4-008 E1 ablation rerun.
+pub const CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION: bool = false;
+
 /// Collision operator selection (identical semantics to V1
 /// `lbm_core::domain::Collision`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,11 +26,10 @@ pub enum CollisionKind {
         /// Magic parameter Λ = (1/ω+ − 1/2)(1/ω− − 1/2).
         magic: f64,
     },
-    /// Cascaded central-moment collision. This is the stage-2 CPU reference
-    /// operator for the cumulant track: the shear-rate field controls the
+    /// Cascaded central-moment collision. The shear-rate field controls the
     /// second-order deviatoric central moments, the second-order trace and
     /// all higher-order central moments relax to equilibrium at rate 1.0.
-    Cumulant {
+    CentralMoment {
         /// Relaxation rate for second-order shear central moments.
         omega_shear: f64,
     },
@@ -52,7 +57,7 @@ impl CollisionKind {
                 let lam_p = tau - 0.5;
                 1.0 / (magic / lam_p + 0.5)
             }
-            CollisionKind::Cumulant { .. } => omega_p,
+            CollisionKind::CentralMoment { .. } => omega_p,
         };
         (omega_p, omega_m)
     }
@@ -60,7 +65,7 @@ impl CollisionKind {
     /// Uniform shear relaxation rate used by the central-moment branch.
     pub fn omega_shear(self, nu: f64) -> f64 {
         match self {
-            CollisionKind::Cumulant { omega_shear } => omega_shear,
+            CollisionKind::CentralMoment { omega_shear } => omega_shear,
             CollisionKind::Bgk | CollisionKind::Trt { .. } => self.omegas(nu).0,
         }
     }
@@ -149,6 +154,9 @@ pub struct StepParams<T: Real> {
     pub omega_m: f64,
     /// Uniform body force (Guo forcing).
     pub force: [T; 3],
+    /// Optional per-mass gravity composed as `rho(x) * gravity` in the same
+    /// Guo forcing source as `force` and per-cell force fields.
+    pub gravity: Option<[T; 3]>,
     /// Open BC per global face, `Face::index()` order.
     pub faces: [FaceBC<T>; 6],
     /// Localized interior volume sources/sinks.
@@ -161,13 +169,13 @@ pub struct StepParams<T: Real> {
 /// step exactly like V1 `Simulation::params()`.
 #[derive(Clone, Copy)]
 pub struct KParams<T: Real> {
-    /// Whether this step uses the stage-2 central-moment cumulant branch.
-    pub cumulant: bool,
+    /// Whether this step uses the central-moment branch.
+    pub central_moment: bool,
     /// `T::r(omega_p)`.
     pub omega_p: T,
     /// `T::r(omega_m)`.
     pub omega_m: T,
-    /// Cumulant/central-moment shear relaxation rate.
+    /// Central-moment shear relaxation rate.
     pub omega_shear: T,
     /// Guo prefactor `1 - omega_p/2` (computed in f64, then converted).
     pub cp: T,
@@ -175,6 +183,8 @@ pub struct KParams<T: Real> {
     pub cm: T,
     /// Uniform body force.
     pub force: [T; 3],
+    /// Optional per-mass gravity.
+    pub gravity: Option<[T; 3]>,
     /// Discrete velocities as `T` (first `Q` entries valid).
     pub cr: [[T; 3]; Q_MAX],
     /// Weights as `T` (first `Q` entries valid).
@@ -193,18 +203,50 @@ impl<T: Real> KParams<T> {
             wr[q] = T::r(L::W[q]);
         }
         Self {
-            cumulant: matches!(p.collision, CollisionKind::Cumulant { .. }),
+            central_moment: matches!(p.collision, CollisionKind::CentralMoment { .. }),
             omega_p: T::r(p.omega_p),
             omega_m: T::r(p.omega_m),
             omega_shear: T::r(match p.collision {
-                CollisionKind::Cumulant { omega_shear } => omega_shear,
+                CollisionKind::CentralMoment { omega_shear } => omega_shear,
                 CollisionKind::Bgk | CollisionKind::Trt { .. } => p.omega_p,
             }),
             cp: T::r(1.0 - p.omega_p / 2.0),
             cm: T::r(1.0 - p.omega_m / 2.0),
             force: p.force,
+            gravity: p.gravity,
             cr,
             wr,
+        }
+    }
+
+    #[inline]
+    pub fn force_on(&self, field_present: bool) -> bool {
+        self.force[0] != T::zero()
+            || self.force[1] != T::zero()
+            || self.force[2] != T::zero()
+            || field_present
+            || self.gravity.is_some()
+    }
+
+    #[inline]
+    pub fn force_at(&self, field: Option<&[[T; 3]]>, idx: usize, rho: T) -> [T; 3] {
+        match (field, self.gravity) {
+            (Some(field), Some(g)) => [
+                self.force[0] + (field[idx][0] + rho * g[0]),
+                self.force[1] + (field[idx][1] + rho * g[1]),
+                self.force[2] + (field[idx][2] + rho * g[2]),
+            ],
+            (Some(field), None) => [
+                self.force[0] + field[idx][0],
+                self.force[1] + field[idx][1],
+                self.force[2] + field[idx][2],
+            ],
+            (None, Some(g)) => [
+                self.force[0] + rho * g[0],
+                self.force[1] + rho * g[1],
+                self.force[2] + rho * g[2],
+            ],
+            (None, None) => self.force,
         }
     }
 }

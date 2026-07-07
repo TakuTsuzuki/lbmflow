@@ -155,8 +155,16 @@ The two RED rows above and the M-F integration wave. Concretely:
   wave 3 work is inside this).
 - **R2-C mechanical TRT port** (SPEC_COLLISION_COMPOSITION first PR) with
   ANOM-P2-001 (uniform-force vs force-field step-1 impulse mismatch) fix.
-  Order staged in `scratchpad/order-r2c.txt`. Not yet dispatched — sequence
-  it after any collision-adjacent QA-sweep landings settle.
+  **PRIOR ATTEMPT DISCARDED 2026-07-07**: the r2c codex (branch
+  `r2-c-collision` in `lbmflow-wt-r2-c`) attempted the fix by adding a
+  `force_field_recompute_moments: bool` case-keyed flag to StepParams/KParams
+  — `true` for external force fields, `false` for internally-staged gravity /
+  Shan-Chen "to preserve the frozen hydrostatic path" (self-incriminating doc
+  comment). Reset to main; codex process killed. Refreshed order with
+  explicit ban clauses and a frozen-gate re-freeze policy staged in
+  `scratchpad/order-r2c-v3.txt` (successor session scratchpad path). NOT yet
+  redispatched — dispatch is a discretionary next move once b2 has landed
+  and trunk is quiet.
 - **Remaining R-Phase 2 items**: B-2 (transitional two-pass non-support
   capability), B-3 (Shan-Chen unification per SPEC_COLLISION_COMPOSITION),
   B-6..B-8 (per SOLVER_IMPROVEMENT_SPEC). Owner-scheduled into the M-E/M-F
@@ -171,18 +179,35 @@ The two RED rows above and the M-F integration wave. Concretely:
 
 ## 5. Live codex processes and scratchpad orders
 
-**No codex processes currently running** (last check).
+**Status refreshed 2026-07-07 night handoff.** Live codex on this host:
+- **pid 93395** — b2 (`r2-b2-sync-contract`), CPU vs GPU probe-force
+  determinism + t14 probe readback contract. Actively running validation
+  cavity tests at handoff time; monitored to completion.
+- **pid 66836** — QA-sweep's Re_tau=180 GPU characterization in
+  `lbmflow-wt-chan180gpu`. QA-sweep owned; do NOT touch.
+- Killed at handoff: pid 93397 (b7 residual — B-7 already merged as
+  `5dde801` / `e9af21a` / `d8a4698`; codex was doing redundant gate work +
+  misc Skill-spec noise); pid 93393 (r2-c old attempt, physics-discipline
+  violation — see § 4 R2-C entry).
 
-Order files in
-`/private/tmp/claude-501/-Users-taku-projects---------/926ff0b4-2122-4cb4-8fd1-f9cd79d2786f/scratchpad/`
-are historical (all named `order-*.txt` from earlier waves). The only one a
-successor might dispatch as-is:
-- `order-r2c.txt` — R2-C mechanical TRT port + ANOM-P2-001 fix. Read it,
-  refresh against current trunk before dispatching.
+Order files in the predecessor session scratchpad
+(`/private/tmp/claude-501/-Users-taku-projects---------/926ff0b4-2122-4cb4-8fd1-f9cd79d2786f/scratchpad/`)
+are historical. Current successor session scratchpad
+(`/private/tmp/claude-501/-Users-taku-projects---------/e0d46ab8-19d4-4a57-bd1a-1b9f26356301/scratchpad/`)
+holds:
+- `order-r2c-v3.txt` — refreshed R2-C order with explicit ban clauses (no
+  `_recompute_moments` / `use_*_path` / `is_*_case` flags; frozen-gate
+  re-freeze policy with independent physical check requirement).
+  STAGED, NOT DISPATCHED.
+- `r2c-dropped-params.rs` / `r2c-dropped-PHYSICS.md` — reference copies of
+  the abandoned r2c attempt's params + PHYSICS draft, in case anyone needs
+  to see what the codex tried before it was reset.
 
-All others (`order-b1*`, `order-me1*`, `order-bouzidi*`, `order-g2`,
-`order-units`, `order-wgrav`, `order-wrot`, `order-b5`, `order-d8`,
-`order-r2d`, `order-strain`) served their landings.
+Historical predecessor orders (`order-r2c-v2.txt`, `order-b1*`,
+`order-me1*`, `order-bouzidi*`, `order-g2`, `order-units`, `order-wgrav`,
+`order-wrot`, `order-b5`, `order-d8`, `order-r2d`, `order-strain`,
+`order-b7.txt`, `order-b8.txt`, `order-b2.txt`, `order-me3-prep.txt`)
+served their landings.
 
 ## 6. Worktree inventory
 

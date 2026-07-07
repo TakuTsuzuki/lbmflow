@@ -21,9 +21,10 @@
 //! concurrent callers touch disjoint cell columns (each row is written by
 //! exactly one call).
 
+use crate::collision::{Collision, ScalarArith, TrtGuo};
 use crate::fields::LocalGeom;
 use crate::lattice::{Face, Lattice, Q_MAX};
-use crate::params::KParams;
+use crate::params::{KParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION};
 use crate::real::Real;
 
 /// Unsafely shareable mutable view for row-parallel kernels.
@@ -137,81 +138,23 @@ pub(crate) unsafe fn collide_row<L: Lattice, T: Real>(
     omega: Option<&[T]>,
     p: &KParams<T>,
 ) {
-    let three = T::r(3.0);
-    let f45 = T::r(4.5);
-    let f15 = T::r(1.5);
-    let nine = T::r(9.0);
-    let half = T::r(0.5);
-    let force_on = p.force[0] != T::zero()
-        || p.force[1] != T::zero()
-        || p.force[2] != T::zero()
-        || ff.is_some();
+    let force_on = p.force_on(ff.is_some());
     for x in 0..rho.len() {
         if solid[x] {
             continue;
         }
         let r = rho[x];
         let u = [ux[x], uy[x], uz[x]];
-        let fv = match ff {
-            Some(field) => [
-                p.force[0] + field[x][0],
-                p.force[1] + field[x][1],
-                p.force[2] + field[x][2],
-            ],
-            None => p.force,
-        };
-        let mut usq = u[0] * u[0];
-        for d in 1..L::D {
-            usq = usq + u[d] * u[d];
-        }
-        let mut uf = u[0] * fv[0];
-        for d in 1..L::D {
-            uf = uf + u[d] * fv[d];
-        }
-        let drho = r - T::one();
-        let mut feq = [T::zero(); Q_MAX];
-        let mut src = [T::zero(); Q_MAX];
-        for q in 0..L::Q {
-            let mut cu = p.cr[q][0] * u[0];
-            for d in 1..L::D {
-                cu = cu + p.cr[q][d] * u[d];
-            }
-            feq[q] = p.wr[q] * (drho + r * (three * cu + f45 * cu * cu - f15 * usq));
-            if force_on {
-                let mut cf = p.cr[q][0] * fv[0];
-                for d in 1..L::D {
-                    cf = cf + p.cr[q][d] * fv[d];
-                }
-                src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);
-            }
-        }
+        let fv = p.force_at(ff, x, r);
         let i = pb + x;
-        // SAFETY: row-disjoint dispatch (see RawSlice contract).
-        unsafe {
-            let op = omega.map_or(p.omega_p, |v| v[x]);
-            let cp = if omega.is_some() {
-                T::one() - op / T::r(2.0)
-            } else {
-                p.cp
-            };
-            let i0 = L::REST * np + i;
-            let f0 = f.get(i0);
-            f.set(i0, f0 - op * (f0 - feq[L::REST]) + cp * src[L::REST]);
-            for &(a, b) in L::PAIRS {
-                let (ia, ib) = (a * np + i, b * np + i);
-                let (fa, fb) = (f.get(ia), f.get(ib));
-                let fp = half * (fa + fb);
-                let fm = half * (fa - fb);
-                let ep = half * (feq[a] + feq[b]);
-                let em = half * (feq[a] - feq[b]);
-                let sp = half * (src[a] + src[b]);
-                let sm = half * (src[a] - src[b]);
-                let rp = op * (fp - ep);
-                let rm = p.omega_m * (fm - em);
-                f.set(ia, fa - rp - rm + cp * sp + p.cm * sm);
-                f.set(ib, fb - rp + rm + cp * sp - p.cm * sm);
-            }
-        }
+        let op = omega.map_or(p.omega_p, |v| v[x]);
+        let cp = if omega.is_some() {
+            T::one() - op / T::r(2.0)
+        } else {
+            p.cp
+        };
+        let mut arith = ScalarArith::new(f, np, i, r, u, fv, op, cp, force_on, p);
+        TrtGuo::relax::<_, L>(&mut arith);
     }
 }
 
@@ -312,7 +255,7 @@ pub(crate) fn solve_moment_system<L: Lattice>(
 
 /// Cascaded central-moment collision with Guo forcing, one row of core cells.
 ///
-/// This is the stage-2 CPU scalar reference for `CollisionKind::Cumulant`.
+/// This is the stage-2 CPU scalar reference for `CollisionKind::CentralMoment`.
 /// It is not a logarithmic cumulant implementation: populations are
 /// transformed to central moments, second-order deviatoric moments relax with
 /// the per-cell shear rate, the second-order trace and all higher-order
@@ -340,16 +283,10 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
         if solid[x] {
             continue;
         }
-        let r = rho[x].as_f64();
+        let r_t = rho[x];
+        let r = r_t.as_f64();
         let u = [ux[x].as_f64(), uy[x].as_f64(), uz[x].as_f64()];
-        let fv_t = match ff {
-            Some(field) => [
-                p.force[0] + field[x][0],
-                p.force[1] + field[x][1],
-                p.force[2] + field[x][2],
-            ],
-            None => p.force,
-        };
+        let fv_t = p.force_at(ff, x, r_t);
         let fv = [fv_t[0].as_f64(), fv_t[1].as_f64(), fv_t[2].as_f64()];
         let force_on = fv[0] != 0.0 || fv[1] != 0.0 || fv[2] != 0.0;
         let i = pb + x;
@@ -411,9 +348,13 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
         }
 
         let os_base = omega.map_or(p.omega_shear.as_f64(), |v| v[x].as_f64());
-        let usq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-        let d3q19_lattice_viscosity_offset = if L::D == 3 && L::Q == 19 { 0.0025 } else { 0.0 };
-        let os = (os_base * (1.0 + d3q19_lattice_viscosity_offset - 0.16 * usq)).min(2.0);
+        let velocity_correction = if CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
+            0.0
+        } else {
+            let usq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+            -0.16 * usq
+        };
+        let os = (os_base * (1.0 + velocity_correction)).min(2.0);
         let mut post = [0.0f64; Q_MAX];
         let mut diag = [usize::MAX; 3];
         for m in 0..L::Q {
@@ -582,15 +523,8 @@ pub(crate) fn moments_row<L: Lattice, T: Real>(
                 m[2] = m[2] + p.cr[q][2] * fq;
             }
         }
-        let fv = match ff {
-            Some(field) => [
-                p.force[0] + field[x][0],
-                p.force[1] + field[x][1],
-                p.force[2] + field[x][2],
-            ],
-            None => p.force,
-        };
         let r = T::one() + dr;
+        let fv = p.force_at(ff, x, r);
         rho[x] = r;
         let inv = T::one() / r;
         ux[x] = (m[0] + half * fv[0]) * inv;
@@ -749,6 +683,9 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
     selection: FaceCellSelection<'_>,
 ) {
     if L::D == 3 {
+        if L::unknowns(face).len() == 9 {
+            return zou_he_face_d3q27::<L, T>(f, np, geom, solid, face, kind, profile, selection);
+        }
         return zou_he_face_3d::<L, T>(f, np, geom, solid, face, kind, profile, selection);
     }
     let n = face.n_in();
@@ -787,6 +724,101 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
         f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c23 * r * un;
         f[q_d1 * np + i] = f[L::OPP[q_d1] * np + i] + c16 * r * un + tcorr;
         f[q_d2 * np + i] = f[L::OPP[q_d2] * np + i] + c16 * r * un - tcorr;
+    });
+}
+
+/// D3Q27 extension of the Zou-He / Hecht-Harting on-site velocity and
+/// pressure closure. The unknown plane has nine links, `n + j t1 + k t2`
+/// with `j,k in {-1,0,1}`. Non-equilibrium bounce-back gives
+/// `f_q = f_opp + 6 w_q rho c_q.u + delta_q`. Its mass and normal momentum
+/// are exact under the usual closure relation; the remaining two constraints
+/// are the tangent moment deficits
+/// `C_t = rho u_t - Q0_t - 6 rho u_t sum_unknown w c_t^2`, where `Q0_t`
+/// is carried by the known face-parallel links. D3Q27 tensor-product
+/// symmetry gives zero cross-coupling, so distributing
+/// `delta_q = C_t1 w_q c_t1 / S_t1 + C_t2 w_q c_t2 / S_t2` exactly enforces
+/// both tangent moments without changing mass or normal momentum.
+#[allow(clippy::too_many_arguments)]
+fn zou_he_face_d3q27<L: Lattice, T: Real>(
+    f: &mut [T],
+    np: usize,
+    geom: &LocalGeom,
+    solid: &[bool],
+    face: Face,
+    kind: &ZhKind<T>,
+    profile: Option<&[[T; 3]]>,
+    selection: FaceCellSelection<'_>,
+) {
+    assert_eq!(
+        L::unknowns(face).len(),
+        9,
+        "zou_he_face_d3q27 expects 9 unknowns; lattice {:?} face has {}",
+        std::any::type_name::<L>(),
+        L::unknowns(face).len()
+    );
+    let a = face.axis();
+    let (t1, t2) = face.tangents();
+    let n = face.n_in();
+    let nsign = T::r(n[a] as f64);
+    let unknowns = L::unknowns(face);
+
+    let mut s2_t1 = 0.0f64;
+    let mut s2_t2 = 0.0f64;
+    for &q in unknowns {
+        let c = L::C[q];
+        s2_t1 += L::W[q] * (c[t1] as f64) * (c[t1] as f64);
+        s2_t2 += L::W[q] * (c[t2] as f64) * (c[t2] as f64);
+    }
+    let (s2_t1, s2_t2) = (T::r(s2_t1), T::r(s2_t2));
+    let (one, two, six) = (T::one(), T::r(2.0), T::r(6.0));
+
+    for_face_cells_selected(geom, face, selection, |coord, pos| {
+        let i = geom.pidx(pos[0], pos[1], pos[2]);
+        if solid[i] {
+            return;
+        }
+
+        let mut s0 = T::zero();
+        let mut sneg = T::zero();
+        let mut q0_t1 = T::zero();
+        let mut q0_t2 = T::zero();
+        for q in 0..L::Q {
+            let c = L::C[q];
+            let dot = c[a] as i32 * n[a] as i32;
+            let fq = f[q * np + i];
+            if dot == 0 {
+                s0 = s0 + fq;
+                q0_t1 = q0_t1 + T::r(c[t1] as f64) * fq;
+                q0_t2 = q0_t2 + T::r(c[t2] as f64) * fq;
+            } else if dot < 0 {
+                sneg = sneg + fq;
+            }
+        }
+
+        let closure = s0 + two * sneg + one;
+        let (rho, un, ut1, ut2) = match *kind {
+            ZhKind::Velocity(u) => {
+                let u = profile.map_or(u, |p| p[coord]);
+                (closure / (one - u[a] * nsign), u[a] * nsign, u[t1], u[t2])
+            }
+            ZhKind::Pressure(rho_bc) => {
+                let un = one - closure / rho_bc;
+                (rho_bc, un, T::zero(), T::zero())
+            }
+        };
+
+        let c_t1 = rho * ut1 * (one - six * s2_t1) - q0_t1;
+        let c_t2 = rho * ut2 * (one - six * s2_t2) - q0_t2;
+        for &q in unknowns {
+            let c = L::C[q];
+            let cdotu = T::r(c[a] as f64) * nsign * un
+                + T::r(c[t1] as f64) * ut1
+                + T::r(c[t2] as f64) * ut2;
+            let w = T::r(L::W[q]);
+            let delta =
+                c_t1 * w * T::r(c[t1] as f64) / s2_t1 + c_t2 * w * T::r(c[t2] as f64) / s2_t2;
+            f[q * np + i] = f[L::OPP[q] * np + i] + six * w * rho * cdotu + delta;
+        }
     });
 }
 
@@ -1007,6 +1039,7 @@ mod tests {
             omega_p: 1.25,
             omega_m: 0.7,
             force: [T::zero(); 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),
@@ -1075,10 +1108,11 @@ mod tests {
 
     fn cumulant_params<T: Real>() -> KParams<T> {
         let params = StepParams::<T> {
-            collision: CollisionKind::Cumulant { omega_shear: 1.25 },
+            collision: CollisionKind::CentralMoment { omega_shear: 1.25 },
             omega_p: 1.25,
             omega_m: 1.25,
             force: [T::zero(); 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),
@@ -1089,10 +1123,11 @@ mod tests {
     fn collide_cumulant_rest_fixed_point<L: Lattice>() {
         let ncells = 8usize;
         let params = StepParams::<f64> {
-            collision: CollisionKind::Cumulant { omega_shear: 1.25 },
+            collision: CollisionKind::CentralMoment { omega_shear: 1.25 },
             omega_p: 1.25,
             omega_m: 1.25,
             force: [0.0; 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),
@@ -1125,10 +1160,11 @@ mod tests {
     fn cumulant_uniform_velocity_stays_uniform_after_collide() {
         let ncells = 16usize;
         let params = StepParams::<f64> {
-            collision: CollisionKind::Cumulant { omega_shear: 1.1 },
+            collision: CollisionKind::CentralMoment { omega_shear: 1.1 },
             omega_p: 1.1,
             omega_m: 1.1,
             force: [0.0; 3],
+            gravity: None,
             faces: [FaceBC::Closed; 6],
             sources: Vec::new(),
             face_patches: Vec::new(),

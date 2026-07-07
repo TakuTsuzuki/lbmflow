@@ -100,6 +100,11 @@ impl<L: Lattice> GpuSolver<L> {
         self.inner.backend().cache_next_upload_moments_once();
     }
 
+    /// Per-mass gravity composed on device as `rho(x) * g`.
+    pub fn set_gravity(&mut self, g: [f32; 3]) {
+        self.inner.set_gravity(g);
+    }
+
     /// Advance `steps` steps on the GPU through the unified solver.
     pub fn run(&mut self, steps: usize) {
         self.inner.run(steps);
@@ -160,15 +165,14 @@ impl<L: Lattice> GpuSolver<L> {
     }
 
     /// Momentum-exchange force on probed solids during the most recent step.
-    ///
-    /// Temporary B-1 shim: B-2 will move this into the backend synchronization
-    /// contract. Until then the wrapper reads WgpuBackend's explicit probe
-    /// accumulator because `Backend::stream` still cannot return it without a
-    /// per-step sync.
     pub fn probed_force(&mut self) -> [f32; 3] {
-        self.inner
-            .backend()
-            .read_probed_force(self.inner.backend_fields(0))
+        self.inner.probed_force()
+    }
+
+    /// Explicit readback of the momentum-exchange force on probed solids
+    /// during the most recent completed step.
+    pub fn read_probed_force(&self) -> [f32; 3] {
+        self.inner.read_probed_force()
     }
 
     /// Total mass over fluid cells.

@@ -207,7 +207,11 @@ fn acoustic_sound_speed_and_damping_periodic_density_wave() {
         "ACC acoustics: c={c_measured:.9e}, rel={c_rel:.3e}, gamma={gamma_measured:.9e}, ref={gamma_ref:.9e}, rel={gamma_rel:.3e}"
     );
     assert!(c_rel <= 1.0e-3, "sound speed rel={c_rel:e}");
-    assert!(gamma_rel <= 3.0e-1, "acoustic damping rel={gamma_rel:e}");
+    // This compares a finite-k D2Q9 density wave against the leading continuum
+    // attenuation Gamma=(4/3)nu k^2. The residual is dominated by the missing
+    // finite-k acoustic damping correction, so keep a narrow physical-model
+    // margin above the measured 0.2505 instead of using a bare ratio band.
+    assert!(gamma_rel <= 2.7e-1, "acoustic damping rel={gamma_rel:e}");
 }
 
 fn tgv_sim(n: usize, nu: f64, u0: f64, u_adv: f64, collision: Collision) -> Simulation<f64> {
@@ -269,8 +273,12 @@ fn galilean_invariance_tgv_defect_bgk_and_trt() {
     let bgk = galilean_defect(Collision::Bgk);
     let trt = galilean_defect(TRT);
     println!("ACC Galilean TGV defect: BGK={bgk:.6e}, TRT={trt:.6e}");
-    assert!(bgk <= 1.5e-1, "BGK Galilean defect={bgk:e}");
-    assert!(trt <= 1.5e-1, "TRT Galilean defect={trt:e}");
+    // The remaining defect is the expected finite-Mach Galilean error of the
+    // weakly compressible TGV comparison at u_adv=0.05, not a conservation
+    // failure. A 5% cap keeps margin over the 0.6-0.9% measurement while
+    // rejecting the formerly vacuous 15% band.
+    assert!(bgk <= 5.0e-2, "BGK Galilean defect={bgk:e}");
+    assert!(trt <= 5.0e-2, "TRT Galilean defect={trt:e}");
 }
 
 fn cavity_profile(n: usize, u_lid: f64, nu: f64, steps: usize) -> Vec<f64> {
@@ -468,24 +476,22 @@ fn forcing_path_gravity_and_force_field_one_step_match() {
 }
 
 #[test]
-#[ignore = "expected failure until R2-C fixes ANOM-P2-001; then this current-wrong-value pin must fail loudly and be retightened"]
-fn uniform_force_impulse_current_wrong_value_pin_anom_p2_001() {
+fn uniform_force_impulse_matches_force_field_anom_p2_001() {
     let uniform = one_step_momentum_gain_force_path("uniform");
     let field = one_step_momentum_gain_force_path("field");
-    // ANOM-P2-001 calibration: at tau=1 TRT, the uniform-force path currently
-    // injects a different step-1 impulse than the per-cell force field /
-    // gravity path, even though steady slopes match. In this observable
-    // (post-step momentum gain after subtracting each path's own half-force
-    // initial momentum), the current wrong uniform/field ratio is 7/3. This
-    // assertion pins that wrong value so a correct R2-C implementation breaks
-    // the test and forces the band to be tightened to equality.
-    let ratio = uniform / field;
-    println!("ACC force path ANOM-P2-001: uniform={uniform:.12e}, field={field:.12e}, ratio={ratio:.12e}");
+    let gravity = one_step_momentum_gain_force_path("gravity");
+    println!("ACC force path ANOM-P2-001 fixed: uniform={uniform:.12e}, field={field:.12e}, gravity={gravity:.12e}");
     assert_close(
-        ratio,
-        7.0 / 3.0,
-        2.0e-2,
-        "current wrong uniform/field impulse ratio",
+        uniform,
+        field,
+        1.0e-14,
+        "uniform vs force_field one-step impulse",
+    );
+    assert_close(
+        uniform,
+        gravity,
+        1.0e-14,
+        "uniform vs gravity one-step impulse",
     );
 }
 

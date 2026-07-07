@@ -95,7 +95,8 @@ fn t18_3_floor_crossing_is_interpolated_and_conserves_particle_count() {
         solid: false,
     };
 
-    set.step_depositing(sample, None::<fn([f64; 3]) -> f64>, floor_z, &mut deposits);
+    set.step_depositing(sample, None::<fn([f64; 3]) -> f64>, floor_z, &mut deposits)
+        .unwrap();
 
     assert_eq!(
         deposits.len(),
@@ -131,7 +132,8 @@ fn t18_3_floor_crossing_is_interpolated_and_conserves_particle_count() {
 
     for _ in 0..8 {
         let before_total = set.particles.len() + deposits.len();
-        set.step_depositing(sample, None::<fn([f64; 3]) -> f64>, floor_z, &mut deposits);
+        set.step_depositing(sample, None::<fn([f64; 3]) -> f64>, floor_z, &mut deposits)
+            .unwrap();
         let after_total = set.particles.len() + deposits.len();
         assert_eq!(
             after_total, before_total,
@@ -174,7 +176,8 @@ fn t18_3_deposit_records_are_in_particle_index_order_within_a_step() {
         solid: false,
     };
 
-    set.step_depositing(sample, None::<fn([f64; 3]) -> f64>, 0.0, &mut deposits);
+    set.step_depositing(sample, None::<fn([f64; 3]) -> f64>, 0.0, &mut deposits)
+        .unwrap();
 
     assert_eq!(
         deposits.len(),
@@ -275,18 +278,22 @@ fn t18_3_deposition_map_is_partition_invariant_and_order_stable() {
     };
 
     for step in 0..80 {
-        mono_particles.step_depositing(
-            |pos| sample_from(&mono_fields, pos),
-            None::<fn([f64; 3]) -> f64>,
-            0.0,
-            &mut mono_deposits,
-        );
-        split_particles.step_depositing(
-            |pos| sample_from(&split_fields, pos),
-            None::<fn([f64; 3]) -> f64>,
-            0.0,
-            &mut split_deposits,
-        );
+        mono_particles
+            .step_depositing(
+                |pos| sample_from(&mono_fields, pos),
+                None::<fn([f64; 3]) -> f64>,
+                0.0,
+                &mut mono_deposits,
+            )
+            .unwrap();
+        split_particles
+            .step_depositing(
+                |pos| sample_from(&split_fields, pos),
+                None::<fn([f64; 3]) -> f64>,
+                0.0,
+                &mut split_deposits,
+            )
+            .unwrap();
         assert_deposit_records_bit_match(
             &mono_deposits,
             &split_deposits,

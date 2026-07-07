@@ -23,14 +23,13 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
   (`smoke_poiseuille.rs::trt_magic_is_exact`), which BGK cannot achieve.
 - **Collision — BGK** available as a lighter alternative. Same convergence
   order as TRT away from walls; loses the Poiseuille exactness.
-- **Collision — cumulant (cascaded central-moment)** for D3Q19/D3Q27,
-  `CollisionKind::Cumulant { omega_shear }`. Implemented as a cascaded
-  central-moment operator (not logarithmic cumulants); the code comment in
-  `solver.rs` names this honestly. D3Q19 uses the D3Q27 tensor-product
-  basis with the eight `x·y·z` corner moments dropped, matching the missing
-  body-diagonal populations. Targets are the DISCRETE second-order Hermite
-  equilibria used by BGK/TRT, not continuous Maxwellian moments (see §2
-  "Cumulant target choice").
+- **Collision — cascaded central-moment** for D3Q19/D3Q27,
+  `CollisionKind::CentralMoment { omega_shear }`. Implemented as a
+  cascaded central-moment operator (not logarithmic cumulants). D3Q19 uses
+  the D3Q27 tensor-product basis with the eight `x·y·z` corner moments
+  dropped, matching the missing body-diagonal populations. Targets are the
+  DISCRETE second-order Hermite equilibria used by BGK/TRT, not continuous
+  Maxwellian moments (see §2 "Cumulant target choice").
 - **Distribution storage — deviation form `f_q − w_q`**. Rest state is the
   zero vector; f32 mantissa is spent on the fluctuation, not on the rest.
   This is what lets f32 hit validation grade (see §2 "Deviation storage").
@@ -145,7 +144,7 @@ with the full provenance and validation package.
 
 ## 2026-07-06 cumulant track stage 2: CPU central-moment reference
 
-Stage 2 implements `CollisionKind::Cumulant { omega_shear }` as a cascaded
+Stage 2 implements `CollisionKind::CentralMoment { omega_shear }` as a cascaded
 central-moment collision, not a logarithmic cumulant collision. This is the
 accepted first operator form for FR-CORE-02 and is named as such in code
 comments. D3Q27 uses the tensor-product central-moment basis with exponents
@@ -173,14 +172,16 @@ The corrected stage-2 operator transforms the same discrete equilibrium
 populations used by BGK/TRT into the central-moment basis and uses those
 moments as the relaxation target. This keeps the reduced D3Q19 transform
 closed on its 19 supported moments and avoids silently importing D3Q27-only
-corner content. A small D3Q19-only shear-rate offset (`+0.0025` relative) is
-applied to compensate the residual reduced-lattice viscosity bias measured by
-the TGV3D decay fit. The finite-frame cubic-velocity viscosity defect is
-cancelled by applying the central-moment shear relaxation as
-`omega_eff = omega_shear * (1 + offset - 0.16 |u|^2)`, clamped to the valid
-range. Here `u` is the same physical velocity used for equilibrium and forcing.
-No regularization, positivity filter, or entropic limiter is active in this
-stage; validation therefore uses the explicit range `0 < omega_shear <= 2`.
+corner content. ANOM-P4-008 later showed that the D3Q19-only `+0.0025`
+shear-rate offset was a banned finite-resolution calibration and removed it.
+The finite-frame cubic-velocity term remains pending as a compile-visible
+ablation target:
+`omega_eff = omega_shear * (1 - 0.16 |u|^2)`, clamped to the valid range,
+unless `CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION` is set for
+the E1 rerun. Here `u` is the same physical velocity used for equilibrium
+and forcing. No regularization, positivity filter, or entropic limiter is
+active in this stage; validation therefore uses the explicit range
+`0 < omega_shear <= 2`.
 
 Guo forcing uses the same discrete source populations as the BGK/TRT branch,
 but the source vector is transformed into central-moment space before
@@ -332,9 +333,10 @@ family at all. Mixing continuous higher targets with the discrete
 equilibrium inflated the advected-TGV Galilean defect and made the D3Q19
 decay rate lattice-dependent. Live implementation transforms the SAME
 discrete equilibrium used by BGK/TRT into the central-moment basis and
-uses those as relaxation targets, plus a D3Q19-only shear-rate offset
-(+0.0025 rel) and a finite-frame cubic-velocity correction
-`ω_eff = ω_shear · (1 + offset − 0.16 |u|²)` calibrated against TGV3D.
+uses those as relaxation targets. The D3Q19-only shear-rate offset
+(+0.0025 rel) once recorded here was removed by ANOM-P4-008 as a banned
+finite-resolution calibration; the remaining finite-frame cubic-velocity
+term `ω_eff = ω_shear · (1 − 0.16 |u|²)` is pending ablation.
 Anyone "cleaning up" this to continuous Maxwellian will regress the T15
 family; this note is the reason not to.
 
@@ -362,8 +364,252 @@ impinging-jet class of scenarios.
   needs to separate a coherent radial outflow from round-off noise, which
   sits 7 orders lower.
 
+### 2026-07-07 D3Q27 open-face velocity/pressure closure (`kernels.rs::zou_he_face_d3q27`)
+- Form: D3Q27 velocity inlet and pressure outlet use non-equilibrium
+  bounce-back on the nine incoming face links. For a face with inward normal
+  `n` and tangent axes `t1,t2`, unknown links are
+  `U = {q: c_q·n = 1}`. The density/normal-velocity closure is
+  `rho (1 - u_n) = S0 + 2 S-`, with `S0 = sum_{c·n=0} f_q`,
+  `S- = sum_{c·n=-1} f_q`; deviation storage adds the same analytic `+1`
+  constant used by the D2Q9/D3Q19 closure. Velocity faces prescribe
+  `u_n,u_t1,u_t2` and solve `rho`; pressure faces prescribe `rho`, solve
+  `u_n`, and set `u_t1 = u_t2 = 0`. Each unknown is reconstructed as
+  `f_q = f_opp(q) + 6 w_q rho (c_q·u) + delta_q`, with
+  `delta_q = C1 w_q c_q,t1 / S1 + C2 w_q c_q,t2 / S2`,
+  `Sk = sum_{q in U} w_q c_q,tk^2`, and
+  `Ck = rho u_tk - Q0_k - 6 rho u_tk Sk`,
+  `Q0_k = sum_{c·n=0} c_tk f_q`. D3Q27 tensor-product symmetry makes
+  `sum_U w c_t1 c_t2 = 0`, so these two correction components do not
+  cross-couple. The correction has zero mass and zero normal moment because
+  `sum_U w c_tk = 0`; it supplies exactly `Ck` to the corresponding tangent
+  moment. Therefore the post-closure node satisfies `rho` and all three
+  velocity components to rounding.
+- Source: Zou and He, "On pressure and velocity flow boundary conditions for
+  the lattice Boltzmann BGK model" (Physics of Fluids, 1997; arXiv
+  `comp-gas/9611001`, https://arxiv.org/abs/comp-gas/9611001) introduced
+  the non-equilibrium bounce-back pressure / velocity construction. Hecht
+  and Harting, "Implementation of on-site velocity boundary conditions for
+  D3Q19 lattice Boltzmann" (J. Stat. Mech. P01018, 2010; arXiv `0811.4593`,
+  https://arxiv.org/abs/0811.4593) give the D3Q19 on-site moment closure.
+  The D3Q27 addition is the algebra above: the D3Q19 tangent deficit
+  correction is distributed over the full nine-link D3Q27 incoming plane by
+  the lattice weights, including the four body-diagonal corner links.
+- Validity domain: planar axis-aligned D3Q27 velocity and pressure faces on
+  the CPU backends, under the existing one-open-axis rule and low-Mach
+  prescribed-speed guard (`MAX_SPEED = 0.3`). It does not implement D3Q27
+  `Outflow` or `Convective` faces, and GPU/WGSL still rejects D3Q27 open
+  faces explicitly.
+- Validation: `crates/lbm-core/tests/d3q27_open_bc.rs`:
+  `d3q27_open_faces_enforce_velocity_and_pressure_moments_all_orientations`
+  measured max velocity-face moment error `6.939e-18`, pressure density error
+  `0`, and pressure transverse velocity error `0` across all six faces;
+  `d3q27_open_duct_matches_series_shape_and_d3q19` measured duct
+  flux-scaled profile L2rel `2.143e-4`, unscaled L2rel `7.416e-3`
+  (compressible mass-flux scaling `1.007413`), D3Q27-vs-D3Q19 L2rel
+  `3.421e-4`, mass-flux imbalance `4.212e-5`, cross-flow ratio
+  `3.588e-7`, and monotone pressure drop; `t13_d3q27_open_duct_split_invariant_with_bc_seams`
+  passed bit-exact split invariance with seams crossing inlet/outlet cells;
+  `d3q27_unimplemented_open_face_kinds_are_rejected` preserves explicit
+  rejection for unimplemented D3Q27 open kinds.
+- Replaces / interacts with: lifts the previous `UnsupportedOpenFaceLattice`
+  restriction only for D3Q27 velocity inlet / pressure outlet. D2Q9 and
+  D3Q19 keep their existing code paths. The D3Q27 outflow and convective
+  closures remain unimplemented rather than inheriting a new model silently.
+
+### 2026-07-07 behavior review — D3Q27 open rectangular duct
+Pattern: the duct run is predominantly unidirectional in `x`; transverse
+velocity is negligible (`cross_rel = 3.588e-7`), mass flux is balanced
+inlet-to-outlet within `4.212e-5`, and the plane-averaged density decreases
+from inlet to outlet.
+Mechanism: the prescribed inlet flux plus fixed outlet density establish an
+axial pressure gradient; half-way wall rims impose the rectangular-duct shear
+profile, and the D3Q27 closure supplies only the missing incoming face
+populations needed to satisfy the boundary moments.
+Resolved vs closure: the duct shear and pressure-gradient response are
+resolved LBM dynamics with half-way walls; the only non-resolved term active
+is the D3Q27 open-face moment closure recorded above.
+Artifacts checked: `crates/lbm-core/target/d3q27_open_duct_profile.csv`.
+No clamps, caps, walls-as-absorbers beyond the documented wall rim, or
+partition seam artifacts were observed; the T13 open-duct split case was
+bit-exact with seams crossing the boundary cells.
+Verdict: PHYSICAL.
+Routing: none.
+
 Without these notes, someone re-tightening the bands from "1e-12 looks
 tight" chases physically impossible numbers.
+
+### 2026-07-07 — ANOM-P4-008: D3Q19 central-moment offset removed
+- Form removed: the D3Q19 central-moment path previously adjusted the
+  configured second-order shear relaxation as
+  `omega_eff = omega_shear * (1 + 0.0025 - 0.16 |u|^2)`, clamped to `<= 2`.
+  The `+0.0025` term was removed from CPU scalar/SIMD and generated GPU WGSL
+  paths. The remaining velocity term is explicitly ablatable via
+  `CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION` and remains
+  pending E1 verdict; normal builds keep it active so the Galilean-defect
+  acceptance stays covered.
+- Source: the removed offset was empirical calibration, not a first-principles
+  closure. The decisive audit in
+  `crates/lbm-core/tests/accuracy_audit_cumulant.rs` separates
+  finite-resolution `O(h^2)` error from continuum bias with
+  `nu_eff/nu - 1 = a + b/N^2`. With the offset removed, the light canary
+  measured D3Q19 defects `(24, 4.009218693e-2)` and
+  `(32, 2.256135694e-2)`, giving `a = 2.171836972e-5`, below the
+  `|a| <= 4e-3` light band and consistent with the heavy acceptance target
+  `|a| <= 2e-3`. The offset's own tau-space footprint matched the poisoned
+  continuum intercept, so it was a banned calibration.
+- Training / holdout split: training = TGV3D decay at the calibration settings
+  used to select `+0.0025` and `0.16`; holdout =
+  `crates/lbm-core/tests/cumulant_holdout.rs` with (1) advected TGV3D at mean
+  frames `u_frame = {0, 0.05, 0.1}`, (2) off-calibration-Re TGV3D with
+  `nu = 0.04`, and (3) D3Q19-vs-D3Q27 TGV3D at the off-calibration Re.
+- Validation results from
+  `cargo test -p lbm-core --release --test cumulant_holdout -- --include-ignored --nocapture`
+  on 2026-07-07:
+  - Advected TGV3D, D3Q19 cumulant, `N=32`, `nu=0.02`, `u0=0.012`,
+    160 steps: rates were `4.634861882e-3` (`u_frame=0`),
+    `4.639833752e-3` (`u_frame=0.05`), and `4.654339667e-3`
+    (`u_frame=0.1`) vs analytic `4.626377063e-3`; relative errors were
+    `1.834009427e-3`, `2.908688268e-3`, and `6.044168839e-3`. The
+    frame-spread was `4.195075506e-3`, exceeding the derived
+    `Ma_frame,max^2 * (k dx)^2 = 1.156594266e-3` band. **Finding:** the
+    calibrated correction does not establish Galilean-invariant viscous decay
+    on this holdout.
+  - Off-calibration Re, D3Q19 cumulant, `N=32`, `nu=0.04`, `u0=0.012`,
+    160 steps: rate `9.223420342e-3` vs analytic `9.252754126e-3`,
+    `nu_eff = 3.987318896e-2`, relative error `3.170276018e-3`, passing the
+    T15 decay-rate class band `2e-2`.
+  - D3Q19 vs D3Q27 cross-check at the off-calibration Re: D3Q19 relative
+    error `3.170276018e-3`; D3Q27 rate `9.299938977e-3`, analytic
+    `9.252754126e-3`, relative error `5.099546655e-3`. D3Q19 is not an
+    outlier against the D3Q27 error plus the T15 band (`2.509954666e-2`).
+- Corrected acceptance: the viscosity gate is resolution-aware h² intercept,
+  not a single N=32 value. The finite-N smoke in
+  `crates/lbm-core/tests/cumulant_acceptance.rs` is re-frozen to the
+  uncorrected D3Q19 N=32 measurement
+  `nu_eff = 2.0454550535750255e-2`, relative error
+  `2.2727526787512733e-2`, with a narrow `2.4e-2` band. D3Q27 remains under
+  the existing `2.0e-2` smoke band with `nu_eff = 2.0187636744471944e-2`,
+  relative error `9.381837223597193e-3`.
+- Validity domain: no D3Q19 lattice-offset closure is live. The remaining
+  `-0.16 |u|^2` central-moment velocity term is not validated as a viscosity
+  correction; E1 remains SPEC-GAP until rerun with the ablation flag. It
+  still has a measured Galilean-defect effect in the current acceptance:
+  D3Q19 BGK `2.570488585e-3` vs CentralMoment `9.996091795e-4`, D3Q27 BGK
+  `2.533062587e-3` vs CentralMoment `1.161446988e-3`.
+- Replaces / interacts with: removes the previous D3Q19 empirical
+  viscosity-offset calibration from the central-moment collision. It does
+  not replace resolved LBM viscosity (`tau = 3 nu + 0.5`) and should not be
+  reused as a generic LES, wall, or stability limiter coefficient.
+
+### 2026-07-07 behavior review — cumulant holdout integral runs
+Pattern: all reported TGV3D runs had positive decay rates and monotonically
+decreasing fluctuation kinetic energy; the advected-frame sequence showed a
+systematic increase in measured decay rate as `u_frame` increased.
+Mechanism: the Fourier-mode velocity field decays by viscous diffusion, while
+the frame trend indicates residual frame-dependent numerical viscosity after
+the empirical D3Q19 correction.
+Resolved vs closure: viscous decay and periodic streaming are resolved by the
+LBM update. The reviewed historical run had both the now-removed D3Q19-only
+`+0.0025` offset and the pending `-0.16 |u|^2` shear-rate adjustment active;
+new runs after ANOM-P4-008 retain only the ablatable velocity term.
+Artifacts checked: these are fully periodic integral-metric tests with no
+walls, outlets, clamps, or seams. Per REV-6, no field-visualization artifact
+was produced or expected for these integral metrics; the behavior anchor is
+the positive-rate and monotone-energy check embedded in every run.
+Verdict: CLOSURE-DRIVEN finding for finite-frame Galilean invariance; passing
+off-Re and D3Q27 cross-checks do not validate the failed frame-dependence
+behavior.
+Routing: core cumulant follow-up / claim narrowing; do not loosen the
+holdout band without a new physics derivation recorded here.
+
+### 2026-07-07 WALE `tau_eff` upper clipping (`crates/lbm-core/src/les.rs:WaleLes`)
+- Form: when explicitly configured, the WALE driver limits the effective
+  symmetric relaxation time to `tau_eff <= tau_eff_max`, where
+  `tau_eff = 1/2 + (nu_0 + nu_t)/(c_s^2 Delta t) = 1/2 + 3(nu_0 + nu_t)`
+  in lattice units. The equivalent eddy-viscosity cap is
+  `nu_t <= (tau_eff_max - (1/2 + 3nu_0)) / 3`. `None` leaves the raw WALE
+  `nu_t` bit-identical to the unclipped implementation.
+- Source: LBM BGK/TRT relaxation uses `omega_plus = 1/tau_eff`; very large
+  `tau_eff` drives `omega_plus` toward zero and over-diffuses the resolved
+  field. FR-LES-02 defines the effective relaxation relation and FR-LES-03
+  requires upper clipping with diagnostics. The limiter is therefore a
+  configured numerical-stability bound on the collision relaxation, not a
+  calibration term for any validation band.
+- Validity domain: applies only to WALE SGS viscosity in lattice units after
+  the Nicoud-Ducros WALE closure has computed raw `nu_t`; the configured
+  `tau_eff_max` must be finite, greater than `1/2`, and at least the laminar
+  `tau_0 = 1/2 + 3nu_0` for the solver. Default is off; no silent physical
+  default is installed.
+- Validation: `crates/lbm-core/tests/wale_les.rs::wale_unset_clipping_matches_raw_wale_bitwise_on_sheared_field`,
+  `::wale_tau_eff_clipping_diagnostics_match_reference`, and
+  `::wale_tau_eff_clipping_count_is_monotone_with_bound`.
+- Replaces / interacts with: augments the WALE SGS relaxation-field driver.
+  Diagnostics are mandatory per update: clipped-cell count, clipped-cell
+  fraction, maximum raw `nu_t` before clipping, configured `tau_eff_max`, and
+  the equivalent active `nu_t` bound.
+
+### 2026-07-07 behavior review — REV-4 WALE `tau_eff` clipping tests
+Pattern: with clipping unset, the sheared multimode field preserves every raw
+WALE `nu_t` bit; with clipping engaged, only cells whose raw `nu_t` exceeds
+the active bound are clipped to that bound.
+Mechanism: the pattern follows directly from limiting
+`tau_eff = tau_0 + 3nu_t`, so clipping only lowers the SGS contribution in
+cells that would otherwise exceed the explicitly configured relaxation-time
+ceiling.
+Resolved vs closure: velocity gradients and collision relaxation remain the
+resolved LBM path; WALE is the active SGS closure; the new limiter is a
+diagnosed numerical-stability limiter on that closure output.
+Artifacts checked: no field-visualization artifact was produced because this
+was a code+unit-test order, not an experiment/demo run; the behavior anchor is
+the exact cell-by-cell clipped-set assertion.
+
+### 2026-07-07 Backend-side gravity body-force composition (`StepParams::gravity`)
+- Form: `F_total(x,t) = F_uniform + F_cell(x,t) + rho(x,t) * g`, composed in
+  the backend collide/moment force path and entering the existing Guo source
+  term. For a caller-owned per-cell force field, arithmetic grouping preserves
+  the old staged overlay: `F_uniform + (F_cell + rho*g)`.
+- Source: resolved from the existing per-mass gravity model and Guo forcing
+  invariant recorded above; no new physics term, closure, or constant.
+- Validity domain: same as the existing single-phase gravity path and Guo
+  forcing path. Solid cells are skipped through the existing collide/moment
+  masks. Future VOF/AGG work must replace only the density factor at this
+  composition point, not the forcing scheme.
+- Validation: `cargo test -p lbm-core gravity --release` passed
+  `gravity.rs::closed_box_gravity_forms_stable_hydrostatic_stratification`,
+  `gravity.rs::gravity_channel_is_bit_identical_to_raw_rho_g_force_field`,
+  `gravity.rs::vr_str_06_static_stratification_quiescent_all_lattices_and_precisions`,
+  and `gravity.rs::shan_chen_gravity_composes_with_force_overwrite_and_creates_buoyancy`.
+  `cargo test -p lbm-core --test backend_simd_equiv --release`,
+  `cargo test -p lbm-core --test t13_split_invariance --release`,
+  `cargo test -p lbm-core --test t13_adversarial --release`, and
+  `cargo test --workspace --release` passed. GPU build gate
+  `cargo build -p lbm-core --release --features gpu` passed. Runtime GPU
+  equivalence is covered by ignored T14 test
+  `t14_backend_equiv::t14_gravity_body_force_device_resident` and is
+  BENCH-PENDING on a native GPU adapter.
+- Replaces / interacts with: replaces the host staging overlay used by
+  `Solver::stage_gravity` on capable backends. The staged overlay remains as
+  fallback for backends that do not advertise backend-side gravity. Shan-Chen,
+  IBM, uniform force, and explicit per-cell force fields still combine through
+  the same Guo force path.
+
+### 2026-07-07 behavior review — backend-side gravity composition tests
+Pattern: hydrostatic closed boxes stayed quiescent within the existing
+machine-level/static-stratification bands; dense phase moved in the `-g`
+direction and light phase rose in the Shan-Chen buoyancy sign test.
+Mechanism: the backend composes the same `rho*g` body-force density into the
+same Guo source term, so pressure/gravity balance and buoyancy signs are
+unchanged while avoiding per-step host staging.
+Resolved vs closure: gravity and Guo forcing are resolved engine terms; the
+Shan-Chen cohesion used by the buoyancy sign test is the existing documented
+multiphase closure and was not changed here.
+Artifacts checked: no clamp, wall, seam, or outlet accumulation artifact was
+introduced; T13 split invariance stayed green and the bit-identical
+gravity-vs-raw-force-field test stayed green. No field-visualization artifact
+is expected for this code-and-test order; the evidence is scalar assertions
+from the named validation tests.
+Verdict: PHYSICAL.
+Routing: none.
 
 ---
 
@@ -388,3 +634,108 @@ table, two-layer gate template, stop-rule report format, escalation table
 — lives in `.claude/skills/lbmflow-physics-discipline/SKILL.md`. Every
 developer agent follows it mechanically; every physics-affecting codex
 order embeds its clauses. Do not duplicate that content here.
+
+---
+
+### 2026-07-07 Schiller-Naumann particle drag validity domain (`crates/lbm-core/src/particles.rs:particle_velocity`)
+- Form: one-way particle drag uses
+  `f(Re_p) = 1 + 0.15 Re_p^0.687`,
+  `tau_p = rho_p d^2 / (18 rho_f nu f(Re_p))`, and the semi-implicit update
+  `v_{n+1,a} = (tau_p v_{n,a} + u_a + tau_p g_a(1 - rho_f/rho_p)) / (tau_p + 1)`.
+  The implemented validity boundary is `SCHILLER_NAUMANN_RE_MAX = 800.0`;
+  `Re_p > 800` returns `ParticleError` with the particle index and offending
+  Reynolds number.
+- Source: Schiller and Naumann (1935), standard drag correction for isolated
+  spherical particles; retained here as the existing T18.3 particle closure.
+- Validity domain: one-way dilute spherical particles in the Schiller-Naumann
+  drag-correction range, enforced as `0 <= Re_p <= 800` in this code path.
+- Validation: `crates/lbm-core/src/particles.rs::tests::schiller_naumann_in_domain_matches_formula_and_is_monotone`
+  checks bit-identical in-domain formula evaluation and monotonicity on
+  `[0, 800]`; `crates/lbm-core/src/particles.rs::tests::schiller_naumann_out_of_domain_reports_particle_index_and_re`
+  checks the hard error for `Re_p > 800`; existing T18.3 settling/deposition
+  tests continue to cover in-domain particle transport.
+- Replaces / interacts with: replaces the previous silent release-build
+  `Re_p.min(800)` clipping in particle drag evaluation. The clip was a banned
+  transport-absorbing behavior because it silently switched the drag law
+  outside the closure's validity domain instead of making the invalid state
+  visible to the caller.
+
+---
+
+## T17/VR-STR-03 — Re_tau=178.12 turbulent channel vs MKM DNS (first measurement, frozen 2026-07-07)
+
+Setup: minimal-flow-unit body-force channel (delta=48: 128x98x72, Lx+=475,
+Lz+=267, u_tau=0.008, TRT magic 3/16 + WALE), deterministic multimode init,
+20 Te warmup + 30 Te statistics. Primary characterization runs on the GPU
+(f32, on-device WALE; 280 s wall vs ~5.5 h CPU); the f64 CPU variant is the
+reference-precision cross-check. GPU f32 reproduces the CPU harness smoke
+values to 4 significant digits.
+
+Measured (delta=48, equilibrium verified):
+- Sustained turbulence: -<u'v'>+ at y+~30 over the last 10 Te = 0.729
+  (MKM DNS ~0.75); peak -<u'v'>+ = 0.726. The resolved Reynolds shear stress
+  MATCHES DNS.
+- Total-stress force balance: nu dU/dy - <u'v'> vs u_tau^2(1 - y/delta),
+  L2rel = 0.0535 over y/delta in [0.2, 0.8] — statistical equilibrium holds;
+  the residual is the (unaccounted) SGS mean contribution + finite window.
+- Mean profile: U+ L2rel vs MKM = 0.2328 over y+ in [5, 150]; centerline U+
+  = 22.0 vs DNS 18.30 (+20%).
+
+Behavior-validity review: the error pattern (correct Reynolds stress, correct
+force balance, over-predicted mean gradient in the buffer/log region) is the
+documented signature of wall-UNRESOLVED LES without a wall model at
+y+/cell = 3.7. It is a resolution grade, not a model defect: WALE's null
+gates (laminar shear, TGV small-strain) remain exact, and the equilibrium
+diagnostics above rule out forcing/BC artifacts. Bands frozen accordingly:
+mean U+ L2rel <= 0.30 (coarse-LES grade, measured 0.2328), stress balance
+<= 0.10 (measured 0.0535), turbulence guard -<u'v'>+ > 0.4 (measured 0.729).
+Improving the mean-profile grade needs either finer near-wall resolution
+(delta >= 96, y+ <= 1.9 — GPU cost ~30 min, planned as a follow-up
+characterization) or a wall model (roadmap item, not implemented).
+
+Resolution trend (delta=64, 171x130x96, y+/cell = 2.8, 50 Te warmup,
+equilibrated — measured 2026-07-07, 1341 s GPU): mean U+ L2rel 0.1549
+(from 0.2328), centerline U+ 20.58 (from 22.02; DNS 18.30), total-stress
+L2rel 0.0192, -<u'v'>+ (y+~30, last 10 Te) 0.755 (DNS ~0.75), peak 0.733.
+Every metric converges toward DNS with near-wall resolution, confirming the
+resolution-grade classification. The frozen delta=48 bands stand; a
+delta>=96 point and/or a wall model are the paths to a tighter mean band.
+
+Harness notes: (i) the total-stress fold initially applied the half-channel
+sign only to the viscous term — the Reynolds term needs the same fold
+(upper-half error ~2x line; fixed before freezing); (ii) delta=64 at 20 Te
+warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
+the equilibrium ceiling, stress residual 34%) — equilibration is delta-
+dependent; 50 Te equilibrates it (measurements above).
+
+---
+
+### 2026-07-07 WALE clipping validation-claim disclosure follow-up
+
+WALE `tau_eff` clipping remains a diagnosed numerical-stability guard, not a
+turbulence-model calibration knob. Any validation claim made with clipping
+active must disclose that clipping was active and report the corresponding
+`clipped_fraction` and `max_nu_t_before_clipping` diagnostics from
+`WaleLesDiagnostics`.
+
+---
+
+### 2026-07-07 Guo force-field ingestion timing (`crates/lbm-core/src/solver.rs:refresh_moments_after_force_change`)
+- Form: after an exactly uniform per-cell force field is installed or cleared
+  (and after gravity is set on all-fluid domains), stored moments are refreshed
+  with the same physical velocity definition used by uniform forcing:
+  `u = (m + F/2) / rho`, where `F` is the composed Guo body force.
+- Source: resolved Guo forcing contract already used by `moments_row` and the
+  uniform-force initialization path; this removes ANOM-P2-001's inconsistent
+  late force-field staging rather than adding a new closure.
+- Validity domain: BGK/TRT Guo forcing paths in this engine for equivalent
+  uniform force-field ingestion. Nonuniform model force fields and wall-rim
+  gravity/hydrostatic cases keep their validated pre-existing staging.
+- Validation: `crates/lbm-core/tests/accuracy_audit.rs::uniform_force_impulse_matches_force_field_anom_p2_001`
+  asserts uniform force, equivalent per-cell force field, and equivalent
+  gravity have identical step-1 momentum impulse to `1e-14`; T13 split
+  invariance and `backend_simd_equiv` were rerun unchanged.
+- Replaces / interacts with: replaces the previous equivalent uniform
+  force-field path that collided step 1 from stale moments and lost the
+  transient `1/(2 tau_minus) * F` contribution while steady slopes remained
+  correct.

@@ -22,7 +22,9 @@
 
 pub mod backend;
 pub mod backend_simd;
+pub mod bench_regression;
 pub mod bouzidi;
+mod collision;
 pub mod compat;
 #[cfg(feature = "mpi")]
 pub mod dist;
@@ -48,7 +50,7 @@ pub mod prelude {
     pub use crate::fields::{LocalGeom, SoaFields};
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
-    pub use crate::les::{WaleLes, WALE_CW};
+    pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
     pub use crate::params::{
         CollisionKind, FaceBC, FacePatch, Reduction, SourceKind, SourceRegion, StepParams,
         VolumeSource,

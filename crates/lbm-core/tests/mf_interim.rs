@@ -53,7 +53,11 @@ fn physical_velocity_after_penalization(
 }
 
 fn schiller_naumann_factor(re: f64) -> f64 {
-    1.0 + 0.15 * re.min(800.0).powf(0.687)
+    assert!(
+        re <= 800.0,
+        "Schiller-Naumann reference factor is outside its validity domain: Re_p={re:e}"
+    );
+    1.0 + 0.15 * re.powf(0.687)
 }
 
 fn sn_tau_p(speed: f64, d: f64, rho_p: f64, rho_f: f64, nu: f64) -> f64 {
@@ -534,8 +538,8 @@ mod mf_contract_tests {
         };
         let mut a = make();
         let mut b = make();
-        a.step(sample, None::<fn([f64; 3]) -> f64>);
-        b.step(sample, None::<fn([f64; 3]) -> f64>);
+        a.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
+        b.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
         assert_eq!(a.particles[0].pos, b.particles[0].pos);
         assert_eq!(a.particles[0].vel, b.particles[0].vel);
         assert!(a.particles[0].pos.iter().all(|v| v.is_finite()));
@@ -580,8 +584,8 @@ mod mf_contract_tests {
             restitution: 0.0,
         };
         for _ in 0..((std::f64::consts::TAU / omega).round() as usize) {
-            tracer.step(sample, None::<fn([f64; 3]) -> f64>);
-            heavy.step(sample, None::<fn([f64; 3]) -> f64>);
+            tracer.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
+            heavy.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
         }
         let r_tracer = radius(tracer.particles[0].pos, center);
         let r_heavy = radius(heavy.particles[0].pos, center);
@@ -637,7 +641,7 @@ mod mf_contract_tests {
             restitution: 0.0,
         };
         for _ in 0..4_000 {
-            ps.step(sample, None::<fn([f64; 3]) -> f64>);
+            ps.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
         }
         assert!(
             ps.particles[0].pos[1] > 0.5,
@@ -670,7 +674,7 @@ mod mf_contract_tests {
             restitution: 0.0,
         };
         for _ in 0..8 {
-            ps.step(sample, None::<fn([f64; 3]) -> f64>);
+            ps.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
         }
         assert!(
             ps.particles[0].vel[0] > 0.0,
@@ -697,7 +701,7 @@ mod mf_contract_tests {
             g: [0.0, 0.0, 0.0],
             restitution: 0.0,
         };
-        ps.step(sample, None::<fn([f64; 3]) -> f64>);
+        ps.step(sample, None::<fn([f64; 3]) -> f64>).unwrap();
         assert!(
             ps.particles[0].pos[0] < 5.0,
             "particle tunneled through wall: {:?}",
@@ -751,7 +755,8 @@ mod mf_contract_tests {
                 solid: false,
             },
             None::<fn([f64; 3]) -> f64>,
-        );
+        )
+        .unwrap();
         assert!(ps.particles[0].pos != ps.particles[1].pos);
     }
 
@@ -777,7 +782,8 @@ mod mf_contract_tests {
                 solid: true,
             },
             None::<fn([f64; 3]) -> f64>,
-        );
+        )
+        .unwrap();
         assert!(!ps.particles[0].pos.iter().any(|v| v.is_nan()));
     }
 

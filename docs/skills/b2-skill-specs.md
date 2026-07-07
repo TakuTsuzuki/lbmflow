@@ -236,6 +236,11 @@ future order has a starting point. Negative evidence = B1 §4.
 
 ### R3 — GPU execution (B1 §4.4, surprise #2)
 
+> *(Superseded 2026-07-07: the fix this section waited on has landed — 2D
+> `backend:"gpu"` dispatch is wired, f32 only, with explicit errors instead of
+> silent CPU fallback. Retained as historical rationale for the conservative
+> Skill authoring.)*
+
 - **Status:** No GPU numerical backend. 3D rejects `backend:"gpu"` at build; 2D
   currently *silently falls back to CPU* (B1 surprise #2).
 - **In-flight fix dependency (per brief):** explicit 2D `backend:"gpu"` will

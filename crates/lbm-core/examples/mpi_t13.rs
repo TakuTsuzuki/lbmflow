@@ -69,6 +69,118 @@ fn max_absdev(a: &[f64], b: &[f64]) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
+fn broadcast_string(world: &SimpleCommunicator, rank: usize, value: String) -> String {
+    let root = world.process_at_rank(0);
+    let mut len = if rank == 0 { value.len() } else { 0usize };
+    root.broadcast_into(&mut len);
+    let mut bytes = if rank == 0 {
+        value.into_bytes()
+    } else {
+        vec![0u8; len]
+    };
+    root.broadcast_into(bytes.as_mut_slice());
+    String::from_utf8(bytes).expect("rank 0 broadcasted a UTF-8 path")
+}
+
+fn checkpoint_roundtrip(world: &SimpleCommunicator) -> bool {
+    let size = world.size() as usize;
+    let rank = world.rank() as usize;
+    let spec = GlobalSpec::<f64> {
+        dims: [48, 32, 1],
+        nu: 0.03,
+        periodic: [true, true, false],
+        force: [1.0e-6, -5.0e-7, 0.0],
+        ..Default::default()
+    };
+    let decomp = choose_decomp(D2Q9::D, spec.dims, size);
+    let (solid, wall_u) = build_wall_rims(D2Q9::D, spec.dims, &WallSpec::default());
+    let mut continuous: MpiSolver<D2Q9, f64, CpuScalar> =
+        MpiSolver::new(world, &spec, &solid, &wall_u, decomp, CpuScalar::default());
+    let mut resumed: MpiSolver<D2Q9, f64, CpuScalar> =
+        MpiSolver::new(world, &spec, &solid, &wall_u, decomp, CpuScalar::default());
+    let init = |x: usize, y: usize, _z: usize| {
+        let kx = 2.0 * std::f64::consts::PI / spec.dims[0] as f64;
+        let ky = 2.0 * std::f64::consts::PI / spec.dims[1] as f64;
+        (
+            1.0 + 0.003 * (kx * x as f64).cos() * (ky * y as f64).sin(),
+            [
+                0.025 * (kx * x as f64).sin(),
+                -0.02 * (ky * y as f64).cos(),
+                0.0,
+            ],
+        )
+    };
+    continuous.init_with(init);
+    resumed.init_with(init);
+    continuous.run(18);
+    resumed.run(7);
+
+    let dir = if rank == 0 {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("lbmflow-mpi-checkpoint-{n}"))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        String::new()
+    };
+    let dir = broadcast_string(world, rank, dir);
+    if rank == 0 {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    world.barrier();
+    resumed.save(&dir).expect("distributed checkpoint save");
+
+    let mut loaded: MpiSolver<D2Q9, f64, CpuScalar> =
+        MpiSolver::new(world, &spec, &solid, &wall_u, decomp, CpuScalar::default());
+    loaded
+        .restore(&dir)
+        .expect("distributed checkpoint restore");
+    loaded.run(11);
+
+    let mut fail = false;
+    let checks = [
+        ("rho", continuous.gather_rho(), loaded.gather_rho()),
+        ("ux", continuous.gather_ux(), loaded.gather_ux()),
+        ("uy", continuous.gather_uy(), loaded.gather_uy()),
+    ];
+    if rank == 0 {
+        for (name, a, b) in checks {
+            let dev = max_absdev(a.as_ref().unwrap(), b.as_ref().unwrap());
+            if dev != 0.0 {
+                fail = true;
+                eprintln!("  FAIL checkpoint {name}: |Δ| = {dev:e}");
+            }
+        }
+    }
+    for q in 0..D2Q9::Q {
+        let a = continuous.gather_f(q);
+        let b = loaded.gather_f(q);
+        if rank == 0 {
+            let dev = max_absdev(a.as_ref().unwrap(), b.as_ref().unwrap());
+            if dev != 0.0 {
+                fail = true;
+                eprintln!("  FAIL checkpoint f[{q}]: |Δ| = {dev:e}");
+            }
+        }
+    }
+    let local = i32::from(fail);
+    let mut global = 0i32;
+    world.all_reduce_into(&local, &mut global, mpi::collective::SystemOperation::max());
+    if rank == 0 {
+        if global == 0 {
+            println!("PASS checkpoint-roundtrip decomp={decomp:?} steps=18");
+            let _ = std::fs::remove_dir_all(&dir);
+        } else {
+            eprintln!("FAIL checkpoint-roundtrip decomp={decomp:?}");
+        }
+    }
+    global == 0
+}
+
 /// Tracks the worst deviations and the pass/fail state of one case.
 #[derive(Default)]
 struct Score {
@@ -388,6 +500,11 @@ fn main() {
     let size = world.size() as usize;
     let rank = world.rank() as usize;
     let only = std::env::args().nth(1);
+
+    if only.as_deref() == Some("checkpoint-roundtrip") {
+        let ok = checkpoint_roundtrip(&world);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
 
     if only.as_deref() == Some("mismatch-nu") {
         assert_eq!(size, 2, "mismatch-nu test requires exactly 2 ranks");

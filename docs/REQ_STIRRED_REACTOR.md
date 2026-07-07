@@ -23,9 +23,10 @@ domain-neutral; §2 concretizes the application.
   cumulant offset triaged as resolution-point calibration (ANOM-P4-008
   disposition C, commits e569fb7 / 5eae598).
 - **D3Q27 stage 1** validation (add5d5b, cx/d3q27-val).
-- **D-track P2** dispersed deposition — CR-1 interior sources, CR-2 masked
-  face patches, CR-3 deposition-aware stepping (3b1bcdc, 76b5071); T18.1-3
-  adversarial tests landed.
+- **D-track P2** one-way dispersed deposition — CR-1 interior sources, CR-2
+  masked face patches, CR-3 deposition-aware stepping (3b1bcdc, 76b5071);
+  T18.1-3 adversarial tests landed. Two-way/four-way particle coupling remains
+  pending.
 
 **Pending — the critical path**:
 - **W-VOF** conservative Allen-Cahn free surface (fidelity-default interface).
@@ -51,18 +52,21 @@ behind the same trait. Config validation rejects inconsistent combinations
 
 | Axis | Fidelity default | Relaxation / reference | Notes |
 |---|---|---|---|
-| Rotation | `IBM-inertial` (LANDED) | rel: `MRF-frozen-rotor` / ref: `sliding-overset` | MRF cannot combine with IBM moving blades. Phase-averaged stats IBM/overset only. |
-| Interface | `resolved-phasefield` Allen-Cahn (**W-VOF PENDING**) | rel: `point-bubble` / `hybrid` | Switching by `d_b/Δx, d_b/W, Eo, Re_b, α_g, We_b`. |
-| Scalar | `active` (feedback to σ, μ, ρ, [T]) | rel: `passive` | Feedback targets and stabilization explicit. |
-| Particle | `two-way` (LANDED); `four-way` at high `α_p` | rel: `one-way` | Four-way = Phase 2 (FR-PART-04..06 contract). |
-| Precision | `mixed_safe` (NFR-02) | ref: `full_f64` / rel: `mixed_fast` | ρ-ratio limit gates `mixed_fast`. |
-| Grid | `uniform` | rel: `block-AMR` | AMR needs conservative coarse-fine + dt-ratio + validation. |
+| Rotation | `IBM-inertial` (LANDED) | rel: `MRF-frozen-rotor` (PENDING) / ref: `sliding-overset` (PENDING) | MRF cannot combine with IBM moving blades. Phase-averaged stats IBM/overset only. |
+| Interface | `resolved-phasefield` Allen-Cahn (**W-VOF PENDING**) | rel: `point-bubble` (PENDING) / `hybrid` (PENDING) | Switching by `d_b/Δx, d_b/W, Eo, Re_b, α_g, We_b`. |
+| Scalar | `active` (feedback to σ, μ, ρ, [T]) (PENDING) | rel: `passive` (PENDING) | Feedback targets and stabilization explicit. |
+| Particle | `two-way` (PENDING, FR-PART target); `four-way` at high `α_p` (PENDING) | rel: `one-way` (LANDED D-track) | Four-way = Phase 2 (FR-PART-04..06 contract). |
+| Precision | `mixed_safe` (NFR-02 profile PENDING; explicit `f32`/`f64` LANDED) | ref: `full_f64` (profile PENDING) / rel: `mixed_fast` (PENDING) | ρ-ratio limit gates `mixed_fast`. |
+| Grid | `uniform` (LANDED) | rel: `block-AMR` (PENDING) | AMR needs conservative coarse-fine + dt-ratio + validation. |
 
-**Initial delivery (release gate)**: IBM-inertial + resolved-phasefield +
-active scalar (predictor-corrector) + two-way particles + uniform +
-`mixed_safe`. **Phase 2 (API-reserved)**: MRF, point-bubble + PBM, one-way,
-four-way contact, block-AMR, `mixed_fast`, hybrid interface, thermal axis.
-Accepted via VR-STR-RELAX.
+**Initial delivery (release gate target, not current landed state)**:
+IBM-inertial + resolved-phasefield + active scalar (predictor-corrector) +
+two-way particles + uniform + `mixed_safe`. **Current landed relaxation
+subset**: IBM-inertial + one-way particles + uniform grids + explicit
+`f32`/`f64`; current multiphase is Shan-Chen, not W-VOF; scalar ADE/feedback
+and precision profiles remain pending. **Phase 2 (API-reserved)**: MRF,
+point-bubble + PBM, four-way contact, block-AMR, `mixed_fast`, hybrid
+interface, thermal axis. Accepted via VR-STR-RELAX.
 
 ---
 
@@ -146,7 +150,7 @@ avoids double-counting with Marangoni; `∇σ=0` degeneration must agree with
 `m_b dv_b/dt = F_buoy + F_drag(Tomiyama) + F_lift + F_addedmass + F_walllub + F_TD`.
 BIT production term added to LES.
 
-**Particles (D-track LANDED)**:
+**Particles (one-way D-track LANDED; two/four-way PENDING)**:
 `m_p dv_p/dt = F_drag(Schiller-Naumann) + F_buoy [+ F_Saffman/F_Basset/F_Faxen]`.
 Two/four-way: regularized reaction-force scatter; momentum conservation
 validated.
@@ -260,7 +264,7 @@ tensor; local gradient reconstruction required.
   (normal flux + Henry partition + phase-wise diffusion) vs point-bubble
   (`k_L a(C* − C)`). Henry and Sherwood applicability explicit.
 
-### 4.5 Dispersed particles — D-track P2 LANDED
+### 4.5 Dispersed particles — one-way D-track P2 LANDED; two/four-way PENDING
 - **FR-PART-01..06**: one/two/four-way switching by `α_p`/mass-loading
   (thresholds explicit); Schiller-Naumann `Re_p` range explicit; reaction-
   force scatter kernel + momentum-conservation validation. LES tracking

@@ -73,7 +73,9 @@ use crate::fields::{FusedScratch, LocalGeom, SoaFields};
 use crate::halo::HaloExchange;
 use crate::kernels::{central_basis, central_phi, for_face_cells, solve_moment_system, RawSlice};
 use crate::lattice::{Face, Lattice, Q_MAX};
-use crate::params::{KParams, Reduction, StepParams};
+use crate::params::{
+    KParams, Reduction, StepParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION,
+};
 use crate::real::Real;
 use crate::subdomain::Subdomain;
 
@@ -294,15 +296,7 @@ unsafe fn collide_span_flat<L: Lattice, T: Real, const FORCE: bool, const FF: bo
         let r = rho[x];
         let u = [ux[x], uy[x], uz[x]];
         let fv = if FORCE {
-            if FF {
-                [
-                    kp.force[0] + field[x][0],
-                    kp.force[1] + field[x][1],
-                    kp.force[2] + field[x][2],
-                ]
-            } else {
-                kp.force
-            }
+            kp.force_at(if FF { Some(field) } else { None }, x, r)
         } else {
             [T::zero(); 3]
         };
@@ -415,15 +409,7 @@ unsafe fn collide_span_blocked<L: Lattice, T: Real, const FORCE: bool, const FF:
             r3v[j] = three * r;
             r45v[j] = f45 * r;
             if FORCE {
-                let fv = if FF {
-                    [
-                        kp.force[0] + field[x][0],
-                        kp.force[1] + field[x][1],
-                        kp.force[2] + field[x][2],
-                    ]
-                } else {
-                    kp.force
-                };
+                let fv = kp.force_at(if FF { Some(field) } else { None }, x, r);
                 fvr[j] = fv;
                 let mut uf = u[0] * fv[0];
                 for d in 1..L::D {
@@ -521,7 +507,7 @@ unsafe fn collide_span_dispatch<L: Lattice, T: Real>(
 ) {
     // SAFETY: forwarded caller contract.
     unsafe {
-        if kp.cumulant {
+        if kp.central_moment {
             collide_span_central_moment::<L, T>(
                 field, omega, src, dst, x0, x1, rho, ux, uy, uz, kp,
             );
@@ -577,16 +563,10 @@ unsafe fn collide_span_central_moment<L: Lattice, T: Real>(
 ) {
     let basis = central_basis::<L>();
     for x in x0..x1 {
-        let r = rho[x].as_f64();
+        let r_t = rho[x];
+        let r = r_t.as_f64();
         let u = [ux[x].as_f64(), uy[x].as_f64(), uz[x].as_f64()];
-        let fv_t = match field {
-            Some(field) => [
-                kp.force[0] + field[x][0],
-                kp.force[1] + field[x][1],
-                kp.force[2] + field[x][2],
-            ],
-            None => kp.force,
-        };
+        let fv_t = kp.force_at(field, x, r_t);
         let fv = [fv_t[0].as_f64(), fv_t[1].as_f64(), fv_t[2].as_f64()];
         let force_active = fv[0] != 0.0 || fv[1] != 0.0 || fv[2] != 0.0;
         let mut phys = [0.0f64; Q_MAX];
@@ -652,9 +632,13 @@ unsafe fn collide_span_central_moment<L: Lattice, T: Real>(
             }
         }
         let os_base = omega.map_or(kp.omega_shear.as_f64(), |v| v[x].as_f64());
-        let usq_full = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-        let d3q19_lattice_viscosity_offset = if L::D == 3 && L::Q == 19 { 0.0025 } else { 0.0 };
-        let os = (os_base * (1.0 + d3q19_lattice_viscosity_offset - 0.16 * usq_full)).min(2.0);
+        let velocity_correction = if CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
+            0.0
+        } else {
+            let usq_full = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+            -0.16 * usq_full
+        };
+        let os = (os_base * (1.0 + velocity_correction)).min(2.0);
         let mut post = [0.0f64; Q_MAX];
         let mut diag = [usize::MAX; 3];
         for m in 0..L::Q {
@@ -772,16 +756,8 @@ unsafe fn moments_span_flat<L: Lattice, T: Real, const FF: bool>(
                 m[2] = m[2] + T::r(L::C[q][2] as f64) * fq;
             }
         }
-        let fv = if FF {
-            [
-                kp.force[0] + field[x][0],
-                kp.force[1] + field[x][1],
-                kp.force[2] + field[x][2],
-            ]
-        } else {
-            kp.force
-        };
         let r = one + dr;
+        let fv = kp.force_at(if FF { Some(field) } else { None }, x, r);
         let inv = one / r;
         // SAFETY: caller contract (disjoint moment rows).
         unsafe {
@@ -843,16 +819,8 @@ unsafe fn moments_span_blocked<L: Lattice, T: Real, const FF: bool>(
         }
         for j in 0..blen {
             let x = xb + j;
-            let fv = if FF {
-                [
-                    kp.force[0] + field[x][0],
-                    kp.force[1] + field[x][1],
-                    kp.force[2] + field[x][2],
-                ]
-            } else {
-                kp.force
-            };
             let r = one + dr[j];
+            let fv = kp.force_at(if FF { Some(field) } else { None }, x, r);
             let inv = one / r;
             // SAFETY: caller contract (disjoint moment rows).
             unsafe {
@@ -1525,6 +1493,10 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         *host = fields.clone();
     }
 
+    fn supports_gravity_body_force(&self) -> bool {
+        true
+    }
+
     fn exchange_f<H: HaloExchange<T>>(
         &mut self,
         exchange: &H,
@@ -1539,6 +1511,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
     /// other cells stay pre-collide (the fused pass collides them
     /// just-in-time).
     fn collide(&mut self, sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        fields.probed_force = [T::zero(); 3];
         if fields.bouzidi.is_some() {
             fields.fused = None;
             let mut scalar = CpuScalar::default();
@@ -1554,10 +1527,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         let np = g.n_padded();
         let [nx, ny, nz] = g.core;
         let pnx = g.padded()[0];
-        let force_on = p.force[0] != T::zero()
-            || p.force[1] != T::zero()
-            || p.force[2] != T::zero()
-            || fields.force_field.is_some();
+        let force_on = kp.force_on(fields.force_field.is_some());
         let f = RawSlice::new(&mut fields.f);
         let (rho, ux, uy, uz) = (&fields.rho, &fields.ux, &fields.uy, &fields.uz);
         let solid = &fields.solid;
@@ -1737,14 +1707,15 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         fields: &mut SoaFields<T>,
         p: &StepParams<T>,
         range: CellRange,
-    ) -> [T; 3] {
+    ) {
         if fields.bouzidi.is_some() {
             fields.fused = None;
             let mut scalar = CpuScalar::default();
-            return <CpuScalar as Backend<L, T>>::stream(&mut scalar, sub, fields, p, range);
+            <CpuScalar as Backend<L, T>>::stream(&mut scalar, sub, fields, p, range);
+            return;
         }
         if range.is_empty() {
-            return [T::zero(); 3];
+            return;
         }
         let g = fields.geom;
         assert_eq!(g.halo, 1, "CpuSimd assumes one-cell halos");
@@ -1752,10 +1723,7 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         let halo = sub.halo_flags();
         let np = g.n_padded();
         let pnx = g.padded()[0];
-        let force_on = p.force[0] != T::zero()
-            || p.force[1] != T::zero()
-            || p.force[2] != T::zero()
-            || fields.force_field.is_some();
+        let force_on = kp.force_on(fields.force_field.is_some());
         let mut scratch = fields
             .fused
             .take()
@@ -1867,7 +1835,11 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         scratch.fresh = true;
         drop(ctx);
         fields.fused = Some(scratch);
-        pf
+        fields.probed_force = [
+            fields.probed_force[0] + pf[0],
+            fields.probed_force[1] + pf[1],
+            fields.probed_force[2] + pf[2],
+        ];
     }
 
     /// Swap the population ping-pong pair and the moment double buffers.
@@ -1881,13 +1853,13 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
         }
     }
 
-    fn apply_bouzidi(
-        &mut self,
-        _sub: &Subdomain,
-        fields: &mut SoaFields<T>,
-        p: &StepParams<T>,
-    ) -> [T; 3] {
-        crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p)
+    fn apply_bouzidi(&mut self, _sub: &Subdomain, fields: &mut SoaFields<T>, p: &StepParams<T>) {
+        let pf = crate::bouzidi::apply_bouzidi_impl::<L, T>(fields, p);
+        fields.probed_force = [
+            fields.probed_force[0] + pf[0],
+            fields.probed_force[1] + pf[1],
+            fields.probed_force[2] + pf[2],
+        ];
     }
 
     fn apply_volume_sources(
@@ -1971,6 +1943,10 @@ impl<L: Lattice, T: Real> Backend<L, T> for CpuSimd {
 
     fn read_moments(&self, fields: &SoaFields<T>, out: &mut HostMoments<T>) {
         read_moments_impl(fields, out);
+    }
+
+    fn read_probed_force(&self, fields: &SoaFields<T>) -> [T; 3] {
+        fields.probed_force
     }
 }
 
@@ -2096,15 +2072,8 @@ fn fix_open_face_moments<L: Lattice, T: Real>(
                     m[2] = m[2] + T::r(L::C[q][2] as f64) * fq;
                 }
             }
-            let fv = match ff {
-                Some(field) => [
-                    kp.force[0] + field[c][0],
-                    kp.force[1] + field[c][1],
-                    kp.force[2] + field[c][2],
-                ],
-                None => kp.force,
-            };
             let r = T::one() + dr;
+            let fv = kp.force_at(ff, c, r);
             let inv = T::one() / r;
             // SAFETY: sequential pass, exclusive access.
             unsafe {
@@ -2147,7 +2116,7 @@ mod tests {
         let spec = GlobalSpec {
             dims: [n, n, n],
             nu,
-            collision: CollisionKind::Cumulant {
+            collision: CollisionKind::CentralMoment {
                 omega_shear: omega_from_nu(nu),
             },
             periodic: [true, true, true],

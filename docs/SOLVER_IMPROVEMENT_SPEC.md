@@ -5,6 +5,11 @@ For the historical review record (E1–E10 experiments, A-1 sync-tests fix, WP-A
 correctness/entry guards), see git history around commit 84abaa3 and its
 predecessors.
 
+**Audit note (2026-07-07):** This pass checked each numbered item against the
+current worktree by grepping the named symbols/behaviors in `crates/`,
+`scripts/`, `.github/`, and relevant tests/docs. Status markers below correct
+the live/open inventory; item bodies are retained as the historical record.
+
 **R-Phase 1 landed.** All WP-A items (A-1..A-10) plus D-6/D-7 doc-consistency
 work were bundled into R-Phase 1 and are on main. V1 was retired in the same
 window; `crates/lbm-core2` was renamed to `crates/lbm-core`, and legacy V1 lives
@@ -23,6 +28,7 @@ legal-configuration bit invariance (probe_state_hash unchanged where noted).
 ## WP-B — Structural (M-E premise prep)
 
 ### B-1 [S1] Backend `Fields` generalization and GpuSolver integration (M-E's most important)
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `Solver` now owns `B::Fields` and can mount `WgpuBackend` (`crates/lbm-core/src/solver.rs:1250`, `crates/lbm-core/src/gpu/backend.rs:1885`, `crates/lbm-core/src/gpu/backend.rs:2459`); remaining: monolithic GPU only, no generic GPU halo/multi-part path, and `GpuSolver` still exists as a wrapper (`crates/lbm-core/src/gpu/backend.rs:1933`, `crates/lbm-core/src/gpu/solver.rs:17`).**
 Target: `crates/lbm-core/src/{solver.rs, dist.rs, halo.rs, gpu/{solver,backend}.rs}`.
 `Solver`/`MpiSolver` are fixed to `Fields = SoaFields<T>`, so `WgpuBackend`
 (`Fields = GpuFields`) does not mount; GpuSolver duplicates the step sequence,
@@ -44,6 +50,7 @@ MLUPS regresses ≤3%. Effort: L. Handoff status: **HANDOFF §4 lists B-1 as own
 scheduled into the M-E/M-F integration campaign; not currently dispatched.**
 
 ### B-2 [S1] Backend synchronization-point contract
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — explicit GPU probe readback exists and `GpuSolver::probed_force()` uses it (`crates/lbm-core/src/gpu/backend.rs:960`, `crates/lbm-core/src/gpu/solver.rs:162`); remaining: `Backend::stream` still returns probe force and the unified `WgpuBackend` slot is still zeroed (`crates/lbm-core/src/backend.rs:189`, `crates/lbm-core/src/gpu/backend.rs:2100`).**
 Target: `crates/lbm-core/src/backend.rs`, `gpu/backend.rs`.
 `stream` is contracted to return probe force synchronously; GPU returns zero
 (silent trap once mounted on Solver). `update_moments` is meaning-repurposed as
@@ -61,6 +68,7 @@ probe, CPU/GPU match on the same API; probed_force bit-matches across 2 runs
 with the same thread count. Effort: M.
 
 ### B-3 [S1] Unify Shan-Chen and V2 native multiphase
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — native single-component Shan-Chen now has wall adhesion / virtual wall density and MPI scalar exchange (`crates/lbm-core/src/solver.rs:2278`, `crates/lbm-core/src/dist.rs:744`); remaining: compat `ShanChen` and `MultiComponent` still carry separate 2D facade implementations (`crates/lbm-core/src/compat/multiphase.rs:307`, `crates/lbm-core/src/compat/multiphase.rs:138`).**
 Target: `crates/lbm-core/src/solver.rs`, `compat/multiphase.rs`.
 SC force stencil currently exists in 3 places (V1, compat, V2 native).
 Wall adhesion, virtual wall density, and two-component are compat/V1 only (2D/
@@ -77,6 +85,7 @@ contact angle with wall_rho on the MPI path. Effort: M-L. **HANDOFF §4 lists
 B-3 among the owner-scheduled R-Phase 2 residuals.**
 
 ### B-6 [S2] Per-cell relaxation-rate groundwork (LES premise)
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `SoaFields::omega_field`, `Solver::set_omega_field`, CPU collide consumption, and explicit WALE `tau_eff` clipping+diagnostics landed with tests (`crates/lbm-core/src/fields.rs:199`, `crates/lbm-core/src/solver.rs:2596`, `crates/lbm-core/src/kernels.rs:181`, `crates/lbm-core/src/les.rs:75`, `crates/lbm-core/tests/wale_les.rs:383`); remaining: no generic staged `omega_field` upload path for `WgpuBackend`, only WALE-specific GPU omega buffers (`crates/lbm-core/src/gpu/backend.rs:1458`).**
 Target: `crates/lbm-core/src/params.rs`, `kernels.rs`.
 Add `omega_field: Option<Vec<T>>` to `SoaFields`; `collide_row` uses per-cell
 omega only when `Some`. The `None` path is bit-identical (probe_state_hash
@@ -87,6 +96,7 @@ Acceptance: bit-identical to all existing tests at `None`; a uniform-value case
 matches scalar spec. Effort: M.
 
 ### B-7 [S2] Seal the public backdoor; f64 diagnostics
+**STATUS (2026-07-07 audit): RESOLVED — `fields_mut` is `pub(crate)`, `total_mass_f64()` exists on solver/compat/MPI, and the MPI dirty debug Allreduce is covered by `dirty-mismatch` (`crates/lbm-core/src/solver.rs:2462`, `crates/lbm-core/src/solver.rs:2930`, `crates/lbm-core/src/dist.rs:642`, `scripts/test_mpi.sh:63`).**
 - (a) Make `fields_mut` pub(crate); route mutations through dedicated methods
   with automatic dirty management (single-rank edit mistake under MPI is the
   worst failure mode — a silent hang).
@@ -99,6 +109,7 @@ Acceptance: dirty automated on mask-edit path; the single-rank-edit debug test
 asserts rather than hangs. Effort: S-M.
 
 ### B-8 [S2] Kernel extension-point design note
+**STATUS (2026-07-07 audit): RESOLVED — `docs/KERNEL_EXTENSION_POINTS.md` covers per-cell omega, MRT/cumulant placement, Bouzidi records, ConvectiveOutflow, and Outflow x solid fallback (`docs/KERNEL_EXTENSION_POINTS.md:43`, `docs/KERNEL_EXTENSION_POINTS.md:73`, `docs/KERNEL_EXTENSION_POINTS.md:124`, `docs/KERNEL_EXTENSION_POINTS.md:171`, `docs/KERNEL_EXTENSION_POINTS.md:221`).**
 One docs sheet; no implementation. Covers: per-cell omega passing convention
 (B-6); placement of MRT/cumulant kernels (CollisionKind branching and transform
 matrix location); per-link wall-distance sparse structure for curved boundaries
@@ -119,6 +130,7 @@ R-Phase 3 items owner-scheduled to run alongside M-E. C-2, C-3, C-8 depend on
 B-1; C-12, C-13 also depend on B-1.
 
 ### C-1 [S1] Localize MPI setup (kill global-array replication)
+**STATUS (2026-07-07 audit): STILL OPEN**
 Target: `crates/lbm-core/src/{dist.rs, solver.rs}`.
 `MpiSolver::new` requires global compact arrays (solid/wall_u) on all ranks;
 `build_wall_rims` also generates the whole domain; `set_solid` is a
@@ -134,6 +146,7 @@ Acceptance: per-rank peak RSS = O(N/P)+constant (measured); T13-MPI bit match
 via the new API. Effort: M.
 
 ### C-2 [S2] Exchange overlap + boundary-shell disjointness fix
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — disjoint boundary shells and probe split-invariance tests landed (`crates/lbm-core/src/backend.rs:79`, `crates/lbm-core/tests/t13_split_invariance.rs:286`); remaining: no `post_f()`/`finish_f()` overlap API and `WgpuBackend` still rejects two-pass streaming (`crates/lbm-core/src/gpu/backend.rs:2044`).**
 Target: `dist.rs`, `solver.rs`.
 Add `post_f()/finish_f()` to `HaloExchange` (InProcess completes immediately).
 Rewire step to collide → post → interior stream → finish → boundary shell.
@@ -147,6 +160,7 @@ exchange-wait occupancy measurably reduced. Effort: L. Depends: B-1 item 3
 (withdrawal of the `stream(range)` assert).
 
 ### C-3 [S2] Parallel I/O (per-rank raw + manifest)
+**STATUS (2026-07-07 audit): STILL OPEN**
 Target: `dist.rs`.
 Short-term: each rank writes its block; rank0 writes only the manifest. Mid-
 term: MPI-IO subarray (rsmpi `File` support to confirm). Keep gather_* as
@@ -156,12 +170,14 @@ Acceptance: rank0 peak RSS at output = O(N/P); output time non-increasing with
 rank count. Effort: M-L.
 
 ### C-4 [S2] Defer probe Allreduce
+**STATUS (2026-07-07 audit): STILL OPEN**
 Target: `dist.rs` (3-double Allreduce every step when probe enabled).
 Fix: make `probed_force()` collective and cache with `time` key (reduce only
 when queried). Acceptance: per-step collective disappears from profile; mpi_t13
 PASS. Effort: S.
 
 ### C-5 [S2] Persistent exchange buffers (stepping stone to GPU-aware MPI)
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `MpiExchange` now owns reusable send/recv buffers and `Solver` owns persistent psi planes (`crates/lbm-core/src/dist.rs:266`, `crates/lbm-core/src/solver.rs:1274`); remaining: steady exchange still creates request vectors in `transfer_axis`, so zero-allocation acceptance is not proven (`crates/lbm-core/src/dist.rs:337`).**
 Target: `dist.rs`, `solver.rs` (ψ plane allocated every step).
 Fix: `MpiExchange` holds send/recv buffers per face×kind and reuses them; ψ
 plane / staging fields likewise. Consolidate buffer ownership in MpiExchange
@@ -170,6 +186,7 @@ Acceptance: zero heap allocation during steady steps; bench_mpi non-regressing;
 T13-MPI bit match. Effort: S-M.
 
 ### C-6 [S2] Inter-rank spec consistency check
+**STATUS (2026-07-07 audit): RESOLVED — rank spec hashes are Allreduce-compared with named mismatch failures and tests/scripts cover the changed-item path (`crates/lbm-core/src/dist.rs:244`, `crates/lbm-core/src/dist.rs:1176`, `scripts/test_mpi.sh:50`).**
 Target: `dist.rs`.
 A mismatch in nu, faces, or mask content is undetected because message length
 matches — emits a plausible field discontinuous at seams. Fix: at build time,
@@ -177,6 +194,7 @@ Allreduce-compare spec-normalized byte sequence + mask FNV hash (min/max);
 abort with item name on mismatch. Effort: S.
 
 ### C-7 [S2] MPI thread level = Funneled
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `bench_mpi` requests `Threading::Funneled` and logs the provided level (`crates/lbm-core/examples/bench_mpi.rs:67`); remaining: no shared `dist::init_mpi()` and `mpi_t13` still calls `mpi::initialize()` (`crates/lbm-core/examples/mpi_t13.rs:385`).**
 Target: `examples/mpi_t13.rs`, `bench_mpi.rs`, `backend.rs`.
 rsmpi 0.8.1 `initialize()` = `Threading::Single`; default feature `parallel`
 launches rayon above 16,384 cells. Real sizes get multi-threaded execution
@@ -187,7 +205,8 @@ provided is insufficient AND parallel is enabled); migrate examples/guide.
 Acceptance: 2 ranks × forced rayon (parallel_min_cells lowered) → T13-MPI-
 equivalent PASS; provided ≥ Funneled logged. Effort: S.
 
-### C-8 [S2] Distributed checkpoint/restart
+### C-8 [S2] Large-scale checkpoint resilience and parallel output (was: Distributed checkpoint/restart)
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — multi-part + per-rank MPI checkpoint/restart landed (format v2, layout/version/spec/decomp/hash guards, bit-exact roundtrip tests, MPI save/restore and checkpoint-roundtrip mode: `crates/lbm-core/src/solver.rs:28`, `crates/lbm-core/src/solver.rs:2662`, `crates/lbm-core/src/solver.rs:2755`, `crates/lbm-core/src/solver.rs:2819`, `crates/lbm-core/src/solver.rs:2935`, `crates/lbm-core/src/dist.rs:792`, `crates/lbm-core/src/dist.rs:828`, `crates/lbm-core/examples/mpi_t13.rs:85`); remaining scope = failure recovery / partial-write detection, parallel field output, and serialized RNG/particle/stats state.**
 On top of B-5's snapshot API: collective `MpiSolver::save(dir)/load(world, dir,
 backend)` — per-rank raw + rank0 manifest, spec-hash and decomp consistency
 validation. Deviation-storage f raw for bit-match on resume.
@@ -195,6 +214,7 @@ Acceptance: 50 steps → save → load → 50 steps = 100 steps continuously (bi
 match); manifest mismatch is an explicit error. Effort: M. Depends: B-5, C-6.
 
 ### C-9 [S1] GPU submit-chunk time calibration + device-lost Result-ification
+**STATUS (2026-07-07 audit): RESOLVED — submit chunk calibration, poll/device-lost error paths, and tests are present (`crates/lbm-core/src/gpu/backend.rs:249`, `crates/lbm-core/src/gpu/backend.rs:447`, `crates/lbm-core/src/gpu/backend.rs:470`, `crates/lbm-core/src/gpu/backend.rs:2346`).**
 Target: `gpu/backend.rs` (`submit_chunk: 200` fixed; `expect` panic on device
 loss).
 200 steps ≈ ~1000 dispatch in a single submit → on a slow GPU, exceeds Windows
@@ -208,6 +228,7 @@ returns Err. Effort: M. E10 baseline (M5 Max): 2048² TGV 5,719 MLUPS →
 147 ms/submit; TDR extrapolation for ~15× slower GPUs holds.
 
 ### C-10 [S2] Pre-validate GPU resource limits
+**STATUS (2026-07-07 audit): RESOLVED — GPU resource planning validates `Q*n`, buffer/storage limits, and workgroup counts with unit tests (`crates/lbm-core/src/gpu/backend.rs:283`, `crates/lbm-core/src/gpu/backend.rs:341`, `crates/lbm-core/src/gpu/backend.rs:2369`).**
 Target: `gpu/backend.rs`.
 At head of `alloc`, check required bytes vs `device.limits()`, `Q*n ≤ u32::MAX`
 (D3Q19 overflows at 226M cells), and dispatch count ≤65,535. Err with reason.
@@ -215,6 +236,7 @@ Acceptance: over-limit grid → `GpuSolver::new` explicit error; T14 green.
 Effort: S.
 
 ### C-11 [S2] GPU diagnostic-path efficiency
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `f_cache` is `Arc`, `FluidCells` uses `host_solid`, and sync combines populations/moments/probe in one readback (`crates/lbm-core/src/gpu/backend.rs:547`, `crates/lbm-core/src/gpu/backend.rs:2154`, `crates/lbm-core/src/gpu/backend.rs:2269`); remaining: reductions still read populations back to the host, so GPU-side 2-stage reduction is not landed (`crates/lbm-core/src/gpu/backend.rs:2137`).**
 Target: `gpu/{backend,solver}.rs`.
 Arc-ify `f_cache` (eliminate cloning). Make FluidCells readback unnecessary
 (host_solid suffices). Consolidate sync's 3 readbacks into 1 encoder/1 wait.
@@ -224,6 +246,7 @@ Acceptance: sync+diagnostics triple ≥3× faster at 2048²; T14 diagnostic valu
 bit-identical. Effort: S (+M).
 
 ### C-12 [S2] FP16 plumbing
+**STATUS (2026-07-07 audit): RESOLVED — `GpuStorage::F16`, `SHADER_F16` context requirement, f16 WGSL load/store, and T16 frozen-band tests are present (`crates/lbm-core/src/gpu/backend.rs:144`, `crates/lbm-core/src/gpu/backend.rs:398`, `crates/lbm-core/src/gpu/wgsl.rs:228`, `crates/lbm-core/tests/t16_fp16_storage.rs:15`).**
 Target: `gpu/backend.rs`, `gpu/wgsl.rs`.
 Conditional `SHADER_F16` request; `generate::<L>(cfg: KernelCfg { storage:
 F32|F16 })` (confine change to buffer decl + load/store wrapper, keep arithmetic
@@ -238,6 +261,7 @@ steady 2.579e-3 vs band 5e-3). ~2.0× MLUPS @2048²; D3Q19 f16 >5 GLUPS. C-12
 retained here for historical spec; body is done.
 
 ### C-13 [S2] scenario `backend: "gpu" | "auto"`
+**STATUS (2026-07-07 audit): RESOLVED — scenario schema has `auto|cpu|gpu`, `compute.storage: f32|f16`, central-moment exposure with the legacy `cumulant` alias, auto thresholding/capability rejection, CLI GPU dispatch, `build_gpu2d`, and manifest provenance (`crates/lbm-scenario/src/lib.rs:95`, `crates/lbm-scenario/src/lib.rs:109`, `crates/lbm-scenario/src/lib.rs:239`, `crates/lbm-scenario/src/lib.rs:1593`, `crates/lbm-cli/src/runner.rs:61`).**
 Target: `crates/lbm-scenario/src/lib.rs`, `crates/lbm-cli/src/main.rs`.
 Unlock in feature-gpu build; validate capability (reject f64/3D/unsupported
 BC with reason); `auto` selects by measured threshold (e.g. n≥256²) and logs.
@@ -248,6 +272,7 @@ from CPU within T14; `f64`+`gpu` rejected with reason. Effort: M. Depends: B-1.
 GREEN. Retained for historical spec.
 
 ### C-14 [S2] GPU memory-footprint reduction
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — optional dummy wall/force allocation exists and upload expands on demand (`crates/lbm-core/src/gpu/backend.rs:1675`, `crates/lbm-core/src/gpu/backend.rs:1712`, `crates/lbm-core/src/gpu/backend.rs:1596`); remaining: default backend `alloc()` still requests full wall/force buffers (`crates/lbm-core/src/gpu/backend.rs:1671`, `crates/lbm-core/src/gpu/backend.rs:1892`).**
 Target: `gpu/backend.rs`.
 Dummy-buffer-ize force_field/wall_u when absent; lazy-allocate and right-size
 staging. Current +284 MB (~1.9×) at 2048² TGV — 3D scaling directly hits the
@@ -256,6 +281,7 @@ Acceptance: without force field or solid, allocation ≤ 2×f + moments + mask +
 O(perimeter); T14 green. Effort: S.
 
 ### C-15 [S3] GPU small-grain bundle
+**STATUS (2026-07-07 audit): PARTIALLY RESOLVED — raised adapter limits, naga validation tests, BcParams table test, and `GpuContext::new -> Result` landed (`crates/lbm-core/src/gpu/backend.rs:426`, `crates/lbm-core/src/gpu/wgsl.rs:1410`, `crates/lbm-core/src/gpu/wgsl.rs:1443`, `crates/lbm-core/src/gpu/backend.rs:392`); remaining: probe CAS nondeterminism is documented in WGSL comments, not in `docs/GPU_EVALUATION.md` (`crates/lbm-core/src/gpu/wgsl.rs:786`).**
 - (a) Raise limits (`max_storage_buffers_per_shader_stage` — step kernel at
   the default upper limit 8, adding 1 storage buffer panics at runtime).
 - (b) `naga` parse+validate unit test of the generated WGSL (no GPU required,
@@ -269,6 +295,7 @@ O(perimeter); T14 green. Effort: S.
 Effort: S×5.
 
 ### C-16 [S3] MPI small-grain bundle
+**STATUS (2026-07-07 audit): RESOLVED — surface-minimizing `choose_decomp`, non-divisible rank coverage in `test_mpi.sh`, 3D/weak/strong `bench_mpi` modes, and deterministic mass are present (`crates/lbm-core/src/dist.rs:104`, `scripts/test_mpi.sh:43`, `crates/lbm-core/examples/bench_mpi.rs:7`, `crates/lbm-core/src/dist.rs:810`).**
 - (a) `choose_decomp` (minimum surface area) + arbitrary-n support of mpi_t13
   (cases n=3,5,6 and non-divisible dims).
 - (b) 3D/D3Q19 and strong/weak-mode-ization of bench_mpi (current 2D-strip
@@ -289,43 +316,56 @@ R-Phase 1 completed D-6 (competitive spec / PLAN reconciliation) and D-7
 (VALIDATION.md T13/T14 sections). Remaining:
 
 - **D-1 [S1]** CI three-stage setup (push/PR default; nightly `--include-
-  ignored`; self-hosted GPU/MPI). Currently `.github/` absent; all quality
-  claims are manual snapshots. Effort: M.
-- **D-2 [S1]** Cargo-test MPI logic (`dist.rs` has 0 `#[test]`). Pack/unpack
-  and phase-plan as pure functions (InProcess reference, tolerance ==0.0). Turn
-  `test_mpi.sh` into a nightly job; bring 1-rank self-exchange smoke into cargo.
-  Effort: M.
-- **D-3 [S1]** Absolute physics validation of GPU + skip mechanism. TGV
-  convergence order ≥1.7 and cavity Ghia RMS ≤0.02U — GPU-direct, f32-
+  ignored`; self-hosted GPU/MPI).
+  **STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `.github/workflows/ci.yml` now has push/PR/scheduled/workflow-dispatch triggers, release tests, GPU compile, MPI, web build, heavy validation, and a scheduled performance-regression hook (`.github/workflows/ci.yml:4`, `.github/workflows/ci.yml:8`, `.github/workflows/ci.yml:24`, `.github/workflows/ci.yml:26`, `.github/workflows/ci.yml:28`, `.github/workflows/ci.yml:42`, `.github/workflows/ci.yml:46`, `.github/workflows/ci.yml:59`); remaining: no self-hosted GPU/MPI runner is configured.**
+  Currently `.github/` absent; all quality claims are manual snapshots. Effort:
+  M.
+- **D-2 [S1]** Cargo-test MPI logic (`dist.rs` has 0 `#[test]`).
+  **STATUS (2026-07-07 audit): RESOLVED — dist/halo pure tests, one-rank MPI smoke, `test_mpi.sh`, and scheduled CI coverage are present (`crates/lbm-core/src/dist.rs:1162`, `crates/lbm-core/src/dist.rs:1194`, `crates/lbm-core/src/dist.rs:1246`, `scripts/test_mpi.sh:43`, `.github/workflows/ci.yml:8`, `.github/workflows/ci.yml:28`).**
+  Pack/unpack and phase-plan as pure functions (InProcess reference, tolerance
+  ==0.0). Turn `test_mpi.sh` into a nightly job; bring 1-rank self-exchange
+  smoke into cargo. Effort: M.
+- **D-3 [S1]** Absolute physics validation of GPU + skip mechanism.
+  **STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `lbm verify --tier gpu` has feature/adapter skip semantics plus GPU-direct TGV decay and Poiseuille f32-band checks (`crates/lbm-cli/src/verify.rs:328`, `crates/lbm-cli/src/verify.rs:335`, `crates/lbm-cli/src/verify.rs:350`, `crates/lbm-cli/src/verify.rs:385`, `crates/lbm-cli/src/verify.rs:428`, `crates/lbm-cli/src/verify.rs:442`); remaining: no GPU TGV convergence-order pair, no GPU cavity Ghia RMS gate, and no `LBM_REQUIRE_GPU=1` fail-promotion in the CLI verify path.**
+  TGV convergence order ≥1.7 and cavity Ghia RMS ≤0.02U — GPU-direct, f32-
   calibrated bands, frozen. Adapter absence = skip; `LBM_REQUIRE_GPU=1`
   promotes to fail. Non-support of 3D GPU / multiphase explicit in
   VALIDATION.md limitations. Effort: M.
-- **D-4 [S1]** f32×3D validation. `Sim3Handle::F32` is a product path with
-  0 f32 tests. Add: t15-1 z-invariant 2D degeneration (f32 rel ≤1e-5), t15-4
-  TGV3D decay rate ±2%, mass drift ≤1e-5/10³ step. Freeze in VALIDATION T15.
-  Effort: S.
+- **D-4 [S1]** f32×3D validation.
+  **STATUS (2026-07-07 audit): RESOLVED — `t15_3d_f32.rs` covers z-invariant degeneration, TGV3D decay, and mass drift for the f32 D3Q19 product path (`crates/lbm-core/tests/t15_3d_f32.rs:1`, `crates/lbm-core/tests/t15_3d_f32.rs:82`, `crates/lbm-core/tests/t15_3d_f32.rs:161`, `crates/lbm-core/tests/t15_3d_f32.rs:195`).**
+  `Sim3Handle::F32` is a product path with 0 f32 tests. Add: t15-1 z-invariant
+  2D degeneration (f32 rel ≤1e-5), t15-4 TGV3D decay rate ±2%, mass drift
+  ≤1e-5/10³ step. Freeze in VALIDATION T15. Effort: S.
 - **D-5 [S1]** Extend equivalence horizon + native absolute validation.
+  **STATUS (2026-07-07 audit): RESOLVED — `d5_long_horizon.rs` contains the ignored Re=100 20k-step compat/native cavity equivalence and native `Solver` TGV convergence test (`crates/lbm-core/tests/d5_long_horizon.rs:75`, `crates/lbm-core/tests/d5_long_horizon.rs:149`).**
   Currently ≤1e-11 vs V1 at 500 steps only; Ghia steady is ~99k steps (200×
   the horizon); V2 native (3D / scenario path) outside the chain. Add: cavity
   Re=100 20k-step equivalence (≤1e-9, may be `#[ignore]`); TGV convergence
   order directly on native `Solver` (detects facade/core drift). Effort: S.
 - **D-8 [S2]** codex adversarial order #7 for T14/T15 (initial discontinuity
   above a boundary face; probe touching a face; u near MAX_SPEED; z-degeneration
-  break; extreme aspect ratio; off-center sphere). Effort: M.
-- **D-9 [S2]** Performance regression detection. Core version of `bench_mlups`
-  (V2 CPU perf still cites V1 Phase 9 numbers) + `--check` mode (fail on
-  ±25% deviation from frozen value) + nightly JSON history in
-  `docs/bench_history/`. Nightly probe_state_hash enforcement. Effort: M.
+  break; extreme aspect ratio; off-center sphere).
+  **STATUS (2026-07-07 audit): RESOLVED — adversarial T14/T15 tests cover the named cases (`crates/lbm-core/tests/t14_adversarial.rs:5`, `crates/lbm-core/tests/t14_adversarial.rs:122`, `crates/lbm-core/tests/t14_adversarial.rs:189`, `crates/lbm-core/tests/t14_adversarial.rs:275`, `crates/lbm-core/tests/t15_adversarial.rs:173`, `crates/lbm-core/tests/t15_adversarial.rs:290`).**
+  Effort: M.
+- **D-9 [S2]** Performance regression detection.
+  **STATUS (2026-07-07 audit): PARTIALLY RESOLVED — `bench_backends --check`/`--update-baseline`, `bench/baselines`, `bench/history.csv`, `bench/results/*.json`, comparison failure tests, docs, and scheduled CI hook landed (`crates/lbm-core/examples/bench_backends.rs:5`, `crates/lbm-core/examples/bench_backends.rs:225`, `crates/lbm-core/examples/bench_backends.rs:424`, `crates/lbm-core/src/bench_regression.rs:49`, `docs/PERFORMANCE.md:10`, `.github/workflows/ci.yml:59`); remaining: no `docs/bench_history/` JSON history path and no nightly `probe_state_hash` enforcement found by grep.**
+  Core version of `bench_mlups` (V2 CPU perf still cites V1 Phase 9 numbers) +
+  `--check` mode (fail on ±25% deviation from frozen value) + nightly JSON
+  history in `docs/bench_history/`. Nightly probe_state_hash enforcement.
+  Effort: M.
 - **D-10 [S2]** `lbm verify` (few-minutes validation subset comparing against
   acceptance bands) + `docs/LIMITATIONS.md` shipped paired with releases.
+  **STATUS (2026-07-07 audit): RESOLVED — CLI exposes `lbm verify --tier quick|gpu|mpi|full`, `lbm capabilities`, quick CPU T1/T2 band checks, `docs/LIMITATIONS.md`, and tests for capabilities/quick verify (`crates/lbm-cli/src/main.rs:31`, `crates/lbm-cli/src/main.rs:37`, `crates/lbm-cli/src/verify.rs:7`, `crates/lbm-cli/src/verify.rs:125`, `crates/lbm-cli/src/capabilities.rs:68`, `docs/LIMITATIONS.md:1`, `crates/lbm-cli/tests/capabilities_verify.rs:4`).**
   Effort: L (verify) + S (limitations).
 - **D-11 [S2]** wasm smoke test (`wasm-pack test --node`: TGV 100-step mass
   conservation + native f64 match ≤1e-12; schema round-trip on the web side).
+  **STATUS (2026-07-07 audit): PARTIALLY RESOLVED — wasm/native TGV mass + f32 field match, scenario entrypoint, and native scenario-normalization round-trip tests exist (`crates/lbm-wasm/src/lib.rs:413`, `crates/lbm-wasm/src/lib.rs:557`, `crates/lbm-wasm/src/lib.rs:873`, `crates/lbm-wasm/src/lib.rs:963`, `crates/lbm-wasm/src/lib.rs:993`); remaining: no f64 ≤1e-12 native match (browser bridge is f32-only) and no TypeScript/web-side schema round-trip test found.**
   Effort: M.
-- **D-12 [S2]** CpuScalar performance-gap explicitation → M-E. Q-major port of
-  V1 `step_band` in `CpuSimd`; until then, publish co-noted V1 single-core
-  ratio. Acceptance: `CpuSimd` bit-matches `CpuScalar`; single-core ≥ 0.9x of
-  V1. Effort: L (M-E body).
+- **D-12 [S2]** CpuScalar performance-gap explicitation → M-E.
+  **STATUS (2026-07-07 audit): RESOLVED — `CpuSimd` equivalence gates and V1 ratio notes are present (`crates/lbm-core/tests/backend_simd_equiv.rs:1`, `crates/lbm-core/examples/bench_backends.rs:12`).**
+  Q-major port of V1 `step_band` in `CpuSimd`; until then, publish co-noted V1
+  single-core ratio. Acceptance: `CpuSimd` bit-matches `CpuScalar`; single-core
+  ≥ 0.9x of V1. Effort: L (M-E body).
 
 ---
 

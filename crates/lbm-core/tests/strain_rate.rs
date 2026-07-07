@@ -88,7 +88,7 @@ fn couette_strain_rate_matches_half_way_wall_gradient() {
     eprintln!(
         "couette strain errors: Sxy={err_sxy:e}, gamma consistency={err_gamma_consistency:e}"
     );
-    assert!(err_sxy <= 2.0e-12, "Couette Sxy error = {err_sxy:e}");
+    assert!(err_sxy <= 3.0e-15, "Couette Sxy error = {err_sxy:e}");
     assert!(
         err_gamma_consistency <= 1.0e-15,
         "Couette gamma_dot consistency error = {err_gamma_consistency:e}"
@@ -117,7 +117,7 @@ fn forced_poiseuille_shear_rate_uses_rev4_force_sign() {
         err = err.max((shear[y * 4] - expect).abs());
     }
     eprintln!("poiseuille shear-rate error with Pi_force = -0.5(uF+Fu): {err:e}");
-    assert!(err <= 2.0e-12, "Poiseuille gamma_dot error = {err:e}");
+    assert!(err <= 3.1e-13, "Poiseuille gamma_dot error = {err:e}");
 }
 
 #[test]

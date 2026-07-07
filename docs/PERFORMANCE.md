@@ -7,6 +7,23 @@ excluded via best-of-N. Measurement path: `examples/bench_backends.rs`
 (CPU) / `examples/bench_gpu.rs` (GPU) / T14-3D quiet-window A/B/A for the
 current 3D GPU headline. All figures below are on the same machine.
 
+## Regression gate
+
+The CPU benchmark harness supports a machine-readable regression check:
+
+```bash
+cargo run --release -p lbm-core --example bench_backends -- \
+  --check --host-tag <host-tag> --timestamp <UTC timestamp>
+```
+
+Baselines live under `bench/baselines/<host-tag>.json`; each case may set
+`regression_threshold`, and absent thresholds default to 10%. This is a
+generous structural-regression bound, not a noise model. The PM tightens
+per-host baselines after collecting real variance data. Use
+`--update-baseline` to rewrite a baseline explicitly; it is never automatic.
+Every check/update run appends rows to `bench/history.csv` and writes the
+latest machine-readable result under `bench/results/`.
+
 ## Current measured headline (M-E, 2026-07-07)
 
 | backend | grid | precision | MLUPS / GLUPS | notes |
@@ -64,9 +81,12 @@ Precision (storage / compute):
 Backend:
 - **CpuSimd** on the CPU path. Auto-vectorized NEON; wins single-thread
   vs OpenLB on Apple Silicon (see `docs/paper/benchmark-results.md`).
-- **Wgpu (Metal / Vulkan / DX12)** for the main GPU path. Preferred
-  whenever a GPU is available — 2 800 MLUPS D3Q19 f32 on M5 Max is
-  ~10× the CPU 3D peak.
+- **Wgpu (Metal / Vulkan / DX12)** for GPU-covered core workloads. Prefer
+  it for large f32 runs when the requested lattice/features are supported:
+  2 800 MLUPS D3Q19 f32 on M5 Max is ~10× the CPU 3D peak. The
+  scenario-runner `compute.backend:"gpu"` product path is narrower than the
+  in-core backend: it is feature-gated and currently dispatches through the
+  2D D2Q9 f32 builder; 3D GPU scenario dispatch is not wired yet.
 - **MPI** (feature `mpi`, off by default) for multi-node. Weak-scaling
   campaign RED pending cluster access.
 
@@ -103,4 +123,4 @@ Backend:
   (y-strip ringing, over-splitting bands) were measured and rejected
   on this machine.
 - **CpuSimd facade switch** (2D compat path): still on hold pending
-  B-1/B-2 synchronization-point contracts.
+  the remaining synchronization-point/facade contract work.

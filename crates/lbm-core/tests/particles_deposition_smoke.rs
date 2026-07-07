@@ -21,7 +21,8 @@ fn straight_line_floor_crossing_is_interpolated_exactly() {
     );
     let mut deposits = Vec::new();
 
-    set.step_depositing(fluid(vel), None::<fn([f64; 3]) -> f64>, 0.0, &mut deposits);
+    set.step_depositing(fluid(vel), None::<fn([f64; 3]) -> f64>, 0.0, &mut deposits)
+        .unwrap();
 
     assert!(set.particles.is_empty());
     assert_eq!(deposits.len(), 1);
@@ -60,7 +61,8 @@ fn deposited_and_suspended_counts_are_conserved_in_particle_order() {
     let mut set = ParticleSet::new(initial, 1.0, 0.1, [0.0; 3]);
     let mut deposits = Vec::new();
 
-    set.step_depositing(fluid(vel), None::<fn([f64; 3]) -> f64>, 0.0, &mut deposits);
+    set.step_depositing(fluid(vel), None::<fn([f64; 3]) -> f64>, 0.0, &mut deposits)
+        .unwrap();
 
     assert_eq!(deposits.len() + set.particles.len(), n0);
     assert_eq!(deposits.len(), 2);
@@ -99,7 +101,8 @@ fn low_re_terminal_velocity_matches_analytic_stokes_settling() {
             None::<fn([f64; 3]) -> f64>,
             -1.0,
             &mut deposits,
-        );
+        )
+        .unwrap();
     }
 
     assert!(deposits.is_empty());

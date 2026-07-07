@@ -24,3 +24,4 @@ anyhow = "1"
 
 [features]
 gpu = ["lbm-core/gpu", "lbm-scenario/gpu"]
+mpi = ["lbm-core/mpi"]

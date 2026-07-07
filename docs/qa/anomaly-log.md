@@ -13,16 +13,6 @@ context in commits 82946d3 / cd3999f / 20d0e10).
 
 ## OPEN — core-engine fix pending
 
-### ANOM-P2-001 — uniform-force vs per-cell force-field transient impulse mismatch
-- Severity: **S2** (steady-state invisible; transients wrong).
-- Cited in: `crates/lbm-core/tests/mf_interim.rs:265`,
-  `crates/lbm-core/tests/accuracy_audit.rs:471` (`#[ignore]` current-wrong-value
-  pin — flips at R2-C fix).
-- Measured (32×24, tau=1, TRT Λ=3/16, F=3e-7): uniform u(1)=1.5F (exact Guo);
-  force-field u(1)=0.9286F — 1/(2 tau_minus)·F = 4/7 F impulse deficit.
-- Disposition: fold into R2-C mechanical TRT port (order text in
-  `scratchpad/order-r2c.txt`).
-
 ### ANOM-P4-001 — time-stepped direct-forcing IBM diverges in default config
 - Severity: **S1**.
 - Gate: `cx/audit-ibm` B1–B8 (currently RED / NaN).
@@ -124,3 +114,213 @@ Retained pointers only; details in git history:
   cumulant; rename or implement true cumulants (D-track owns the routing).
 - Particle SN validity clamp at Re_p=800 is silent; add
   debug_assert→warn/documented saturation at API surface.
+- **ANOM-P2-001** — FIXED in R2-C v2 for equivalent uniform per-cell forcing.
+  Exactly uniform force-field installs/clears, plus gravity on all-fluid
+  domains, refresh moments through the same Guo half-force definition before
+  collision as uniform force. Regression:
+  `crates/lbm-core/tests/accuracy_audit.rs::uniform_force_impulse_matches_force_field_anom_p2_001`.
+
+---
+
+## Pass 5 — 2026-07-07, hard-multiphase first measurements
+(cx/mp-hard rev 2; the diagnostic protocol REFUTED all four test-side
+hypotheses — these are real finding candidates)
+
+- **ANOM-P4-014 — Jurin capillary rise: gap-dependent collapse steeper than
+  1/w** — S2 candidate, UNDER INVESTIGATION (visuals required). gap16:
+  +3.0% (good); gap24: −22.5%; gap32: −67% vs h = 2σcosθ/(Δρgw) with
+  T11/T11c inputs; θ_slot ≈ 66-68° stable; h·w falls 878 → 660 → 280
+  instead of constant. Known mechanisms predict the OPPOSITE trend. Field
+  dumps ordered (rev 3).
+- **ANOM-P4-015 — MCMP interfacial-wave frequency +29% at kW ≈ 0.5** — S3
+  test-design: bookkeeping fully verified; sharp-interface dispersion
+  applied at kW ≈ 0.5 where O((kW)²) ~ 25%. Rev 3: k-sweep (kW ≤ 0.25)
+  must recover theory as kW → 0; σ(k) trend = diffuse-interface
+  characterization.
+- **ANOM-P4-016 — MCMP RT-cutoff seeding NaN** — OPEN: max|u| = 0.3 by
+  step 10, NaN < step 1000, at BOTH stable and unstable modes, while T12
+  runs the same class healthily. Rev 3 diffs the initialization against
+  validation_rt.rs before any engine claim.
+- **ANOM-P4-017 — Taylor-Culick: scaling law holds, prefactor 0.49** — S2
+  characterization candidate: v ∝ h^(-1/2) confirmed (slope −0.5, r² 0.96,
+  h ∈ {16,24,32}) but v/v_TC plateaus at 0.49-0.54 (20h retraction, two
+  interfaces confirmed, vapor drag ~6%). Candidate mechanism: Laplace-σ
+  (static, T11) vs MECHANICAL σ (momentum flux) discrepancy of the SC
+  pressure tensor — the lane-1.7 "SC pressure-tensor form" audit row and
+  this measurement now referee each other. If confirmed: documented SC
+  validity limit (PHYSICS.md), core FYI.
+
+### Pass 5 addendum (cx/mp-dynamics rev 2) — the SC dynamic-limitations cluster
+
+- **ANOM-P4-015 UPDATED**: H1 (SCMP capillary wave, damped-oscillator fit)
+  shows omega +38% / gamma 2.1x at Q ~ 0.8 — same direction as I2's MCMP
+  +29% at kW = 0.5. CROSS-MODEL consistency: diffuse-interface sigma(k)
+  stiffening at kW ≳ 0.25 is a characterization of both SC variants, not a
+  bookkeeping error. kW-sweep (I rev 3) remains the decider.
+- **ANOM-P4-018 — SC near-wall shear artifact (H3)** — S2 candidate: in the
+  stratified two-layer Couette the LIQUID side carries l2 = 0.56 (vapor
+  0.13) with a visible lower-wall density/velocity artifact — the SC wall
+  interaction (psi = 0 solid exclusion) generates a near-wall layer that
+  distorts the sheared profile. Connects to the T11b known wall-scheme
+  limitation; lane 1.7 SC audit takes it.
+- **ANOM-P4-019 — SC contact-line immobility (H4 + I1 unified hypothesis)**
+  — S2 model-validity candidate: H4 (verified contact + curved meniscus at
+  t = 500) STALLS at 5 cells / 6000 steps vs predicted ~38 (Washburn).
+  Unified reading of I1: its columns were initialized FILLED and partially
+  drain — gap16's +3% is then start-near-answer luck, and gap32's collapse
+  is drainage past a pinned contact line. Decisive test (queue into the
+  next mp-hard rev): initialize the gap-16 column at two heights (above and
+  below prediction) — convergence to DIFFERENT plateaus confirms
+  pinning/hysteresis. If confirmed: SC statics (T11/T11c) remain valid;
+  any WICKING/SPREADING dynamics claim is out of the SC validity domain
+  (strengthens the MF-gamma case). PHYSICS.md entry drafted on
+  cx/mp-dynamics (merge with care).
+
+### ANOM-P4-013 VERDICT (Kovasznay, cx/exact-benchmarks 0257e65)
+Wet-node Zou-He velocity faces with tangentially-varying profiles carry an
+O(h) boundary error dominating the O(h²) interior: three-point ladder
+eu = 3.202e-3 / 1.671e-3 / 8.618e-4 (N = 48/96/192), order 0.94-0.96,
+r² ≈ 1. Interior order 2 separately proven (T1/T2). Characterization
+FROZEN (heavy pin [0.85, 1.15] — a future 2nd-order open-BC must fail it
+upward); light band 5e-3 (measured 2.611e-3). Pressure-field validation
+passes (slope → 0.991, r² 0.99999). Benchmark-design note: Zou-He
+PRESSURE outlets force v = 0 and are NOT valid closures for exact
+solutions with tangential outlet velocity (first pass measured the
+resulting O(1)-fraction elliptic contamination). S2 characterization;
+core FYI: 2nd-order open BC (NEBB / non-equilibrium extrapolation) is the
+improvement candidate.
+
+### ANOM-P4-014 VERDICT: TEST-SIDE (reference-datum error, found by the
+mandatory visual review). The PGM dumps show healthy connected columns and
+menisci at all gaps; but the domain's OUTSIDE channels are themselves
+finite-width wetting slots, so the "flat reservoir level" datum is
+capillary-elevated by 2σcosθ/(Δρ g w_out). Differential prediction
+h_meas = (2σcosθ/Δρg)(1/w_slot − 1/w_out) reconciles the pattern
+(gap32: w_out ≈ w_slot ⇒ h_meas → 0, measured 8.8; gap16: w_out ≫ w_slot
+⇒ near-ideal, measured +3%). Rev 4: widen the true reservoir (or assert
+the differential formula). COROLLARY for ANOM-P4-019: gap-16 liquid ROSE
+~55 cells to equilibrium — SC contact lines DO move in a 16-slot; the
+"immobility" hypothesis needs re-examination against H4's specific setup
+(20-slit + side reservoir) before any model-limit claim.
+
+### ANOM-P4-016 ESCALATED: with the T12-IDENTICAL protocol, the STABLE
+orientation (heavy below) diverges by step 400 (max|u| = 4e3,
+rho_min = −6.0) while T12's unstable orientation passes CI. Engine-finding
+candidate: MCMP + per-component gravity, stable stratification divergence.
+Routing package = the rev-3 test + printed trajectory (cx/mp-hard).
+
+### ANOM-P4-008 RESOLVED (core merge 15adfdd; V&V gate verified 2026-07-07)
+Offset removed (CPU/SIMD/WGSL); Cumulant→CentralMoment rename; finite-N
+band re-frozen to uncorrected measurement; e2 h²-intercept canary flipped
+GREEN in the same commit and INDEPENDENTLY re-verified by this session on
+main (3 passed / 5 ignored, 68 s). Remaining: the −0.16|u|² term sits
+behind CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION (default
+active); E1 ablation A/B measurement dispatched (cx/e1-ablation) — verdict
+rule: ON−OFF slope difference vs 0.16·W·2/(2−ω) within 30% at two
+viscosities ⇒ (B), else (C) candidate. Core also CONFIRMED the P4-001/010
+family diagnosis (per-cell gain fix delays 120→1450 steps but a collective
+mode remains; ANOM-P2-001 is the deeper defect) — R2-C re-dispatch in
+flight on the core side; our gates hold.
+
+### ANOM-P4-008 FULLY CLOSED — the −0.16|u|² term verdict: (B)
+Ablation A/B (cx/e1-ablation, docs/qa/e1-ablation-report.md + PNG): ON−OFF
+slope difference matches the derived footprint δc = 0.16·(1/4)·2/(2−ω)
+within 26.5% (ν=0.02) and 24.9% (ν=0.10); the τ-fingerprint RATIO across
+the two viscosities is 3.42 vs 3.50 predicted — the term is a real
+Galilean-class correction, retained with measured provenance (inventory
+3.1: offset was (C), removed; u²-term is (B), validated). The audit file's
+E1 SPEC-GAP stays as documentation (the toggle is a compile-time const, so
+the A/B cannot live in one test binary); the report is its evidence.
+
+### ANOM-P4-020 — Axis 9.1 sparger: SCMP interior mass source cannot
+express GAS injection — CORE CAPABILITY GAP (by design, not a bug)
+Visual evidence (out/vv_sparger_2d/*/density_030000.png, PM-reviewed): no
+bubbles at any rate; the pool just densifies (rho_max 2.385 super-liquid
+at the source). Mechanism: SC phase identity is local density — a MassFlow
+source inside liquid adds liquid; there is no phase channel to inject.
+All-rate-identical observables (events=3 detector noise, rise 0.1882,
+negative Laplace) are the no-bubble consequence, not an aggregation bug
+(mass ledgers differ per rate and pass at 1e-8). Disposition: Axis 9.1
+re-tagged GATED — needs MCMP per-component sources (capability gap) or
+MF-gamma phase-field gas inflow (VR-STR-02 sparger unit test is the
+planned home). Routing package = branch cx/vv-sparger (example + report +
+PNGs). The STOP-rule/honesty machinery worked as designed.
+
+### ANOM-P4-014 CLOSED as characterization (cx/mp-hard rev 5)
+Wetted-wall bookkeeping settled (wall_rho applies to ALL solids incl. rim —
+compat/multiphase.rs:356, in-code comment added); with the correct
+two-wetted-channel contrast the intercept collapses −20 → −1.4 and the law
+is exact (r² = 0.99998). Remaining coefficient anomaly FROZEN: measured
+slope 1312.7 = 1.54× the flat-wall theory 852.2 (in-situ θ ≈ 66° both
+channels, so it is not an angle error). THREE-WAY REFEREE now stands on
+the SC interface tension: Laplace σ (1.0 by construction, T11), Taylor-
+Culick mechanical σ (0.49×, P4-017), Jurin meniscus σcosθ (1.54×, this) —
+the lane-1.7 SC pressure-tensor audit is promoted to the highest-value W2
+item; its job is to derive which σ the SC pressure tensor actually
+delivers on curved menisci vs flat interfaces vs retracting rims.
+
+### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — S2,
+core-engine routing (found by the interaction matrix, lane 5.1)
+Steady-state discriminator confirms the leak persists after hydrostatic
+equilibration: uniform-force × patch +2.47e-5 mass/step, gravity × patch
+−7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale ~ F·A_patch.
+Mechanism candidate (pitfall family #1): the Zou-He patch reconstruction
+of unknown populations ignores the Guo half-force contribution, so each
+step leaks O(F) mass per patch cell. Neither T18.2 (patches, no force) nor
+the gravity suite (force, no patches) could see it — a pure
+pair-interaction defect, exactly what lane 5.1 exists for. Gate =
+cx/interaction-matrix (2 documented-red cells, interpretation rule in the
+asserts). All other 18 pairs PASS (or SKIP with stated reasons).
+
+### Lane 2.1 mutation-testing extension CLOSED (merge 8c26f14)
+10-mutant matrix all CAUGHT: Guo-source sign, moving-wall factor 2, D2Q9
+weight non-opposite swap, half-way source-cell off-by-one, probe-corner
+link drop, TRT ω⁻ tau/λ typo, feq u² coefficient 4.5→4.0 — plus the
+baseline 3 (MW sign, Zou-He pressure sign, outflow stale slot). Zero
+survivors ⇒ zero silent physics-kernel mutants in the current validation
+net. Complements ANOM-P4-021 (interaction-matrix): the pair-only defect
+class is NOT reachable by single-mutation coverage — the two lanes are
+complementary and both are needed.
+
+### ANOM-P4-022 — Shan-Chen force-field OVERWRITE breaks additive composition — S2 (found by code-to-spec back-translation, lane 3.2)
+`ShanChen::update_force` and `MultiComponent::update_forces`
+`copy_from_slice` into `force_field` (compat/multiphase.rs:387), silently
+discarding any prior rotor/gravity/user contribution — contradicts the
+W-GRAV additive composition-point invariant. Rotor + SC coexistence needs
+the caller to call SC FIRST then add rotor; the reverse order silently
+zeros the rotor force. This is invisible in the current lane-5.1 matrix
+(SC × rotor SKIPs by API-incompatibility). Fix candidate: change to
+add-into with a documented "SC contribution overwrites its own footprint"
+convention, or require callers to compose after SC in a single documented
+order.
+
+### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec)
+Zou-He closures at kernels.rs:754-773 (D2Q9), 941-954 (D3Q19), 828-867
+(D3Q27) reconstruct unknowns from raw populations and use caller-passed u
+verbatim — NO (1−ω/2)·Guo-source term at the face. Applied macroscopic
+velocity is therefore u_prescribed + F/(2ρ), and mass leaks as F·A_patch
+per step — matches ANOM-P4-021 measurement exactly. The two lanes now
+converge on the same fix locus. Core routing package includes the
+derivation.
+
+### Documentation drift found (lane 3.2 residuals, S3)
+- PHYSICS.md T11 σ entry does not acknowledge P4-014/017 mechanical-σ
+  three-way referee — one-paragraph update recommended.
+- Bouzidi "2nd-order" claim: three of four branches (qd≥1/2 and halo-edge
+  cases without a second fluid node) silently degrade to 1st order —
+  PHYSICS.md missing the validity clause.
+- CLAUDE.md pass-order invariant + ARCHITECTURE_V2.md §3.4 elide
+  apply_bouzidi / apply_volume_sources / swap; the real sequence is
+  collide → halo → stream(interior/shell) → bouzidi → swap → open-BCs →
+  volume-source → moments → end_step (backend.rs:258-320).
+
+### V&V methodology audit findings (lane 4.3, docs/qa/vv-methodology-audit.md)
+10 conforms / 10 gaps against ASME V&V 20 + Oberkampf-Roy. Top gaps (all
+S3 process, none S0 physics): (1) no headline result carries a stated
+U_num (Roache GCI never computed even though T8 is one step away —
+common/gci.rs helper is the cheapest fix); (2) no vocabulary crosswalk
+(U_num/U_input/U_D/U_val/δ_model vs our SPEC-GAP/STOP-RULE/frozen-band);
+(3) T11/T11b/T11c frozen bands are regression pins masquerading as
+validation gates (label VALIDATION_GATE vs REGRESSION_PIN + add one
+external Maxwell-rule holdout for T11). No hidden calibration hack
+survived the +0.0025 cleanup — process risk only.

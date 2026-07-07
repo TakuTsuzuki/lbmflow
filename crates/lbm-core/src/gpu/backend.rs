@@ -15,16 +15,16 @@
 //!   performs collide+push-stream in one pass, preserving the CPU's `S∘C`
 //!   step order — see `wgsl.rs`).
 //! - `stream` — records `clear_probe` (when probing) + the fused dispatch.
-//!   Returns zeros: the probe force accumulates on-device and is fetched
-//!   through [`WgpuBackend::read_probed_force`] (explicit readback), holding
-//!   the most recent step's value like V1 `probed_force`.
+//!   The probe force accumulates on-device and is fetched through
+//!   [`WgpuBackend::read_probed_force`] (explicit readback), holding the most
+//!   recent step's value like V1 `probed_force`.
 //! - `swap` — flips the ping-pong index (bind groups pre-built per parity).
 //! - `apply_open_faces` — records the per-face `bc` dispatches in
 //!   `Face::ALL` order (CPU order).
 //! - `update_moments` — lazy: the fused kernel re-derives the moments it
 //!   needs in-kernel from the same pre-collide state the CPU caches, so the
-//!   device moment buffers are only refreshed by `read_moments`. Doubles as
-//!   the step-end hook for chunked submission.
+//!   device moment buffers are only refreshed by `read_moments`.
+//! - `end_step` — records the step boundary for chunked submission.
 //! - `reduce` — explicit readback of the populations plus the exact V1
 //!   f64 accumulation loop on the host (wgpu has no f64; doing the loop
 //!   host-side keeps the diagnostic convention bit-compatible with
@@ -538,7 +538,7 @@ struct RecState {
     pending_collide: bool,
     use_cached_moments_once: bool,
     /// Written Params uniform (asserts step-parameter stability per run).
-    params_words: Option<[u32; 16]>,
+    params_words: Option<[u32; 20]>,
     /// Written per-face BC uniforms.
     bc_words: Option<[[u32; 64]; 6]>,
     /// Bumped per fused dispatch; invalidates the readback cache.
@@ -1015,9 +1015,10 @@ impl<L: Lattice> WgpuBackend<L> {
         let collision_code = match p.collision {
             CollisionKind::Bgk => 0u32,
             CollisionKind::Trt { .. } => 1u32,
-            CollisionKind::Cumulant { .. } => 2u32,
+            CollisionKind::CentralMoment { .. } => 2u32,
         };
-        let words: [u32; 16] = [
+        let gravity = p.gravity.unwrap_or([0.0; 3]);
+        let words: [u32; 20] = [
             fields.nx,
             fields.ny,
             fields.nz,
@@ -1029,6 +1030,9 @@ impl<L: Lattice> WgpuBackend<L> {
             p.force[0].to_bits(),
             p.force[1].to_bits(),
             p.force[2].to_bits(),
+            gravity[0].to_bits(),
+            gravity[1].to_bits(),
+            gravity[2].to_bits(),
             {
                 let halo = sub.halo_flags();
                 let mut flags = 0u32;
@@ -1049,6 +1053,9 @@ impl<L: Lattice> WgpuBackend<L> {
                 if fields.wale.is_some() {
                     flags |= wgsl::FLAG_WALE;
                 }
+                if p.gravity.is_some() {
+                    flags |= wgsl::FLAG_GRAVITY;
+                }
                 for face in Face::ALL {
                     if face.axis() >= L::D {
                         continue;
@@ -1061,6 +1068,7 @@ impl<L: Lattice> WgpuBackend<L> {
             },
             (p.collision.omega_shear((1.0 / p.omega_p - 0.5) / 3.0) as f32).to_bits(),
             collision_code,
+            0,
             0,
             0,
         ];
@@ -1726,7 +1734,7 @@ impl<L: Lattice> WgpuBackend<L> {
         let uy = buf("uy", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let uz = buf("uz", (n * 4) as u64, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let probe_acc = buf("probe_acc", 12, U::STORAGE | U::COPY_DST | U::COPY_SRC);
-        let params_ub = buf("params", 64, U::UNIFORM | U::COPY_DST);
+        let params_ub = buf("params", 80, U::UNIFORM | U::COPY_DST);
         let bc_ub = std::array::from_fn(|i| buf(&format!("bc{i}"), 256, U::UNIFORM | U::COPY_DST));
         let profiles = std::array::from_fn(|i| {
             let (t1, t2) = Face::ALL[i].tangents();
@@ -1889,6 +1897,14 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         false
     }
 
+    fn supports_d3q27_open_faces(&self) -> bool {
+        false
+    }
+
+    fn supports_gravity_body_force(&self) -> bool {
+        true
+    }
+
     fn alloc(&self, sub: &Subdomain) -> GpuFields {
         self.try_alloc(sub).expect("GPU field allocation failed")
     }
@@ -1924,6 +1940,10 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         true
     }
 
+    fn supports_two_pass(&self) -> bool {
+        false
+    }
+
     fn exchange_f<H: HaloExchange<f32>>(
         &mut self,
         _exchange: &H,
@@ -1955,7 +1975,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         fields: &mut GpuFields,
         _p: &StepParams<f32>,
         range: CellRange,
-    ) -> [f32; 3] {
+    ) {
         assert_eq!(
             range,
             CellRange::full(sub),
@@ -1973,7 +1993,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         let cur = st.cur;
         let cached = st.use_cached_moments_once || has_open_faces::<L>(sub, _p);
         let wale = fields.wale.is_some();
-        let cumulant = matches!(_p.collision, CollisionKind::Cumulant { .. });
+        let cumulant = matches!(_p.collision, CollisionKind::CentralMoment { .. });
         if wale {
             st.ops.push(Op::Moments { bg: cur });
             st.ops.push(Op::WaleOmega { bg: cur });
@@ -1986,9 +2006,6 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
         });
         st.generation += 1;
         st.f_cache = None;
-        // The probe force accumulates on-device; explicit readback via
-        // read_probed_force (per-step CPU sync is the 9x trap).
-        [0.0; 3]
     }
 
     fn swap(&mut self, fields: &mut GpuFields) {
@@ -2014,18 +2031,24 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn update_moments(&mut self, sub: &Subdomain, fields: &mut GpuFields, p: &StepParams<f32>) {
-        let has_uniform_force = p.force.iter().any(|&f| f != 0.0);
+        let has_uniform_force = p.force.iter().any(|&f| f != 0.0) || p.gravity.is_some();
         if has_uniform_force && fields.host_ff.is_none() {
             self.ensure_params(sub, fields, p);
             let mut st = fields.state.borrow_mut();
             let cur = st.cur;
             st.ops.push(Op::Moments { bg: cur });
-            st.steps_recorded += 1;
         } else {
             // Lazy: the fused kernel re-derives (rho, u) from the identical
             // pre-collide state, so no device moment refresh is needed.
-            fields.state.borrow_mut().steps_recorded += 1;
         }
+    }
+
+    fn end_step(&mut self, fields: &GpuFields) {
+        fields.state.borrow_mut().steps_recorded += 1;
+    }
+
+    fn read_probed_force(&self, fields: &GpuFields) -> [f32; 3] {
+        WgpuBackend::read_probed_force(self, fields)
     }
 
     fn run_span<H: HaloExchange<f32>>(
@@ -2075,7 +2098,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             let cur = st.cur;
             let cached = st.use_cached_moments_once || open_faces.iter().any(|&is_open| is_open);
             let wale = field.wale.is_some();
-            let cumulant = matches!(p.collision, CollisionKind::Cumulant { .. });
+            let cumulant = matches!(p.collision, CollisionKind::CentralMoment { .. });
             if wale {
                 st.ops.push(Op::Moments { bg: cur });
                 st.ops.push(Op::WaleOmega { bg: cur });
@@ -2097,10 +2120,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
             }
             st.steps_recorded += 1;
         }
-        // The probe force accumulates on-device and is read explicitly by
-        // GpuSolver::probed_force; the unified scalar slot stays at the same
-        // zero value returned by WgpuBackend::stream.
-        *probed_force = [0.0; 3];
+        let _ = probed_force;
     }
 
     fn run_chunk_size(&self, fields: &[GpuFields]) -> usize {
@@ -2115,10 +2135,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
 
     fn finish_run_chunk(&mut self, fields: &[GpuFields], steps: usize) {
         let start = std::time::Instant::now();
+        let calibrating = !self.submit_chunk_calibrated;
         for field in fields {
+            if field.state.borrow().ops.is_empty() {
+                continue;
+            }
             self.flush(field);
         }
-        let calibrating = !self.submit_chunk_calibrated;
         if calibrating {
             self.ctx.wait_idle();
         }
@@ -2177,9 +2200,13 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
                             for q in 0..L::Q {
                                 m += L::C[q][a] as f64 * f[q * n + c] as f64;
                             }
+                            let rho = 1.0 + (0..L::Q).map(|q| f[q * n + c] as f64).sum::<f64>();
+                            let gravity_force = p.gravity.map_or(0.0, |g| rho * g[a] as f64);
                             let fa = match &fields.host_ff {
-                                Some(field) => p.force[a] as f64 + field[c][a] as f64,
-                                None => p.force[a] as f64,
+                                Some(field) => {
+                                    p.force[a] as f64 + (field[c][a] as f64 + gravity_force)
+                                }
+                                None => p.force[a] as f64 + gravity_force,
                             };
                             acc += m + 0.5 * fa;
                         }
@@ -2408,7 +2435,7 @@ mod tests {
         GlobalSpec {
             dims: [n, n, n],
             nu,
-            collision: CollisionKind::Cumulant {
+            collision: CollisionKind::CentralMoment {
                 omega_shear: omega_from_nu(nu),
             },
             periodic: [true, true, true],

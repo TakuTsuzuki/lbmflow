@@ -15,9 +15,11 @@ Licensed under MIT OR Apache-2.0.
 - **Explicit accuracy–speed control.** Every trade-off — collision operator,
   precision, backend, resolution — is a first-class knob, not a hidden default.
   BGK is fast; TRT with magic parameter Λ = 3/16 reproduces plane Poiseuille
-  exactly on the half-way bounce-back grid; cumulant restores Galilean
-  invariance at high Re. Pick your point on the curve; the trade-off is
-  measured, not asserted.
+  exactly on the half-way bounce-back grid; cumulant improves high-Re
+  stability and isotropy (its D3Q19 shear-rate calibration is validated for
+  non-advected decay; a Galilean-invariance holdout at finite frame velocity
+  is an open finding — see PHYSICS.md). Pick your point on the curve; the
+  trade-off is measured, not asserted.
 - **Physically rigorous.** Every model term is derived from the governing
   equations or a literature-backed closure with a recorded derivation, validity
   domain, and its own validation test (`docs/PHYSICS.md`). Constants calibrated
@@ -50,8 +52,10 @@ Licensed under MIT OR Apache-2.0.
   by construction; MKM 1999 channel-flow reference profiles landed for
   Re_τ = 180 characterisation.
 - **Rotating machinery**: rotating immersed-boundary method for impellers and
-  stirred-reactor geometries; dispersed-phase deposition tracking (D-track)
-  with adhesion-capture and resuspension closures.
+  stirred-reactor geometries; rotating-body IBM is prescribed rigid rotation
+  with torque/force diagnostics, not general FSI or structural degrees of
+  freedom; dispersed-phase deposition tracking (D-track) with
+  adhesion-capture and resuspension closures.
 - **Curved walls**: Bouzidi second-order interpolated bounce-back.
 - **Rich boundary catalogue**: periodic, half-way bounce-back (static /
   moving), Zou-He velocity inlet (uniform or `set_inlet_profile`), Zou-He
@@ -126,10 +130,37 @@ D2Q9 / D3Q19 / D3Q27, backend selection) is documented in
 | Axis        | Choices                                                    | Notes |
 |-------------|------------------------------------------------------------|-------|
 | Dimension   | 2D (D2Q9), 3D (D3Q19, D3Q27)                               | Compile-time specialisation over `Lattice`. |
-| Collision   | BGK, TRT (magic Λ=3/16 default), cumulant (central-moment) | TRT for accuracy on Poiseuille and BCs; cumulant for high-Re Galilean invariance. |
+| Collision   | BGK, TRT (magic Λ=3/16 default), cumulant (central-moment) | TRT for accuracy on Poiseuille and BCs; central-moment/cumulant improves high-Re stability and isotropy. The D3Q19 finite-frame Galilean-invariance correction has an open holdout finding (PHYSICS.md) — use TRT/f64 or D3Q27 references for validation-grade frame-shift studies. |
 | Precision   | `f32` (deviation storage, validation-grade), `f64`, `f16`  | `f16` storage doubles capacity at ≈ 2× MLUPS with frozen bands. |
 | Backend     | `CpuScalar`, `CpuSimd` (fused collide+stream+moments), `Wgpu` | `--features gpu` for wgpu; T14 verifies CPU ↔ GPU equivalence. |
 | Parallelism | rayon threads (auto-serial on small grids), MPI ranks      | `--features mpi` for domain-decomposed halo exchange. |
+
+## Capability matrix
+
+The core API is broader than the product path exposed through scenario JSON,
+the CLI, and MCP. Use this matrix to choose combinations that are usable today.
+
+| Capability | Core API | Scenario JSON + MCP path | Notes |
+|------------|----------|--------------------------|-------|
+| Lattices | D2Q9 and D3Q19 support periodic, closed-wall, and open-face runs; D3Q27 adds velocity-inlet / pressure-outlet support on CPU (landed 2026-07-07). | `grid.nz <= 1` uses D2Q9; `grid.nz > 1` uses D3Q19. D3Q27 is not exposed in scenario JSON. | D3Q27 outflow/convective faces and GPU open faces are still rejected explicitly. |
+| Collision | `CollisionKind` exposes BGK, TRT, and cumulant / central-moment collision. | `CollisionSpec` exposes `bgk`, `trt`, and `cumulant` (cumulant honored on the 3D D3Q19 CPU path only; other paths reject it explicitly). | Landed 2026-07-07; the run manifest records the collision actually used. |
+| Precision / storage | CPU solvers run with `f32` or `f64`; the GPU backend runs `f32` compute and can store distributions as `f32` or `f16`. | `Precision` exposes `f32` and `f64` (GPU dispatch rejects `f64`); `compute.storage` exposes `f32` and `f16` — `f16` honored only for 2D D2Q9 GPU scenarios with a SHADER_F16 adapter, otherwise rejected explicitly. | Landed 2026-07-07; manifest records the storage actually used. |
+| Backends | `CpuScalar`, `CpuSimd`, `WgpuBackend` under feature `gpu`, and `MpiSolver` / `MpiExchange` under feature `mpi`. | CPU is the default scenario path. `compute.backend:"gpu"` is wired for 2D f32 scenarios when built with feature `gpu`; the CLI/MCP runner does not run 3D GPU scenarios yet. No JSON/MCP selector exists for MPI. | 3D GPU scenario capability rejects f64, multiphase, rotor, particles, non-rest initialization, and force probes; the core GPU backend also rejects localized volume sources and masked face patches. |
+| Checkpoint / restart | Multi-part and per-rank MPI checkpoint/restart (format v2) landed 2026-07-07; serialized state covers populations, stale buffer, moments, solid mask, and optional force field. Restart requires the same partition layout and rank count (`CKPT_DECOMP_MISMATCH` otherwise). | CLI run options can save and restore checkpoints for CPU-backed 2D and 3D scenario runs; MCP tools do not expose checkpoint options. | RNG / particles / statistics are not serialized (manifest flags false); large-scale checkpoint resilience (failure recovery, parallel field output) remains open. |
+| Particles | `ParticleSet` is deterministic one-way Lagrangian coupling only. | Scenario particles are optional in 2D CPU runs; 3D and GPU scenario paths reject particles. | Particles feel sampled flow, gravity / buoyancy, and drag; they do not apply reaction force back to the fluid. |
+| Multi-node scaling | MPI halo exchange and `MpiSolver` exist under feature `mpi`. | Not exposed through scenario JSON or MCP. | 64-rank weak-scaling acceptance remains RED pending cluster measurement. |
+
+<!-- Capability matrix verification:
+- Lattices/core: crates/lbm-core/src/lattice.rs defines D2Q9, D3Q19, D3Q27; crates/lbm-core/src/solver.rs validate_lattice rejects open faces unless the lattice has 3 or 5 unknowns, surfacing UnsupportedOpenFaceLattice for D3Q27; crates/lbm-core/src/solver.rs tests cover D3Q27 periodic / walled boxes and open-face rejection.
+- Lattices/scenario: crates/lbm-scenario/src/lib.rs Grid::is_3d, Solver3<T> = Solver<D3Q19, ...>, build3d, and build_t/Simulation<D2Q9 compat path.
+- Collision/core: crates/lbm-core/src/params.rs CollisionKind::{Bgk, Trt, Cumulant}; Collision/scenario: crates/lbm-scenario/src/lib.rs CollisionSpec::{Bgk, Trt}.
+- Precision/core: crates/lbm-core/src/real.rs implements Real for f32/f64; crates/lbm-core/src/gpu/backend.rs GpuStorage::{F32, F16}, KernelCfg, WgpuBackend::with_config. Precision/scenario: crates/lbm-scenario/src/lib.rs Precision::{F32, F64} and gpu_capability_error rejects f64 GPU dispatch.
+- Backends/core: crates/lbm-core/src/backend.rs CpuScalar Backend impl; crates/lbm-core/src/backend_simd.rs CpuSimd Backend impl; crates/lbm-core/src/gpu/backend.rs WgpuBackend Backend<L, f32> impl; crates/lbm-core/src/dist.rs MpiExchange/MpiSolver; crates/lbm-core/src/solver.rs rejects unsupported localized GPU features.
+- Backends/scenario: crates/lbm-scenario/src/lib.rs BackendSpec and gpu_capability_error; crates/lbm-cli/src/runner.rs dispatches GPU only through run_gpu2d and bails for 3D GPU.
+- Checkpoint/core: crates/lbm-core/src/solver.rs v2 checkpoint (multi-part payloads, CKPT_DECOMP_MISMATCH/CKPT_VERSION_MISMATCH guards), crates/lbm-core/src/dist.rs MpiSolver::save/restore, reserved rng/particles/stats false. Checkpoint/scenario: crates/lbm-cli/src/runner.rs RunOptions restore/save paths in run_t and run3d_t.
+- Particles: crates/lbm-core/src/particles.rs module docs and ParticleSet; crates/lbm-scenario/src/lib.rs ParticlesSpec comment plus build3d/build_gpu2d rejections; crates/lbm-cli/src/runner.rs one-way particle stepping.
+- Multi-node: crates/lbm-core/src/dist.rs feature-gated MPI module; docs/paper/claims-ledger.md keeps Multi-node scaling RED; README measured status retains the RED row.
+-->
 
 ## Measured status
 
@@ -138,7 +169,7 @@ Working snapshot from `docs/paper/claims-ledger.md`:
 | Capability                                     | Gate                                          | Status |
 |------------------------------------------------|-----------------------------------------------|:------:|
 | 3D GPU D3Q19 (T14-3D + ≥ 1 500 MLUPS)          | 32³ TGV3D u ≤ 1 × 10⁻⁵ · MLUPS quiet-window   | GREEN  |
-| Explicit `backend:"gpu"` in scenarios          | End-to-end honoured                           | GREEN  |
+| Explicit `backend:"gpu"` in 2D scenarios       | End-to-end honoured                           | GREEN  |
 | FP16 storage, × 2 grid capacity                | T16 bands frozen · ≥ 1.5× MLUPS @ 2048²       | GREEN  |
 | 2D GPU GLUPS · CPU MLUPS · T13 bit-exact       | Landed and measured                           | GREEN  |
 | WASM bit-identity · agent-native MCP + Skills  | Landed                                        | GREEN  |
@@ -189,6 +220,7 @@ Physics and validation
 
 - [docs/PHYSICS.md](docs/PHYSICS.md) — physics decisions and experiment log.
 - [docs/VALIDATION.md](docs/VALIDATION.md) — validation-test specification (T1–T18.x).
+- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — explicit capability limits and unsupported combinations.
 - [docs/T15_5_CAVITY3D_REFERENCE.md](docs/T15_5_CAVITY3D_REFERENCE.md) — 3D cavity reference data.
 
 Architecture and design

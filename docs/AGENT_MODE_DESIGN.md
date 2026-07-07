@@ -1,10 +1,16 @@
 # Agent Mode Design (Phase 6)
 
+**Status (2026-07-07)**: **Landed**: `lbm` CLI, scenario runner, schema printing, presets, and stdio MCP server are implemented.
+**Landed**: MCP exposes the designed seven tools, including async `start_run`/`run_status`/`list_runs` with a 4-run cap.
+**Superseded/current intent**: the JSON example below is historical; authoritative schema is `crates/lbm-scenario/src/lib.rs`, which now includes 3D, units, compute backend, rotor, particles, and related fields.
+
 Enable agents (Claude/Codex, etc.) and CLI users to run simulations through the
 same entry point. **The scenario JSON is the single execution contract**, and the
 GUI presets also internally generate the same schema (unifying the 3 modes).
 
 ## Crate structure
+
+(landed with additions 2026-07-07 — CLI subcommands exist; `gallery`, checkpoint flags, and JSON manifest output were added beyond this sketch)
 
 - `crates/lbm-cli` → binary name `lbm`
   - `lbm run <scenario.json> [--out DIR]`: executes and outputs artifacts + manifest.json
@@ -15,6 +21,8 @@ GUI presets also internally generate the same schema (unifying the 3 modes).
 - Dependencies: serde/serde_json, clap, png (visualization output), (MCP is either rmcp or hand-written JSON-RPC)
 
 ## Scenario JSON schema (v0)
+
+(partially superseded 2026-07-07 — use `lbm schema`/`lbm-scenario::Scenario`; this example omits newer fields and includes `collision.magic`, which is not in the current `CollisionSpec`)
 
 ```jsonc
 {
@@ -57,6 +65,8 @@ GUI presets also internally generate the same schema (unifying the 3 modes).
 
 ### Execution results (out directory)
 
+(landed with manifest drift 2026-07-07 — actual manifest uses camelCase `stepsRun`, status `completed|steady|diverged`, and errors are returned by the runner/MCP call rather than persisted as `status="error"`)
+
 - `manifest.json`: machine-readable summary
   ```jsonc
   {
@@ -74,6 +84,8 @@ GUI presets also internally generate the same schema (unifying the 3 modes).
 
 ### Design principles (agent UX)
 
+(landed with scope drift 2026-07-07 — self-description and deterministic runs exist; validation reports JSON errors/warnings/units, not the exact field-level repair schema sketched here)
+
 1. **Self-describing**: usage can be discovered with just `lbm schema` and `lbm presets list`
 2. **Structured failures**: validation errors return JSON stating "which field, why,
    and how to fix it" (e.g. "nu must be > 0; tau = 3*nu + 0.5 must exceed 0.5")
@@ -82,6 +94,8 @@ GUI presets also internally generate the same schema (unifying the 3 modes).
 4. **Determinism**: same scenario → same result (maintains the seed-free design)
 
 ## MCP server (`lbm mcp`)
+
+(landed 2026-07-07 — all seven designed tools are registered in `tools_list` and dispatched in `tools_call`)
 
 The stdio MCP server exposes 7 tools. The synchronous `run_scenario` blocks the
 client; the async trio (`start_run` / `run_status` / `list_runs`) is the way to
@@ -98,6 +112,8 @@ launch long or multiple simulations without blocking (4-concurrent cap).
 | `get_schema() -> JSON Schema` | Self-discovery of the scenario schema. |
 
 ## Relationship with the GUI
+
+(partially landed 2026-07-07 — GUI scenario export exists; presets still use GUI `EngineConfig` and are converted when exported)
 
 - GUI presets = scenario JSON (generated from web/src/presets.ts or shared JSON)
 - Future: an "export scenario" button in the GUI → reproducible in Agent Mode

@@ -105,3 +105,11 @@ session when ready; the PM triages before any code change is ordered.
   failure preferred). (2) ANOM-P4-009 doc comments (caller-must-clear
   contract on Rotor::update_force; hub region is a hole) added directly by
   the PM in compat/rotor.rs — doc-only, no behavior change.
+- 2026-07-06 (D-track PM): ANOM-P4-008 closure ack — offset removed by core,
+  −0.16·u² companion measured (B) by ablation. Inventory §3.1 updated to
+  P0 CLOSED. Excellent Order E outcome.
+- 2026-07-06 (D-track PM): ANOM-P4-020 sparger capability-gap ack. Filed
+  routing to core as docs/proposals/capability_gap_mcmp_sources.md (per-
+  component MCMP volume sources as interim path to MF-γ). D-track is
+  unaffected (dispersed_seeding is single-distribution particle + CR-1
+  liquid-flow sources); recorded for cross-track visibility.

@@ -6,7 +6,8 @@
 
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 mod units;
 pub use units::{
@@ -90,6 +91,8 @@ impl Scenario {
 pub struct ComputeSpec {
     #[serde(default)]
     pub backend: BackendSpec,
+    #[serde(default, skip_serializing_if = "is_default_storage")]
+    pub storage: StorageSpec,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,15 +104,37 @@ pub enum BackendSpec {
     Gpu,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StorageSpec {
+    #[default]
+    F32,
+    F16,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_storage(storage: &StorageSpec) -> bool {
+    *storage == StorageSpec::F32
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WallModel {
     Bouzidi,
 }
 
+#[cfg(not(feature = "gpu"))]
 const GPU_FEATURE_UNAVAILABLE: &str = "requested backend \"gpu\" is unavailable: this binary was built without GPU scenario dispatch (--features gpu). Use compute.backend \"cpu\" or rebuild with --features gpu.";
+#[cfg(not(feature = "gpu"))]
+const GPU_F16_FEATURE_UNAVAILABLE: &str = "requested compute.storage \"f16\" is unavailable: this binary was built without GPU scenario dispatch (--features gpu). Use compute.storage \"f32\" or rebuild with --features gpu.";
+#[cfg(feature = "gpu")]
+const GPU_F16_ADAPTER_UNAVAILABLE: &str = "requested compute.storage \"f16\" is unavailable: no usable GPU adapter with SHADER_F16 was found. Use compute.storage \"f32\" or run on a GPU adapter that supports shader-f16.";
 const GPU_F64_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for physics.precision f64; GPU scenario dispatch currently supports f32 storage/compute only. Use physics.precision \"f32\" or compute.backend \"cpu\".";
 const GPU_3D_UNSUPPORTED: &str = "requested backend \"gpu\" is unsupported for this 3D scenario: unsupported 3D GPU scenario combinations are f64 precision, multiphase, rotor, particles, non-rest init, force probes, and non-f32 storage. Use compute.backend \"cpu\" or simplify the scenario.";
+const GPU_F16_CPU_UNSUPPORTED: &str = "requested compute.storage \"f16\" is unsupported for compute.backend \"cpu\"; f16 distribution storage requires the GPU backend.";
+const GPU_F16_3D_UNSUPPORTED: &str = "requested compute.storage \"f16\" is unsupported for the 3D scenario path: GPU storage selection is currently wired only for 2D D2Q9 GPU scenarios.";
+const CENTRAL_MOMENT_2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 compat scenario path; central_moment is exposed only on the 3D D3Q19 native CPU scenario path.";
+const CENTRAL_MOMENT_GPU2D_UNSUPPORTED: &str = "requested collision \"central_moment\" is unsupported for the 2D D2Q9 GPU scenario path; central_moment scenario exposure is limited to 3D D3Q19 CPU.";
 
 /// Backend selected after applying explicit/auto policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -123,9 +148,17 @@ pub fn requested_backend(sc: &Scenario) -> BackendSpec {
     sc.compute.map(|c| c.backend).unwrap_or_default()
 }
 
+pub fn requested_storage(sc: &Scenario) -> StorageSpec {
+    sc.compute.map(|c| c.storage).unwrap_or_default()
+}
+
 pub fn auto_gpu_threshold(sc: &Scenario) -> bool {
     if sc.is_3d() {
-        sc.grid.nx.saturating_mul(sc.grid.ny).saturating_mul(sc.grid.nz) >= 64usize.pow(3)
+        sc.grid
+            .nx
+            .saturating_mul(sc.grid.ny)
+            .saturating_mul(sc.grid.nz)
+            >= 64usize.pow(3)
     } else {
         sc.grid.nx.saturating_mul(sc.grid.ny) >= 256usize.pow(2)
     }
@@ -136,7 +169,9 @@ pub fn selected_backend(sc: &Scenario) -> BackendChoice {
         BackendSpec::Cpu => BackendChoice::Cpu,
         BackendSpec::Gpu => BackendChoice::Gpu,
         BackendSpec::Auto => {
-            if auto_gpu_threshold(sc) && gpu_capability_error(sc).is_none() {
+            if requested_storage(sc) == StorageSpec::F16 {
+                BackendChoice::Gpu
+            } else if auto_gpu_threshold(sc) && gpu_capability_error(sc).is_none() {
                 BackendChoice::Gpu
             } else {
                 BackendChoice::Cpu
@@ -149,6 +184,9 @@ pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
     if sc.physics.precision == Precision::F64 {
         return Some(GPU_F64_UNSUPPORTED);
     }
+    if sc.is_3d() && requested_storage(sc) == StorageSpec::F16 {
+        return Some(GPU_F16_3D_UNSUPPORTED);
+    }
     if sc.is_3d()
         && (sc.multiphase.is_some()
             || sc.rotor.is_some()
@@ -160,6 +198,19 @@ pub fn gpu_capability_error(sc: &Scenario) -> Option<&'static str> {
                 .any(|p| matches!(p, ProbeSpec::Force { .. })))
     {
         return Some(GPU_3D_UNSUPPORTED);
+    }
+    None
+}
+
+pub fn strict_capability_error(sc: &Scenario) -> Option<&'static str> {
+    if requested_backend(sc) == BackendSpec::Cpu && requested_storage(sc) == StorageSpec::F16 {
+        return Some(GPU_F16_CPU_UNSUPPORTED);
+    }
+    if !sc.is_3d() && sc.physics.collision.is_central_moment() {
+        if selected_backend(sc) == BackendChoice::Gpu {
+            return Some(CENTRAL_MOMENT_GPU2D_UNSUPPORTED);
+        }
+        return Some(CENTRAL_MOMENT_2D_UNSUPPORTED);
     }
     None
 }
@@ -184,22 +235,83 @@ pub struct Physics {
     pub precision: Precision,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollisionSpec {
     Bgk,
-    #[default]
-    #[serde(rename_all = "camelCase")]
     Trt,
+    CentralMoment,
+    DeprecatedCumulantAlias,
+}
+
+impl Default for CollisionSpec {
+    fn default() -> Self {
+        Self::Trt
+    }
+}
+
+impl Serialize for CollisionSpec {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut st = serializer.serialize_struct("CollisionSpec", 1)?;
+        let kind = match self {
+            CollisionSpec::Bgk => "bgk",
+            CollisionSpec::Trt => "trt",
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                "central_moment"
+            }
+        };
+        st.serialize_field("type", kind)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CollisionSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Tagged {
+            #[serde(rename = "type")]
+            kind: String,
+        }
+
+        let tagged = Tagged::deserialize(deserializer)?;
+        match tagged.kind.as_str() {
+            "bgk" => Ok(CollisionSpec::Bgk),
+            "trt" => Ok(CollisionSpec::Trt),
+            "central_moment" => Ok(CollisionSpec::CentralMoment),
+            "cumulant" => Ok(CollisionSpec::DeprecatedCumulantAlias),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["bgk", "trt", "central_moment", "cumulant"],
+            )),
+        }
+    }
 }
 
 impl CollisionSpec {
+    pub fn is_central_moment(self) -> bool {
+        matches!(
+            self,
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias
+        )
+    }
+
+    pub fn used_deprecated_cumulant_alias(self) -> bool {
+        matches!(self, CollisionSpec::DeprecatedCumulantAlias)
+    }
+
     pub fn to_core(self) -> Collision {
         match self {
             CollisionSpec::Bgk => Collision::Bgk,
             CollisionSpec::Trt => Collision::default(),
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                panic!("2D compat Collision does not support central_moment")
+            }
         }
     }
+}
+
+pub fn central_moment_omega_shear(nu: f64) -> f64 {
+    lbm_core::params::CollisionKind::Bgk.omegas(nu).0
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +627,13 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
             message,
         });
     };
+    if sc.physics.collision.used_deprecated_cumulant_alias() {
+        warn(
+            "physics.collision",
+            "collision type \"cumulant\" is deprecated; use canonical type \"central_moment\""
+                .to_string(),
+        );
+    }
     let tau = 3.0 * sc.physics.nu + 0.5;
     if tau < TAU_LOW_WARN_THRESHOLD {
         warn(
@@ -591,6 +710,11 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 "seed region is empty or outside the grid".to_string(),
             );
         }
+        warn(
+            "particles.model",
+            "particles use a one-way Schiller-Naumann drag model only: no reaction force, added mass, lift, Basset history, Faxen correction, stochastic LES dispersion, or particle-particle contact. Near-neutral finite-size, high mass-loading, and full-FSI particle claims are spec-only until two-way/resolved-particle validation lands"
+                .to_string(),
+        );
     }
     if sc.multiphase.is_some() && sc.physics.precision == Precision::F32 {
         warn(
@@ -612,6 +736,10 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
     }
     if selected_backend(sc) == BackendChoice::Gpu {
         #[cfg(not(feature = "gpu"))]
+        if requested_storage(sc) == StorageSpec::F16 {
+            warn("compute.storage", GPU_F16_FEATURE_UNAVAILABLE.to_string());
+        }
+        #[cfg(not(feature = "gpu"))]
         if requested_backend(sc) == BackendSpec::Gpu {
             warn("compute.backend", GPU_FEATURE_UNAVAILABLE.to_string());
         }
@@ -628,6 +756,16 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
                 ),
             );
         }
+    }
+    if let Some(e) = strict_capability_error(sc) {
+        let field = if e.contains("storage") {
+            "compute.storage"
+        } else if e.contains("backend") {
+            "compute.backend"
+        } else {
+            "physics.collision"
+        };
+        warn(field, e.to_string());
     }
     if sc.is_3d() {
         if sc.multiphase.is_some() {
@@ -694,6 +832,35 @@ fn edge_speeds(e: &EdgesSpec) -> [f64; 6] {
     })
 }
 
+fn named_edge_spec(edges: &EdgesSpec, edge: EdgeName) -> EdgeSpec {
+    match edge {
+        EdgeName::Left => edges.left,
+        EdgeName::Right => edges.right,
+        EdgeName::Bottom => edges.bottom,
+        EdgeName::Top => edges.top,
+    }
+}
+
+fn validate_inlet_profile_request(sc: &Scenario) -> Result<(), ConfigError> {
+    let Some(p) = &sc.inlet_profile else {
+        return Ok(());
+    };
+    if !matches!(
+        named_edge_spec(&sc.edges, p.edge),
+        EdgeSpec::VelocityInlet { .. }
+    ) {
+        return Err(ConfigError::InvalidParameter {
+            what: "inletProfile edge must reference a velocityInlet boundary",
+            value: 0.0,
+        });
+    }
+    let speed = p.umax.abs();
+    if !(speed <= MAX_SPEED) {
+        return Err(ConfigError::VelocityTooHigh { speed });
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- build
 
 /// A built simulation, precision-erased for the runner.
@@ -703,7 +870,12 @@ pub enum SimHandle {
 }
 
 #[cfg(feature = "gpu")]
-pub type GpuSim2 = lbm_core::gpu::GpuSolver<lbm_core::lattice::D2Q9>;
+pub type GpuSim2 = lbm_core::solver::Solver<
+    lbm_core::lattice::D2Q9,
+    f32,
+    lbm_core::gpu::WgpuBackend<lbm_core::lattice::D2Q9>,
+    lbm_core::halo::LocalPeriodic,
+>;
 
 /// Build error for 2D scenarios: either a core configuration error or a
 /// requested scenario capability the 2D compat execution path cannot provide.
@@ -811,7 +983,14 @@ pub fn build_check(sc: &Scenario) -> Result<(), String> {
         Err(e) => return Err(e),
     };
     let sc = &resolved;
+    if let Some(e) = strict_capability_error(sc) {
+        return Err(e.to_string());
+    }
     if selected_backend(sc) == BackendChoice::Gpu {
+        #[cfg(not(feature = "gpu"))]
+        if requested_storage(sc) == StorageSpec::F16 {
+            return Err(GPU_F16_FEATURE_UNAVAILABLE.to_string());
+        }
         #[cfg(not(feature = "gpu"))]
         if requested_backend(sc) == BackendSpec::Gpu {
             return Err(GPU_FEATURE_UNAVAILABLE.to_string());
@@ -857,6 +1036,7 @@ pub fn build3d(sc: &Scenario) -> Result<Sim3Handle, Build3Error> {
         Ok(None) => sc,
         Err(e) => return Err(Build3Error::Units(e)),
     };
+    validate_inlet_profile_request(sc)?;
     Ok(match sc.physics.precision {
         Precision::F32 => Sim3Handle::F32(build3d_t::<f32>(sc)?),
         Precision::F64 => Sim3Handle::F64(build3d_t::<f64>(sc)?),
@@ -885,6 +1065,9 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
     }
     if !matches!(sc.init, InitSpec::Rest) {
         return Err(Build3Error::Unsupported("init must be rest only"));
+    }
+    if let Some(e) = strict_capability_error(sc) {
+        return Err(Build3Error::BackendUnavailable(e));
     }
     if selected_backend(sc) == BackendChoice::Gpu {
         #[cfg(not(feature = "gpu"))]
@@ -976,6 +1159,11 @@ fn build3d_t<T: lbm_core::real::Real>(sc: &Scenario) -> Result<Solver3<T>, Build
             CollisionSpec::Trt => CollisionKind::Trt {
                 magic: CollisionKind::MAGIC_STD,
             },
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                CollisionKind::CentralMoment {
+                    omega_shear: central_moment_omega_shear(sc.physics.nu),
+                }
+            }
         },
         periodic,
         faces,
@@ -1122,12 +1310,16 @@ pub fn build(sc: &Scenario) -> Result<SimHandle, BuildError> {
         Ok(None) => sc,
         Err(e) => return Err(BuildError::Units(e)),
     };
+    validate_inlet_profile_request(sc)?;
     if sc.is_3d() {
         return Err(ConfigError::InvalidParameter {
             what: "grid.nz (2D build requires nz == 1; the runner dispatches 3D to build3d)",
             value: sc.grid.nz as f64,
         }
         .into());
+    }
+    if let Some(e) = strict_capability_error(sc) {
+        return Err(BuildError::BackendUnavailable(e));
     }
     if selected_backend(sc) == BackendChoice::Gpu {
         #[cfg(not(feature = "gpu"))]
@@ -1303,7 +1495,7 @@ fn validate_gravity_vector(g: [f64; 3], is_3d: bool) -> Result<(), ConfigError> 
 
 #[cfg(feature = "gpu")]
 pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
-    use lbm_core::lattice::{D2Q9, Face};
+    use lbm_core::lattice::{Face, D2Q9};
     use lbm_core::prelude::{build_wall_rims, CollisionKind, FaceBC, GlobalSpec, WallSpec};
     use std::sync::Arc;
 
@@ -1316,23 +1508,35 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
         Ok(None) => sc,
         Err(e) => return Err(BuildError::Units(e)),
     };
+    validate_inlet_profile_request(sc)?;
     if sc.is_3d() {
         return Err(BuildError::Unsupported("build_gpu2d requires nz == 1"));
+    }
+    if let Some(e) = strict_capability_error(sc) {
+        return Err(BuildError::BackendUnavailable(e));
     }
     if let Some(e) = gpu_capability_error(sc) {
         return Err(BuildError::BackendUnavailable(e));
     }
     if sc.multiphase.is_some() {
-        return Err(BuildError::Unsupported("GPU scenario dispatch does not support multiphase"));
+        return Err(BuildError::Unsupported(
+            "GPU scenario dispatch does not support multiphase",
+        ));
     }
     if sc.rotor.is_some() {
-        return Err(BuildError::Unsupported("GPU scenario dispatch does not support rotor"));
+        return Err(BuildError::Unsupported(
+            "GPU scenario dispatch does not support rotor",
+        ));
     }
     if sc.particles.is_some() {
-        return Err(BuildError::Unsupported("GPU scenario dispatch does not support particles"));
+        return Err(BuildError::Unsupported(
+            "GPU scenario dispatch does not support particles",
+        ));
     }
     if !matches!(sc.init, InitSpec::Rest) {
-        return Err(BuildError::Unsupported("GPU scenario dispatch supports init rest only"));
+        return Err(BuildError::Unsupported(
+            "GPU scenario dispatch supports init rest only",
+        ));
     }
     let dims = [sc.grid.nx, sc.grid.ny, 1];
     let specs = [sc.edges.left, sc.edges.right, sc.edges.bottom, sc.edges.top];
@@ -1378,6 +1582,11 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
             CollisionSpec::Trt => CollisionKind::Trt {
                 magic: CollisionKind::MAGIC_STD,
             },
+            CollisionSpec::CentralMoment | CollisionSpec::DeprecatedCumulantAlias => {
+                CollisionKind::CentralMoment {
+                    omega_shear: central_moment_omega_shear(sc.physics.nu),
+                }
+            }
         },
         periodic,
         faces,
@@ -1418,9 +1627,32 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
     }
     spec.validate(2, &solid)
         .map_err(|e| BuildError::Unsupported(Box::leak(e.to_string().into_boxed_str())))?;
-    let ctx = lbm_core::gpu::GpuContext::new()
-        .map_err(|_| BuildError::BackendUnavailable("requested backend \"gpu\" is unavailable: no usable GPU adapter was found"))?;
-    let mut s = lbm_core::gpu::GpuSolver::<D2Q9>::new(&spec, &solid, &wall_u, Arc::clone(&ctx));
+    let storage = match requested_storage(sc) {
+        StorageSpec::F32 => lbm_core::gpu::GpuStorage::F32,
+        StorageSpec::F16 => lbm_core::gpu::GpuStorage::F16,
+    };
+    let ctx = if storage == lbm_core::gpu::GpuStorage::F16 {
+        lbm_core::gpu::GpuContext::new_with_shader_f16(true)
+            .map_err(|_| BuildError::BackendUnavailable(GPU_F16_ADAPTER_UNAVAILABLE))
+    } else {
+        lbm_core::gpu::GpuContext::new().map_err(|_| {
+            BuildError::BackendUnavailable(
+                "requested backend \"gpu\" is unavailable: no usable GPU adapter was found",
+            )
+        })
+    }?;
+    let backend = lbm_core::gpu::WgpuBackend::<D2Q9>::with_config(
+        Arc::clone(&ctx),
+        lbm_core::gpu::KernelCfg { storage },
+    );
+    let mut s = lbm_core::solver::Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        backend,
+        lbm_core::halo::LocalPeriodic,
+    );
     if let Some(p) = &sc.inlet_profile {
         let face = match p.edge {
             EdgeName::Left => Face::XNeg,
@@ -1440,11 +1672,7 @@ pub fn build_gpu2d(sc: &Scenario) -> Result<GpuSim2, BuildError> {
                 } else {
                     let w = c as f64 - 0.5;
                     let mag = 4.0 * p.umax * w * (h - w) / (h * h);
-                    [
-                        (mag * normal[0]) as f32,
-                        (mag * normal[1]) as f32,
-                        0.0,
-                    ]
+                    [(mag * normal[0]) as f32, (mag * normal[1]) as f32, 0.0]
                 }
             })
             .collect::<Vec<_>>();
@@ -1849,6 +2077,7 @@ mod tests {
         let mut gpu = duct3d();
         gpu.compute = Some(ComputeSpec {
             backend: BackendSpec::Gpu,
+            storage: StorageSpec::F32,
         });
         assert!(matches!(
             build3d(&gpu),
@@ -1900,6 +2129,7 @@ mod tests {
         let mut sc = preset("cavity");
         sc.compute = Some(ComputeSpec {
             backend: BackendSpec::Gpu,
+            storage: StorageSpec::F32,
         });
 
         let err = match build(&sc) {
@@ -1923,7 +2153,8 @@ mod tests {
         assert_eq!(check, err);
         assert!(validate(&sc).iter().any(|w| {
             w.field == "compute.backend"
-                && (w.message
+                && (w
+                    .message
                     .contains("requested backend \"gpu\" is unavailable")
                     || w.message
                         .contains("requested backend \"gpu\" is unsupported"))
@@ -1931,10 +2162,92 @@ mod tests {
     }
 
     #[test]
+    fn build_check_rejects_hard_scenario_physics_errors() {
+        let mut bad_nu = preset("cavity");
+        bad_nu.physics.nu = 0.0;
+        let err = build_check(&bad_nu).unwrap_err();
+        assert!(err.contains("kinematic viscosity must be > 0"), "{err}");
+        assert!(err.contains("tau = 3*nu + 0.5"), "{err}");
+
+        let mut too_fast_wall = preset("cavity");
+        too_fast_wall.edges.top = EdgeSpec::MovingWall { u: [0.31, 0.0] };
+        let err = build_check(&too_fast_wall).unwrap_err();
+        assert!(err.contains("low-Mach limit"), "{err}");
+
+        let mut adjacent_open = preset("cavity");
+        adjacent_open.edges.left = EdgeSpec::VelocityInlet { u: [0.05, 0.0] };
+        adjacent_open.edges.right = EdgeSpec::PressureOutlet { rho: 1.0 };
+        adjacent_open.edges.bottom = EdgeSpec::Outflow;
+        let err = build_check(&adjacent_open).unwrap_err();
+        assert!(
+            err.contains("orthogonal") || err.contains("adjacent") || err.contains("perpendicular"),
+            "{err}"
+        );
+
+        let mut profile_not_on_inlet = preset("cavity");
+        profile_not_on_inlet.inlet_profile = Some(InletProfile {
+            edge: EdgeName::Top,
+            kind: ProfileKind::Parabolic,
+            umax: 0.05,
+        });
+        let err = build_check(&profile_not_on_inlet).unwrap_err();
+        assert!(err.contains("inletProfile edge"), "{err}");
+
+        let mut too_fast_profile = preset("cylinder-karman");
+        too_fast_profile.inlet_profile = Some(InletProfile {
+            edge: EdgeName::Left,
+            kind: ProfileKind::Parabolic,
+            umax: 0.31,
+        });
+        let err = build_check(&too_fast_profile).unwrap_err();
+        assert!(err.contains("low-Mach limit"), "{err}");
+    }
+
+    #[test]
+    fn unsupported_source_sink_schema_fields_are_rejected() {
+        let with_sources = serde_json::json!({
+            "name": "unsupported-sources",
+            "grid": { "nx": 16, "ny": 16 },
+            "physics": { "nu": 0.05 },
+            "edges": {
+                "left": { "type": "periodic" },
+                "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" },
+                "top": { "type": "bounceBack" }
+            },
+            "sources": [],
+            "run": { "steps": 1 }
+        });
+        let err = serde_json::from_value::<Scenario>(with_sources)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `sources`"), "{err}");
+
+        let with_sinks = serde_json::json!({
+            "name": "unsupported-sinks",
+            "grid": { "nx": 16, "ny": 16 },
+            "physics": { "nu": 0.05 },
+            "edges": {
+                "left": { "type": "periodic" },
+                "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" },
+                "top": { "type": "bounceBack" }
+            },
+            "sinks": [],
+            "run": { "steps": 1 }
+        });
+        let err = serde_json::from_value::<Scenario>(with_sinks)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `sinks`"), "{err}");
+    }
+
+    #[test]
     fn auto_backend_still_builds_and_runs_for_2d() {
         let mut sc = preset("cavity");
         sc.compute = Some(ComputeSpec {
             backend: BackendSpec::Auto,
+            storage: StorageSpec::F32,
         });
 
         match build(&sc).unwrap() {
@@ -1945,6 +2258,148 @@ mod tests {
             _ => panic!("expected an f64 single-phase CPU compat build"),
         }
         assert!(build_check(&sc).is_ok());
+    }
+
+    #[test]
+    fn central_moment_and_f16_schema_roundtrip() {
+        let text = r#"{
+            "name": "new-surface",
+            "grid": { "nx": 12, "ny": 10, "nz": 8 },
+            "physics": {
+                "nu": 0.02,
+                "collision": { "type": "central_moment" },
+                "precision": "f32"
+            },
+            "compute": { "backend": "gpu", "storage": "f16" },
+            "edges": {
+                "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+            },
+            "run": { "steps": 1 }
+        }"#;
+        let sc: Scenario = serde_json::from_str(text).unwrap();
+        assert!(matches!(sc.physics.collision, CollisionSpec::CentralMoment));
+        assert_eq!(requested_storage(&sc), StorageSpec::F16);
+        let json = serde_json::to_string(&sc).unwrap();
+        assert!(json.contains("\"type\":\"central_moment\""), "{json}");
+        assert!(json.contains("\"storage\":\"f16\""), "{json}");
+        let back: Scenario = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back.physics.collision,
+            CollisionSpec::CentralMoment
+        ));
+        assert_eq!(requested_storage(&back), StorageSpec::F16);
+    }
+
+    #[test]
+    fn deprecated_cumulant_alias_maps_to_central_moment_with_warning() {
+        let text = r#"{
+            "name": "old-surface",
+            "grid": { "nx": 12, "ny": 10, "nz": 8 },
+            "physics": {
+                "nu": 0.02,
+                "collision": { "type": "cumulant" }
+            },
+            "edges": {
+                "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+            },
+            "run": { "steps": 1 }
+        }"#;
+        let sc: Scenario = serde_json::from_str(text).unwrap();
+        assert!(sc.physics.collision.is_central_moment());
+        assert!(sc.physics.collision.used_deprecated_cumulant_alias());
+        let warnings = validate(&sc);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.field == "physics.collision" && w.message.contains("deprecated")),
+            "{warnings:?}"
+        );
+        let json = serde_json::to_string(&sc).unwrap();
+        assert!(json.contains("\"type\":\"central_moment\""), "{json}");
+    }
+
+    #[test]
+    fn unsupported_central_moment_paths_are_rejected_precisely() {
+        let mut cpu2d = preset("cavity");
+        cpu2d.physics.collision = CollisionSpec::CentralMoment;
+        let err = build_check(&cpu2d).unwrap_err();
+        assert!(err.contains("central_moment"), "{err}");
+        assert!(err.contains("2D D2Q9 compat"), "{err}");
+
+        let mut gpu2d = preset("cavity");
+        gpu2d.physics.precision = Precision::F32;
+        gpu2d.physics.collision = CollisionSpec::CentralMoment;
+        gpu2d.compute = Some(ComputeSpec {
+            backend: BackendSpec::Gpu,
+            storage: StorageSpec::F32,
+        });
+        let err = build_check(&gpu2d).unwrap_err();
+        assert!(err.contains("central_moment"), "{err}");
+        assert!(err.contains("2D D2Q9 GPU"), "{err}");
+    }
+
+    #[test]
+    fn f16_storage_requires_gpu_backend() {
+        let mut sc = preset("cavity");
+        sc.physics.precision = Precision::F32;
+        sc.compute = Some(ComputeSpec {
+            backend: BackendSpec::Cpu,
+            storage: StorageSpec::F16,
+        });
+        let err = build_check(&sc).unwrap_err();
+        assert!(err.contains("compute.storage \"f16\""), "{err}");
+        assert!(err.contains("compute.backend \"cpu\""), "{err}");
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    #[test]
+    fn f16_storage_without_gpu_feature_is_rejected() {
+        let mut sc = preset("cavity");
+        sc.physics.precision = Precision::F32;
+        sc.compute = Some(ComputeSpec {
+            backend: BackendSpec::Auto,
+            storage: StorageSpec::F16,
+        });
+        let err = build_check(&sc).unwrap_err();
+        assert!(err.contains("compute.storage \"f16\""), "{err}");
+        assert!(err.contains("--features gpu"), "{err}");
+    }
+
+    #[test]
+    fn central_moment_3d_cpu_smoke_uses_core_central_moment_rate() {
+        let mut sc: Scenario = serde_json::from_str(
+            r#"{
+                "name": "central_moment3d-smoke",
+                "grid": { "nx": 4, "ny": 4, "nz": 4 },
+                "physics": {
+                    "nu": 0.02,
+                    "collision": { "type": "central_moment" }
+                },
+                "compute": { "backend": "cpu" },
+                "edges": {
+                    "left": { "type": "periodic" }, "right": { "type": "periodic" },
+                    "bottom": { "type": "bounceBack" }, "top": { "type": "bounceBack" },
+                    "front": { "type": "bounceBack" }, "back": { "type": "bounceBack" }
+                },
+                "run": { "steps": 1 }
+            }"#,
+        )
+        .unwrap();
+        sc.physics.collision = CollisionSpec::CentralMoment;
+        match build3d(&sc).unwrap() {
+            Sim3Handle::F64(mut s) => {
+                s.run(sc.run.steps);
+                assert_eq!(s.time(), 1);
+                assert!(s.u(2, 2, 2)[0].is_finite());
+                let expected = 1.0 / s.tau();
+                assert_eq!(central_moment_omega_shear(sc.physics.nu), expected);
+            }
+            _ => panic!("expected f64"),
+        }
     }
 
     #[test]
@@ -2042,6 +2497,37 @@ mod tests {
             "{warnings:?}"
         );
         assert!(warnings.iter().any(|w| w.field == "edges"), "{warnings:?}");
+    }
+
+    #[test]
+    fn validate_downgrades_one_way_particle_model_claims() {
+        let mut sc = preset("cavity");
+        sc.physics.gravity = Some([0.0, -1.0e-5, 0.0]);
+        sc.particles = Some(ParticlesSpec {
+            count: 4,
+            d: 1.0,
+            rho_p: 1.01,
+            restitution: 0.0,
+            seed: SeedRegion {
+                x0: 8.0,
+                y0: 8.0,
+                x1: 16.0,
+                y1: 16.0,
+            },
+            output_every: 0,
+        });
+
+        let warnings = validate(&sc);
+        assert!(
+            warnings.iter().any(|w| {
+                w.field == "particles.model"
+                    && w.message.contains("one-way Schiller-Naumann")
+                    && w.message.contains("added mass")
+                    && w.message.contains("Near-neutral")
+                    && w.message.contains("full-FSI")
+            }),
+            "{warnings:?}"
+        );
     }
 
     fn preset(name: &str) -> Scenario {

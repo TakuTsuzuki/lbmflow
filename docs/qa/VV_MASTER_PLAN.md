@@ -34,9 +34,20 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 - 1.8 Tracer-limit particle audit (near-neutral buoyancy) — **GATE
   (Phase B spec)** — v→u relaxation in nonuniform flow; BBO validity floor.
 
+- 1.9 **Dynamic multiphase exact suite** — **RUN** (codex cx/mp-dynamics in
+  flight): capillary-wave dispersion (omega^2 = sigma k^3/(rho_l+rho_v),
+  k^3-law fit), Lamb n=2 droplet oscillation (R^-3/2 scaling), two-layer
+  stratified Couette exact piecewise profile under shear, Lucas-Washburn
+  x^2 ~ t imbibition. Research agent enumerating the next tier (Tomotika,
+  Taylor deformation D(Ca), spinodal exponents, KH threshold, Jurin) →
+  docs/qa/multiphase-hard-cases.md.
+
 ## Axis 2 — Meta-V&V: does the net catch fish?
 
-- 2.1 **Mutation testing of the validation suite** — **W1**: inject
+- 2.1 **Mutation testing** — **RUN (split)**: cx/vv-mutation (other V&V
+  worker) landed the runner + 3 mutants, all KILLED (moving-wall sign,
+  Zou-He pressure normal sign, outflow stale slot); extension order queued
+  (task #8) for the remaining mutants: inject
   deliberate physics bugs one at a time (sign flip in Guo source, factor-2
   in MW term, w_q swap, off-by-half wall position, dropped corner link,
   tau→omega typo, feq u² coefficient); every MISSED mutant = a coverage hole.
@@ -44,9 +55,8 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   physics kernels.
 - 2.2 Band-vacuity scan — **DONE** (commit 2e121c8). Retighten queue
   survives in `docs/qa/band-vacuity-scan.md`.
-- 2.3 Behavior-anchor coverage — **W2**: for every VALIDATION.md band,
-  check a pattern/sign/monotonicity anchor exists (two-layer rule); list
-  band-only gates → codex retrofit order.
+- 2.3 Behavior-anchor coverage — **DONE** (structural-sweep-2026-07-06.md):
+  17/23 sections dual-layer, T4 band-only justified; no retrofit needed.
 
 ## Axis 3 — Cross-intelligence review
 
@@ -55,20 +65,21 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   derivation. Cumulant naming routed to D-track.
 - 3.2 **W2** Code→spec back-translation — subagent derives "what equations
   does this code actually solve" per module; diff against PHYSICS.md.
-- 3.3 **W2** Claims-ledger cross-check — every PHYSICS.md / whitepaper
-  claim mapped to the test that proves it; red rows.
+- 3.3 Claims-ledger cross-check — **DONE (by the parallel V&V campaign)**:
+  cx/vv-trace docs/VV_TRACEABILITY.md — 27 VALIDATED / 4 VERIFIED-ONLY /
+  3 BENCH-PENDING / 8 SPEC-ONLY / 1 UNSAFE-CLAIM (T17-03 stress/LES/IBM,
+  consistent with our ANOM-P4-001 routing). Merge via task #12.
 - 3.4 Review panel on fix designs — **GATE (P4-001/010 core landing)** —
   2-3 agent judge panel on the fix design before gate-running.
 
 ## Axis 4 — Literature & community bad-practice sweep (web)
 
-- 4.1 **LBM pitfall compendium** — **W1**: forcing-scheme inconsistencies,
-  non-eq initialization, corner/edge BC, checkerboard modes, tau→0.5
-  oscillations, viscosity-dependent BB slip, momentum-exchange Galilean
-  (Wen et al.), interpolated-BB mass leakage, Shan-Chen thermodynamic
-  inconsistency, LES wall, cumulant Galilean claims, Ma² contamination,
-  staircase artifacts. Map every item → {covered / gap / N-A}.
-  Deliverable: `docs/qa/pitfall-checklist.md`; gaps become audit rows.
+- 4.1 LBM pitfall compendium — **DONE** (commit f1d9eb2,
+  `docs/qa/pitfall-checklist.md`): 27 pitfalls mapped, 16 COVERED /
+  8 PARTIAL / 1 GAP (checkerboard modes) / 1 N/A; 9 kill-cases queued in
+  priority order → fold into lane 1.7 W2 orders (top 4: checkerboard-mode
+  decay, co-moving-frame zero wall force (Wen-2014 decider), WALE
+  pure-shear nu_t field check, single-delta streaming + OPP[] table test).
 - 4.2 Benchmark-matrix expansion — **DONE** (commit 4eac49e); outstanding
   queue in `docs/qa/benchmark-backlog.md`. Kovasznay / Sangani-Acrivos /
   Womersley landed in 2c78d85.
@@ -101,18 +112,21 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   cavity/cylinder/TGV.
 - 6.2 **W3** Spectral mini-referee — 64-line Python spectral NS for 2D TGV
   / Kolmogorov.
-- 6.3 GPU absolute physics — **GATE (R2-D3 lands)** — TGV order + cavity
-  Ghia directly on GPU; PM-run.
+- 6.3 GPU absolute physics — **PARTIAL**: cx/vv-backend (parallel campaign)
+  landed D2Q9 GPU-direct TGV (order 1.883) + pressure-channel sentinels;
+  remaining: D3Q19 direct, GPU Ghia cavity, GPU conservation — GATE (R2-D3)
+  for the full matrix.
 
 ## Axis 7 — Static & structural verification
 
 - 7.1 **W1** Ban-list grep sweep — case-identity branches, transported-
   quantity clamps, bare calibrated literals; recurring CI-able check.
-- 7.2 **W2** Numeric-literal provenance scan — every float in src/ physics
-  paths needs a provenance comment or named constant.
+- 7.2 Numeric-literal provenance scan — **DONE** (structural-sweep):
+  no new undocumented physics constants; P2 comment order queued.
 - 7.3 **W3** Unsafe/precision audit — SIMD unsafe UB; f32↔f64 cast audit;
   Kahan-summation needs.
-- 7.4 **W2** Docs/spec consistency — VALIDATION.md ↔ test files drift.
+- 7.4 Docs/spec consistency — **DONE** (structural-sweep): 14/14 verified
+  bands match exactly, zero drift; agent's missing-test rows PM-refuted.
 
 ## Axis 8 — Interface/tooling V&V (product surface)
 
@@ -120,6 +134,50 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 - 8.2 **W3** WASM/GUI parity vs native.
 - 8.3 **W3** CLI/MCP contract tests (presets/gallery/VTK/manifest schema).
 - 8.4 **W3** Units V&V extension — SI↔lattice across all constructors.
+
+## Axis 9 — Real-world scenario gauntlet (experiment-driven, visualized)
+
+User directive 2026-07-06: V&V must also exercise REAL multiphysics
+scenarios, not only analytic gates — run them, visualize them, behavior-
+review them, and be honest about capability limits. Every case: at least one
+quantitative anchor + behavior anchors (pattern/sign/trend), mandatory
+visual artifacts (PNG series / viewer), behavior-validity review by the PM,
+findings to anomaly-log. Capability tags: RUN-NOW / AFTER-FIX (named) /
+GATED (named track).
+
+- 9.1 **Sparger bubble injection** — **GATED (ANOM-P4-020)**: SCMP mass
+  sources have no phase identity — no bubbles form at any rate (visual
+  evidence on cx/vv-sparger). Needs MCMP component sources or MF-γ gas
+  inflow (VR-STR-02). Original plan text: at the
+  Shan-Chen achievable density ratio (~15; REAL air-water 1000:1 is GATED
+  on MF-γ — say so in every report). 2D column, SC liquid pool + gas
+  injected through a bottom masked patch / volume source; observables:
+  bubble detachment period vs injection rate (monotone anchor), rise
+  velocity vs the SC-consistent buoyancy-drag balance, Laplace-consistent
+  bubble pressure, coalescence behavior; spurious-current context printed.
+- 9.2 **Half-filled rotating drum** — RUN-NOW with caveats: SC liquid/vapor
+  pool (diffuse interface, ratio ~15) + per-mass gravity + rotating THIN
+  SHELL via penalization (thin features sit in the measured stable margin;
+  ANOM-P4-010 caveat printed; rerun after cx/fix-p4-010 lands). Observables:
+  static pool level, surface inclination vs rotation rate (solid-body limit
+  at low Ro), onset of recirculation/cascading analog, vortical structures.
+  HONESTY: moderate-Re unsteady flow within the grid-Re envelope — label it
+  "unsteady vortical flow", never "turbulence"; free surface is a diffuse
+  low-ratio interface, not a VOF surface (MF-γ).
+- 9.3 Fully-filled drum spin-up vs analytic spin-up timescale — AFTER-FIX
+  (P4-010 or P4-001; the rotating boundary needs a healthy path).
+- 9.4 Sedimentation basin: CR-3 particles + gravity + weak crossflow,
+  deposition-map visualization vs settling-length estimate — RUN-NOW.
+- 9.5 Stirred-tank free-surface vortex — GATED (MF-γ free surface).
+- 9.6 Single-bubble Grace-diagram + Hysing benchmark — GATED (MF-γ;
+  already the MF-γ headline acceptance).
+- 9.7 Lateral-oscillation sloshing — RUN-NOW as SC low-ratio analog
+  (resonance-frequency anchor vs shallow-water estimate); real after MF-γ.
+- 9.8 Taylor-Couette wavy-vortex transition (3D, LES) — READY-heavy
+  (schedule against compute budget; onset Ta_c anchor).
+- 9.9 Bubble-plume in a tank (SC vapor source composition) — RUN-NOW after
+  9.1 validates the source+SC composition (compose rules are exactly the
+  interaction-matrix lane 5.1 territory).
 
 ## Dependencies & sequencing
 
