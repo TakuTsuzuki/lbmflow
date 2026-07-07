@@ -1447,6 +1447,7 @@ fn val_mphard_i1_jurin_capillary_rise_zero_parameter() {
 }
 
 #[test]
+#[ignore = "ignored per MODEL_RISK_MATRIX section 3 Shan-Chen demo tier; validation belongs to Allen-Cahn BCFD-040..048"]
 fn val_mphard_i2_prosperetti_standing_wave_light_one_k() {
     let rows: Vec<_> = [(1usize, 12_000usize), (2, 8_000), (4, 5_000)]
         .into_iter()
@@ -1544,6 +1545,7 @@ fn val_mphard_i2_heavy_gravity_capillary_crossover_scan() {
 }
 
 #[test]
+#[ignore = "ignored per MODEL_RISK_MATRIX section 3 Shan-Chen demo tier; validation belongs to Allen-Cahn BCFD-040..048"]
 fn val_mphard_i3_rayleigh_taylor_cutoff_light_sign_canary() {
     let nx = 256;
     let target_mc = 5.0;
