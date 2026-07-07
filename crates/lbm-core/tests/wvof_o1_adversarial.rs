@@ -18,10 +18,7 @@ const WIDTH_HI: f64 = 5.0;
 const ROTATION_LINF_BAND: f64 = 1.0e-10;
 
 fn params(mobility: f64) -> PhaseFieldParams<f64> {
-    PhaseFieldParams {
-        interface_width: W_TARGET,
-        mobility,
-    }
+    PhaseFieldParams::new(W_TARGET, mobility)
 }
 
 fn periodic_solver(dims: [usize; 3]) -> Sim {

@@ -1337,6 +1337,8 @@ where
     psi_planes: Vec<Vec<T>>,
     gravity: Option<[T; 3]>,
     material_model: MaterialModel,
+    phase_initial_total: Option<f64>,
+    phase_last_diag: Option<crate::phase_field::PhaseFieldDiagnostics>,
     /// Split streaming into interior + boundary-shell passes (the overlap
     /// seam for asynchronous exchanges). Off by default: the single full
     /// pass reproduces V1's probe summation order bit-for-bit.
@@ -1531,6 +1533,8 @@ where
             psi_planes: Vec::new(),
             gravity: None,
             material_model: MaterialModel::SinglePhase,
+            phase_initial_total: None,
+            phase_last_diag: None,
             two_pass: false,
             _lattice: std::marker::PhantomData,
         };
@@ -1757,9 +1761,9 @@ where
     }
 
     fn step_auxiliary_distributions_noop(&mut self) {
-        // BCFD-010 allocates and routes auxiliary distribution storage.
-        // Actual scalar ADE and coupled phase-field stepping land in later
-        // tickets; keeping this hook explicit prevents silent CPU fallback.
+        if self.host_parts.iter().any(|fields| fields.phi.is_some()) {
+            let _ = self.phase_field_step_current_velocity();
+        }
     }
 
     fn update_material_fields(&mut self) {
@@ -1794,13 +1798,13 @@ where
     /// open faces → moments).
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
-        if self.auxiliary_distributions_enabled() {
-            self.step_auxiliary_distributions_noop();
-        }
-        self.update_material_fields();
         let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
         if self.gravity.is_some() && !backend_gravity {
             self.run_staged_step();
+            if self.auxiliary_distributions_enabled() {
+                self.step_auxiliary_distributions_noop();
+            }
+            self.update_material_fields();
             return;
         }
         self.stage_in_if_dirty();
@@ -1825,6 +1829,10 @@ where
         if !self.backend.handles_single_part_periodic_halo() {
             self.stage_out_all();
         }
+        if self.auxiliary_distributions_enabled() {
+            self.step_auxiliary_distributions_noop();
+        }
+        self.update_material_fields();
     }
 
     /// Advance `steps` time steps.
@@ -2292,6 +2300,8 @@ where
         for fields in &mut self.host_parts {
             fields.enable_phase_distribution(params, L::Q);
         }
+        self.phase_initial_total = Some(0.0);
+        self.phase_last_diag = Some(crate::phase_field::PhaseFieldDiagnostics::empty());
         self.host_dirty = true;
         self.stage_in_if_dirty();
         Ok(())
@@ -3018,6 +3028,9 @@ where
             total_phi,
             min_phi,
             max_phi,
+            clipped_fraction: 0.0,
+            interface_cells: 0,
+            total_cells: 0,
         }
     }
 
@@ -3052,6 +3065,7 @@ where
             let np = geo.n_padded();
             let nc = geo.n_core();
             let local_phi = fields.phi.get_or_insert_with(|| vec![T::zero(); nc]);
+            fields.phase_params = Some(params);
             if local_phi.len() != nc {
                 local_phi.resize(nc, T::zero());
             }
@@ -3238,6 +3252,230 @@ where
         let diag = self.phase_field_step_prescribed_velocity(params, velocity)?;
         self.step();
         Ok(diag)
+    }
+
+    fn compact_solid_mask(&self) -> Vec<bool> {
+        let mut solid = vec![false; self.dims[0] * self.dims[1] * self.dims[2]];
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let geo = sub.geom;
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        solid[gi] = fields.solid[geo.pidx(x, y, z)];
+                    }
+                }
+            }
+        }
+        solid
+    }
+
+    fn sample_axis(&self, pos: [usize; 3], axis: usize, delta: isize) -> [usize; 3] {
+        let mut p = pos;
+        let n = self.dims[axis] as isize;
+        let v = pos[axis] as isize + delta;
+        p[axis] = if self.periodic[axis] {
+            ((v + n) % n) as usize
+        } else if v < 0 {
+            0
+        } else if v >= n {
+            self.dims[axis] - 1
+        } else {
+            v as usize
+        };
+        p
+    }
+
+    fn compact_idx(&self, p: [usize; 3]) -> usize {
+        (p[2] * self.dims[1] + p[1]) * self.dims[0] + p[0]
+    }
+
+    fn phase_cell_flux(
+        &self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        phi: &[T],
+        ux: &[T],
+        uy: &[T],
+        uz: &[T],
+        pos: [usize; 3],
+    ) -> [f64; 3] {
+        let i = self.compact_idx(pos);
+        let mut grad = [T::zero(); 3];
+        for a in 0..L::D {
+            let pp = self.sample_axis(pos, a, 1);
+            let pm = self.sample_axis(pos, a, -1);
+            grad[a] = (phi[self.compact_idx(pp)] - phi[self.compact_idx(pm)]) * T::r(0.5);
+        }
+        let j = crate::phase_field::phase_flux_jphi(params, phi[i], grad);
+        [
+            (phi[i] * ux[i] + j[0]).as_f64(),
+            (phi[i] * uy[i] + j[1]).as_f64(),
+            (phi[i] * uz[i] + j[2]).as_f64(),
+        ]
+    }
+
+    fn phase_field_step_current_velocity(
+        &mut self,
+    ) -> Result<crate::phase_field::PhaseFieldDiagnostics, crate::phase_field::PhaseFieldError>
+    {
+        let params = self
+            .host_parts
+            .iter()
+            .find_map(|fields| fields.phase_params)
+            .ok_or_else(|| crate::phase_field::PhaseFieldError {
+                message: "phase field is not enabled".to_string(),
+            })?
+            .validate()?;
+        self.stage_out_all();
+        let phi_old = self.gather_phi()?;
+        let ux = self.gather_ux();
+        let uy = self.gather_uy();
+        let uz = self.gather_uz();
+        let solid = self.compact_solid_mask();
+        let mut phi_new = phi_old.clone();
+        let mut clipped = 0usize;
+        let mut interface_cells = 0usize;
+        for z in 0..self.dims[2] {
+            for y in 0..self.dims[1] {
+                for x in 0..self.dims[0] {
+                    let pos = [x, y, z];
+                    let i = self.compact_idx(pos);
+                    if solid[i] {
+                        continue;
+                    }
+                    let mut div = 0.0;
+                    for a in 0..L::D {
+                        let fp = self.phase_cell_flux(
+                            params,
+                            &phi_old,
+                            &ux,
+                            &uy,
+                            &uz,
+                            self.sample_axis(pos, a, 1),
+                        );
+                        let fm = self.phase_cell_flux(
+                            params,
+                            &phi_old,
+                            &ux,
+                            &uy,
+                            &uz,
+                            self.sample_axis(pos, a, -1),
+                        );
+                        div += 0.5 * (fp[a] - fm[a]);
+                    }
+                    let raw = phi_old[i] - T::r(div);
+                    let (bounded, was_clipped) =
+                        crate::phase_field::apply_clipping(params.clipping_policy, raw);
+                    phi_new[i] = bounded;
+                    if was_clipped {
+                        clipped += 1;
+                    }
+                }
+            }
+        }
+        let mut total_phi = 0.0;
+        let mut min_phi = f64::INFINITY;
+        let mut max_phi = f64::NEG_INFINITY;
+        let mut active_cells = 0usize;
+        for (i, v) in phi_new.iter().enumerate() {
+            if solid[i] {
+                continue;
+            }
+            let vf = v.as_f64();
+            total_phi += vf;
+            min_phi = min_phi.min(vf);
+            max_phi = max_phi.max(vf);
+            if vf > 1.0e-6 && vf < 1.0 - 1.0e-6 {
+                interface_cells += 1;
+            }
+            active_cells += 1;
+        }
+        if active_cells == 0 {
+            min_phi = 0.0;
+            max_phi = 0.0;
+        }
+        self.scatter_phi_and_equilibrium(&phi_new)?;
+        let diag = crate::phase_field::PhaseFieldDiagnostics {
+            total_phi,
+            min_phi,
+            max_phi,
+            clipped_fraction: if active_cells == 0 {
+                0.0
+            } else {
+                clipped as f64 / active_cells as f64
+            },
+            interface_cells,
+            total_cells: active_cells,
+        };
+        if self.phase_initial_total.is_none() {
+            self.phase_initial_total = Some(total_phi);
+        }
+        self.phase_last_diag = Some(diag.clone());
+        Ok(diag)
+    }
+
+    fn scatter_phi_and_equilibrium(
+        &mut self,
+        phi: &[T],
+    ) -> Result<(), crate::phase_field::PhaseFieldError> {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        if phi.len() != n {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: format!(
+                    "phase field length {} does not match cell count {n}",
+                    phi.len()
+                ),
+            });
+        }
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            let local_phi = fields
+                .phi
+                .get_or_insert_with(|| vec![T::zero(); geo.n_core()]);
+            let gset = fields.g.get_or_insert_with(|| vec![T::zero(); L::Q * np]);
+            fields
+                .gtmp
+                .get_or_insert_with(|| vec![T::zero(); L::Q * np]);
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let c = geo.cidx(x, y, z);
+                        let pi = geo.pidx(x, y, z);
+                        local_phi[c] = phi[gi];
+                        let geq = crate::phase_field::equilibrium(
+                            phi[gi],
+                            [fields.ux[c], fields.uy[c], fields.uz[c]],
+                        );
+                        for q in 0..L::Q.min(19) {
+                            gset[q * np + pi] = geq[q];
+                        }
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        Ok(())
+    }
+
+    /// Set the compact global phase fraction field.
+    pub fn set_phi(&mut self, phi: &[T]) -> Result<(), crate::phase_field::PhaseFieldError> {
+        self.scatter_phi_and_equilibrium(phi)?;
+        let diag = self.diagnose_phase_field();
+        self.phase_initial_total = Some(diag.total_phi);
+        self.phase_last_diag = Some(diag);
+        self.stage_in_if_dirty();
+        Ok(())
+    }
+
+    pub fn phase_diagnostics(&self) -> Option<&crate::phase_field::PhaseFieldDiagnostics> {
+        self.phase_last_diag.as_ref()
     }
 
     /// Compute the conservative Allen-Cahn interface flux `J_phi` at one
@@ -4713,10 +4951,7 @@ mod tests {
     }
 
     fn phase_params() -> crate::phase_field::PhaseFieldParams<f64> {
-        crate::phase_field::PhaseFieldParams {
-            interface_width: 4.0,
-            mobility: 0.1,
-        }
+        crate::phase_field::PhaseFieldParams::new(4.0, 0.1)
     }
 
     #[test]

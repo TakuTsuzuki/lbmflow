@@ -28,10 +28,7 @@ fn build(n: usize) -> Sim {
 }
 
 fn params() -> PhaseFieldParams<f64> {
-    PhaseFieldParams {
-        interface_width: 4.0,
-        mobility: 0.04,
-    }
+    PhaseFieldParams::new(4.0, 0.04)
 }
 
 fn slab_phi(nx: usize, w: f64, x: usize) -> f64 {
@@ -105,13 +102,15 @@ fn phase_field_params_enforce_frozen_validity_domain() {
     assert!(params().validate().is_ok());
     assert!(PhaseFieldParams {
         interface_width: 3.9,
-        mobility: 0.04
+        mobility: 0.04,
+        clipping_policy: ClippingPolicy::Off,
     }
     .validate()
     .is_err());
     assert!(PhaseFieldParams {
         interface_width: 4.0,
-        mobility: 0.17
+        mobility: 0.0,
+        clipping_policy: ClippingPolicy::Off,
     }
     .validate()
     .is_err());

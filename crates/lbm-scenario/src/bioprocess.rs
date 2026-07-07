@@ -844,6 +844,7 @@ pub enum PhysicsModel {
     ResolvedPhaseField {
         interface_width_m: f64,
         mobility_m2_per_s: f64,
+        clipping_policy: Option<PhaseClippingPolicy>,
         contact_angle_deg: Option<f64>,
     },
     PointBubble {
@@ -876,7 +877,15 @@ pub enum PhysicsModel {
 pub struct ResolvedPhaseFieldInner {
     pub interface_width_m: f64,
     pub mobility_m2_per_s: f64,
+    pub clipping_policy: Option<PhaseClippingPolicy>,
     pub contact_angle_deg: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PhaseClippingPolicy {
+    Off,
+    ClipToBounds { min: f64, max: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

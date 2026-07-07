@@ -69,7 +69,9 @@ pub mod prelude {
         PhaseFieldMixtureParams, Reduction, SourceKind, SourceRegion, StepParams,
         ViscosityInterpolation, VolumeSource,
     };
-    pub use crate::phase_field::{PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams};
+    pub use crate::phase_field::{
+        ClippingPolicy, PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams,
+    };
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{
