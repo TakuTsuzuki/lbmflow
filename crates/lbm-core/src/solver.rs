@@ -20,6 +20,7 @@ use crate::rotating_ibm::{
     add3, cross, marker_stencil, norm, to_real3, DirectForcingConfig, IbmDiagnostics, RotatingBody,
 };
 use crate::subdomain::Subdomain;
+use crate::wall_model::{friction_velocity, WallCellMetric, WallMetricSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -1264,6 +1265,17 @@ pub fn partition(
         }
     }
     subs
+}
+
+fn tangential_speed<T: Real>(u: [T; 3], wall_u: [T; 3], normal: [T; 3]) -> T {
+    let rel = [u[0] - wall_u[0], u[1] - wall_u[1], u[2] - wall_u[2]];
+    let un = rel[0] * normal[0] + rel[1] * normal[1] + rel[2] * normal[2];
+    let tan = [
+        rel[0] - un * normal[0],
+        rel[1] - un * normal[1],
+        rel[2] - un * normal[2],
+    ];
+    (tan[0] * tan[0] + tan[1] * tan[1] + tan[2] * tan[2]).sqrt()
 }
 
 /// Time-evolution driver over a decomposed grid.
@@ -3758,6 +3770,141 @@ where
     /// Global z-velocity field.
     pub fn gather_uz(&self) -> Vec<T> {
         self.gather_moment(|m, c| m.uz[c])
+    }
+
+    /// Wall metrics for wall-adjacent fluid cells in global compact order.
+    ///
+    /// This is a read-only W1 diagnostic. It reads the current velocity moments
+    /// and wall geometry, but it does not write populations, moments, masks, or
+    /// per-cell relaxation fields. Half-way rim cells use `y_w = 0.5`; Bouzidi
+    /// cells use the shortest installed `qd * |c_q|` link for that fluid cell.
+    pub fn gather_wall_metrics(&self) -> Vec<WallCellMetric<T>> {
+        let mut out = Vec::new();
+        for ((sub, host), fields) in self
+            .subs
+            .iter()
+            .zip(self.host_parts.iter())
+            .zip(self.parts.iter())
+        {
+            let g = sub.geom;
+            let mut hm = HostMoments::default();
+            self.backend.read_moments(fields, &mut hm);
+
+            let mut bouzidi = vec![None; g.n_padded()];
+            if let Some(links) = &host.bouzidi {
+                for rec in &links.records {
+                    let q = rec.q as usize;
+                    assert!(q > 0 && q < L::Q, "invalid Bouzidi direction {q}");
+                    let cq = L::C[q];
+                    let len_sq = cq[0] as f64 * cq[0] as f64
+                        + cq[1] as f64 * cq[1] as f64
+                        + cq[2] as f64 * cq[2] as f64;
+                    assert!(len_sq > 0.0, "Bouzidi wall link must be non-rest");
+                    let len = T::r(len_sq).sqrt();
+                    let y_w = rec.qd * len;
+                    let inv_len = T::one() / len;
+                    let normal = [
+                        T::r(cq[0] as f64) * inv_len,
+                        T::r(cq[1] as f64) * inv_len,
+                        T::r(cq[2] as f64) * inv_len,
+                    ];
+                    let wall_u = host.wall_u[rec.wall_ref as usize];
+                    let cell = rec.cell as usize;
+                    let replace = match bouzidi[cell] {
+                        Some((prev_y_w, _, _)) => y_w < prev_y_w,
+                        None => true,
+                    };
+                    if replace {
+                        bouzidi[cell] = Some((y_w, normal, wall_u));
+                    }
+                }
+            }
+
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let pi = g.pidx(x, y, z);
+                        if host.solid[pi] {
+                            continue;
+                        }
+                        let c = g.cidx(x, y, z);
+                        let u = [hm.ux[c], hm.uy[c], hm.uz[c]];
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+
+                        let metric_input = if let Some((y_w, normal, wall_u)) = bouzidi[pi] {
+                            Some((y_w, normal, wall_u, WallMetricSource::Bouzidi))
+                        } else {
+                            self.halfway_wall_metric_input(host, x, y, z)
+                                .map(|(normal, wall_u)| {
+                                    (T::r(0.5), normal, wall_u, WallMetricSource::HalfwayRim)
+                                })
+                        };
+
+                        let Some((y_w, normal, wall_u, source)) = metric_input else {
+                            continue;
+                        };
+                        let u_parallel = tangential_speed(u, wall_u, normal);
+                        let u_tau = friction_velocity(u_parallel, y_w, T::r(self.nu));
+                        out.push(WallCellMetric {
+                            cell_index: gi,
+                            y_w,
+                            u_parallel,
+                            u_tau,
+                            y_plus: y_w * u_tau / T::r(self.nu),
+                            tau_w: u_tau * u_tau,
+                            source,
+                        });
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|m| m.cell_index);
+        out
+    }
+
+    fn halfway_wall_metric_input(
+        &self,
+        fields: &SoaFields<T>,
+        x: usize,
+        y: usize,
+        z: usize,
+    ) -> Option<([T; 3], [T; 3])> {
+        let g = fields.geom;
+        let mut normal = [T::zero(); 3];
+        let mut wall_u = [T::zero(); 3];
+        let mut n = 0usize;
+        for q in 1..L::Q {
+            let cq = L::C[q];
+            let np = g.pidx_i(
+                x as isize + cq[0] as isize,
+                y as isize + cq[1] as isize,
+                z as isize + cq[2] as isize,
+            );
+            if fields.solid[np] {
+                for a in 0..3 {
+                    normal[a] = normal[a] + T::r(cq[a] as f64);
+                    wall_u[a] = wall_u[a] + fields.wall_u[np][a];
+                }
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        let norm_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
+        assert!(
+            norm_sq > T::zero(),
+            "half-way wall normal is undefined because solid-link directions cancel"
+        );
+        let inv_norm = T::one() / norm_sq.sqrt();
+        let inv_n = T::one() / T::r(n as f64);
+        for a in 0..3 {
+            normal[a] = normal[a] * inv_norm;
+            wall_u[a] = wall_u[a] * inv_n;
+        }
+        Some((normal, wall_u))
     }
 
     fn strain_rate_at(&self, fields: &SoaFields<T>, x: usize, y: usize, z: usize) -> [T; 6] {
