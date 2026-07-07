@@ -1,7 +1,8 @@
 // VB-01 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-01--single-phase-stirred-tank-np
 
-const VB01_IGNORE_REASON: &str = "VB-01: waits on BCFD-030/031";
+const VB01_IGNORE_REASON: &str =
+    "VB-01: Engineering ceiling: waiting on stirred-tank Np reference/calibration artefacts (BCFD-082/083)";
 
 const RUSHTON_REFERENCE_NP: f64 = 5.0;
 const PBT45_REFERENCE_NP: f64 = 1.3;
@@ -30,7 +31,7 @@ struct GridNp {
     np: f64,
 }
 
-#[ignore = "VB-01: waits on BCFD-030/031"]
+#[ignore = "VB-01: Engineering ceiling: waiting on stirred-tank Np reference/calibration artefacts (BCFD-082/083)"]
 #[test]
 fn rushton_np_matches_published_correlation() {
     let point = pending_np_operating_point(ImpellerGeometry::Rushton);
@@ -39,7 +40,7 @@ fn rushton_np_matches_published_correlation() {
     assert_np_within_15_percent_of_published(point.measured_np, point.geometry);
 }
 
-#[ignore = "VB-01: waits on BCFD-030/031"]
+#[ignore = "VB-01: Engineering ceiling: waiting on stirred-tank Np reference/calibration artefacts (BCFD-082/083)"]
 #[test]
 fn pbt45_np_matches_published_correlation() {
     let point = pending_np_operating_point(ImpellerGeometry::Pbt45);
@@ -48,7 +49,7 @@ fn pbt45_np_matches_published_correlation() {
     assert_np_within_15_percent_of_published(point.measured_np, point.geometry);
 }
 
-#[ignore = "VB-01: waits on BCFD-030/031"]
+#[ignore = "VB-01: Engineering ceiling: waiting on stirred-tank Np reference/calibration artefacts (BCFD-082/083)"]
 #[test]
 fn np_three_grid_convergence_between_two_finest_grids() {
     let grid_np = pending_three_grid_np_series();

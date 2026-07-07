@@ -75,9 +75,9 @@ pub fn evaluate_operating_window(
         .filter(|point| point_feasible(point, constraints))
         .cloned()
         .collect();
-    let constraint_ranking = rank_constraints(points, constraints);
+    let constraint_ranking = rank_constraints(points, constraints, &mode);
     let conflict_table = if feasible_operating_window.is_empty() {
-        conflict_table(points, constraints)
+        conflict_table(points, constraints, &mode)
     } else {
         Vec::new()
     };
@@ -155,6 +155,7 @@ fn max_constraint_violation(value: Option<f64>, limit: f64) -> f64 {
 fn rank_constraints(
     points: &[OperatingPoint],
     constraints: &ConstraintSet,
+    mode: &ScaleUpMode,
 ) -> Vec<ConstraintTightness> {
     let mut maxima: HashMap<String, f64> = HashMap::new();
     for point in points {
@@ -173,15 +174,20 @@ fn rank_constraints(
             tightness,
         })
         .collect();
-    ranking.sort_by(|a, b| b.tightness.total_cmp(&a.tightness));
+    ranking.sort_by(|a, b| {
+        constraint_priority(mode, &a.constraint)
+            .cmp(&constraint_priority(mode, &b.constraint))
+            .then_with(|| b.tightness.total_cmp(&a.tightness))
+    });
     ranking
 }
 
 fn conflict_table(
     points: &[OperatingPoint],
     constraints: &ConstraintSet,
+    mode: &ScaleUpMode,
 ) -> Vec<ConstraintConflict> {
-    let ranking = rank_constraints(points, constraints);
+    let ranking = rank_constraints(points, constraints, mode);
     ranking
         .into_iter()
         .map(|rank| {
@@ -203,6 +209,25 @@ fn conflict_table(
             }
         })
         .collect()
+}
+
+fn constraint_priority(mode: &ScaleUpMode, constraint: &str) -> usize {
+    if let ScaleUpMode::CustomWeighted { weights } = mode {
+        if let Some(weight) = weights.get(constraint) {
+            let scaled = (*weight * 1_000_000.0).round();
+            if scaled.is_finite() && scaled > 0.0 {
+                return usize::MAX.saturating_sub(scaled as usize);
+            }
+        }
+    }
+    match constraint {
+        "kla_min_1_s" => 0,
+        "p_over_v_max_w_m3" => 1,
+        "p95_shear_max_pa" => 2,
+        "mixing_time_max_s" => 3,
+        "gas_holdup_range" => 4,
+        _ => 100,
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +286,20 @@ mod tests {
         let points = vec![point("bad", 0.005, 300.0, 1.0, 50.0, 0.04)];
         let eval =
             evaluate_operating_window(&points, &constraints(), ScaleUpMode::ConstantTipSpeed);
-        assert_eq!(eval.constraint_ranking[0].constraint, "p_over_v_max_w_m3");
+        let constraints: Vec<_> = eval
+            .constraint_ranking
+            .iter()
+            .map(|rank| rank.constraint.as_str())
+            .collect();
+        assert_eq!(
+            constraints,
+            vec![
+                "kla_min_1_s",
+                "p_over_v_max_w_m3",
+                "p95_shear_max_pa",
+                "mixing_time_max_s",
+                "gas_holdup_range"
+            ]
+        );
     }
 }

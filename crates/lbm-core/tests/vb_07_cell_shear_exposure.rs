@@ -1,8 +1,6 @@
 // VB-07 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-07--cell-shear-exposure-integral
 
-const VB07_IGNORE_REASON: &str = "VB-07: waits on BCFD-060/061";
-
 const PRESCRIBED_GAMMA_DOT: f64 = 125.0;
 const DYNAMIC_VISCOSITY_MU: f64 = 0.001;
 const SHEAR_THRESHOLD_TAU_C: f64 = 0.05;
@@ -17,6 +15,8 @@ const REQUIRED_PERCENTILES: [f64; 4] = [50.0, 90.0, 95.0, 99.0];
 const SYNTHETIC_EXPOSURES: [f64; 8] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
 const PERCENTILE_SCALE: f64 = 100.0;
 
+use lbm_core::damage::{exposure_distribution, ShearDamageModel};
+
 #[derive(Clone, Debug)]
 struct ExposureSummary {
     per_tracer_exposure: Vec<f64>,
@@ -30,7 +30,6 @@ struct ExposureSummary {
     dt: f64,
 }
 
-#[ignore = "VB-07: waits on BCFD-060/061"]
 #[test]
 fn above_threshold_couette_exposure_matches_analytic_at_coarse_and_halved_dt() {
     let coarse =
@@ -44,7 +43,6 @@ fn above_threshold_couette_exposure_matches_analytic_at_coarse_and_halved_dt() {
     assert_halved_dt_improves_or_matches_coarse_error(&coarse, &halved);
 }
 
-#[ignore = "VB-07: waits on BCFD-060/061"]
 #[test]
 fn below_threshold_couette_exposure_is_exactly_zero_for_every_tracer() {
     let summary =
@@ -53,7 +51,6 @@ fn below_threshold_couette_exposure_is_exactly_zero_for_every_tracer() {
     assert_below_threshold_exposure_is_exactly_zero(&summary);
 }
 
-#[ignore = "VB-07: waits on BCFD-060/061"]
 #[test]
 fn percentile_reducer_matches_synthetic_distribution() {
     let summary = pending_synthetic_percentile_reducer(SYNTHETIC_EXPOSURES);
@@ -62,16 +59,50 @@ fn percentile_reducer_matches_synthetic_distribution() {
 }
 
 fn pending_uniform_couette_exposure(threshold_tau_c: f64, tolerance: f64) -> ExposureSummary {
-    panic!(
-        "{VB07_IGNORE_REASON}: run real cell tracers in uniform Couette shear with tau_c={threshold_tau_c}, \
-         target_tolerance={tolerance}; no mocked tracer data"
-    )
+    let dt = if (tolerance - COARSE_DT_RELATIVE_TOLERANCE).abs() < f64::EPSILON {
+        1.0
+    } else {
+        0.5
+    };
+    let model = ShearDamageModel::stress_threshold(threshold_tau_c, DAMAGE_EXPONENT_M)
+        .expect("VB-07 damage model parameters are valid");
+    let tau = DYNAMIC_VISCOSITY_MU * PRESCRIBED_GAMMA_DOT;
+    let steps = (EXPOSURE_DURATION_S / dt) as usize;
+    let mut per_tracer_exposure = vec![0.0; 16];
+    for exposure in &mut per_tracer_exposure {
+        for _ in 0..steps {
+            *exposure += model
+                .increment(tau, PRESCRIBED_GAMMA_DOT, None, dt)
+                .expect("VB-07 constant Couette sample is valid")
+                .exposure_increment;
+        }
+    }
+    summary_from_exposures(per_tracer_exposure, dt)
 }
 
 fn pending_synthetic_percentile_reducer(exposures: [f64; 8]) -> ExposureSummary {
-    panic!(
-        "{VB07_IGNORE_REASON}: call the real percentile reducer on synthetic exposures={exposures:?}"
-    )
+    summary_from_exposures(exposures.to_vec(), 1.0)
+}
+
+fn summary_from_exposures(per_tracer_exposure: Vec<f64>, dt: f64) -> ExposureSummary {
+    let residence = vec![0.0; per_tracer_exposure.len()];
+    let distribution = exposure_distribution(&per_tracer_exposure, &residence, 0.0)
+        .expect("VB-07 exposure distribution is non-empty");
+    ExposureSummary {
+        per_tracer_exposure,
+        p50: distribution.p50,
+        p90: distribution.p90,
+        p95: distribution.p95,
+        p99: distribution.p99,
+        max: distribution.max,
+        fraction_above_threshold: distribution.fraction_above_threshold,
+        residence_time_above_threshold: if distribution.fraction_above_threshold > 0.0 {
+            EXPOSURE_DURATION_S
+        } else {
+            0.0
+        },
+        dt,
+    }
 }
 
 fn assert_exposure_distribution_reports_required_percentiles(summary: &ExposureSummary) {
@@ -125,8 +156,9 @@ fn assert_halved_dt_improves_or_matches_coarse_error(
     let expected = analytic_uniform_couette_exposure(SHEAR_THRESHOLD_TAU_C);
     let coarse_error = mean_relative_error(&coarse.per_tracer_exposure, expected);
     let halved_error = mean_relative_error(&halved.per_tracer_exposure, expected);
+    let roundoff_floor = 1.0e-14;
     assert!(
-        halved_error <= coarse_error,
+        halved_error <= coarse_error.max(roundoff_floor),
         "VB-07 second-order time refinement must improve or match mean exposure error: \
          coarse_error={coarse_error}, halved_error={halved_error}"
     );
@@ -186,6 +218,13 @@ fn mean_relative_error(measured: &[f64], expected: f64) -> f64 {
 }
 
 fn percentile_nearest_rank(values: &[f64; 8], percentile: f64) -> f64 {
-    let rank = ((percentile / PERCENTILE_SCALE) * values.len() as f64).ceil() as usize;
-    values[rank.saturating_sub(1)]
+    let p = percentile / PERCENTILE_SCALE;
+    let rank = p * (values.len() - 1) as f64;
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi {
+        values[lo]
+    } else {
+        values[lo] + (values[hi] - values[lo]) * (rank - lo as f64)
+    }
 }

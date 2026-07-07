@@ -1,7 +1,8 @@
 // VB-04 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-04--phase-field-droplet-and-laplace-law
 
-const VB04_IGNORE_REASON: &str = "VB-04: waits on BCFD-040..043/BCFD-048";
+const VB04_IGNORE_REASON: &str =
+    "VB-04: waits on integrated phase-field Laplace validation runner (BCFD-048)";
 
 const DROPLET_RADII_LU: [f64; 3] = [8.0, 16.0, 32.0];
 const SURFACE_TENSION_SIGMA: f64 = 0.01;
@@ -25,7 +26,7 @@ struct PhiLedger {
     steps: usize,
 }
 
-#[ignore = "VB-04: waits on BCFD-040..043/BCFD-048"]
+#[ignore = "VB-04: waits on integrated phase-field Laplace validation runner (BCFD-048)"]
 #[test]
 fn static_2d_droplets_follow_laplace_pressure_jump() {
     let measurements = pending_laplace_measurements(TWO_DIMENSIONAL_LAPLACE_FACTOR);
@@ -34,7 +35,7 @@ fn static_2d_droplets_follow_laplace_pressure_jump() {
     assert_laplace_slope_through_origin(&measurements, TWO_DIMENSIONAL_LAPLACE_FACTOR);
 }
 
-#[ignore = "VB-04: waits on BCFD-040..043/BCFD-048"]
+#[ignore = "VB-04: waits on integrated phase-field Laplace validation runner (BCFD-048)"]
 #[test]
 fn static_3d_droplets_follow_laplace_pressure_jump() {
     let measurements = pending_laplace_measurements(THREE_DIMENSIONAL_LAPLACE_FACTOR);
@@ -43,7 +44,7 @@ fn static_3d_droplets_follow_laplace_pressure_jump() {
     assert_laplace_slope_through_origin(&measurements, THREE_DIMENSIONAL_LAPLACE_FACTOR);
 }
 
-#[ignore = "VB-04: waits on BCFD-040..043/BCFD-048"]
+#[ignore = "VB-04: waits on integrated phase-field Laplace validation runner (BCFD-048)"]
 #[test]
 fn total_phi_drift_stays_below_point_one_percent_for_10000_steps() {
     let ledgers = pending_phi_ledgers(PHI_DRIFT_WINDOW_STEPS);

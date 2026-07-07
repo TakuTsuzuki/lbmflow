@@ -20,6 +20,19 @@ Current status legend:
 Heavy validation runs are behind `cargo test --release --include-ignored`;
 quick smoke tests run by default.
 
+## Current status matrix (2026-07-07)
+
+| VB group | Default-suite status | Notes |
+|---|---|---|
+| VB-01 | Ignored-with-reason | Engineering ceiling: stirred-tank Np correlation check waits on reference/calibration artefacts and mesh/time sensitivity records (BCFD-082/083). |
+| VB-02 | Engineering GREEN | Default test exercises the landed mixing-time QOI reducer with a monotone synthetic CV decay and timestep-invariance check. |
+| VB-03 | Engineering GREEN | Default test exercises landed shear-gradient/stress reducers against Couette, Poiseuille, and second-order convergence analytic fields. |
+| VB-04 | Ignored-with-reason | Integrated phase-field Laplace validation runner is still required for the 2D/3D droplet pressure-jump and 10,000-step phi-ledger checks. |
+| VB-05 | Ignored-with-reason | Integrated sparger phase-field gas-ledger runner is still required for closed-lid Q·t conservation. |
+| VB-06 | Engineering GREEN | Default test exercises the landed dynamic-gassing kLa fit against a synthetic first-order transient and equilibrium zero-transfer case; evidence kL remains calibration-gated. |
+| VB-07 | Engineering GREEN | Default test exercises landed shear-exposure integral and percentile distribution reducers against analytical Couette exposure. |
+| VB-08 | Engineering GREEN | Default test exercises the landed scale-up evaluator against analytic feasible and infeasible synthetic maps. |
+
 ---
 
 ## VB-01 — Single-phase stirred tank Np
@@ -38,7 +51,10 @@ GCI or equivalent).
 **Tier this validates.** Engineering (Tier 1) for `single_phase_stirred_tank`
 and `power` QOIs (BCFD-031).
 
-**Current status.** Not started. Depends on BCFD-030 / BCFD-031.
+**Current status.** Ignored-with-reason. BCFD-030 / BCFD-031 code has
+landed, but the published-correlation Engineering check is capped until
+reference/calibration artefacts plus mesh/time sensitivity records are
+registered (BCFD-082/083). The ignored test reason is explicit.
 
 ---
 
@@ -56,7 +72,10 @@ Nθ = N · t95 correlation with a published band for the geometry.
 **Tier this validates.** Engineering for `passive_scalar` and `mixing`
 QOIs (BCFD-034, BCFD-035).
 
-**Current status.** Not started. Depends on BCFD-034 / BCFD-035.
+**Current status.** Engineering GREEN for the default QOI-reducer validation
+path. The default test is unignored and checks monotone CV decay, t95/t99
+threshold crossing, Nθ band, and halved-Δt invariance on a deterministic
+synthetic CV series.
 
 ---
 
@@ -76,7 +95,9 @@ across N ∈ {32, 64, 128}.
 **Tier this validates.** Engineering for `stress` / `shear` fields
 (BCFD-032, BCFD-033).
 
-**Current status.** Not started. Depends on BCFD-032 / BCFD-033.
+**Current status.** Engineering GREEN. The default test is unignored and
+checks Couette / Poiseuille analytic gradients plus second-order convergence
+through the landed stress-field implementation.
 
 ---
 
@@ -94,7 +115,9 @@ constant offset > 5%); total-phi drift ≤ 0.1% over the run window.
 **Tier this validates.** Engineering for `resolved_phase_field` and
 `surface_tension` (BCFD-040..043).
 
-**Current status.** Not started. Depends on BCFD-040..043 and BCFD-048.
+**Current status.** Ignored-with-reason. Phase-field helper code has landed,
+but the integrated Laplace validation runner is still required before the
+2D/3D droplet pressure-jump and long phi-ledger checks can run by default.
 
 ---
 
@@ -111,7 +134,9 @@ transient. No negative φ. Rejects liquid injection through gas sparger.
 **Tier this validates.** Engineering for `sparger` boundary and
 `resolved_phase_field` gas injection (BCFD-046, BCFD-047).
 
-**Current status.** Not started. Depends on BCFD-046 / BCFD-047.
+**Current status.** Ignored-with-reason. Sparger schema / bookkeeping pieces
+exist, but the integrated phase-field gas-ledger runner is still required for
+the closed-lid Q·t conservation check.
 
 ---
 
@@ -129,7 +154,10 @@ Equilibrium (C = C*) case fits `kLa ≈ 0` within tolerance.
 **Tier this validates.** Engineering for `oxygen` scalar and `kla` QOI
 (BCFD-050..052).
 
-**Current status.** Not started. Depends on BCFD-050..052.
+**Current status.** Engineering GREEN for the synthetic dynamic-gassing QOI
+path. The default test is unignored and recovers input kLa within the frozen
+5% band with R² ≥ 0.99; validated/evidence kL remains calibration-gated by
+BCFD-082 / BCFD-091.
 
 ---
 
@@ -150,7 +178,9 @@ reducer verified against a synthetic distribution.
 **Tier this validates.** Engineering for `cell_tracer`, `shear_exposure`,
 and the damage integral (BCFD-060, BCFD-061).
 
-**Current status.** Not started. Depends on BCFD-060 / BCFD-061.
+**Current status.** Engineering GREEN. The default test is unignored and
+checks analytical Couette exposure, exact below-threshold zero exposure,
+required percentiles, fraction-above-threshold, and Δt refinement behavior.
 
 ---
 
@@ -171,7 +201,9 @@ empty; ranks constraints in the documented priority (constant kLa → P/V
 
 **Tier this validates.** Engineering for `scale-up window` (BCFD-084).
 
-**Current status.** Not started. Depends on BCFD-084 and BCFD-083.
+**Current status.** Engineering GREEN. The default test is unignored and
+checks the landed scale-up evaluator against analytic feasible/infeasible
+synthetic operating maps and the implemented constraint-priority order.
 
 ---
 

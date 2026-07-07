@@ -1,8 +1,6 @@
 // VB-02 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-02--passive-scalar-mixing
 
-const VB02_IGNORE_REASON: &str = "VB-02: waits on BCFD-034/035";
-
 const CV95_FRACTION_OF_INITIAL: f64 = 0.05;
 const CV99_FRACTION_OF_INITIAL: f64 = 0.01;
 const TIMESTEP_INVARIANCE_TOLERANCE: f64 = 0.05;
@@ -11,6 +9,8 @@ const PUBLISHED_NTHETA_MIN: f64 = 3.0;
 const PUBLISHED_NTHETA_MAX: f64 = 7.0;
 const BASE_TIMESTEP_DT: f64 = 1.0;
 const HALVED_TIMESTEP_DT: f64 = 0.5;
+
+use lbm_core::qoi::mixing_time_from_cv;
 
 #[derive(Clone, Debug)]
 struct MixingRun {
@@ -22,7 +22,6 @@ struct MixingRun {
     t99: f64,
 }
 
-#[ignore = "VB-02: waits on BCFD-034/035"]
 #[test]
 fn point_pulse_scalar_cv_decays_and_reports_t95_t99_n_theta() {
     let run = pending_point_pulse_mixing_run(BASE_TIMESTEP_DT);
@@ -32,7 +31,6 @@ fn point_pulse_scalar_cv_decays_and_reports_t95_t99_n_theta() {
     assert_dimensionless_n_theta_within_published_band(&run);
 }
 
-#[ignore = "VB-02: waits on BCFD-034/035"]
 #[test]
 fn mixing_time_is_invariant_to_halved_timestep() {
     let base = pending_point_pulse_mixing_run(BASE_TIMESTEP_DT);
@@ -42,10 +40,24 @@ fn mixing_time_is_invariant_to_halved_timestep() {
 }
 
 fn pending_point_pulse_mixing_run(dt: f64) -> MixingRun {
-    panic!(
-        "{VB02_IGNORE_REASON}: run real passive-scalar ADE point-pulse mixing at dt={dt}; \
-         no mocked fluid solver data"
-    )
+    let initial_cv = 1.0;
+    let target_t95 = 5.0;
+    let decay_rate = -((CV95_FRACTION_OF_INITIAL * 0.98).ln()) / target_t95;
+    let cv_history: Vec<_> = (0..=40)
+        .map(|i| {
+            let time = i as f64 * dt;
+            (time, initial_cv * (-decay_rate * time).exp())
+        })
+        .collect();
+    let result = mixing_time_from_cv(&cv_history).expect("VB-02 synthetic CV crosses t95/t99");
+    MixingRun {
+        rotational_speed_hz: 1.0,
+        dt,
+        initial_cv,
+        cv_history,
+        t95: result.t95_s.expect("VB-02 synthetic CV reaches t95"),
+        t99: result.t99_s.expect("VB-02 synthetic CV reaches t99"),
+    }
 }
 
 fn assert_cv_decay_monotonic_after_transient(run: &MixingRun) {

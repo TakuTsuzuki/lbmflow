@@ -1,7 +1,8 @@
 // VB-05 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-05--sparger-gas-ledger
 
-const VB05_IGNORE_REASON: &str = "VB-05: waits on BCFD-046/047";
+const VB05_IGNORE_REASON: &str =
+    "VB-05: waits on integrated sparger phase-field gas-ledger runner (BCFD-046/047)";
 
 const GAS_LEDGER_RELATIVE_TOLERANCE: f64 = 0.02;
 const INITIAL_TRANSIENT_STEPS: usize = 500;
@@ -23,7 +24,7 @@ struct GasLedgerRun {
     min_phi: f64,
 }
 
-#[ignore = "VB-05: waits on BCFD-046/047"]
+#[ignore = "VB-05: waits on integrated sparger phase-field gas-ledger runner (BCFD-046/047)"]
 #[test]
 fn ring_sparger_closed_lid_gas_ledger_balances_q_times_t_after_transient() {
     let run = pending_ring_sparger_closed_lid_run();
@@ -31,7 +32,7 @@ fn ring_sparger_closed_lid_gas_ledger_balances_q_times_t_after_transient() {
     assert_gas_ledger_balances_expected_q_times_t(&run);
 }
 
-#[ignore = "VB-05: waits on BCFD-046/047"]
+#[ignore = "VB-05: waits on integrated sparger phase-field gas-ledger runner (BCFD-046/047)"]
 #[test]
 fn ring_sparger_rejects_negative_phi() {
     let run = pending_ring_sparger_closed_lid_run();
@@ -39,7 +40,7 @@ fn ring_sparger_rejects_negative_phi() {
     assert_no_negative_phi(&run);
 }
 
-#[ignore = "VB-05: waits on BCFD-046/047"]
+#[ignore = "VB-05: waits on integrated sparger phase-field gas-ledger runner (BCFD-046/047)"]
 #[test]
 fn liquid_injection_through_gas_sparger_is_rejected() {
     let rejection = pending_liquid_injection_rejection();
