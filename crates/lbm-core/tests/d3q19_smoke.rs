@@ -89,10 +89,12 @@ fn d3q19_tgv_decay_rate_tracks_viscosity() {
     let rate_expect = 2.0 * nu * 3.0 * k * k;
     let rate_measured = -(e1 / e0).ln() / steps as f64;
     let rel = (rate_measured - rate_expect).abs() / rate_expect;
-    println!("TGV3D decay: measured {rate_measured:.4e}, analytic {rate_expect:.4e}, rel {rel:.3}");
+    println!(
+        "TGV3D decay: measured {rate_measured:.4e}, analytic {rate_expect:.4e}, rel {rel:.6e}"
+    );
     assert!(
-        rel < 0.15,
-        "decay rate off by {rel:.3} (measured {rate_measured:e}, expect {rate_expect:e})"
+        rel < 0.05,
+        "decay rate off by {rel:.6e} (measured {rate_measured:e}, expect {rate_expect:e}, band = 5.0e-2)"
     );
 }
 
@@ -111,7 +113,8 @@ fn d3q19_moving_lid_box_is_stable_and_conserves_mass() {
     for f in Face::ALL {
         walls.is_wall[f.index()] = true;
     }
-    walls.u[Face::YPos.index()] = [0.08, 0.0, 0.0];
+    let lid_speed = 0.08;
+    walls.u[Face::YPos.index()] = [lid_speed, 0.0, 0.0];
     let (solid, wall_u) = build_wall_rims(3, spec.dims, &walls);
     let mut s: Solver3<f64> = Solver::new(
         &spec,
@@ -131,13 +134,21 @@ fn d3q19_moving_lid_box_is_stable_and_conserves_mass() {
     );
     // The lid drags fluid: interior velocity below the lid is positive-x.
     let u = s.u(n / 2, n - 2, n / 2);
+    let ux_rel_lid = u[0] / lid_speed;
     assert!(u[0] > 1e-4, "lid must drag fluid, got ux = {}", u[0]);
+    assert!(
+        (0.25..=1.0).contains(&ux_rel_lid),
+        "lid-driven ux must be O(lid speed) and not exceed the lid: ux={}, lid_speed={}, ux/lid={}",
+        u[0],
+        lid_speed,
+        ux_rel_lid
+    );
     // The lid feels a reaction force opposing its motion.
     let f = s.probed_force();
     assert!(f[0] < 0.0, "drag on moving lid must be -x, got {:?}", f);
     assert!(f.iter().all(|c| c.is_finite()));
     println!(
-        "3D lid box: ux(below lid) = {:.3e}, lid force = {:?}",
-        u[0], f
+        "3D lid box: ux(below lid) = {:.3e}, ux/lid = {:.3e}, lid speed = {:.3e}, lid force = {:?}",
+        u[0], ux_rel_lid, lid_speed, f
     );
 }

@@ -82,9 +82,12 @@ fn t6_periodic_uniform_force_adds_exact_momentum() {
         let gained = p1[axis] - p0[axis];
         let expect = steps as f64 * nf * force[axis];
         let rel = ((gained - expect) / expect).abs();
+        println!(
+            "T6 force momentum axis {axis}: rel={rel:.3e}, gained={gained:.12e}, expected={expect:.12e}"
+        );
         assert!(
-            rel <= 1.0e-10,
-            "T6 force momentum axis = {axis}, rel = {rel:e}, gained = {gained:e}, expected = {expect:e}"
+            rel <= 4.0e-12,
+            "T6 force momentum axis = {axis}, rel = {rel:e}, gained = {gained:e}, expected = {expect:e}, band = 4.0e-12"
         );
     }
 }

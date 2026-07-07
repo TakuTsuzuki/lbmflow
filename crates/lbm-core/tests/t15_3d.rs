@@ -682,9 +682,11 @@ fn t15_4_tgv3d_diffusive_convergence() {
     let (e64, rate64) = tgv3d_short::<D3Q19>(64, nu, u0_coef);
     let order = (e32 / e64).log2();
     println!("TGV3D convergence: e32 = {e32:.4e}, e64 = {e64:.4e}, order = {order:.3}");
+    // The remaining decay-rate offset is the finite-k diffusion-limit error at
+    // N=64; 1% gives ~9x measured headroom while halving the former 2% smoke band.
     assert!(
-        rate64 <= 0.02,
-        "N=64 decay rate off the diffusion limit by {rate64:.3e} (> 2%)"
+        rate64 <= 0.01,
+        "N=64 decay rate off the diffusion limit by {rate64:.3e} (> 1%)"
     );
     assert!(
         order >= 1.7,
