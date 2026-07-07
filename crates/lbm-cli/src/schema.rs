@@ -360,13 +360,26 @@ fn bioprocess_schema() -> Value {
             "RunSpec": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["steps", "dt_s", "backend", "precision", "lattice"],
+                "required": ["steps", "dt_s", "grid_nx", "grid_ny", "grid_nz", "backend", "precision", "lattice"],
                 "properties": {
                     "steps": { "type": "integer", "minimum": 0 },
                     "dt_s": { "type": "number" },
+                    "grid_nx": { "type": "integer", "minimum": 1 },
+                    "grid_ny": { "type": "integer", "minimum": 1 },
+                    "grid_nz": { "type": "integer", "minimum": 1 },
                     "backend": { "type": ["string", "null"], "enum": ["auto", "cpu", "gpu", null] },
                     "precision": { "type": ["string", "null"], "enum": ["f32", "f64", null] },
                     "lattice": { "type": ["string", "null"], "enum": ["d2q9", "d3q19", "d3q27", null] }
+                }
+            },
+            "UnitReport": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "lattice": { "type": "object" },
+                    "groups": { "type": "object" },
+                    "feasibility": { "type": "object" },
+                    "matching_priority": { "type": "object" }
                 }
             },
             "OutputsSpec": {

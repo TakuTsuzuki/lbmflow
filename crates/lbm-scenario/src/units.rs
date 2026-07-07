@@ -1,3 +1,6 @@
+use crate::bioprocess::{
+    BioprocessScenario, BioprocessScenarioError, PhysicsModel, ReactorSpec, SpargerSpec,
+};
 use crate::Scenario;
 use lbm_core::compat::prelude::MAX_SPEED;
 use serde::{Deserialize, Serialize};
@@ -6,6 +9,508 @@ pub const TAU_LOW_WARN_THRESHOLD: f64 = 0.55;
 pub const TAU_HIGH_WARN_THRESHOLD: f64 = 2.0;
 pub const LATTICE_SPEED_WARN_THRESHOLD: f64 = 0.15;
 pub const GRID_RE_WARN_THRESHOLD: f64 = 15.0;
+
+/// SPEC_BIOPROCESS_CORE.md §6: warn when lattice Mach exceeds 0.10.
+pub const MACH_LATTICE_WARN_THRESHOLD: f64 = 0.10;
+/// SPEC_BIOPROCESS_CORE.md §6: reject when lattice Mach exceeds 0.30.
+pub const MACH_LATTICE_REJECT_THRESHOLD: f64 = 0.30;
+/// SPEC_BIOPROCESS_CORE.md §6: warn when BGK tau lies in (0.5, 0.55].
+pub const TAU_NEAR_HALF_WARN_THRESHOLD: f64 = 0.55;
+/// SPEC_BIOPROCESS_CORE.md §6: reject non-positive lattice viscosity at tau <= 0.5.
+pub const TAU_NON_POSITIVE_VISCOSITY_THRESHOLD: f64 = 0.5;
+/// SPEC_BIOPROCESS_CORE.md §6: reject phase-field Cahn number below 0.02.
+pub const CAHN_MIN_THRESHOLD: f64 = 0.02;
+/// SPEC_BIOPROCESS_CORE.md §6: reject phase-field Cahn number above 0.5.
+pub const CAHN_MAX_THRESHOLD: f64 = 0.5;
+/// SPEC_BIOPROCESS_CORE.md §6: reject resolved gas injection below 4 cells per bubble/orifice diameter.
+pub const BUBBLE_DIAMETER_MIN_CELLS: f64 = 4.0;
+/// SPEC_BIOPROCESS_CORE.md §6: warn when grid Reynolds exceeds 15.
+pub const BIOPROCESS_GRID_REYNOLDS_WARN_THRESHOLD: f64 = 15.0;
+/// SPEC_BIOPROCESS_CORE.md §6: warn when grid Schmidt exceeds 25.
+pub const GRID_SCHMIDT_WARN_THRESHOLD: f64 = 25.0;
+pub const LATTICE_CS2: f64 = 1.0 / 3.0;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DimensionlessGroups {
+    pub reynolds: f64,
+    pub froude: f64,
+    pub weber: Option<f64>,
+    pub eotvos: Option<f64>,
+    pub morton: Option<f64>,
+    pub schmidt: Option<f64>,
+    pub peclet: Option<f64>,
+    pub stokes: Option<f64>,
+    pub mach_lattice: f64,
+    pub cahn: Option<f64>,
+    pub peclet_phi: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LatticeMapping {
+    pub grid_nx: u32,
+    pub grid_ny: u32,
+    pub grid_nz: u32,
+    pub dx_m: f64,
+    pub dt_s: f64,
+    pub u_ref_lu: f64,
+    pub nu_lu: f64,
+    pub tau_lu: f64,
+    pub cs2_lu: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FeasibilityDiagnostics {
+    pub warnings: Vec<FeasibilityIssue>,
+    pub rejections: Vec<FeasibilityIssue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FeasibilityIssue {
+    pub code: String,
+    pub message: String,
+    pub value: Option<f64>,
+    pub threshold: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MatchingPriority {
+    pub achieved: Vec<String>,
+    pub relaxed: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UnitReport {
+    pub lattice: LatticeMapping,
+    pub groups: DimensionlessGroups,
+    pub feasibility: FeasibilityDiagnostics,
+    pub matching_priority: MatchingPriority,
+}
+
+pub fn bioprocess_unit_report(
+    sc: &BioprocessScenario,
+) -> Result<UnitReport, BioprocessScenarioError> {
+    let report = bioprocess_unit_report_unchecked(sc)?;
+    if !report.feasibility.rejections.is_empty() {
+        let detail = report
+            .feasibility
+            .rejections
+            .iter()
+            .map(|issue| format!("{}: {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(BioprocessScenarioError::unsupported(
+            "bioprocess unit feasibility rejected the scenario",
+            crate::UnsupportedReason::OutOfValidityRange { detail },
+        ));
+    }
+    Ok(report)
+}
+
+pub fn bioprocess_unit_report_unchecked(
+    sc: &BioprocessScenario,
+) -> Result<UnitReport, BioprocessScenarioError> {
+    let ReactorSpec::StirredTank {
+        vessel_diameter_m,
+        liquid_height_m,
+        impellers,
+        spargers,
+        ..
+    } = &sc.reactor;
+    let impeller = impellers.first().ok_or_else(|| {
+        BioprocessScenarioError::unsupported(
+            "at least one impeller is required for bioprocess unit mapping",
+            crate::UnsupportedReason::MissingDependency {
+                depends_on: "reactor.impellers".to_string(),
+            },
+        )
+    })?;
+
+    require_positive("reactor.vessel_diameter_m", *vessel_diameter_m)?;
+    require_positive("reactor.liquid_height_m", *liquid_height_m)?;
+    require_positive("impeller.diameter_m", impeller.diameter_m)?;
+    require_positive(
+        "impeller.rotational_speed_rpm",
+        impeller.rotational_speed_rpm,
+    )?;
+    require_positive(
+        "fluids.liquid_density_kg_m3",
+        sc.fluids.liquid_density_kg_m3,
+    )?;
+    require_positive(
+        "fluids.liquid_viscosity_pa_s",
+        sc.fluids.liquid_viscosity_pa_s,
+    )?;
+    require_positive("run.dt_s", sc.run.dt_s)?;
+    if sc.run.grid_nx == 0 || sc.run.grid_ny == 0 || sc.run.grid_nz == 0 {
+        return Err(BioprocessScenarioError::unsupported(
+            "run grid dimensions must be positive",
+            crate::UnsupportedReason::OutOfValidityRange {
+                detail: "run.grid_nx, run.grid_ny and run.grid_nz must all be > 0".to_string(),
+            },
+        ));
+    }
+
+    let n_hz = impeller.rotational_speed_rpm / 60.0;
+    let u_ref_m_s = n_hz * impeller.diameter_m;
+    let nu_m2_s = sc.fluids.liquid_viscosity_pa_s / sc.fluids.liquid_density_kg_m3;
+    let dx_m = vessel_diameter_m / f64::from(sc.run.grid_nx);
+    let u_ref_lu = u_ref_m_s * sc.run.dt_s / dx_m;
+    let nu_lu = nu_m2_s * sc.run.dt_s / (dx_m * dx_m);
+    let tau_lu = 3.0 * nu_lu + 0.5;
+    let cs_lu = LATTICE_CS2.sqrt();
+    let mach_lattice = u_ref_lu / cs_lu;
+
+    let reynolds = sc.fluids.liquid_density_kg_m3 * n_hz * impeller.diameter_m.powi(2)
+        / sc.fluids.liquid_viscosity_pa_s;
+    // SPEC_BIOPROCESS_CORE.md §6 defines Fr, Eo and Mo with gravitational acceleration g.
+    let g_m_s2 = 9.80665;
+    let froude = n_hz.powi(2) * impeller.diameter_m / g_m_s2;
+    let delta_rho = sc
+        .fluids
+        .gas_density_kg_m3
+        .map(|rho_gas| sc.fluids.liquid_density_kg_m3 - rho_gas);
+    let weber = sc.fluids.surface_tension_n_m.map(|sigma| {
+        sc.fluids.liquid_density_kg_m3 * n_hz.powi(2) * impeller.diameter_m.powi(3) / sigma
+    });
+    let eotvos = match (sc.fluids.surface_tension_n_m, delta_rho) {
+        (Some(sigma), Some(drho)) => Some(g_m_s2 * drho * impeller.diameter_m.powi(2) / sigma),
+        _ => None,
+    };
+    let morton = match (sc.fluids.surface_tension_n_m, delta_rho) {
+        (Some(sigma), Some(drho)) => Some(
+            g_m_s2 * sc.fluids.liquid_viscosity_pa_s.powi(4) * drho
+                / (sc.fluids.liquid_density_kg_m3.powi(2) * sigma.powi(3)),
+        ),
+        _ => None,
+    };
+    let scalar_diffusivity = primary_scalar_diffusivity(sc);
+    let schmidt = scalar_diffusivity.map(|d| nu_m2_s / d);
+    let peclet = scalar_diffusivity.map(|d| u_ref_m_s * vessel_diameter_m / d);
+    let scalar_diffusivity_lu = scalar_diffusivity.map(|d| d * sc.run.dt_s / (dx_m * dx_m));
+    let stokes = None;
+    let phase = primary_phase_field(sc);
+    let cahn = phase.map(|(width, _)| width / vessel_diameter_m);
+    let peclet_phi = phase.map(|(width, mobility)| u_ref_m_s * width / mobility);
+
+    let mut warnings = Vec::new();
+    let mut rejections = Vec::new();
+    if mach_lattice > MACH_LATTICE_REJECT_THRESHOLD {
+        rejections.push(issue(
+            "MA_LATTICE_TOO_HIGH",
+            "lattice Mach exceeds the hard low-Mach cap",
+            Some(mach_lattice),
+            Some(MACH_LATTICE_REJECT_THRESHOLD),
+        ));
+    } else if mach_lattice > MACH_LATTICE_WARN_THRESHOLD {
+        warnings.push(issue(
+            "MA_LATTICE_HIGH",
+            "lattice Mach is high enough for compressibility error to matter",
+            Some(mach_lattice),
+            Some(MACH_LATTICE_WARN_THRESHOLD),
+        ));
+    }
+    if tau_lu <= TAU_NON_POSITIVE_VISCOSITY_THRESHOLD {
+        rejections.push(issue(
+            "TAU_NON_POSITIVE_VISCOSITY",
+            "BGK relaxation time implies non-positive lattice viscosity",
+            Some(tau_lu),
+            Some(TAU_NON_POSITIVE_VISCOSITY_THRESHOLD),
+        ));
+    } else if tau_lu <= TAU_NEAR_HALF_WARN_THRESHOLD {
+        warnings.push(issue(
+            "TAU_NEAR_HALF",
+            "BGK relaxation time is numerically marginal near tau = 0.5",
+            Some(tau_lu),
+            Some(TAU_NEAR_HALF_WARN_THRESHOLD),
+        ));
+    }
+    if let Some(cn) = cahn {
+        if cn > CAHN_MAX_THRESHOLD {
+            rejections.push(issue(
+                "INTERFACE_WIDTH_TOO_LARGE",
+                "phase-field interface width is too large relative to the vessel diameter",
+                Some(cn),
+                Some(CAHN_MAX_THRESHOLD),
+            ));
+        } else if cn < CAHN_MIN_THRESHOLD {
+            rejections.push(issue(
+                "INTERFACE_WIDTH_TOO_THIN",
+                "phase-field interface width is too thin relative to the vessel diameter",
+                Some(cn),
+                Some(CAHN_MIN_THRESHOLD),
+            ));
+        }
+    }
+    if phase.is_some() {
+        for diameter in sparger_diameters(spargers) {
+            let cells = diameter / dx_m;
+            if cells < BUBBLE_DIAMETER_MIN_CELLS {
+                rejections.push(issue(
+                    "BUBBLE_UNDER_RESOLVED",
+                    "resolved gas injection diameter spans too few lattice cells",
+                    Some(cells),
+                    Some(BUBBLE_DIAMETER_MIN_CELLS),
+                ));
+            }
+        }
+    }
+    let grid_reynolds = u_ref_lu / nu_lu;
+    if grid_reynolds > BIOPROCESS_GRID_REYNOLDS_WARN_THRESHOLD {
+        warnings.push(issue(
+            "GRID_REYNOLDS_HIGH",
+            "cell-scale Reynolds number is high for the selected mapping",
+            Some(grid_reynolds),
+            Some(BIOPROCESS_GRID_REYNOLDS_WARN_THRESHOLD),
+        ));
+    }
+    if let Some(d_lu) = scalar_diffusivity_lu {
+        let grid_sc = nu_lu / d_lu;
+        if grid_sc > GRID_SCHMIDT_WARN_THRESHOLD {
+            warnings.push(issue(
+                "SCALAR_DIFFUSION_UNSTABLE",
+                "lattice scalar diffusion is marginal for the selected mapping",
+                Some(grid_sc),
+                Some(GRID_SCHMIDT_WARN_THRESHOLD),
+            ));
+        }
+    }
+    add_optional_group_reasons(sc, &mut warnings, weber, eotvos, morton, scalar_diffusivity);
+
+    Ok(UnitReport {
+        lattice: LatticeMapping {
+            grid_nx: sc.run.grid_nx,
+            grid_ny: sc.run.grid_ny,
+            grid_nz: sc.run.grid_nz,
+            dx_m,
+            dt_s: sc.run.dt_s,
+            u_ref_lu,
+            nu_lu,
+            tau_lu,
+            cs2_lu: LATTICE_CS2,
+        },
+        groups: DimensionlessGroups {
+            reynolds,
+            froude,
+            weber,
+            eotvos,
+            morton,
+            schmidt,
+            peclet,
+            stokes,
+            mach_lattice,
+            cahn,
+            peclet_phi,
+        },
+        feasibility: FeasibilityDiagnostics {
+            warnings,
+            rejections,
+        },
+        matching_priority: matching_priority(sc, weber, eotvos, scalar_diffusivity),
+    })
+}
+
+fn require_positive(name: &str, value: f64) -> Result<(), BioprocessScenarioError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(())
+    } else {
+        Err(BioprocessScenarioError::unsupported(
+            format!("{name} must be finite and positive"),
+            crate::UnsupportedReason::OutOfValidityRange {
+                detail: format!("{name} must be finite and positive"),
+            },
+        ))
+    }
+}
+
+fn issue(
+    code: &str,
+    message: &str,
+    value: Option<f64>,
+    threshold: Option<f64>,
+) -> FeasibilityIssue {
+    FeasibilityIssue {
+        code: code.to_string(),
+        message: message.to_string(),
+        value,
+        threshold,
+    }
+}
+
+fn primary_phase_field(sc: &BioprocessScenario) -> Option<(f64, f64)> {
+    sc.physics.models.iter().find_map(|model| match model {
+        PhysicsModel::ResolvedPhaseField {
+            interface_width_m,
+            mobility_m2_per_s,
+            ..
+        } => Some((*interface_width_m, *mobility_m2_per_s)),
+        PhysicsModel::Hybrid { phase_field, .. } => {
+            Some((phase_field.interface_width_m, phase_field.mobility_m2_per_s))
+        }
+        _ => None,
+    })
+}
+
+fn primary_scalar_diffusivity(sc: &BioprocessScenario) -> Option<f64> {
+    sc.physics
+        .models
+        .iter()
+        .find_map(|model| match model {
+            PhysicsModel::PassiveScalar {
+                diffusivity_m2_per_s,
+                ..
+            } => Some(*diffusivity_m2_per_s),
+            _ => None,
+        })
+        .or_else(|| {
+            if sc.physics.has_oxygen() {
+                sc.fluids.oxygen_diffusivity_m2_per_s
+            } else {
+                None
+            }
+        })
+}
+
+fn sparger_diameters(spargers: &[SpargerSpec]) -> Vec<f64> {
+    spargers
+        .iter()
+        .filter_map(|sparger| match sparger {
+            SpargerSpec::Ring {
+                orifice_diameter_m, ..
+            } => Some(*orifice_diameter_m),
+            SpargerSpec::Pipe { diameter_m, .. } => Some(*diameter_m),
+            SpargerSpec::PointOrifices { .. } => None,
+        })
+        .collect()
+}
+
+fn add_optional_group_reasons(
+    sc: &BioprocessScenario,
+    warnings: &mut Vec<FeasibilityIssue>,
+    weber: Option<f64>,
+    eotvos: Option<f64>,
+    morton: Option<f64>,
+    scalar_diffusivity: Option<f64>,
+) {
+    if sc.physics.has_gas_model() && weber.is_none() {
+        warnings.push(issue(
+            "WEBER_UNAVAILABLE",
+            "Weber number not emitted because surface_tension_n_m is absent",
+            None,
+            None,
+        ));
+    }
+    if sc.physics.has_gas_model() && eotvos.is_none() {
+        warnings.push(issue(
+            "EOTVOS_UNAVAILABLE",
+            "Eotvos number not emitted because surface_tension_n_m or gas_density_kg_m3 is absent",
+            None,
+            None,
+        ));
+    }
+    if sc.physics.has_gas_model() && morton.is_none() {
+        warnings.push(issue(
+            "MORTON_UNAVAILABLE",
+            "Morton number not emitted because surface_tension_n_m or gas_density_kg_m3 is absent",
+            None,
+            None,
+        ));
+    }
+    if has_scalar_model(sc) && scalar_diffusivity.is_none() {
+        warnings.push(issue(
+            "SCALAR_GROUPS_UNAVAILABLE",
+            "Schmidt and Peclet numbers not emitted because scalar diffusivity is absent",
+            None,
+            None,
+        ));
+    }
+    if has_particle_model(sc) {
+        warnings.push(issue(
+            "STOKES_UNAVAILABLE",
+            "Stokes number not emitted because particle species density and diameter are absent from the schema",
+            None,
+            None,
+        ));
+    }
+}
+
+fn has_scalar_model(sc: &BioprocessScenario) -> bool {
+    sc.physics.models.iter().any(|model| {
+        matches!(
+            model,
+            PhysicsModel::PassiveScalar { .. } | PhysicsModel::Oxygen { .. }
+        )
+    })
+}
+
+fn has_particle_model(sc: &BioprocessScenario) -> bool {
+    sc.cells.is_some()
+        || sc
+            .physics
+            .models
+            .iter()
+            .any(|model| matches!(model, PhysicsModel::CellTracer { .. }))
+}
+
+fn matching_priority(
+    sc: &BioprocessScenario,
+    weber: Option<f64>,
+    eotvos: Option<f64>,
+    scalar_diffusivity: Option<f64>,
+) -> MatchingPriority {
+    let mut relaxed = Vec::new();
+    let mut missing = Vec::new();
+    if primary_phase_field(sc).is_some() {
+        if sc.fluids.gas_density_kg_m3.is_some() && weber.is_some() && eotvos.is_some() {
+            relaxed.push(
+                "rho_gas/rho_liquid and We/Eo fall out of the Re-matched lattice mapping"
+                    .to_string(),
+            );
+        } else {
+            missing.push("rho_gas/rho_liquid and We/Eo not enforced because gas density or surface tension is absent".to_string());
+        }
+    } else {
+        missing.push(
+            "rho_gas/rho_liquid and We/Eo not enforced because phase field is off".to_string(),
+        );
+    }
+    relaxed.push(
+        "Fr falls out of the Re-matched lattice mapping when free-surface behavior is relevant"
+            .to_string(),
+    );
+    if has_scalar_model(sc) {
+        if scalar_diffusivity.is_some() {
+            relaxed.push(
+                "Sc/Pe/Da fall out of the Re-matched lattice mapping for active scalars"
+                    .to_string(),
+            );
+        } else {
+            missing.push("Sc/Pe/Da not enforced because scalar diffusivity is absent".to_string());
+        }
+    } else {
+        missing.push(
+            "Sc/Pe/Da not enforced because no scalar or reaction model is active".to_string(),
+        );
+    }
+    if has_particle_model(sc) {
+        missing.push(
+            "St not enforced because particle species density and diameter are absent".to_string(),
+        );
+    } else {
+        missing.push("St not enforced because no particle model is active".to_string());
+    }
+    MatchingPriority {
+        achieved: vec!["Re".to_string()],
+        relaxed,
+        missing,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnitVerdict {
@@ -149,7 +654,7 @@ pub struct UnitSuggestion {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UnitReport {
+pub struct LegacyUnitReport {
     pub constructor: UnitConstructor,
     pub inputs: UnitInputsEcho,
     pub lattice: LatticeUnits,
@@ -164,7 +669,7 @@ pub struct UnitReport {
 #[derive(Clone, Debug)]
 pub struct ResolvedScenario {
     pub scenario: Scenario,
-    pub report: UnitReport,
+    pub report: LegacyUnitReport,
 }
 
 pub fn resolve(sc: &Scenario) -> Result<Option<ResolvedScenario>, String> {
@@ -196,7 +701,7 @@ pub fn resolve(sc: &Scenario) -> Result<Option<ResolvedScenario>, String> {
     Ok(Some(ResolvedScenario { scenario, report }))
 }
 
-pub fn report(params: &FlowParams) -> Result<UnitReport, String> {
+pub fn report(params: &FlowParams) -> Result<LegacyUnitReport, String> {
     let re =
         params.characteristic_velocity * params.characteristic_length / params.kinematic_viscosity;
     if !(params.characteristic_length > 0.0
@@ -403,7 +908,7 @@ pub fn report(params: &FlowParams) -> Result<UnitReport, String> {
         None
     };
 
-    Ok(UnitReport {
+    Ok(LegacyUnitReport {
         constructor: params.constructor,
         inputs: UnitInputsEcho {
             characteristic_length: params.characteristic_length,
@@ -549,7 +1054,7 @@ mod tests {
         }
     }
 
-    fn report_ids(r: &UnitReport) -> Vec<&str> {
+    fn report_ids(r: &LegacyUnitReport) -> Vec<&str> {
         r.diagnostics.iter().map(|d| d.id.as_str()).collect()
     }
 

@@ -1,7 +1,7 @@
 use lbm_core::compat::prelude::ConfigError;
 use lbm_scenario::{
-    build, build_check, CollisionSpec, EdgeSpec, EdgesSpec, FlowParams, Grid, InitSpec, Physics,
-    Precision, RunSpec, Scenario, SimHandle, UnitConstructor, UnitReport,
+    build, build_check, CollisionSpec, EdgeSpec, EdgesSpec, FlowParams, Grid, InitSpec,
+    LegacyUnitReport, Physics, Precision, RunSpec, Scenario, SimHandle, UnitConstructor,
 };
 
 const ROUND_TRIP_REL_TOL: f64 = 1.0e-6;
@@ -154,11 +154,11 @@ fn constructor_params(
     params
 }
 
-fn report_for(params: &FlowParams) -> UnitReport {
+fn report_for(params: &FlowParams) -> LegacyUnitReport {
     lbm_scenario::unit_report(params).unwrap_or_else(|err| panic!("unit report failed: {err}"))
 }
 
-fn resolved_resolution(report: &UnitReport) -> usize {
+fn resolved_resolution(report: &LegacyUnitReport) -> usize {
     (report.inputs.characteristic_length / report.conversion_factors.length_m).round() as usize
 }
 
@@ -172,7 +172,7 @@ fn assert_rel_close(label: &str, actual: f64, expected: f64, rel_tol: f64) {
     );
 }
 
-fn assert_round_trips(case: PhysicalTuple, report: &UnitReport) {
+fn assert_round_trips(case: PhysicalTuple, report: &LegacyUnitReport) {
     let n = resolved_resolution(report);
     let l_back = n as f64 * report.conversion_factors.length_m;
     let u_back = report.lattice.u_char_lattice * report.conversion_factors.velocity_m_s;

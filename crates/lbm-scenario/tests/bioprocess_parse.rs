@@ -55,6 +55,9 @@ fn base_scenario() -> Value {
         "run": {
             "steps": 100,
             "dt_s": 0.01,
+            "grid_nx": 64,
+            "grid_ny": 64,
+            "grid_nz": 64,
             "backend": "cpu",
             "precision": "f64",
             "lattice": "d3q19"

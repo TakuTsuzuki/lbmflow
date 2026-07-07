@@ -9,6 +9,7 @@ mod mcp;
 mod render;
 mod runner;
 mod schema;
+mod validate;
 mod verify;
 
 use anyhow::{Context, Result};
@@ -68,6 +69,9 @@ enum Command {
     Validate {
         /// Scenario JSON file (`-` for stdin)
         scenario: String,
+        /// Emit stable machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
     /// List, show, or run the built-in presets
     Presets {
@@ -185,39 +189,9 @@ fn main() -> Result<()> {
                 },
             )?;
         }
-        Command::Validate { scenario } => {
-            let sc = load_scenario(&scenario)?;
-            let units = match lbm_scenario::unit_report_for(&sc) {
-                Ok(units) => units,
-                Err(e) => {
-                    let report = serde_json::json!({
-                        "ok": false,
-                        "error": e,
-                        "warnings": lbm_scenario::validate(&sc),
-                        "units": null,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&report)?);
-                    std::process::exit(1);
-                }
-            };
-            let resolved = lbm_scenario::resolve(&sc);
-            let sc_for_warnings = match &resolved {
-                Ok(Some(r)) => &r.scenario,
-                _ => &sc,
-            };
-            let warnings = lbm_scenario::validate(sc_for_warnings);
-            let build_result = lbm_scenario::build_check(&sc);
-            let ok = build_result.is_ok();
-            let report = serde_json::json!({
-                "ok": ok,
-                "error": build_result.err(),
-                "warnings": warnings,
-                "units": units,
-            });
-            println!("{}", serde_json::to_string_pretty(&report)?);
-            if !ok {
-                std::process::exit(1);
-            }
+        Command::Validate { scenario, json } => {
+            let code = validate::run(&scenario, json)?;
+            std::process::exit(code);
         }
         Command::Presets { action } => match action {
             PresetAction::List => {

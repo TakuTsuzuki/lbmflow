@@ -27,7 +27,7 @@ pub struct Manifest {
     pub provenance: Provenance,
     pub warnings: Vec<lbm_scenario::Warning>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub units: Option<lbm_scenario::UnitReport>,
+    pub units: Option<lbm_scenario::LegacyUnitReport>,
     pub files: Vec<String>,
 }
 
@@ -170,7 +170,7 @@ fn run_gpu2d(
     sc: &Scenario,
     mut sim: lbm_scenario::GpuSim2,
     out_dir: &Path,
-    units: Option<lbm_scenario::UnitReport>,
+    units: Option<lbm_scenario::LegacyUnitReport>,
 ) -> Result<Manifest> {
     let t0 = Instant::now();
     let mut files = Vec::new();
@@ -305,7 +305,7 @@ fn run_t<T: Real>(
     mut sim: Simulation<T>,
     mp: Option<ShanChen<T>>,
     out_dir: &Path,
-    units: Option<lbm_scenario::UnitReport>,
+    units: Option<lbm_scenario::LegacyUnitReport>,
     options: &RunOptions,
 ) -> Result<Manifest> {
     if let Some(dir) = &options.restore {
@@ -897,7 +897,7 @@ fn run3d_t<L, T>(
     mut s: Solver3<L, T>,
     lattice: &str,
     out_dir: &Path,
-    units: Option<lbm_scenario::UnitReport>,
+    units: Option<lbm_scenario::LegacyUnitReport>,
     options: &RunOptions,
 ) -> Result<Manifest>
 where

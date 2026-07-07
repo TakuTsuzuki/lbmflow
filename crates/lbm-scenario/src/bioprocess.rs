@@ -1,3 +1,4 @@
+use crate::units::UnitReport;
 use crate::UnsupportedReason;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
@@ -80,6 +81,14 @@ impl BioprocessScenario {
         Ok(())
     }
 
+    pub fn compute_unit_report(&self) -> Result<UnitReport, BioprocessScenarioError> {
+        crate::units::bioprocess_unit_report(self)
+    }
+
+    pub fn unit_report_with_diagnostics(&self) -> Result<UnitReport, BioprocessScenarioError> {
+        crate::units::bioprocess_unit_report_unchecked(self)
+    }
+
     fn from_fields(fields: BioprocessScenarioFields) -> Result<Self, BioprocessScenarioError> {
         let scenario = Self {
             version: fields.version,
@@ -142,7 +151,7 @@ impl BioprocessScenarioError {
         }
     }
 
-    fn unsupported(message: impl Into<String>, reason: UnsupportedReason) -> Self {
+    pub(crate) fn unsupported(message: impl Into<String>, reason: UnsupportedReason) -> Self {
         Self {
             message: message.into(),
             reason,
@@ -530,6 +539,9 @@ pub struct OxygenExposureQoiOpts {}
 pub struct RunSpec {
     pub steps: u64,
     pub dt_s: f64,
+    pub grid_nx: u32,
+    pub grid_ny: u32,
+    pub grid_nz: u32,
     pub backend: Option<BackendSpec>,
     pub precision: Option<Precision>,
     pub lattice: Option<LatticeSpec>,

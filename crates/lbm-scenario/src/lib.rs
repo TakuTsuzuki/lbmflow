@@ -11,13 +11,17 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub mod bioprocess;
-mod units;
+pub mod units;
 pub use bioprocess::{BioprocessScenario, BioprocessScenarioError};
 pub use units::{
-    report as unit_report, resolve, ConversionFactors, DimensionlessNumbers, FlowParams,
-    LatticeUnits, UnitConstructor, UnitDiagnostic, UnitInputsEcho, UnitReport, UnitSuggestion,
-    UnitVerdict, GRID_RE_WARN_THRESHOLD, LATTICE_SPEED_WARN_THRESHOLD, TAU_HIGH_WARN_THRESHOLD,
-    TAU_LOW_WARN_THRESHOLD,
+    report as unit_report, resolve, ConversionFactors, DimensionlessGroups, DimensionlessNumbers,
+    FeasibilityDiagnostics, FeasibilityIssue, FlowParams, LatticeMapping, LatticeUnits,
+    LegacyUnitReport, MatchingPriority, UnitConstructor, UnitDiagnostic, UnitInputsEcho,
+    UnitReport, UnitSuggestion, UnitVerdict, BIOPROCESS_GRID_REYNOLDS_WARN_THRESHOLD,
+    BUBBLE_DIAMETER_MIN_CELLS, CAHN_MAX_THRESHOLD, CAHN_MIN_THRESHOLD, GRID_RE_WARN_THRESHOLD,
+    GRID_SCHMIDT_WARN_THRESHOLD, LATTICE_SPEED_WARN_THRESHOLD, MACH_LATTICE_REJECT_THRESHOLD,
+    MACH_LATTICE_WARN_THRESHOLD, TAU_HIGH_WARN_THRESHOLD, TAU_LOW_WARN_THRESHOLD,
+    TAU_NEAR_HALF_WARN_THRESHOLD, TAU_NON_POSITIVE_VISCOSITY_THRESHOLD,
 };
 
 // ---------------------------------------------------------------- schema
@@ -929,7 +933,7 @@ pub fn validate(sc: &Scenario) -> Vec<Warning> {
     warnings
 }
 
-pub fn unit_report_for(sc: &Scenario) -> Result<Option<UnitReport>, String> {
+pub fn unit_report_for(sc: &Scenario) -> Result<Option<LegacyUnitReport>, String> {
     sc.units.as_ref().map(unit_report).transpose()
 }
 
