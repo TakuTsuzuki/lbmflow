@@ -29,6 +29,7 @@ const NU: f64 = 1.0 / 60.0;
 const TA_CRIT: f64 = 3390.0;
 const SHELL_HALF_WIDTH: f64 = 0.55;
 const DIVERGED_SPEED: f64 = 0.5;
+const AXIAL_SEED_EPS: f64 = 1.0e-4;
 
 #[derive(Clone, Debug)]
 struct VelocityFields {
@@ -44,7 +45,16 @@ struct Spectrum {
     samples: usize,
     axial_energy: Vec<f64>,
     axisymmetric_energy: f64,
+    ratio_trajectory: Vec<RatioSample>,
     max_speed_trajectory: Vec<(usize, f64)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RatioSample {
+    step: usize,
+    nonzero_ratio: f64,
+    high_mode_ratio: f64,
+    axisymmetric_energy: f64,
 }
 
 fn idx(x: usize, y: usize, z: usize) -> usize {
@@ -91,7 +101,7 @@ fn shell_geometry(omega: f64) -> (Vec<bool>, Vec<[f64; 3]>) {
     (solid, wall_u)
 }
 
-fn build_solver(omega: f64, perturb: bool) -> TaycSolver {
+fn build_solver(omega: f64) -> TaycSolver {
     let (solid, wall_u) = shell_geometry(omega);
     let spec = GlobalSpec::<f64> {
         dims: [NX, NY, NZ],
@@ -102,35 +112,62 @@ fn build_solver(omega: f64, perturb: bool) -> TaycSolver {
         },
         ..Default::default()
     };
-    let mut sim: TaycSolver = Solver::new(
+    Solver::new(
         &spec,
         &solid,
         &wall_u,
         [1, 1, 1],
         CpuSimd::default(),
         LocalPeriodic,
-    );
-    if perturb {
-        seed_radial_impulse(&mut sim);
-    }
-    sim
+    )
 }
 
-fn seed_radial_impulse(sim: &mut TaycSolver) {
-    // A deterministic infinitesimal radial impulse exposes the axial onset
-    // mode. The subcritical case must damp it; supercritical cases should
-    // amplify it. This is a one-step initial perturbation, not a persistent
-    // closure term, and is far below the circular-Couette speed.
-    sim.set_body_force_field(|x, y, z| {
+fn axial_seed_mode() -> usize {
+    // The linear Taylor-Couette critical axial wavelength is approximately
+    // lambda_c = 2 d for a narrow gap, with d = R_o - R_i. In this periodic
+    // box, axial Fourier mode m has lambda_m = L_z / m = NZ / m. Testing the
+    // requested candidates gives m=1 -> 64 and m=2 -> 32; d=16, so
+    // lambda_c=32 and the m=2 seed is the analytic-wavelength match.
+    let lambda_c = 2.0 * (R_O - R_I);
+    let m1_err = (NZ as f64 - lambda_c).abs();
+    let m2_err = (NZ as f64 / 2.0 - lambda_c).abs();
+    if m1_err <= m2_err {
+        1
+    } else {
+        2
+    }
+}
+
+fn axial_seed_delta_ur(x: usize, y: usize, z: usize) -> f64 {
+    let (_, _, r) = radius_xy(x, y);
+    if !(R_I + 2.0..R_O - 2.0).contains(&r) {
+        return 0.0;
+    }
+    let sigma = (R_O - R_I) / 4.0;
+    let radial_envelope = (-((r - R_MID) * (r - R_MID)) / (sigma * sigma)).exp();
+    let kz = TAU * axial_seed_mode() as f64 / NZ as f64;
+    AXIAL_SEED_EPS * radial_envelope * (kz * z as f64).cos()
+}
+
+fn inject_axial_seed(sim: &mut TaycSolver) {
+    let rho = sim.gather_rho();
+    let ux = sim.gather_ux();
+    let uy = sim.gather_uy();
+    let uz = sim.gather_uz();
+    sim.init_with(|x, y, z| {
+        let i = idx(x, y, z);
         let (dx, dy, r) = radius_xy(x, y);
-        if !(R_I + 2.0..R_O - 2.0).contains(&r) {
-            return [0.0; 3];
-        }
-        let radial = 1.0e-6 * (TAU * z as f64 / NZ as f64).cos();
-        [radial * dx / r, radial * dy / r, 0.0]
+        let delta_ur = axial_seed_delta_ur(x, y, z);
+        let radial = if r > 0.0 {
+            [delta_ur * dx / r, delta_ur * dy / r, 0.0]
+        } else {
+            [0.0; 3]
+        };
+        (
+            rho[i],
+            [ux[i] + radial[0], uy[i] + radial[1], uz[i] + radial[2]],
+        )
     });
-    sim.step();
-    sim.clear_body_force_field();
 }
 
 fn gather_velocity(sim: &TaycSolver) -> VelocityFields {
@@ -244,30 +281,63 @@ fn axial_energy(signal: &[f64]) -> Vec<f64> {
     out
 }
 
+fn ratio_sample(step: usize, spectrum: &[f64], axisymmetric_energy: f64) -> RatioSample {
+    RatioSample {
+        step,
+        nonzero_ratio: spectrum[1..].iter().sum::<f64>() / axisymmetric_energy.max(1.0e-30),
+        high_mode_ratio: spectrum[2..].iter().sum::<f64>() / axisymmetric_energy.max(1.0e-30),
+        axisymmetric_energy,
+    }
+}
+
+fn sample_spectrum(sim: &TaycSolver, step: usize) -> (Vec<f64>, f64, RatioSample, VelocityFields) {
+    let fields = gather_velocity(sim);
+    let (signal, axis_e) = radial_line_signal(&fields);
+    let spectrum = axial_energy(&signal);
+    let ratio = ratio_sample(step, &spectrum, axis_e);
+    (spectrum, axis_e, ratio, fields)
+}
+
 fn measure_spectrum(ta: f64, final_window: usize, sample_every: usize) -> Spectrum {
     let omega = omega_for_ta(ta);
-    let mut sim = build_solver(omega, true);
+    let mut sim = build_solver(omega);
     let settle_steps = 5000;
     let mut traj = run_checked(&mut sim, settle_steps, 500, &format!("Ta={ta:.3} settle"));
+    inject_axial_seed(&mut sim);
     let mut spectrum = vec![0.0; NZ / 2 + 1];
     let mut axisymmetric_energy = 0.0;
+    let mut ratio_trajectory = Vec::new();
     let mut samples = 0usize;
+    let (seed_spectrum, seed_axis_e, seed_ratio, seed_fields) = sample_spectrum(&sim, settle_steps);
+    traj.push((settle_steps, max_speed(&seed_fields)));
+    assert_finite_or_stop(
+        &format!("Ta={ta:.3} seeded"),
+        settle_steps,
+        &seed_fields,
+        &traj,
+    );
+    for (dst, src) in spectrum.iter_mut().zip(seed_spectrum) {
+        *dst += src;
+    }
+    axisymmetric_energy += seed_axis_e;
+    ratio_trajectory.push(seed_ratio);
+    samples += 1;
     let mut elapsed = 0usize;
     while elapsed < final_window {
         let chunk = (final_window - elapsed).min(sample_every);
         sim.run(chunk);
         elapsed += chunk;
         if elapsed % sample_every == 0 || elapsed == final_window {
-            let fields = gather_velocity(&sim);
             let global_step = settle_steps + elapsed;
-            let max_u = max_speed(&fields);
-            traj.push((global_step, max_u));
+            let (sample_spectrum, sample_axis_e, ratio, fields) =
+                sample_spectrum(&sim, global_step);
+            traj.push((global_step, max_speed(&fields)));
             assert_finite_or_stop(&format!("Ta={ta:.3} final"), global_step, &fields, &traj);
-            let (signal, axis_e) = radial_line_signal(&fields);
-            for (dst, src) in spectrum.iter_mut().zip(axial_energy(&signal)) {
+            for (dst, src) in spectrum.iter_mut().zip(sample_spectrum) {
                 *dst += src;
             }
-            axisymmetric_energy += axis_e;
+            axisymmetric_energy += sample_axis_e;
+            ratio_trajectory.push(ratio);
             samples += 1;
         }
     }
@@ -285,6 +355,7 @@ fn measure_spectrum(ta: f64, final_window: usize, sample_every: usize) -> Spectr
         samples,
         axial_energy: spectrum,
         axisymmetric_energy,
+        ratio_trajectory,
         max_speed_trajectory: traj,
     }
 }
@@ -299,6 +370,21 @@ fn high_mode_ratio(spectrum: &Spectrum) -> f64 {
     high / spectrum.axisymmetric_energy.max(1.0e-30)
 }
 
+fn ratio_trajectory_values(spectrum: &Spectrum) -> Vec<(usize, f64, f64, f64)> {
+    spectrum
+        .ratio_trajectory
+        .iter()
+        .map(|s| {
+            (
+                s.step,
+                s.nonzero_ratio,
+                s.high_mode_ratio,
+                s.axisymmetric_energy,
+            )
+        })
+        .collect()
+}
+
 fn print_spectrum(label: &str, spectrum: &Spectrum) {
     let ratios: Vec<f64> = spectrum
         .axial_energy
@@ -307,13 +393,15 @@ fn print_spectrum(label: &str, spectrum: &Spectrum) {
         .collect();
     println!(
         "VAL-TAYC {label}: Ta={:.6e}, Omega={:.6e}, samples={}, axisymmetric_energy={:.6e}, \
-         nonzero_ratio={:.6e}, high_mode_ratio={:.6e}, spectrum_abs={:?}, spectrum_ratio={:?}, max|u|_trajectory={:?}",
+         nonzero_ratio={:.6e}, high_mode_ratio={:.6e}, ratio_trajectory={:?}, spectrum_abs={:?}, \
+         spectrum_ratio={:?}, max|u|_trajectory={:?}",
         spectrum.ta,
         spectrum.omega,
         spectrum.samples,
         spectrum.axisymmetric_energy,
         nonzero_mode_ratio(spectrum),
         high_mode_ratio(spectrum),
+        ratio_trajectory_values(spectrum),
         spectrum.axial_energy,
         ratios,
         spectrum.max_speed_trajectory
@@ -324,7 +412,7 @@ fn print_spectrum(label: &str, spectrum: &Spectrum) {
 fn val_tayc_laminar_circular_couette_profile_light() {
     let ta = 0.10 * TA_CRIT;
     let omega = omega_for_ta(ta);
-    let mut sim = build_solver(omega, false);
+    let mut sim = build_solver(omega);
     let traj = run_checked(&mut sim, 5000, 500, "laminar profile");
     let fields = gather_velocity(&sim);
     let (count, l2_rel, linf_rel_ui) = laminar_profile_error(&fields, omega);
@@ -349,21 +437,46 @@ fn val_tayc_wavy_vortex_onset_heavy() {
     let high = measure_spectrum(3.0 * TA_CRIT, 2000, 20);
     print_spectrum("Ta=3.0Ta_c", &high);
 
-    let sub_ratio = nonzero_mode_ratio(&subcritical);
-    let onset_ratio = nonzero_mode_ratio(&onset);
-    let onset_high = high_mode_ratio(&onset);
-    let high_high = high_mode_ratio(&high);
+    let sub_start = subcritical.ratio_trajectory.first().unwrap();
+    let sub_end = subcritical.ratio_trajectory.last().unwrap();
+    let onset_start = onset.ratio_trajectory.first().unwrap();
+    let onset_end = onset.ratio_trajectory.last().unwrap();
+    let high_end = high.ratio_trajectory.last().unwrap();
+
+    println!(
+        "VAL-TAYC damping/growth: mode={}, eps={:.6e}, sub_start={:.6e}, sub_end={:.6e}, \
+         onset_start={:.6e}, onset_end={:.6e}, high_end={:.6e}, onset_high_end={:.6e}, high_high_end={:.6e}",
+        axial_seed_mode(),
+        AXIAL_SEED_EPS,
+        sub_start.nonzero_ratio,
+        sub_end.nonzero_ratio,
+        onset_start.nonzero_ratio,
+        onset_end.nonzero_ratio,
+        high_end.nonzero_ratio,
+        onset_end.high_mode_ratio,
+        high_end.high_mode_ratio
+    );
 
     assert!(
-        sub_ratio < 0.01,
-        "subcritical Ta=0.5Ta_c grew axial modes: nonzero/axisymmetric={sub_ratio:.6e}"
+        sub_end.nonzero_ratio < sub_start.nonzero_ratio,
+        "subcritical Ta=0.5Ta_c did not damp the axial seed: start={:.6e}, end={:.6e}, trajectory={:?}",
+        sub_start.nonzero_ratio,
+        sub_end.nonzero_ratio,
+        ratio_trajectory_values(&subcritical)
     );
     assert!(
-        onset_ratio > 0.05,
-        "supercritical Ta=1.5Ta_c did not show visible axial-mode growth: nonzero/axisymmetric={onset_ratio:.6e}"
+        onset_end.nonzero_ratio > onset_start.nonzero_ratio && onset_end.nonzero_ratio > 0.05,
+        "supercritical Ta=1.5Ta_c did not show visible axial-mode growth: start={:.6e}, end={:.6e}, trajectory={:?}",
+        onset_start.nonzero_ratio,
+        onset_end.nonzero_ratio,
+        ratio_trajectory_values(&onset)
     );
     assert!(
-        high_high > onset_high,
-        "Ta=3Ta_c did not move more energy into higher modes: high={high_high:.6e}, onset={onset_high:.6e}"
+        high_end.high_mode_ratio > onset_end.high_mode_ratio,
+        "Ta=3Ta_c did not move more energy into higher modes: high={:.6e}, onset={:.6e}, high_trajectory={:?}, onset_trajectory={:?}",
+        high_end.high_mode_ratio,
+        onset_end.high_mode_ratio,
+        ratio_trajectory_values(&high),
+        ratio_trajectory_values(&onset)
     );
 }
