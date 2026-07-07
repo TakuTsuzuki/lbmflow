@@ -600,3 +600,35 @@ NOT filtering the mode — the test just used a wrong critical value.
 Also: rev 3 CONFIRMED rotating IBM cylinders work in Taylor-Couette
 setups (light PASS), which strengthens the P4-010 disposition endorsement
 in a NEW use case.
+
+### ANOM-P4-023 DEEPENED (sigma(R) sweep — radar #1, main 79d0cb0)
+9-point R-sweep + 2-point light: sigma_YL(R) fits EXACTLY the inverse-R
+Tolman form sigma_YL = sigma_inf + C/R with r² = 0.99977 (heavy 9-point:
+r² = 0.99971). Fitted constants (heavy):
+  sigma_inf = 3.610e-2, C = -1.085e-1
+- At R→∞: sigma_YL → 3.61e-2, ~9% ABOVE sigma_Laplace(T11) = 3.32e-2.
+- At R=12: sigma_YL = 2.71e-2, matches P4-023 P1 measurement (2.87e-2)
+  within 6% (consistency check).
+- At Jurin's meniscus r_m ~ 12 (gap 24): sigma_YL(12) = 2.71e-2
+- Jurin-inferred sigma_eff (P4-014 slope 1.54× Laplace) = 5.11e-2
+- **rel error 47%**: the R-dependence of sigma_YL DOES NOT explain
+  Jurin's 1.54× enhancement.
+
+Three-way referee status (Laplace T11: 1.00×, Jurin P4-014: 1.54×,
+Taylor-Culick P4-017: 0.49×, sigma_KB flat P4-023 P3: 1.10×,
+sigma_YL(R→∞) new: 1.09×) — flat-interface pressure-tensor sigma is
+~10% above the T11 Laplace calibration, static curved-drop sigma matches
+that in the R→∞ limit, both flat and asymptotic-curved cases converge to
+~3.6e-2. But the WETTING slot (Jurin, sigma_eff 5.1e-2) is 40% above
+even the asymptotic sigma_∞. Remaining hypothesis: WALL AFFINITY at the
+solid rim adds a solid-fluid interface tension γ_sl that Young's law
+naturally couples into cosθ_slot, effectively enhancing sigma·cosθ
+without changing the bulk sigma. This is a CLOSURE hypothesis, not a
+free-parameter fit — Young's γ_sl - γ_sv = γ_lv cosθ. Next investigation
+(radar rev): measure γ_sl/γ_lv via the contact-line curvature in T11c
+setup and see if 1.54× emerges from the correct Young-Laplace formulation
+in a bounded slot. LEFT AS OPEN for a targeted follow-up; the σ(R) test
+lands as a definitive characterization of the SC bulk sigma R-dependence.
+Model-domain status: SC static sigma DOES obey a Tolman-length-type
+correction, well-fit r²>0.9997 across R∈[6,32]. This is a physics finding
+worth PHYSICS.md documentation.
