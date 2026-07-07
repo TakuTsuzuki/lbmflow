@@ -57,6 +57,27 @@ cd web && npm run build                   # GUI (tsc strict + vite)
   [AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md) /
   [COMPETITIVE_SPEC.md](docs/COMPETITIVE_SPEC.md) — subsystem designs
 
+## Documentation principles
+
+- **One home per fact.** Each topic has exactly one owning doc; others link to
+  it instead of restating it. When facts change, update the owning doc in
+  place — never fork a new file or append a contradicting section.
+- **Index or archive.** Every file directly under `docs/` must have a one-line
+  entry in the Docs index above; add/remove docs and the index (CLAUDE.md AND
+  AGENTS.md) in the same commit. Superseded or one-shot docs (handoffs, dated
+  audits, drafts) move to `docs/archive/` with a pointer to their replacement.
+- **Sections over files.** A new top-level doc is justified only by a new
+  subsystem or track. Findings, reports, and experiment records go into the
+  owning doc or the track's subdirectory (`docs/qa/`, `docs/proposals/`, …).
+- **State the lifecycle in the header**: living (updated in place), frozen
+  spec (change = recorded spec revision), or snapshot (dated, never edited).
+- **Docs move with the change.** The change that alters behavior updates the
+  affected docs (physics → PHYSICS.md, claims → LIMITATIONS.md, plan →
+  PLAN.md). Delegating the doc work is fine, but the report must say so —
+  neither written nor delegated means the change is not done.
+- **English, absolute dates, repo-relative links.** "today"/"last week" rots;
+  write 2026-07-07.
+
 ## Team & conventions
 
 - Fable is PM. **Implementation workhorse = codex CLI, fanned out aggressively
