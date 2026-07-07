@@ -1,5 +1,6 @@
 use crate::manifest::MANIFEST_PATH;
 use anyhow::Result;
+use lbm_core::credibility::{EvidenceGate, EvidenceGateInput, EvidenceGateResult, MissingArtefact};
 use lbm_core::qoi::{CapabilityStatus, QoiBundle, QoiScalar};
 use serde::Serialize;
 use serde_json::Value;
@@ -50,7 +51,8 @@ pub fn generate_report(run_dir: &Path) -> Result<PathBuf> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
 
     let mut out = String::new();
-    if !evidence_gate_ready(&qoi) {
+    let gate_results = evidence_gate_results(&qoi, &manifest);
+    if !evidence_gate_ready(&gate_results) {
         out.push_str("# NOT EVIDENCE-GRADE\n\n");
     }
     out.push_str("# Bioprocess CFD Report\n\n");
@@ -83,6 +85,8 @@ pub fn generate_report(run_dir: &Path) -> Result<PathBuf> {
             status.qoi, status.status, status.tier
         )?;
     }
+    out.push_str("\n## Evidence gate\n\n");
+    write_evidence_gate_summary(&mut out, &gate_results)?;
     out.push_str("\n## Limitations\n\n");
     out.push_str("See [docs/LIMITATIONS.md](../../../docs/LIMITATIONS.md).\n\n");
     out.push_str("## Provenance\n\n");
@@ -105,12 +109,123 @@ pub fn generate_report(run_dir: &Path) -> Result<PathBuf> {
     Ok(report_path)
 }
 
-fn evidence_gate_ready(qoi: &QoiBundle) -> bool {
-    !qoi.validation_status.is_empty()
-        && qoi
-            .validation_status
+pub fn evidence_check(run_dir: &Path) -> Result<Vec<EvidenceGateResult>> {
+    let qoi_path = run_dir.join(lbm_scenario::QOI_BUNDLE_JSON);
+    if !qoi_path.exists() {
+        return Err(ReportError::missing_qoi(&qoi_path).into());
+    }
+    let qoi: QoiBundle = serde_json::from_slice(&fs::read(&qoi_path)?)?;
+    let manifest_path = run_dir.join(MANIFEST_PATH);
+    let manifest: Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+    Ok(evidence_gate_results(&qoi, &manifest))
+}
+
+fn evidence_gate_ready(results: &[EvidenceGateResult]) -> bool {
+    !results.is_empty()
+        && results
             .iter()
-            .all(|s| s.status == CapabilityStatus::EvidenceReady)
+            .all(|result| matches!(result, EvidenceGateResult::Ready { .. }))
+}
+
+fn evidence_gate_results(qoi: &QoiBundle, manifest: &Value) -> Vec<EvidenceGateResult> {
+    if let Some(inputs) = manifest_evidence_inputs(manifest) {
+        return inputs.into_iter().map(EvidenceGate::evaluate).collect();
+    }
+    qoi.validation_status
+        .iter()
+        .map(|status| {
+            let vb_id = vb_id_for_qoi(&status.qoi).to_string();
+            let mut missing = vec![
+                MissingArtefact::NoCalibrationDataset,
+                MissingArtefact::NoHoldoutDataset,
+                MissingArtefact::NoUqInterval,
+                MissingArtefact::NoMeshSensitivity,
+                MissingArtefact::NoTimeStepSensitivity,
+                MissingArtefact::NoLimitationReport,
+            ];
+            if !matches!(
+                status.status,
+                CapabilityStatus::Engineering | CapabilityStatus::EvidenceReady
+            ) {
+                missing.insert(
+                    0,
+                    MissingArtefact::ValidationMatrixFail {
+                        vb_id,
+                        reason: format!("QOI status is {:?}", status.status),
+                    },
+                );
+            }
+            EvidenceGateResult::Blocked {
+                qoi_id: status.qoi.clone(),
+                missing,
+            }
+        })
+        .collect()
+}
+
+fn manifest_evidence_inputs(manifest: &Value) -> Option<Vec<EvidenceGateInput>> {
+    let value = manifest
+        .get("evidenceGate")
+        .or_else(|| manifest.get("evidence_gate"))?;
+    if let Some(array) = value.as_array() {
+        let inputs: Vec<EvidenceGateInput> = array
+            .iter()
+            .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+            .collect();
+        return Some(inputs);
+    }
+    serde_json::from_value(value.clone())
+        .ok()
+        .map(|input| vec![input])
+}
+
+fn vb_id_for_qoi(qoi: &str) -> &'static str {
+    match qoi {
+        "power" => "VB-01",
+        "mixing" => "VB-02",
+        "shear" | "shear_rate" => "VB-03",
+        "gas" | "gas_holdup" => "VB-05",
+        "kla" | "oxygen" => "VB-06",
+        "cells" | "cell_exposure" => "VB-07",
+        "scaleup" | "scale_up" => "VB-08",
+        _ => "VB-UNKNOWN",
+    }
+}
+
+fn write_evidence_gate_summary(
+    out: &mut String,
+    results: &[EvidenceGateResult],
+) -> std::fmt::Result {
+    if results.is_empty() {
+        out.push_str("No evidence-gate artefacts were found.\n");
+        return Ok(());
+    }
+    out.push_str("| QOI | Gate | Detail |\n|---|---|---|\n");
+    for result in results {
+        match result {
+            EvidenceGateResult::Ready {
+                qoi_id,
+                calibration_ids,
+                holdout_ids,
+                ..
+            } => writeln!(
+                out,
+                "| {qoi_id} | Ready | calibration={} holdout={} |",
+                calibration_ids.join(","),
+                holdout_ids.join(",")
+            )?,
+            EvidenceGateResult::Blocked { qoi_id, missing } => writeln!(
+                out,
+                "| {qoi_id} | Blocked | {} |",
+                missing
+                    .iter()
+                    .map(|item| format!("{item:?}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )?,
+        }
+    }
+    Ok(())
 }
 
 fn write_scenario_summary(out: &mut String, scenario: Option<&Value>) -> std::fmt::Result {
@@ -258,16 +373,23 @@ mod tests {
     }
 
     fn write_manifest(dir: &Path) {
+        write_manifest_with_evidence(dir, None);
+    }
+
+    fn write_manifest_with_evidence(dir: &Path, evidence_gate: Option<Value>) {
+        let mut manifest = serde_json::json!({
+            "scenario": "fixture",
+            "scenarioHash": "sha256:abc",
+            "activeModels": ["single_phase"],
+            "unitReport": {"verdict": "screening"},
+            "provenance": {}
+        });
+        if let Some(evidence_gate) = evidence_gate {
+            manifest["evidenceGate"] = evidence_gate;
+        }
         fs::write(
             dir.join(MANIFEST_PATH),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "scenario": "fixture",
-                "scenarioHash": "sha256:abc",
-                "activeModels": ["single_phase"],
-                "unitReport": {"verdict": "screening"},
-                "provenance": {}
-            }))
-            .unwrap(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
         fs::write(
@@ -280,6 +402,57 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    fn ready_evidence_gate_json() -> Value {
+        serde_json::json!({
+            "qoi_id": "power",
+            "vb_id": "VB-01",
+            "vb_engineering_green": true,
+            "datasets": {
+                "calibration": {
+                    "cal-power": {
+                        "id": "cal-power",
+                        "qoi": "power",
+                        "source": "fixture",
+                        "date": "2026-07-07",
+                        "scale": "bench",
+                        "operating_condition": "N=1/s",
+                        "measurement_uncertainty": 0.1
+                    }
+                },
+                "holdout": {
+                    "hold-power": {
+                        "id": "hold-power",
+                        "qoi": "power",
+                        "source": "fixture",
+                        "date": "2026-07-07",
+                        "scale": "pilot",
+                        "operating_condition": "N=2/s",
+                        "measurement_uncertainty": 0.1
+                    }
+                }
+            },
+            "uq_interval": {
+                "q_hat": 1.0,
+                "q_lo": 0.9,
+                "q_hi": 1.1,
+                "method": "fixture"
+            },
+            "mesh_sensitivity": {
+                "additional_cases": 2,
+                "variation_fraction": 0.04,
+                "summary": "fixture mesh sensitivity"
+            },
+            "time_step_sensitivity": {
+                "additional_cases": 2,
+                "variation_fraction": 0.04,
+                "summary": "fixture time-step sensitivity"
+            },
+            "limitation_report": {
+                "manifest_path": "limitations.md"
+            }
+        })
     }
 
     #[test]
@@ -314,7 +487,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lbm_report_evidence_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        write_manifest(&dir);
+        write_manifest_with_evidence(&dir, Some(ready_evidence_gate_json()));
         fs::write(
             dir.join(lbm_scenario::QOI_BUNDLE_JSON),
             serde_json::to_vec_pretty(&fixture_qoi(CapabilityStatus::EvidenceReady)).unwrap(),
@@ -323,5 +496,25 @@ mod tests {
         let report = generate_report(&dir).unwrap();
         let text = fs::read_to_string(report).unwrap();
         assert!(!text.contains("NOT EVIDENCE-GRADE"));
+    }
+
+    #[test]
+    fn evidence_ready_label_without_artefacts_still_gets_banner() {
+        let dir = std::env::temp_dir().join(format!(
+            "lbm_report_evidence_blocked_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write_manifest(&dir);
+        fs::write(
+            dir.join(lbm_scenario::QOI_BUNDLE_JSON),
+            serde_json::to_vec_pretty(&fixture_qoi(CapabilityStatus::EvidenceReady)).unwrap(),
+        )
+        .unwrap();
+        let report = generate_report(&dir).unwrap();
+        let text = fs::read_to_string(report).unwrap();
+        assert!(text.contains("NOT EVIDENCE-GRADE"));
+        assert!(text.contains("NoCalibrationDataset"));
     }
 }

@@ -87,7 +87,8 @@ pub mod prelude {
         CellCheckpointSection, CellFieldSample, CellTracer, CellTracerPopulation,
     };
     pub use crate::credibility::{
-        CalibrationDataset, CredibilityError, DatasetRegistry, HoldoutDataset,
+        CalibrationDataset, CredibilityError, DatasetRegistry, EvidenceGate, EvidenceGateInput,
+        EvidenceGateResult, HoldoutDataset, LimitationReport, MissingArtefact, SensitivityRecord,
     };
     pub use crate::damage::{
         exposure_distribution, DamageIncrement, DamageModelError, DamageThreshold,
