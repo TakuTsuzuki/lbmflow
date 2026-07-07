@@ -12,11 +12,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub mod bioprocess;
 pub mod qoi_schema;
+pub mod sweep;
 pub mod units;
 pub use bioprocess::{BioprocessScenario, BioprocessScenarioError};
 pub use qoi_schema::{
     bioprocess_qoi_output_schema, QoiOutputSchema, QOI_BUNDLE_JSON, QOI_CELLS_CSV, QOI_GAS_CSV,
     QOI_KLA_CSV, QOI_MIXING_CSV, QOI_POWER_CSV, QOI_SHEAR_CSV,
+};
+pub use sweep::{
+    expand_grid, SweepCase, SweepCaseParameter, SweepMethod, SweepParam, SweepScenario,
 };
 pub use units::{
     report as unit_report, resolve, ConversionFactors, DimensionlessGroups, DimensionlessNumbers,

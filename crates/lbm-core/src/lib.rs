@@ -61,6 +61,7 @@ pub mod solver;
 pub mod stress;
 pub mod subdomain;
 pub mod surface_tension;
+pub mod uq;
 #[cfg(feature = "geometry-import")]
 pub mod voxel_import;
 pub mod wall_model;
@@ -158,6 +159,9 @@ pub mod prelude {
     pub use crate::subdomain::Subdomain;
     pub use crate::surface_tension::{
         SurfaceTensionDiagnostics, SurfaceTensionError, SurfaceTensionParams,
+    };
+    pub use crate::uq::{
+        combine_interval, one_factor_local_sensitivity, UqComponent, UqComponentKind,
     };
     pub use crate::wall_model::{WallCellMetric, WallMetricSource};
     pub use crate::wetting::{ContactAngleParams, WettingError};

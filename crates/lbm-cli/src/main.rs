@@ -12,6 +12,7 @@ mod render;
 mod report;
 mod runner;
 mod schema;
+mod sweep;
 mod validate;
 mod verify;
 
@@ -125,6 +126,14 @@ enum BioprocessAction {
     Report {
         /// Run directory containing qoi.json and manifest.json
         run_dir: PathBuf,
+    },
+    /// Run a deterministic bioprocess parameter sweep
+    Sweep {
+        /// Sweep JSON file
+        sweep: PathBuf,
+        /// Output directory for case folders and sweep_summary.json
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -300,6 +309,10 @@ fn main() -> Result<()> {
         Command::Bioprocess { action } => match action {
             BioprocessAction::Report { run_dir } => {
                 let path = report::generate_report(&run_dir)?;
+                println!("{}", path.display());
+            }
+            BioprocessAction::Sweep { sweep, out } => {
+                let path = sweep::run(&sweep, out)?;
                 println!("{}", path.display());
             }
         },
