@@ -1,92 +1,100 @@
 # LBMFlow
 
-A commercial-grade lattice Boltzmann fluid simulator. Rust core, WebAssembly
-GUI, a scenario CLI, and a native MCP server so AI agents can drive it.
+**A bioprocess-specific CFD core.** Rust engine, scenario CLI, and a native
+MCP server so AI agents can drive it. Its purpose is to compute the QOIs
+that drive stirred-tank cell-culture and bioreactor process decisions:
+power number, mixing time, gas holdup, kLa, shear exposure, oxygen
+exposure, cell / microcarrier damage risk, and scale-up operating windows.
 
-D2Q9 / D3Q19 / D3Q27 lattices · BGK / TRT / cumulant collisions · scalar,
-SIMD-fused, and wgpu GPU backends · FP16 storage · MPI halo exchange · Shan-Chen
-multiphase · WALE LES · rotating immersed boundary · Bouzidi curved walls ·
-Guo forcing.
+Generic CFD parity is *not* a goal. See [docs/BIOPROCESS_PIVOT.md](docs/BIOPROCESS_PIVOT.md)
+for the pivot rationale and what has been retracted / preserved.
 
 Licensed under MIT OR Apache-2.0.
 
+**Version:** `0.2.0-bioprocess.0`. The pre-pivot general-purpose LBM
+snapshot is `git tag v1-lbm-general-final`; its docs live under
+`docs/archive/2026-07-07-pivot/`.
+
+## Product mission
+
+LBMFlow is the CFD side of a bioprocess design workflow, not a
+general-purpose simulator. Concretely:
+
+- **Impeller and vessel hydrodynamics** — Np, P/V, discharge Nq for
+  Rushton and pitched-blade in stirred tanks.
+- **Shear-rate and viscous-stress fields** with percentile distributions
+  (P50 / P90 / P95 / P99); wall-shear diagnostics.
+- **Passive-scalar mixing** — CV-based t95 and t99 mixing time.
+- **Resolved gas-liquid** via conservative Allen-Cahn phase field, with
+  surface tension, contact angle, and a sparger conservation ledger.
+- **Oxygen transport** with Henry-equilibrium interfacial flux; kLa QOI
+  from dynamic gassing.
+- **Cell / microcarrier trajectories** with shear-exposure integrals and
+  Schiller-Naumann validity enforcement.
+- **Point-bubble + PBM engineering mode** for aeration with d32 and
+  interfacial-area-based kLa.
+- **UQ / sweep runner** and **scale-up operating-window evaluator**.
+- **Evidence-tier gate** requiring calibration + holdout + UQ +
+  sensitivity records before any evidence claim can be labelled.
+
+The plan lives in [docs/PLAN.md](docs/PLAN.md) as tickets BCFD-000..110
+across milestones M0..M3.
+
 ## Design principles
 
-- **Explicit accuracy–speed control.** Every trade-off — collision operator,
-  precision, backend, resolution — is a first-class knob, not a hidden default.
-  BGK is fast; TRT with magic parameter Λ = 3/16 reproduces plane Poiseuille
-  exactly on the half-way bounce-back grid; cumulant improves high-Re
-  stability and isotropy (its D3Q19 shear-rate calibration is validated for
-  non-advected decay; a Galilean-invariance holdout at finite frame velocity
-  is an open finding — see PHYSICS.md). Pick your point on the curve; the
-  trade-off is measured, not asserted.
+- **Explicit accuracy–speed control.** Every trade-off — collision
+  operator, precision, backend, resolution — is a first-class knob, not a
+  hidden default. Pick your point on the curve; the trade-off is measured,
+  not asserted.
 - **Physically rigorous.** Every model term is derived from the governing
-  equations or a literature-backed closure with a recorded derivation, validity
-  domain, and its own validation test (`docs/PHYSICS.md`). Constants calibrated
-  to pass a band, case-keyed branches, silent clamps that absorb transport, and
-  decorative physics are prohibited by policy — if a gate cannot be met without
-  a hack, the spec is revised, not the physics.
-- **Validated adversarially.** The validation suite (`docs/VALIDATION.md`,
-  T1–T18.x) is authored independently of the engine from a public spec. The
-  engine is fixed until the tests pass — not the other way around.
-- **Three front-ends over one core.** Browser GUI (Rust → WASM), scenario CLI,
-  and an MCP server. The physics kernels are written once, generic over
-  lattice and precision, and specialised at compile time.
-
-## Highlights
-
-- **Second-order Taylor–Green convergence** (T1); exact Poiseuille with
-  TRT(Λ=3/16) (T2); the Ghia et al. (1982) lid-driven cavity benchmark to
-  Re = 1000 (T7); Schäfer–Turek cylinder drag & Strouhal (T8).
-- **3D GPU (D3Q19)**: quiet-window measurement 2 791–2 813 MLUPS at 192³,
-  2 778–2 880 MLUPS at 128³ on an Apple M5 Max (A/B/A interleaved), against a
-  1 500 MLUPS acceptance gate. T14 backend-equivalence (CPU ↔ GPU) verified
-  to ≤ 1 × 10⁻⁵ on 32³ TGV and 24³ cavity.
-- **FP16 storage** doubles the addressable grid and delivers ≈ 2× MLUPS at
-  2048² with validation bands frozen to measured error (TGV transient
-  1.401 × 10⁻¹, cavity steady 2.579 × 10⁻³); D3Q19 f16 exceeds 5 GLUPS.
-- **Multiphase**: Shan-Chen single-component (droplets, Laplace law, full
-  contact-angle range via virtual wall density) and two-component MCMP
-  (Rayleigh–Taylor growth rate) — measurement-calibrated, T11/T11b/T11c/T12.
-- **Turbulence**: WALE subgrid-scale model with near-wall damping recovered
-  by construction; MKM 1999 channel-flow reference profiles landed for
-  Re_τ = 180 characterisation.
-- **Rotating machinery**: rotating immersed-boundary method for impellers and
-  stirred-reactor geometries; rotating-body IBM is prescribed rigid rotation
-  with torque/force diagnostics, not general FSI or structural degrees of
-  freedom; dispersed-phase deposition tracking (D-track) with
-  adhesion-capture and resuspension closures.
-- **Curved walls**: Bouzidi second-order interpolated bounce-back.
-- **Rich boundary catalogue**: periodic, half-way bounce-back (static /
-  moving), Zou-He velocity inlet (uniform or `set_inlet_profile`), Zou-He
-  pressure, zero-gradient and convective outflow, arbitrary internal
-  obstacles, momentum-exchange force probes.
-- **Bit-reproducible across backends and partitions**: T13 (partition
-  invariance) and T14 (backend equivalence) are gate-tested every commit.
+  equations or a literature-backed closure with a recorded derivation,
+  validity domain, and its own validation test
+  ([docs/PHYSICS.md](docs/PHYSICS.md)). Constants calibrated to pass a
+  band, case-keyed branches, silent clamps that absorb transport, and
+  decorative physics are prohibited — if a gate cannot be met without a
+  hack, the spec is revised, not the physics.
+- **Validated adversarially.** The bioprocess validation suite
+  ([docs/VALIDATION_BIOPROCESS.md](docs/VALIDATION_BIOPROCESS.md),
+  VB-01..VB-08) is authored independently of the engine from the public
+  spec. The engine is fixed until the tests pass — never the other way
+  around.
+- **Nothing silent.** Unsupported combinations fail with structured
+  errors carrying an `UnsupportedReason` (BCFD-002 capability registry).
+  QOIs without units / method / averaging metadata fail serialisation.
+  `max` alone is never a report — distributions are required.
+- **Evidence claims are mechanical.** BCFD-091 gates evidence-tier labels
+  on calibration/holdout separation, UQ intervals, and mesh / time-step
+  sensitivity records.
 
 ## Getting started
 
-### Browser (no build required for users, engine ships as committed WASM)
+### CLI (bioprocess workflow — target surface, ticket-gated)
 
 ```bash
-cd web && npm install && npm run dev   # → http://localhost:5173
+cargo build --workspace --release
+./target/release/lbm capabilities --json                # what is supported
+./target/release/lbm schema --bioprocess                # bioprocess scenario JSON schema
+./target/release/lbm bioprocess validate my-tank.json   # unit feasibility + capability check
+./target/release/lbm bioprocess run my-tank.json        # run + QOI extraction
+./target/release/lbm bioprocess qoi out/my-tank/        # print qoi.json + provenance
+./target/release/lbm bioprocess report out/my-tank/     # human-readable report
+./target/release/lbm bioprocess sweep my-sweep.json     # UQ / parameter sweep
+./target/release/lbm bioprocess evidence-check out/     # evidence-gate result
 ```
 
-Pick a preset (lid-driven cavity / Kármán vortex street / two-phase droplet /
-droplet-on-wall / free canvas) and press run. Obstacles can be drawn with
-the mouse. This is the same Rust LBM engine, compiled to WebAssembly.
+The `bioprocess` subcommands land per BCFD-092. Until then the M0 subset
+(single-phase Np / P/V / mixing / shear) is what the CLI can actually
+produce.
 
-### CLI
+### CLI (legacy demos, still runnable)
 
 ```bash
-cargo build --release -p lbm-cli
 ./target/release/lbm presets list             # cavity, cylinder-karman, two-phase-droplet, droplet-on-wall
-./target/release/lbm presets show cavity      # print the preset's scenario JSON
-./target/release/lbm presets run cylinder-karman   # → out/cylinder-karman/ (PNG + CSV + VTK + manifest.json)
-./target/release/lbm gallery                  # run all presets, emit an HTML report
-./target/release/lbm schema                   # scenario JSON schema
-./target/release/lbm run my-scenario.json     # your own scenario
+./target/release/lbm presets run cavity       # → out/cavity/ (emits legacy-preset warning)
 ```
+
+Legacy presets are not bioprocess decision-grade and emit a warning to
+stderr on run.
 
 ### MCP server (AI-agent integration)
 
@@ -94,97 +102,24 @@ cargo build --release -p lbm-cli
 claude mcp add lbmflow -- /path/to/target/release/lbm mcp
 ```
 
-Seven tools: `run_scenario` (synchronous), `start_run` / `run_status` /
-`list_runs` (async jobs for long runs and parallel sweeps), plus
-`validate_scenario`, `list_presets`, `get_schema`. Results are structured
-(manifest + PNG / CSV / VTK).
+Legacy tools (`run_scenario`, `start_run` / `run_status` / `list_runs`,
+`validate_scenario`, `list_presets`, `get_schema`) plus the bioprocess
+tool surface added per BCFD-092 (`validate_bioprocess_scenario`,
+`run_bioprocess_scenario`, `get_bioprocess_qoi`,
+`generate_bioprocess_report`, `check_evidence_gate`).
 
 ### Library
 
-```rust
-use lbm_core::compat::prelude::*;   // stable 2D facade
-
-let mut sim: Simulation<f64> = SimConfig {
-    nx: 128, ny: 128,
-    nu: 0.02,
-    collision: Collision::Trt { magic: 0.1875 },
-    edges: Edges {
-        left:   EdgeBC::BounceBack,
-        right:  EdgeBC::BounceBack,
-        bottom: EdgeBC::BounceBack,
-        top:    EdgeBC::MovingWall { u: [0.1, 0.0] },
-    },
-    ..Default::default()
-}.build()?;
-
-sim.run(10_000);
-println!("centre velocity = {}", sim.ux(64, 64));
-```
-
-The native V2 core API (`lbm_core::prelude` — `Solver`, `GlobalSpec`,
-D2Q9 / D3Q19 / D3Q27, backend selection) is documented in
-[docs/ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md).
-
-## Trade-off axes
-
-| Axis        | Choices                                                    | Notes |
-|-------------|------------------------------------------------------------|-------|
-| Dimension   | 2D (D2Q9), 3D (D3Q19, D3Q27)                               | Compile-time specialisation over `Lattice`. |
-| Collision   | BGK, TRT (magic Λ=3/16 default), cumulant (central-moment) | TRT for accuracy on Poiseuille and BCs; central-moment/cumulant improves high-Re stability and isotropy. The D3Q19 finite-frame Galilean-invariance correction has an open holdout finding (PHYSICS.md) — use TRT/f64 or D3Q27 references for validation-grade frame-shift studies. |
-| Precision   | `f32` (deviation storage, validation-grade), `f64`, `f16`  | `f16` storage doubles capacity at ≈ 2× MLUPS with frozen bands. |
-| Backend     | `CpuScalar`, `CpuSimd` (fused collide+stream+moments), `Wgpu` | `--features gpu` for wgpu; T14 verifies CPU ↔ GPU equivalence. |
-| Parallelism | rayon threads (auto-serial on small grids), MPI ranks      | `--features mpi` for domain-decomposed halo exchange. |
-
-## Capability matrix
-
-The core API is broader than the product path exposed through scenario JSON,
-the CLI, and MCP. Use this matrix to choose combinations that are usable today.
-
-| Capability | Core API | Scenario JSON + MCP path | Notes |
-|------------|----------|--------------------------|-------|
-| Lattices | D2Q9, D3Q19, and D3Q27 support periodic, closed-wall, and open-face runs on CPU. | `grid.nz <= 1` uses D2Q9; `grid.nz > 1` uses `grid.lattice: "d3q19" \| "d3q27"` with absent lattice defaulting to D3Q19. D3Q27 supports CPU full boundary coverage including periodic, closed-wall, velocity-inlet, pressure-outlet, outflow, and convective open faces; GPU open faces are rejected explicitly; scenario JSON exposure landed 2026-07-07. | D3Q27 GPU open-face scenarios are rejected explicitly. |
-| Collision | `CollisionKind` exposes BGK, TRT, and cascaded central-moment collision. | `CollisionSpec` exposes `bgk`, `trt`, and `central_moment` (honored on the 3D CPU path only; other paths reject it explicitly; `cumulant` is accepted as a deprecated alias). | Landed 2026-07-07; the run manifest records the collision actually used. |
-| Precision / storage | CPU solvers run with `f32` or `f64`; the GPU backend runs `f32` compute and can store distributions as `f32` or `f16`. | `Precision` exposes `f32` and `f64` (GPU dispatch rejects `f64`); `compute.storage` exposes `f32` and `f16` — `f16` honored only for 2D D2Q9 GPU scenarios with a SHADER_F16 adapter, otherwise rejected explicitly. | Landed 2026-07-07; manifest records the storage actually used. |
-| Backends | `CpuScalar`, `CpuSimd`, `WgpuBackend` under feature `gpu`, and `MpiSolver` / `MpiExchange` under feature `mpi`. | CPU is the default scenario path. `compute.backend:"gpu"` is wired for 2D f32 scenarios when built with feature `gpu`; the CLI/MCP runner does not run 3D GPU scenarios yet. No JSON/MCP selector exists for MPI. | 3D GPU scenario capability rejects f64, multiphase, rotor, particles, non-rest initialization, and force probes; the core GPU backend also rejects localized volume sources and masked face patches. |
-| Checkpoint / restart | Multi-part and per-rank MPI checkpoint/restart (format v2) landed 2026-07-07; serialized state covers populations, stale buffer, moments, solid mask, and optional force field. Restart requires the same partition layout and rank count (`CKPT_DECOMP_MISMATCH` otherwise). | CLI run options can save and restore checkpoints for CPU-backed 2D and 3D scenario runs; MCP tools do not expose checkpoint options. | RNG / particles / statistics are not serialized (manifest flags false); large-scale checkpoint resilience (failure recovery, parallel field output) remains open. |
-| Particles | `ParticleSet` is deterministic one-way Lagrangian coupling only. | Scenario particles are optional in 2D CPU runs; 3D and GPU scenario paths reject particles. | Particles feel sampled flow, gravity / buoyancy, and drag; they do not apply reaction force back to the fluid. |
-| Multi-node scaling | MPI halo exchange and `MpiSolver` exist under feature `mpi`. | Not exposed through scenario JSON or MCP. | 64-rank weak-scaling acceptance remains RED pending cluster measurement. |
-
-<!-- Capability matrix verification:
-- Lattices/core: crates/lbm-core/src/lattice.rs defines D2Q9, D3Q19, D3Q27; crates/lbm-core/src/solver.rs validate_lattice accepts D3Q27 open faces and solver construction rejects D3Q27 open faces on backends that report no support.
-- Lattices/scenario: crates/lbm-scenario/src/lib.rs Grid::is_3d, LatticeSpec, Solver3<L,T>, build3d, and build_t/Simulation<D2Q9 compat path.
-- Collision/core: crates/lbm-core/src/params.rs CollisionKind::{Bgk, Trt, Cumulant}; Collision/scenario: crates/lbm-scenario/src/lib.rs CollisionSpec::{Bgk, Trt}.
-- Precision/core: crates/lbm-core/src/real.rs implements Real for f32/f64; crates/lbm-core/src/gpu/backend.rs GpuStorage::{F32, F16}, KernelCfg, WgpuBackend::with_config. Precision/scenario: crates/lbm-scenario/src/lib.rs Precision::{F32, F64} and gpu_capability_error rejects f64 GPU dispatch.
-- Backends/core: crates/lbm-core/src/backend.rs CpuScalar Backend impl; crates/lbm-core/src/backend_simd.rs CpuSimd Backend impl; crates/lbm-core/src/gpu/backend.rs WgpuBackend Backend<L, f32> impl; crates/lbm-core/src/dist.rs MpiExchange/MpiSolver; crates/lbm-core/src/solver.rs rejects unsupported localized GPU features.
-- Backends/scenario: crates/lbm-scenario/src/lib.rs BackendSpec and gpu_capability_error; crates/lbm-cli/src/runner.rs dispatches GPU only through run_gpu2d and bails for 3D GPU.
-- Checkpoint/core: crates/lbm-core/src/solver.rs v2 checkpoint (multi-part payloads, CKPT_DECOMP_MISMATCH/CKPT_VERSION_MISMATCH guards), crates/lbm-core/src/dist.rs MpiSolver::save/restore, reserved rng/particles/stats false. Checkpoint/scenario: crates/lbm-cli/src/runner.rs RunOptions restore/save paths in run_t and run3d_t.
-- Particles: crates/lbm-core/src/particles.rs module docs and ParticleSet; crates/lbm-scenario/src/lib.rs ParticlesSpec comment plus build3d/build_gpu2d rejections; crates/lbm-cli/src/runner.rs one-way particle stepping.
-- Multi-node: crates/lbm-core/src/dist.rs feature-gated MPI module; docs/paper/claims-ledger.md keeps Multi-node scaling RED; README measured status retains the RED row.
--->
-
-## Measured status
-
-Working snapshot from `docs/paper/claims-ledger.md`:
-
-| Capability                                     | Gate                                          | Status |
-|------------------------------------------------|-----------------------------------------------|:------:|
-| 3D GPU D3Q19 (T14-3D + ≥ 1 500 MLUPS)          | 32³ TGV3D u ≤ 1 × 10⁻⁵ · MLUPS quiet-window   | GREEN  |
-| Explicit `backend:"gpu"` in 2D scenarios       | End-to-end honoured                           | GREEN  |
-| FP16 storage, × 2 grid capacity                | T16 bands frozen · ≥ 1.5× MLUPS @ 2048²       | GREEN  |
-| 2D GPU GLUPS · CPU MLUPS · T13 bit-exact       | Landed and measured                           | GREEN  |
-| WASM bit-identity · agent-native MCP + Skills  | Landed                                        | GREEN  |
-| Multi-node weak scaling ≥ 80 % @ 64 rank       | 64-rank weak measurement                      |  RED   |
-| Full-physics stirred workload                  | Degradation ratio vs single-phase             |  RED   |
-
-RED rows track external inputs (cluster access, M-F integration
-completion), not implementation velocity.
+The Rust API is documented in [docs/ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md).
+The v2 core lives in `lbm_core::prelude`; the legacy 2D facade lives in
+`lbm_core::compat::prelude`.
 
 ## Building and testing
 
 ```bash
 cargo build --workspace --release
-cargo test  --workspace --release              # the default gate — always --release
-cargo test  --release -- --include-ignored     # + heavy validation and benches (~5 min)
+cargo test  --workspace --release --no-fail-fast   # default gate — always --release --no-fail-fast
+cargo test  --release -- --include-ignored         # + heavy bioprocess validation (~5 min)
 
 # WebAssembly for the browser GUI (lbm-wasm is outside the workspace):
 wasm-pack build crates/lbm-wasm --target web --release --out-dir ../../web/src/engine/pkg
@@ -195,55 +130,66 @@ cargo test  --workspace --release --features gpu   # wgpu backend (GPU hosts onl
 cargo test  --workspace --release --features mpi   # requires a native MPI toolchain
 ```
 
-LBM is roughly 50× slower in debug builds; `--release` is not optional. The
+LBM is roughly 50× slower in debug; `--release` is not optional. The
 default gate is `cargo test --workspace --release --no-fail-fast`.
+Piping the gate through `tail` / `grep` eats the exit code.
 
 ## Repository map
 
-- `crates/lbm-core` — the engine: D2Q9 / D3Q19 / D3Q27 lattices, CPU scalar /
-  SIMD backends, wgpu GPU backend (feature `gpu`), MPI halo exchange
-  (feature `mpi`), WALE LES, rotating IBM, Bouzidi. The legacy 2D public
-  facade lives in `compat/`.
-- `crates/lbm-scenario` — JSON scenario schema, runner, and unit system.
-- `crates/lbm-cli` — the `lbm` binary: presets, gallery, schema, scenario
-  run, and the MCP server (7 tools including async `start_run` /
-  `run_status` / `list_runs`).
-- `crates/lbm-wasm` — WASM bindings for the web GUI (excluded from the
-  workspace; the built `pkg/` is committed under `web/src/engine/pkg`).
-- `crates/lbm-gpu-proto` — standalone wgpu evaluation prototype (measurement
+- `crates/lbm-core` — the engine: D2Q9 / D3Q19 / D3Q27 lattices, CPU
+  scalar / SIMD backends, wgpu GPU backend (feature `gpu`), MPI halo
+  exchange (feature `mpi`), WALE LES, rotating IBM, Bouzidi curved walls.
+  Legacy 2D facade in `compat/`. Bioprocess physics modules (phase field,
+  materials, sparger, oxygen, cells, bubbles, PBM, damage) land per BCFD
+  tickets.
+- `crates/lbm-scenario` — JSON scenario schema (legacy `Scenario` +
+  `BioprocessScenario`) and runner.
+- `crates/lbm-cli` — `lbm` binary: presets (legacy demos), gallery,
+  schema, scenario run, MCP server, and the bioprocess CLI surface (per
+  BCFD-092).
+- `crates/lbm-wasm` — WASM bindings for the web GUI (outside the
+  workspace). Not on the bioprocess critical path until BCFD-081.
+- `crates/lbm-gpu-proto` — wgpu evaluation prototype (measurement
   record, superseded by the in-core `gpu` module).
-- `web/` — the TypeScript / Vite GUI.
+- `web/` — TypeScript / Vite GUI.
 
 ## Documentation
 
-Physics and validation
+Bioprocess product docs (living):
 
-- [docs/PHYSICS.md](docs/PHYSICS.md) — physics decisions and experiment log.
-- [docs/VALIDATION.md](docs/VALIDATION.md) — validation-test specification (T1–T18.x).
-- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — explicit capability limits and unsupported combinations.
-- [docs/T15_5_CAVITY3D_REFERENCE.md](docs/T15_5_CAVITY3D_REFERENCE.md) — 3D cavity reference data.
+- [docs/BIOPROCESS_PIVOT.md](docs/BIOPROCESS_PIVOT.md) — pivot, retracted
+  vs preserved claims.
+- [docs/SPEC_BIOPROCESS_CORE.md](docs/SPEC_BIOPROCESS_CORE.md) — intended
+  use, tiers, QOI catalog, scenario schema.
+- [docs/VALIDATION_BIOPROCESS.md](docs/VALIDATION_BIOPROCESS.md) —
+  VB-01..VB-08.
+- [docs/CREDIBILITY_BIOPROCESS.md](docs/CREDIBILITY_BIOPROCESS.md) —
+  calibration / holdout / UQ policy.
+- [docs/MODEL_RISK_MATRIX.md](docs/MODEL_RISK_MATRIX.md) — per-model risk.
+- [docs/PLAN.md](docs/PLAN.md) — BCFD tickets, milestones, dev protocol,
+  merge-queue rules, known traps.
+- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — machine-readable capability
+  status.
 
-Architecture and design
+Preserved engineering references:
 
-- [docs/ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md) — dimension × lattice × precision × backend × partition.
-- [docs/SOLVER_IMPROVEMENT_SPEC.md](docs/SOLVER_IMPROVEMENT_SPEC.md) — R-Phase solver spec.
-- [docs/KERNEL_EXTENSION_POINTS.md](docs/KERNEL_EXTENSION_POINTS.md) — extending the kernel.
-- [docs/MULTIPHASE_DESIGN.md](docs/MULTIPHASE_DESIGN.md) · [docs/WASM_BRIDGE_DESIGN.md](docs/WASM_BRIDGE_DESIGN.md) · [docs/AGENT_MODE_DESIGN.md](docs/AGENT_MODE_DESIGN.md).
-- [docs/DISPERSED_DEPOSITION.md](docs/DISPERSED_DEPOSITION.md) — dispersed-phase deposition track.
-- [docs/REQ_STIRRED_REACTOR.md](docs/REQ_STIRRED_REACTOR.md) — stirred-reactor requirements.
+- [docs/PHYSICS.md](docs/PHYSICS.md) — physics decisions + experiment
+  log.
+- [docs/ARCHITECTURE_V2.md](docs/ARCHITECTURE_V2.md) — code architecture.
+- [docs/KERNEL_EXTENSION_POINTS.md](docs/KERNEL_EXTENSION_POINTS.md).
+- [docs/MPI_GUIDE.md](docs/MPI_GUIDE.md) ·
+  [docs/CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md) ·
+  [docs/CLUSTER_RUNBOOK.md](docs/CLUSTER_RUNBOOK.md).
+- [docs/REQ_STIRRED_REACTOR.md](docs/REQ_STIRRED_REACTOR.md) — pre-pivot
+  stirred-reactor requirements text, useful as bioprocess reference.
+- [docs/T15_5_CAVITY3D_REFERENCE.md](docs/T15_5_CAVITY3D_REFERENCE.md).
 
-Performance and scale
+Archive:
 
-- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — measured MLUPS, thread scaling, mode-selection guide.
-- [docs/GPU_EVALUATION.md](docs/GPU_EVALUATION.md) — wgpu evaluation and kernel notes.
-- [docs/BENCH_COMPARISON_DRAFT.md](docs/BENCH_COMPARISON_DRAFT.md) — external-comparison working draft.
-- [docs/MPI_GUIDE.md](docs/MPI_GUIDE.md) · [docs/CLUSTER_OPTIONS.md](docs/CLUSTER_OPTIONS.md).
-
-Programme
-
-- [docs/PLAN.md](docs/PLAN.md) — milestones M-A … M-F and the active queue.
-- [docs/paper/LBMFlow-whitepaper.md](docs/paper/LBMFlow-whitepaper.md) — living technical paper.
-- [docs/paper/claims-ledger.md](docs/paper/claims-ledger.md) — measurement-status snapshot.
+- [docs/archive/2026-07-07-pivot/](docs/archive/2026-07-07-pivot/) —
+  pre-pivot PLAN, VALIDATION, LIMITATIONS; T1..T18 matrix; M-A..M-F track;
+  R-Phase spec; V&V ledger; whitepaper; competitor analysis. Read only for
+  the pre-pivot history.
 
 ## License
 

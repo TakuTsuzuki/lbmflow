@@ -1,297 +1,749 @@
-# LBMFlow Implementation Plan
+# LBMFlow Bioprocess CFD — Implementation Plan (BCFD-000..110)
 
-> **2026-07-05 revision**: per user directive, 3D, supercomputer-scale, and GPU are mandatory.
-> Requirements framework: [COMPETITIVE_SPEC.md](COMPETITIVE_SPEC.md) (R1–R5 + T13–T16 equivalence framework);
-> strategic positioning: [paper/LBMFlow-whitepaper.md](paper/LBMFlow-whitepaper.md).
-> Architecture: [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) (dimension × lattice × precision × backend × partitioning).
-> Milestones M-A–M-D landed; M-E mostly GREEN (ME-3 cluster + ME-4 stirred RED); M-F in flight.
+Lifecycle: living (owning doc for the ticket ledger, milestone plan,
+development protocol, merge-queue rules, and known traps).
 
-**Goal**: A commercial-grade lattice Boltzmann method (LBM) fluid simulator.
-It can explicitly control the accuracy-vs-speed tradeoff, supports multiphase flow, and provides both a
-GUI mode that even beginners can use without getting lost and an Agent mode operable from agents.
+**Product mission.** Turn LBMFlow into a bioprocess-specific CFD core (see
+[BIOPROCESS_PIVOT.md](BIOPROCESS_PIVOT.md) and
+[SPEC_BIOPROCESS_CORE.md](SPEC_BIOPROCESS_CORE.md)). Do not add generic
+CFD features; do not prioritise GPU, FP16, or WASM GUI before the QOI
+pipeline works.
 
-**Technology stack**: Rust (core engine / CLI / MCP) + TypeScript (GUI, Vite) + WASM (browser execution)
-
-**Team structure**: Fable = PM / architect / integration validation. Implementation is delegated to Claude subagents and Codex
-at an executable granularity. **The boundary-condition test suite is created adversarially by Codex**, and
-the engine side is fixed until it passes them all (separating test authors from implementers to detect specification bugs).
-
----
-
-## Architecture
-
-```
-LBMFlow/
-├── Cargo.toml              # workspace
-├── crates/
-│   ├── lbm-core/           # V2 core engine (pure Rust library, no I/O)
-│   │   ├── src/
-│   │   │   ├── lattice.rs      # D2Q9 / D3Q19 / D3Q27 velocity sets and derived tables
-│   │   │   ├── real.rs         # f32/f64 generic (Real trait)
-│   │   │   ├── fields.rs       # q-major SoA deviation storage with halo padding
-│   │   │   ├── params.rs       # BGK / TRT / cumulant collision and BC parameters
-│   │   │   ├── backend.rs      # backend trait + CPU scalar reference backend
-│   │   │   ├── backend_simd.rs # fused CPU SIMD/band-parallel backend
-│   │   │   ├── gpu/            # wgpu backend (feature "gpu")
-│   │   │   ├── halo.rs         # local/in-process halo exchange
-│   │   │   ├── dist.rs         # MPI exchange/solver (feature "mpi")
-│   │   │   ├── solver.rs       # V2 solver orchestrator
-│   │   │   └── compat/         # supported legacy 2D facade over V2
-│   │   └── tests/          # validation tests (including the codex-authored adversarial suite)
-│   ├── lbm-cli/            # JSON scenario execution CLI + MCP stdio server
-│   └── lbm-wasm/           # wasm-bindgen bindings
-├── web/                    # TypeScript GUI (Vite)
-└── docs/
-    ├── PLAN.md             # this file
-    ├── VALIDATION.md       # validation-test specification matrix (commissioning spec for codex)
-    └── PHYSICS.md          # rationale for adopted physics models and formulas (appended as needed)
-```
-
-### Core design highlights
-
-- **Lattice**: V2 is generic over the `Lattice` trait with D2Q9, D3Q19, and D3Q27 implementations.
-  Population storage is q-major SoA deviation form over halo-padded local boxes:
-  `f[q * n_padded + cell]`, with `cell = z * (pnx * pny) + y * pnx + x`.
-- **Streaming / step order**: the common solver orchestrates
-  `collide` → halo exchange → `stream` → `swap` → open-boundary BCs → moments update.
-  `CpuSimd` fuses collide/stream internally while preserving the backend contract.
-- **Collision operator**: BGK, TRT (with magic Λ=3/16, wall position is exact, recommended default),
-  and the landed central-moment/cumulant branch (`CollisionKind::Cumulant`).
-- **Precision**: f32/f64 are selected via `Real`; GPU execution is f32-only today.
-- **Backends / distribution**: CPU scalar and fused CPU SIMD backends are available in the core;
-  the wgpu backend is behind feature `gpu`, and MPI halo exchange / distributed runs are behind feature `mpi`.
-- **Body force**: Guo forcing (2nd-order accurate, u includes F/2 correction). Used in Shan-Chen too.
-- **Walls**: half-way bounce-back (stationary walls, moving walls). Edge-specified walls are realized as a 1-cell solid
-  rim → the corner special-casing with Zou-He becomes unnecessary.
-- **Open boundaries**: Zou-He velocity/pressure, zero-gradient outflow, and convective outflow are face-normal
-  parameterized. Open-face kernels currently support D2Q9 and D3Q19; D3Q27 open-face support remains explicit follow-on work.
-- **Force measurement**: momentum-exchange method (required for the cylinder Cd/St benchmark).
-
-### Boundary-condition combination rules (specification)
-
-- Periodic is selected per axis and cannot be combined with an open BC on that axis.
-- Open faces may lie on at most one axis. Perpendicular non-periodic faces must be fully covered by a wall rim,
-  or covered by validated face patches.
-- Non-positive viscosity (`tau = 3*nu + 0.5 <= 0.5`) is a construction-time error.
-  Prescribed speed above 0.3 lattice units is a construction-time error.
+**Ordering law.** Single-phase stirred tank → Np / mixing / shear QOI →
+resolved gas-liquid → oxygen / kLa → cell exposure → UQ / evidence gate →
+point bubble / PBM → MPI / parallel output. Breaking this ordering to
+chase GPU, FP16, GUI, or generic geometry has been the failure mode of
+prior planning iterations.
 
 ---
 
-## Phase plan
+## 0. Milestones
 
-(2026-07-07 historical record — describes the state at the original phase milestones; see ARCHITECTURE_V2.md for the current design.)
+Each milestone's exit criterion is that its tickets have landed AND their
+VB validation groups have their acceptance bands green at Engineering tier
+(no evidence-tier claim unless BCFD-091 passes).
 
-| Phase | Content | Completion criteria |
-|---|---|---|
-| 0 | Foundation: git / workspace / PLAN / VALIDATION / CLAUDE.md | Documents committed |
-| 1 | lbm-core vertical slice (D2Q9, BGK/TRT, Guo force, BB/moving wall/periodic/Zou-He/Outflow, force measurement) + smoke tests | TGV convergence order ≈2, Poiseuille(TRT) exact, Couette exact, conservation-law tests green |
-| 2 | **Have codex implement the adversarial test suite from VALIDATION.md** → fix the engine until all pass. Includes the cavity (Ghia) and cylinder (Cd/St) benchmarks | `cargo test --release` all green |
-| 3 | Accuracy × speed: f32 validation, MLUPS benchmarks, thread scaling, mode-selection guide, **deviation-storage scheme** (keep f−w to raise the effective precision of f32. BB is linear so it is invariant in deviation space, Zou-He needs the constant term folded in, ρ = 1+Σdev) | The measured tradeoff table appears in docs. The T6 error for f32 improves |
-| 4 | Multiphase flow: Shan-Chen (single-component multiphase + two-component) + codex validation (Laplace law, contact angle, Rayleigh-Taylor) | Multiphase tests all green |
-| 5 | GUI: wasm-pack + Vite + TS. Preset-driven, obstacle painting, real-time visualization, Japanese UI | 5 presets run with one click |
-| 6 | Agent mode: lbm-cli (JSON scenario → structured output) + MCP server | An agent can run a scenario and retrieve results |
-| 7 | Comprehensive review → formulate the next plan (3D/GPU/LES/cumulant, etc.) → continuous improvement | Review document + next plan |
+### M0 — Bioprocess pivot and single-phase stirred tank
 
-### Validation-driven development protocol
+Tickets: BCFD-000..005, BCFD-010..012, BCFD-020..021, BCFD-030..035,
+BCFD-080..081, BCFD-090, BCFD-110.
 
-1. State acceptance criteria numerically in the specification (VALIDATION.md).
-2. codex writes the tests (in principle written from the specification without looking at the implementation).
-3. If the engine fails: (a) engine bug → fix, (b) specification physics is wrong → experiment and fix the specification
-   (record the reason for the fix in PHYSICS.md), (c) test bug → send back to codex.
-4. Move to the next phase when all green. Run `git commit` at the end of each phase.
+Exit criteria:
 
-## Current queue: improvement phase (R-Phase) and M-F (established 2026-07-05)
+- 3D stirred-tank single-phase scenario runs end-to-end.
+- Impeller creates flow; torque and Np are extracted with provenance.
+- P/V is emitted with units and averaging window.
+- Passive-scalar mixing-time QOI (t95 / t99) is emitted.
+- Shear-rate field and P50/P90/P95/P99 exposure percentiles are emitted.
+- `lbm report` produces a bioprocess report scaffold.
+- Capability registry states this is screening / engineering only, not
+  evidence-grade.
 
-2 source documents: [SOLVER_IMPROVEMENT_SPEC.md](SOLVER_IMPROVEMENT_SPEC.md) (41 items from the
-concurrent review, all claims validated by experiments E1–E10, merged into main) and
-[REQ_STIRRED_REACTOR.md](REQ_STIRRED_REACTOR.md) (M-F requirement rev.1b, 48 codex adversarial-review
-items reflected, acceptance is VALIDATION.md **T17**).
+### M1 — Resolved gas-liquid and oxygen / kLa
 
-### R-Phase (follows the execution order in §4 of the improvement spec)
+Tickets: BCFD-022, BCFD-040..048, BCFD-050..053, BCFD-080..081, BCFD-090,
+BCFD-110.
 
-- **R-Phase 1 (in progress 2026-07-05–)**: A-2–A-10 = entry guards, correctness.
-  worktree `r-phase1`, delegated to Opus. Common DoD = existing tests green without modification, legal-configuration bits invariant.
-  D-6/D-7 (document consistency) already applied under direct PM control (COMPETITIVE_SPEC revision history, VALIDATION T13/T14 sections).
-- **R-Phase 2 (after R-1 lands, ~1.5 weeks)**: B-1 (Fields generalization + GpuSolver integration) → B-2
-  (sync-point contract) → concurrent B-3 / B-5–B-8, C-9–C-11, D-1–D-5.
-  **Additional requirement from M-F**: the B-1 design must accommodate multiple distribution sets (phase-field g, scalar h), per-cell
-  material-property fields (generalization of B-6), and Lagrangian buffers (IBM markers/particles/point bubbles)
-  — this is a structural premise of M-F and a foundation shared with M-E (FP16/multi-GPU).
-- **R-Phase 3 (can run concurrently with M-E)**: C-1 (localizing the MPI setup = resolving 10⁹-lattice OOM),
-  C-2 (communication overlap. Premise: the E8 probe double-counting shell fix), C-4–C-8,
-  C-12–C-16, D-8–D-10.
-- **M-E is premised on completion of B-1/B-2/C-9/C-12/C-13/D-9** (dependency relations in §4 of the spec).
+Exit criteria:
 
-### External review response (2026-07-07) — claim hygiene + product-path gaps
+- Phase-field gas / liquid run possible (conservative Allen-Cahn, coupled
+  to solver velocity, with mass-conservation and boundedness guards).
+- Sparger gas injection with conservation ledger.
+- Gas-holdup QOI with threshold / averaging metadata.
+- Oxygen scalar transport with Henry interfacial flux.
+- Synthetic kLa fit from dynamic gassing works and reports fit metadata.
+- Report marks kLa as model-dependent and non-evidence unless a
+  calibration + holdout pair exists.
 
-An external review (static cross-check of docs vs implementation) was triaged by the PM.
-Verdict: core findings confirmed; the FSI-overclaim and "supercomputer-class claim" points
-were rejected (the repo never claims FSI; multi-node is already RED in the claims table and
-"supercomputer-scale" appears only as a roadmap mandate in this file).
+### M2 — Cell exposure and scale-up decision layer
 
-**P0 — dispatched 2026-07-07 as 7 parallel codex orders (branches `cx/*`):**
-ci.yml nightly schedule + dispatch + artifacts (`cx/ci-schedule`); VALIDATION T16/T17
-status sync + D3Q27 open-face note (`cx/validation-sync`); REQ particle status tags
-(`cx/req-sync`); README capability matrix (`cx/readme-cap`); docs/LIMITATIONS.md
-(`cx/limitations`); SOLVER_IMPROVEMENT_SPEC resolved/open audit (`cx/sis-audit`);
-particles.rs silent Re>800 clamp → explicit validity-domain error (`cx/re-clamp`).
+Tickets: BCFD-060..062, BCFD-082..084, BCFD-091..092, BCFD-110.
 
-**P1 — queued (new items; overlapping ones fold into existing tracks):**
+Exit criteria:
 
-| Item | Content | Folds into |
-|---|---|---|
-| REV-1 | Scenario schema exposure: `collision: cumulant`, `storage: f16`, `backend: auto\|cpu\|gpu`, lattice selection; unsupported-combination errors; manifest records actual backend/lattice/collision/storage | new (agent-native product path) |
-| REV-2 | `lbm verify --tier quick/full/gpu/mpi` + `lbm capabilities` (machine-readable capability/limitation output) | SOLVER_IMPROVEMENT_SPEC open item |
-| REV-3 | **DONE 2026-07-07**: backend-side `rho*g` composition on CPU scalar/SIMD + wgpu; chunked submission restored for gravity runs; staged path kept as capability fallback. Gates: backend_simd_equiv, T13, T14 incl. new gravity equivalence (native PASS). |
-| REV-4 | **Clipping+diagnostics DONE 2026-07-07** (explicit config, default off, PHYSICS.md entry). y+ diagnostics + wall treatment remain MF-β scope — design spec landed at docs/proposals/LES_WALL_TREATMENT_SPEC.md (4-order plan, builds on cx/chan180). |
-| REV-5 | **D3Q27 open-face CPU support + scenario JSON exposure DONE 2026-07-07** (NEBB/open closures, CPU; moment exactness ~1e-17, duct L2 2.1e-4, D3Q19 consistency 3.4e-4, T13 BC-seam bit-exact; `grid.lattice: "d3q27"` exposed with GPU open-face rejection). GPU open-face kernels also landed (native CPU-vs-GPU equivalence PASS for inlet/pressure/outflow/convective); the scenario-path GPU restriction for 3D remains a scenario-runner limitation, not a core one. |
-| REV-6 | **DONE 2026-07-07 with FINDING**: holdout suite landed (`cumulant_holdout.rs`); off-Re and D3Q19-vs-D3Q27 pass, but advected TGV3D FAILS Galilean invariance (frame spread 4.2e-3 vs derived band 1.16e-3, error grows systematically with u_frame). Correction reclassified as empirical calibration valid for non-advected decay only (PHYSICS.md). Follow-up routed to core-engine: derive a frame-consistent correction or narrow the product claim. |
-| REV-7 | **DONE 2026-07-07** (format v2, multi-part + per-rank MPI, layout/version guards; native roundtrip PASS at 2/4 ranks). RNG/particles/stats flags stay `false` — core Solver does not own that state; revisit when particles attach to Solver. |
+- Cell tracers record shear and oxygen exposure with percentile
+  distributions.
+- Microcarrier one-way mode with Schiller-Naumann validity enforced.
+- Sweep runner aggregates QOI bundles with per-case provenance.
+- Scale-up operating window can be computed; infeasible sets produce an
+  explicit conflict table.
+- Evidence gate blocks unsupported claims.
+- CLI + MCP bioprocess surface complete.
 
-**P2:** UQ/sensitivity harness (parameter sweeps with CI-band QOIs, calibration/holdout
-separation); absolute-physics GPU gates beyond equivalence (VALIDATION already flags the
-blind spot); geometry ingestion (STL/voxelization) — deferred, not currently claimed.
+### M3 — Engineering aeration with point bubbles / PBM
 
-### Performance roadmap — ALL FOUR gaps are committed implementation items (user directive 2026-07-05: "implement all of these; at minimum put them on the roadmap")
+Tickets: BCFD-070..075, BCFD-090, BCFD-110.
 
-The four gaps identified by the sales-paper analysis (vs FluidX3D / waLBerla / OpenLB /
-M-Star) are hereby **committed**, in this order:
+Exit criteria:
 
-| # | Item | Acceptance line | Depends on | Wave |
-|---|---|---|---|---|
-| ME-1 | **3D GPU** (D3Q19 WGSL kernels + BC passes) | R2: single-GPU D3Q19 f32 **≥1,500 MLUPS** (expect multi-GLUPS on M5 Max); T14 extended to 3D | R-Phase 2 B-1 (orchestrator unification) | immediately after R-2 |
-| ME-2 | **FP16 storage** (C-12, shader-f16; compute stays f32) | T16 degradation bands frozen (TGV/cavity); **≥1.5×** MLUPS vs f32 at 2048²; grid capacity ×2 | B-1, ME-1 (shares kernel plumbing) | with ME-1 wave |
-| ME-3 | **Multi-node / cluster measurement** (R3) | 64-rank weak scaling **≥80%** on a real cluster; the 8-item measurement list in MPI_GUIDE §cluster | C-1 (MPI setup localization) + cluster access — **AWS hpc7g×8 (~¥13k, CLUSTER_OPTIONS.md recommended) or Fugaku trial**; committed on the roadmap, instance spend gets a one-line user confirm at execution | R-Phase 3 window |
-| ME-4 | **Full-physics benchmark** (stirred-tank workload: two-phase + particles + scalar + LES) | performance-degradation ratio vs single-phase measured and published (the M-Star-comparable number); runs as part of MF-ζ acceptance | M-F tracks | MF-ζ |
+- Point bubbles injected from sparger with volume ledger.
+- Bubble force closures active with declared validity ranges.
+- PBM computes d32 with bin-conservation diagnostics.
+- kLa from PBM interfacial area emitted.
+- Hybrid resolved-interface + point-bubble bookkeeping avoids
+  double-counting.
 
-The paper (docs/paper/LBMFlow-whitepaper.md) describes what is measured today;
-edit the paper as the implementation lands, not the other way around. The
-acceptance lines above are the technical targets the roadmap converges on —
-they are not paper claims to true up at release. See docs/paper/claims-ledger.md
-for the current measurement-status snapshot.
+### Hard cut lines
 
-### M-F: rotating boundary, high-density-ratio two-phase, LES-coupled 3D (REQ-M-F-STR rev.1b)
+- Do NOT start BCFD-100..102 (MPI parallel work) before M0 and M1 are
+  green.
+- Do NOT start GPU bioprocess support before CPU correctness + QOI
+  validation are green.
+- Do NOT start GUI before BCFD-081 (report generator) is useful.
+- Do NOT implement generic CAD meshing beyond BCFD-023 until the QOI
+  pipeline proves its value on a stirred tank.
+- Do NOT claim evidence-grade until BCFD-091 passes.
+- Do NOT add model complexity without a QOI and a validation entry.
 
-Target design decisions (decided by the project owner — these are M-F targets, NOT current implementation status): **scope all-at-once** (implement subsystems simultaneously
-without staged splitting) / **fidelity defaults** (IBM-inertial, resolved-phasefield, active scalar,
-two-way particles, uniform lattice, f64 near the interface + f32 in the bulk); low-cost approximations (MRF, point-bubble,
-one-way, AMR, aggressive f32) are add-on extensions behind the same trait / physics-conflicting modes are
-mutually exclusive at runtime via configuration validation (extending A-4's `GlobalSpec::validate`).
+---
 
-Current implementation status per subsystem lives in VALIDATION.md T17's status table and docs/LIMITATIONS.md — those are the source of truth; this section records the owner's target fidelity choices only.
+## 1. Ticket ledger (BCFD-000..110)
 
-Implementation tracks (commissioned in parallel after R-Phase 2 lands. Conventional team structure of worktree separation, implementation by Opus/Sonnet,
-**validation tests created adversarially by codex from REQ/T17**):
+Every ticket carries: **Depends** · **Targets** (files) · **Impl** ·
+**Tests** · **DoD** (definition of done). Multi-file tickets bundle
+same-file items into one codex order. Concurrency and worktree isolation
+are the codex-dispatch skill's job, not the ticket's.
 
-| Track | Content | Primary FR | Validation | Dependency |
-|---|---|---|---|---|
-| MF-α | D3Q27 lattice + central-moment/cumulant collision | FR-CORE-01/02 | moment isotropy, TGV3D order, Galilean-invariance band | R-2 |
-| MF-β | LES (WALE default) + non-Newtonian μ(γ̇) + stress-field evaluation (convention FR-STRESS-01 fixed) | FR-LES-*, FR-STRESS-* | VR-STR-03, channel Re_τ=180 vs DNS | R-2 (B-6) |
-| MF-γ | conservative Allen-Cahn high-density-ratio two-phase (10³) + well-balanced gravity + sparger/degassing BC | FR-VOF-*, FR-BC-* | VR-STR-02/06, Laplace, parasitic current Ca<10⁻³, single-bubble Grace | R-2 (B-1 multiple distributions) |
-| MF-δ | IBM-inertial rotating boundary + torque/Np measurement | FR-ROT-* | VR-STR-01, Taylor-Couette torque, IBM sphere drag vs T15 reference | R-2 (B-1 Lagrangian) |
-| MF-ε | scalar ADE (active feedback) + Lagrangian particles (shear-exposure recording) | FR-LES-04, FR-PART-* | VR-STR-04, Taylor-Aris, settling terminal velocity vs SN | R-2 (B-1) |
-| MF-ζ | coupling integration (§5 dataflow, dt constraints) + configuration exclusivity + I/O/statistics/GUI 3D display + acceptance run | FR-COUP-*, FR-INIT, FR-IO-* | VR-STR-05/07 + coupled system of 01/02 | MF-α–ε |
+### Foundation (M0-blocking)
 
-Status of remaining spec details (late night 2026-07-05): **active scalar feedback formula** = research complete
-(docs/proposals/active-scalar-feedback.md. **1 derivation required before implementation**: consistency of the
-Liu et al. Marangoni-form W²↔(κ,β) coefficients — already stated in REQ §3) /
-**f64/f32 interface band width** = frozen by experiment at MF-γ implementation time (characterize→freeze) /
-**trait boundary API** = confirmed together with the B-1 design of R-Phase 2 (appended to ARCHITECTURE_V2) /
-**REQ 2nd-round codex validation** = complete, all 11 items adopted → **rev.2 applied**
-(new VR-STR-RELAX, delivery-scope clarification, variable-σ convention, and others.
-Findings original: docs/proposals/req-round2-findings.md).
+**BCFD-000 — Product pivot and repository guardrails.**
+Depends: none.
+Targets: README.md, docs/PLAN.md, docs/LIMITATIONS.md, docs/BIOPROCESS_PIVOT.md,
+crates/lbm-cli/src/main.rs.
+Impl: pivot docs, unsupported-as-product-grade labels, legacy-preset
+warning string.
+DoD: docs no longer imply general-purpose LBM production-readiness;
+LIMITATIONS distinguishes demo / engineering / evidence; existing tests
+pass.
 
-Effort sense (assuming parallel agents): R-2 ~1.5 weeks → MF-α–ε parallel ~1-2 weeks → MF-ζ integration ~1 week.
-The 1e9-lattice class is **cluster-only** per the memory budget table (REQ §7) (the single-machine development line is ≤256³) —
-measurements are consolidated into the cluster plan (CLUSTER_OPTIONS.md, awaiting user decision).
+**BCFD-001 — Bioprocess core specification docs.**
+Depends: BCFD-000.
+Targets: docs/SPEC_BIOPROCESS_CORE.md, docs/VALIDATION_BIOPROCESS.md,
+docs/CREDIBILITY_BIOPROCESS.md, docs/MODEL_RISK_MATRIX.md.
+Impl: define intended / forbidden use, tiers, VB-01..VB-08 scaffolding,
+credibility policy, model-risk table.
+DoD: four docs exist; each has current-status and not-yet-validated
+sections.
 
-### D-track: dispersed-phase deposition-design tool (established 2026-07-06)
+**BCFD-002 — Capability registry and unsupported-combination errors.**
+Depends: BCFD-000.
+Targets: crates/lbm-scenario/src/lib.rs, crates/lbm-cli/src/{main,capabilities}.rs,
+crates/lbm-core/src/solver.rs.
+Impl: `CapabilityRegistry`, `CapabilityStatus`, `CapabilityTier`,
+`UnsupportedReason`; enumerate capabilities including single-phase
+stirred, rotating IBM, passive scalar, phase-field VOF, oxygen kLa, point
+bubbles, PBM, cell exposure, evidence-tier report; structured errors
+replace string-only errors on unsupported paths; add
+`lbm capabilities --json`.
+DoD: users can query support; no silent fallback for bioprocess modes.
 
-AI-agent-native forward/inverse design of deposited number-density fields
-n(x,y) from a withdraw/eject/agitate/settle protocol. Spec + phasing (P0–P4)
-frozen in [DISPERSED_DEPOSITION.md](DISPERSED_DEPOSITION.md); acceptance =
-VALIDATION.md **T18**. Status: **P0–P2 done** (2026-07-06). P2 landed CR-1
-interior volume source/sink, CR-2 per-cell masked face patches (incl. the
-frozen zero-velocity-lid semantics and global-coords seam handling), and CR-3
-deposition-aware particles (`step_depositing`), each gated by a
-codex-adversarial T18 suite (T18.1/.2/.3 green; 2 impl bugs caught and fixed
-at first measurement — see PHYSICS.md "T18 first-measurement
-reconciliation"); the example now runs on the real core capabilities and
-reproduces the P1.1 bands (gentle CV=1.138 ∈ [1.05, 1.30], deposition parity
-0.4%). Next: P3 (VOF-on-LBM free surface) is evidence-gated, not speculative;
-P4 = inverse solver (discrete-recipe comparison first, then CMA-ES/BO +
-surrogate) — T18.4 trend anchors and T18.5 recovery are the gates.
+**BCFD-003 — Bioprocess scenario schema v1.**
+Depends: BCFD-001, BCFD-002.
+Targets: crates/lbm-scenario/src/{bioprocess,lib}.rs,
+crates/lbm-cli/src/schema.rs.
+Impl: `BioprocessScenario` alongside legacy `Scenario`; sections `reactor`,
+`fluids`, `operation`, `physics`, `cells`, `qoi`, `run`, `outputs`;
+`ReactorSpec::StirredTank`, impeller / baffle / sparger lists;
+`PhysicsSpec` discriminated union; unknown-field rejection;
+impossible-combination rejection.
+DoD: `lbm schema --bioprocess` emits schema; old scenarios still parse;
+strict validation on bioprocess.
 
-**Fine-grained scheduling (rev.3)**: the authoritative dependency DAG is
-**REQ_STIRRED_REACTOR.md §11** (W-items; MF-α〜ζ above are the delegation bundles,
-each row maps to its track). Execution shape: after W0 (=MF-α core basis), wave 1
-runs **6-way parallel** {W-EXT, W-UNIT, W-STRESS, W-ROT, W-GRAV, W-SCAL}; then
-{W-LES, W-VOF, W-PART, W-REACT}; then {W-BCTOP, W-BUB, active feedback};
-W-COUP / W-IO / W-VAL run cross-cutting. **Critical paths to staff first**:
-`W0→W-GRAV→W-VOF→W-BCTOP` (interface chain) and `W0→W-STRESS→W-LES→W-PART`
-(stress/exposure chain). W-EXT is co-designed with R-Phase 2 B-1 (one trait design,
-two consumers). Validation (W-VAL) stays codex-adversarial and implementation-separated.
+**BCFD-004 — Unit conversion and dimensionless feasibility layer.**
+Depends: BCFD-003.
+Targets: crates/lbm-scenario/src/{units,bioprocess}.rs,
+crates/lbm-cli/src/validate.rs.
+Impl: SI ↔ lattice for D, T, H, V, N, rpm, gas flow, vvm, ρ, μ, σ;
+compute Re, Fr, We, Eo, Mo, Sc, Pe, St, Ma_lattice, Cn, Pe_φ; matching
+priority (Re → density/viscosity ratio + We/Eo → Fr → Sc/Pe/Da → St);
+feasibility diagnostics (Ma_lattice warn > 0.1 hard-reject > configured;
+τ→0.5; interface too thin; bubble under-resolved; scalar diffusion
+unstable); emit `UnitReport`.
+DoD: every bioprocess scenario emits a unit feasibility report; invalid
+lattice mappings fail before simulation.
 
-**Language policy (2026-07-05 user directive)**: all artifacts English from now on
-(code, docs, commit messages, UI/CLI strings). Legacy Japanese content is being
-translated by a dedicated spawned session; this file will be fully translated there.
+**BCFD-005 — Verification command and machine-readable capability output.**
+Depends: BCFD-002.
+Targets: crates/lbm-cli/src/{main,verify,capabilities}.rs.
+Impl: `lbm verify --tier {quick|bioprocess|full}`;
+`lbm capabilities --json`; output includes `tests_run`, `tests_skipped`,
+`unsupported_capabilities`, `validation_tier`, `git_sha`, `build_features`.
+DoD: agents can query validation state without reading docs.
 
-## Progress notes
+### Backend generalisation (M0-blocking)
 
-(2026-07-07 historical record — dated notes preserve what was true or planned at each milestone; see ARCHITECTURE_V2.md for the current design.)
+**BCFD-010 — Backend fields generalisation for multiple distributions.**
+Depends: BCFD-002.
+Targets: crates/lbm-core/src/{fields,backend,solver}.rs,
+crates/lbm-core/src/gpu/backend.rs.
+Impl: support hydrodynamic `f`, phase-field `g`, scalar `h[k]`;
+`DistributionKind::{Hydro, Phase, Scalar}`; allocation API
+`enable_phase_distribution()`, `enable_scalar_distribution(name, D)`;
+hydro-only path bit-identical; CPU supports phase / scalar first; GPU
+rejects phase / scalar explicitly (structured error).
+DoD: multiple distributions coexist in CPU solver; existing tests pass
+unchanged.
 
-- 2026-07-05 late night: **Integrated the results of the concurrent review session into main**. Improvement spec v1 +
-  experiment crate merged (E2/E7 reproduce numerically matching values on main after renaming). 4 PM decisions confirmed:
-  (a) spec merge = done by PM (b) R-Phase 2 is right after R-1, a common premise of M-E/M-F
-  (c) D-6 = applied under direct PM control (see COMPETITIVE_SPEC revision history) (d) codex D-8 commissioning is
-  after R-1 lands. **R-Phase 1 commissioned** (worktree r-phase1, Opus, A-2–A-10).
-  **M-F requirement rev.1b confirmed** (neutral title, memory budget table, T17 wiring) and the implementation-track plan
-  (table above). codex #7 (T15.5 3D cavity) in progress.
-- 2026-07-05 evening: **Officially judged R1/R2/R3 all achieved** (REVIEW_2026-07-05_2.md.
-  Note: the acceptance band takes the 2026-07-05 D-6 revision as authoritative: sphere drag ±10%, D_h normalization, the weak-scaling
-  85% line is n≤4 local, 3D cavity T15.5 is being additionally implemented in codex #7).
-  M-D MPI complete (T13-MPI bit-identical in all cases, weak scaling 97-99% n≤4, MPI_GUIDE complete).
-  CpuSimd fused backend (2D new record 1,183 MLUPS, 3D 2-3x, equivalence ~6e-14).
-  Workspace 205 tests green. In progress: V1 retirement (v1-retirement) + 3 research items
-  (public benchmark comparison / 3D cavity reference / cluster options). CI workflow prepared.
-- 2026-07-05 evening: **M-C 3D physics complete (R1 achieved)**. D3Q19 Zou-He face boundary (5 unknowns + tangential correction,
-  2D degeneration 8.9e-16), duct exact series 2.3e-4, sphere drag with hydrodynamic-pair (r+½, Re(D+1)/D)
-  normalization gives +7.1%/+0.6%/+2.3% (all pass including the heavyweight D=24), TGV3D order 1.910.
-  Scenario/CLI nz support (VTK 3D / cross-section PNG). **Wgpu backend integration (R2)**: with push-type fusion,
-  strict operator-order match with CPU, T14 6 configurations ≤1e-5, 5.9–11.4 GLUPS. Workspace 184 green.
-  In progress: M-D MPI distribution (arm64 Open MPI 5.0.9 already source-built into ~/.local).
-- 2026-07-05 afternoon: **M-B core V2 complete and integrated** (physically equivalent to V1, T13 partition invariance is bit-identical-class up to 8 adversarial attacks + 3D 2×2×2, D3Q19 smoke works, 8 V1 implicit-spec items frozen as tests).
-  **Phase 9 complete**: CPU fused kernel 3.2–7x (f32 peak 1,124 MLUPS) + GPU measured
-  6,975–12,152 MLUPS. MCP asynchronous job API (R4). Survived all of codex #6's adversarial T13.
-  In progress: 2-way parallel of the Wgpu backend real implementation (m-b-wgpu) and 3D physics M-C (m-c-3d).
-- 2026-07-05 midday: **Phase 8 complete** (T12 RT γ ratio 1.118, T11c contact-angle full range, T9b convective outflow
-  improved 16x in the reflection case, 67 tests green). **GPU measurement complete**: 6,975–12,152
-  MLUPS on M5 Max Metal (16–42x vs CPU, validation L∞ 7e-6, GPU_EVALUATION.md, exceeds the R2 target by 4-8x).
-  Scenario/CLI gains convectiveOutflow, wallRho, VTK, gallery. GUI gains scenario export
-  (→lbm run E2E confirmed), divergence guard, MLUPS. SoA/SIMD is WIP (phase9-perf, resumes after quota
-  recovery). Next: parallel commissioning of M-B core V2.
+**BCFD-011 — Material-property fields: ρ, μ, σ, phase fractions.**
+Depends: BCFD-010.
+Targets: crates/lbm-core/src/{fields,solver,materials,params}.rs.
+Impl: `MaterialFields` (ρ_phys, μ_phys, ν_phys, σ, α_liquid, α_gas);
+`MaterialModel::{SinglePhase, PhaseFieldMixture, ActiveScalarFeedback}`;
+interpolation `ρ(φ) = ρ_g + φ(ρ_l - ρ_g)`; harmonic μ default with
+explicit-flag linear μ fallback; material update after phase/scalar
+updates; no update in hydro-only path.
+DoD: physical material fields exist independent of lattice ρ.
 
-- 2026-07-05: **Phase 4a/5/6 complete (three-mode unification achieved)**. codex #4 multiphase validation
-  all green (coexistence densities, EOS pressure equilibrium, Laplace, contact-angle regression 133/160/164°, f32 hardening 1e-5).
-  GUI: cavity/Karman vortex/two-phase droplet run on the real WASM engine (~600 steps/s).
-  Agent mode: lbm CLI (run/validate/presets/schema, manifest + PNG/CSV) +
-  MCP server (4 tools including run_scenario). Workspace 56 tests all green.
-- 2026-07-04: Project started. Phase 0 begun.
-- 2026-07-04: Phase 1 complete. Implemented lbm-core (D2Q9, BGK/TRT, Guo force, half-way BB/moving wall,
-  Zou-He, Outflow, force measurement, f32/f64, rayon + small-lattice serial fallback).
-  21 smoke tests green: TGV 2nd-order convergence (1.91/1.98), Poiseuille TRT exact
-  (<1e-10), Couette exact, conservation laws ~1e-13. Recorded 4 experimental findings in PHYSICS.md.
-- 2026-07-05: **Phase 4a implementation complete** (validation awaiting codex #4). Per-cell force-field API +
-  Shan-Chen SCMP. Measured: density ratio 15.8, pressure equilibrium 8.5e-6, spurious velocity 1.3e-3,
-  Laplace R²=0.9999. **Scope reorganization**: MCMP+RT (Phase 4b) moved to after the first review.
-  Do GUI (Phase 5) / Agent mode (Phase 6) first and complete the three-mode unification first.
-- 2026-07-05: **Phase 3 complete**. Introducing the deviation-storage scheme (f−w) brought f32 to validation grade
-  (momentum error improved 4800x, on par with f64 in TGV). MLUPS measured: peak 381 (f32/1024²/18T),
-  single 35, TRT is the same speed as BGK. Tradeoff guide in PERFORMANCE.md.
-  Maintained all 49 tests green.
-- 2026-07-05: **Phase 2 complete**. 3 rounds of codex adversarial tests (triaged 9 findings total:
-  2 engine bugs = Zou-He pressure sign, rim-corner anisotropy / 5 specification bugs / 1 reference-data
-  typo / 1 f32 characteristic). Default 49 tests, full 53 tests all green.
-  Passed Ghia cavity Re=100/400/1000, Schäfer-Turek cylinder 2D-1/2D-2,
-  exact equivariance (machine precision 4e-16), Zou-He 4 directions, conservation laws.
-  The GUI shell (Vite+TS+mock) was also completed ahead (Phase 5a).
+**BCFD-012 — Solver-state manifest and QOI provenance.**
+Depends: BCFD-003, BCFD-010.
+Targets: crates/lbm-core/src/solver.rs, crates/lbm-cli/src/{runner,manifest}.rs.
+Impl: extend manifest with `scenario_hash`, `bioprocess_schema_version`,
+`backend`, `lattice`, `precision`, `active_models`, `qoi_methods`,
+`unit_report`, `capability_report`; add `QoiProvenance` (source field,
+averaging window, units, validation tier); every output file lists
+manifest path.
+DoD: every bioprocess run is auditable.
+
+### Geometry (M0)
+
+**BCFD-020 — Stirred-tank geometry templates.**
+Depends: BCFD-003, BCFD-004.
+Targets: crates/lbm-scenario/src/bioprocess.rs, crates/lbm-core/src/geometry.rs,
+crates/lbm-core/src/solver.rs, crates/lbm-cli/src/presets.rs.
+Impl: cylindrical tank voxel mask (flat bottom; dished bottom rejected
+for M0); baffle template (count, width, thickness, wall-attachment);
+coordinate conventions (x,y horizontal, z vertical, tank centre at
+domain centre); geometry validation (impeller inside liquid, baffles
+inside tank, sparger inside tank, enough grid resolution); build solid
+mask and wall velocity fields.
+DoD: bioprocess scenario can generate a 3D stirred-tank solid mask.
+
+**BCFD-021 — Impeller and baffle geometry realisation.**
+Depends: BCFD-020.
+Targets: crates/lbm-core/src/{geometry,rotating_ibm}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: `ImpellerSpec::{Rushton, PitchedBlade, Marine, CustomMarkerSet}`
+(custom is placeholder); realise Rushton and pitched blade as IBM
+marker sets with blade thickness / angle; rotating marker generation;
+baffles remain solid walls.
+DoD: single-phase stirred-tank scenario supports rotating impeller +
+baffles.
+
+**BCFD-022 — Sparger geometry schema and masks.**
+Depends: BCFD-020.
+Targets: crates/lbm-scenario/src/bioprocess.rs, crates/lbm-core/src/geometry.rs.
+Impl: `SpargerSpec::{Ring, Pipe, PointOrifices}`; gas inputs
+(volumetric flow, vvm, `inlet_phase = gas`); orifice mask; no gas
+injection yet; validation (sparger below liquid surface, orifice
+resolved, positive gas flow, no raw φ inlets, no gas model → reject).
+DoD: sparger geometry + metadata exist as a mask.
+
+**BCFD-023 — Optional STL voxel import MVP.**
+Depends: BCFD-020.
+Targets: crates/lbm-core/src/voxel_import.rs,
+crates/lbm-scenario/src/bioprocess.rs, crates/lbm-cli/src/runner.rs.
+Impl: feature `geometry-import`; binary STL only; voxelise → solid
+mask; patch labels (wall, impeller, baffle, sparger, unknown); unknown
+allowed for screening tier only; evidence tier requires explicit
+labels.
+DoD: non-template geometry can be ingested experimentally.
+
+### Single-phase runner and QOI (M0)
+
+**BCFD-030 — Single-phase stirred-tank runner path.**
+Depends: BCFD-021.
+Targets: crates/lbm-cli/src/runner.rs, crates/lbm-scenario/src/bioprocess.rs,
+crates/lbm-core/src/solver.rs.
+Impl: run path for `BioprocessScenario` single_phase; 3D D3Q19 or
+D3Q27; install tank / baffle solids, rotating impeller IBM; record
+torque, force, velocity snapshots; reject 2D scenarios.
+DoD: minimal stirred-tank scenario runs; rest tank quiescent; impeller
+non-zero velocity; old scenario tests pass.
+
+**BCFD-031 — Torque, Np, P/V, Nq QOI extraction.**
+Depends: BCFD-030.
+Targets: crates/lbm-core/src/qoi.rs, crates/lbm-cli/src/{runner,output}.rs.
+Impl: compute Tq, `P = ωTq`, `N = ω/(2π)`, `Np = P/(ρN³D⁵)`,
+`P_over_V = P/V_working`, `Nq = Q/(ND³)` when discharge surface
+defined (skip with reason otherwise); output qoi_power.{csv,json}.
+DoD: power QOIs emitted with units and averaging window.
+
+**BCFD-032 — Stress tensor and shear-rate field.**
+Depends: BCFD-011, BCFD-030.
+Targets: crates/lbm-core/src/{stress,solver}.rs, crates/lbm-cli/src/output.rs.
+Impl: velocity-gradient `S`; `gamma_dot = √(2 S:S)`; `viscous_stress =
+μ_eff · gamma_dot`; second invariant, von Mises proxy; percentile
+reducer (P50/P90/P95/P99/max) — never max alone; non-equilibrium
+stress optional later.
+DoD: shear fields + percentiles exist for single-phase runs.
+
+**BCFD-033 — Wall shear and y+ diagnostics.**
+Depends: BCFD-032.
+Targets: crates/lbm-core/src/{wall_model,stress}.rs, crates/lbm-cli/src/output.rs.
+Impl: wall-adjacent detector; wall-distance estimate; wall-shear proxy
+from tangential velocity gradient; y+ when LES on; wall_shear.csv;
+label as "proxy" unless a validated mode enabled.
+DoD: wall-shear diagnostics available and clearly labelled.
+
+**BCFD-034 — Passive scalar ADE distribution.**
+Depends: BCFD-010, BCFD-030.
+Targets: crates/lbm-core/src/{scalar,solver}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: scalar `h`; diffusivity, initial field, point/region pulse,
+inlet source, no-flux wall; scalar evolves after fluid step; closed
+domain mass conservation.
+DoD: passive scalar simulated in stirred tank.
+
+**BCFD-035 — Mixing-time QOI.**
+Depends: BCFD-034.
+Targets: crates/lbm-core/src/qoi.rs, crates/lbm-cli/src/output.rs.
+Impl: scalar CV(t); t95 (CV ≤ 0.05 CV₀), t99 (≤ 0.01 CV₀);
+compartment-wise CV; skip when no pulse configured; outputs
+mixing_time.json, scalar_cv.csv.
+DoD: mixing-time QOI reproducible.
+
+### Phase-field gas-liquid (M1)
+
+**BCFD-040 — Conservative Allen-Cahn phase-field evolution.**
+Depends: BCFD-010, BCFD-011.
+Targets: crates/lbm-core/src/{phase_field,solver}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: solver-coupled phase update; `∂φ/∂t + ∇·(φu + J_φ) = 0`,
+`J_φ = -M[∇φ - (4/W)φ(1-φ) n]`; φ ∈ [0,1] with diagnostics;
+`PhaseFieldParams { interface_width, mobility, clipping }`; uses
+current fluid velocity; no surface tension in this ticket.
+DoD: phase field dynamically coupled to solver velocity.
+
+**BCFD-041 — Phase-field mass conservation and boundedness guards.**
+Depends: BCFD-040.
+Targets: crates/lbm-core/src/{phase_field,solver,divergence}.rs.
+Impl: diagnostics `total_φ`, `min_φ`, `max_φ`, `clipped_fraction`,
+`interface_cells`; hard divergence guard (NaN, out-of-bounds after
+clip, excessive drift); manifest fields; `run_guarded` support.
+DoD: phase-field runs cannot silently diverge.
+
+**BCFD-042 — High-density-ratio ρ/μ interpolation and J_ρ consistency.**
+Depends: BCFD-040, BCFD-041.
+Targets: crates/lbm-core/src/{materials,phase_field,solver}.rs.
+Impl: compute ρ(φ), μ(φ); `J_ρ = (ρ_l - ρ_g) · J_φ`; same J_ρ used in
+continuity diagnostics AND momentum advection correction (consistency
+check); moderate density-ratio guard; high ratio > threshold remains
+Experimental.
+DoD: material property fields update from φ consistently.
+
+**BCFD-043 — Surface tension force.**
+Depends: BCFD-040, BCFD-042.
+Targets: crates/lbm-core/src/{surface_tension,solver,params}.rs.
+Impl: chemical-potential force for constant σ; curvature / normal
+diagnostics; applied through existing Guo force composition; disabled
+in single-phase; capillary Δt diagnostic.
+DoD: resolved interface generates capillary force.
+
+**BCFD-044 — Contact-angle and wettability boundary.**
+Depends: BCFD-043.
+Targets: crates/lbm-core/src/{wetting,phase_field,geometry}.rs.
+Impl: wall contact-angle parameter; phase-field wall flux condition;
+per-wall metadata; droplet-on-wall init helper; reject contact-angle
+without phase field.
+DoD: contact angle represented in phase-field path.
+
+**BCFD-045 — Free-surface top boundary and degassing placeholder.**
+Depends: BCFD-043.
+Targets: crates/lbm-core/src/{free_surface,solver}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: top modes `closed_lid`, `free_surface` (engineering
+experimental), `degassing_outlet` (placeholder: gas out, liquid in;
+mass ledger records gas outflow); evidence tier rejects degassing.
+DoD: top boundary is explicit and cannot be silently wrong.
+
+**BCFD-046 — Sparger gas-injection boundary.**
+Depends: BCFD-022, BCFD-040, BCFD-045.
+Targets: crates/lbm-core/src/{sparger,phase_field}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: gas-only injection at sparger; `inlet_phase: gas` maps to φ = 0;
+enforced conservation (gas volumetric flow, gas volume ledger,
+pressure diagnostic); reject under-resolved orifice for resolved
+injection; point-bubble mode is BCFD-070+.
+DoD: resolved gas injection with conservation ledger.
+
+**BCFD-047 — Resolved gas-volume and gas-holdup QOI.**
+Depends: BCFD-041, BCFD-046.
+Targets: crates/lbm-core/src/qoi.rs, crates/lbm-cli/src/output.rs.
+Impl: `α_g = 1 - φ`; global / compartment / thresholded / raw holdup;
+metadata (threshold, averaging volume, time window,
+`method = resolved_phase_field`); outputs gas_holdup.{json,csv}.
+DoD: resolved gas holdup is recomputable and metadata-complete.
+
+**BCFD-048 — Phase-field validation suite.**
+Depends: BCFD-040, BCFD-041, BCFD-043, BCFD-046.
+Targets: crates/lbm-core/tests/bioprocess_phase_field.rs,
+docs/VALIDATION_BIOPROCESS.md (VB-04 + VB-05).
+Impl: static planar interface, advected droplet, Laplace law, gas
+injection volume ledger, contact-angle smoke; validation bands added
+to docs; tests written from docs, not implementation; heavy tests
+`--include-ignored`.
+DoD: phase-field has explicit validation status.
+
+### Oxygen and kLa (M1)
+
+**BCFD-050 — Oxygen scalar transport.**
+Depends: BCFD-034, BCFD-040.
+Targets: crates/lbm-core/src/{oxygen,scalar}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: oxygen as named scalar over the ADE infrastructure; C_L, C_star,
+D_O2, boundary sources; may be liquid-phase-only initially.
+DoD: oxygen scalar simulated as a named scalar.
+
+**BCFD-051 — Henry equilibrium and interfacial oxygen flux.**
+Depends: BCFD-043, BCFD-050.
+Targets: crates/lbm-core/src/{oxygen,surface_tension,qoi}.rs.
+Impl: Henry equilibrium; interfacial area density `a_local` from
+phase-field δ-approximation; flux `S = kL·a_local·(C* - C)`; kL model
+enum (constant | correlation_placeholder | calibrated); ledger;
+evidence claims reject uncalibrated kL.
+DoD: resolved-interface oxygen transfer path exists.
+
+**BCFD-052 — kLa QOI from scalar transient.**
+Depends: BCFD-050, BCFD-051.
+Targets: crates/lbm-core/src/qoi.rs, crates/lbm-cli/src/output.rs.
+Impl: fit `dC/dt = kLa(C* - C)`; output kla_1_per_s, kla_1_per_hr,
+fit_r2, fitting_window, method, CI when available; skip with reason
+on invalid fit.
+DoD: kLa estimable from oxygen scalar transient.
+
+**BCFD-053 — OUR and reaction-source hooks.**
+Depends: BCFD-050.
+Targets: crates/lbm-core/src/{reaction,oxygen}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: OUR options constant / Monod placeholder / cell-density-scaled;
+source term to oxygen; non-negative concentration guard; source
+ledger.
+DoD: oxygen consumption representable.
+
+### Cell / microcarrier exposure (M2)
+
+**BCFD-060 — Cell tracer population.**
+Depends: BCFD-030, BCFD-032.
+Targets: crates/lbm-core/src/{cells,particles}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: massless tracers sampling flow; record position, velocity,
+gamma_dot, viscous_stress, ε proxy if available, oxygen C_L if
+enabled; deterministic seeding; serialisable state.
+DoD: cell trajectory / exposure history collectible.
+
+**BCFD-061 — Shear exposure integral and damage model.**
+Depends: BCFD-032, BCFD-060.
+Targets: crates/lbm-core/src/{cells,damage}.rs, crates/lbm-cli/src/output.rs.
+Impl: `E = ∫ max(0, τ - τ_c)^m dt`; alternatives (γ̇ threshold, ε
+threshold placeholder); output P50/P90/P95/P99/max exposure,
+fraction_above_threshold, residence_time_above_threshold — never max
+alone.
+DoD: shear damage risk computable from tracer histories.
+
+**BCFD-062 — Microcarrier particle mode.**
+Depends: BCFD-060.
+Targets: crates/lbm-core/src/{microcarrier,particles}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: finite-size particles (d, ρ, restitution, drag, buoyancy);
+reuse Schiller-Naumann within Re_p ≤ 800; suspension metrics (settled
+fraction, height distribution, residence-near-impeller, shear
+exposure); no collision yet.
+DoD: microcarrier-like particles trackable one-way.
+
+**BCFD-063 — Two-way particle reaction-force scatter.**
+Depends: BCFD-062.
+Targets: crates/lbm-core/src/{microcarrier,particles,solver}.rs.
+Impl: two-way coupling; regularised kernel scatter; momentum ledger;
+mass-loading guard until four-way exists.
+DoD: two-way particle coupling with momentum conservation
+diagnostics.
+
+### Point-bubble and PBM (M3)
+
+**BCFD-070 — Point-bubble entity store.**
+Depends: BCFD-011, BCFD-022.
+Targets: crates/lbm-core/src/bubbles.rs, crates/lbm-scenario/src/bioprocess.rs.
+Impl: `Bubble { position, velocity, diameter, gas_volume, age }`;
+`BubbleSet`; sparger seeding; deterministic injection schedule; no
+forces yet.
+DoD: point bubbles trackable as entities.
+
+**BCFD-071 — Point-bubble force closures.**
+Depends: BCFD-070.
+Targets: crates/lbm-core/src/{bubbles,bubble_forces}.rs.
+Impl: buoyancy, drag, added mass placeholder, lift placeholder, wall
+lubrication placeholder, turbulent dispersion placeholder; each
+declares validity range; substep supported.
+DoD: point bubbles move under basic forces.
+
+**BCFD-072 — Bubble-to-liquid momentum coupling.**
+Depends: BCFD-071.
+Targets: crates/lbm-core/src/{bubbles,solver}.rs.
+Impl: scatter bubble force reaction to liquid with regularised
+kernel; momentum ledger; gas holdup from point bubbles; high-holdup
+guard until continuum mode exists.
+DoD: point bubbles couple momentum with ledger.
+
+**BCFD-073 — PBM bins and breakup/coalescence.**
+Depends: BCFD-070.
+Targets: crates/lbm-core/src/{pbm,bubbles}.rs,
+crates/lbm-scenario/src/bioprocess.rs.
+Impl: binned distribution; breakup / coalescence kernel traits;
+placeholder kernels (disabled / constant); hooks for Luo-Svendsen and
+Prince-Blanch; d32 and interfacial area updated.
+DoD: PBM infrastructure computes d32 / a.
+
+**BCFD-074 — kLa from point-bubble interfacial area.**
+Depends: BCFD-050, BCFD-073.
+Targets: crates/lbm-core/src/{kla,pbm,oxygen}.rs.
+Impl: `a = 6 α_g / d32`; kL enum (constant / penetration placeholder /
+calibrated); oxygen source `kL·a·(C* - C)`; metadata includes method,
+kL source, d32 source; evidence tier requires calibrated kL.
+DoD: kLa computable from PBM interfacial area.
+
+**BCFD-075 — Hybrid resolved-interface + point-bubble bookkeeping.**
+Depends: BCFD-047, BCFD-074.
+Targets: crates/lbm-core/src/{hybrid_gas,qoi}.rs.
+Impl: track gas in resolved phase field + point bubbles; prevent
+double-counting; ε_g_{resolved, bubble, total}, a_{resolved, bubble};
+evidence tier rejects hybrid until validation exists.
+DoD: hybrid gas bookkeeping explicit.
+
+### Reporting, credibility, sweep, evidence (M2)
+
+**BCFD-080 — QOI output schema.**
+Depends: BCFD-031, BCFD-035, BCFD-047, BCFD-052, BCFD-061.
+Targets: crates/lbm-core/src/qoi.rs, crates/lbm-cli/src/output.rs,
+crates/lbm-scenario/src/qoi_schema.rs.
+Impl: `QoiBundle` (power, mixing, gas, oxygen, kla, shear, cells,
+microcarriers, validation_status); every QOI has units, method,
+time_window, averaging_region, source_fields, validation_tier;
+qoi.json + CSVs for time series.
+DoD: bioprocess QOI output stable and machine-readable.
+
+**BCFD-081 — Bioprocess report generator.**
+Depends: BCFD-080.
+Targets: crates/lbm-cli/src/report.rs, docs/report_templates/bioprocess.md.
+Impl: `lbm report <run-dir>`; sections (intended use, forbidden use,
+scenario summary, unit feasibility, active models, QOI summary,
+validation status, limitations, provenance); marks "not
+evidence-grade" unless BCFD-091 passes; no PDF/docx.
+DoD: human-readable bioprocess report generated.
+
+**BCFD-082 — Calibration and holdout registry.**
+Depends: BCFD-080.
+Targets: crates/lbm-core/src/credibility.rs,
+crates/lbm-scenario/src/bioprocess.rs, crates/lbm-cli/src/validate.rs.
+Impl: `CalibrationDataset`, `HoldoutDataset` (id, QOI, source, date,
+scale, operating condition, measurement uncertainty); same id cannot
+be used for both; evidence tier requires holdout.
+DoD: calibration/holdout separation enforced.
+
+**BCFD-083 — UQ and sweep runner.**
+Depends: BCFD-080, BCFD-082.
+Targets: crates/lbm-cli/src/sweep.rs, crates/lbm-core/src/uq.rs,
+crates/lbm-scenario/src/sweep.rs.
+Impl: sweep scenario schema; deterministic grid; Latin hypercube
+placeholder; aggregate QoiBundles; one-factor local sensitivity;
+sweep_summary.json; failed cases recorded, not lost.
+DoD: parameter sweeps produce aggregated QOI summaries.
+
+**BCFD-084 — Scale-up operating-window evaluator.**
+Depends: BCFD-031, BCFD-052, BCFD-061, BCFD-083.
+Targets: crates/lbm-core/src/scaleup.rs, crates/lbm-cli/src/scaleup.rs.
+Impl: constraints (kLa ≥ target, P/V ≤ limit, P95_shear ≤ limit,
+mixing_time ≤ limit, gas_holdup range); modes (constant P/V, tip
+speed, kLa, mixing time, custom weighted); explicit conflict table
+when no feasible point.
+DoD: scale-up decision summaries produced from QOI sweeps.
+
+### Validation, gate, CLI/MCP surface (M2)
+
+**BCFD-090 — Bioprocess validation matrix.**
+Depends: BCFD-031, BCFD-035, BCFD-048, BCFD-052, BCFD-061.
+Targets: docs/VALIDATION_BIOPROCESS.md, crates/lbm-core/tests/bioprocess_*.rs.
+Impl: expand VB-01..VB-08 with setup, QOI, acceptance, tier, current
+status; quick tests default, heavy `--include-ignored`.
+DoD: validation coverage maps to every product QOI.
+
+**BCFD-091 — Evidence-tier gatekeeper.**
+Depends: BCFD-082, BCFD-083, BCFD-090.
+Targets: crates/lbm-core/src/credibility.rs, crates/lbm-cli/src/{report,validate}.rs.
+Impl: `EvidenceGate`; evidence tier requires validation-matrix pass +
+calibration/holdout separated + mesh/time-step sensitivity + QOI
+uncertainty interval + limitation report; failure → report marked
+"not evidence-grade"; `EvidenceGateResult`.
+DoD: evidence claims mechanically gated.
+
+**BCFD-092 — CLI/MCP bioprocess tools.**
+Depends: BCFD-080, BCFD-081, BCFD-091.
+Targets: crates/lbm-cli/src/{main,mcp}.rs.
+Impl: `lbm bioprocess {validate, run, qoi, report, sweep,
+evidence-check}`; MCP tools `validate_bioprocess_scenario`,
+`run_bioprocess_scenario`, `get_bioprocess_qoi`,
+`generate_bioprocess_report`, `check_evidence_gate`; structured JSON;
+human errors include remediation.
+DoD: agent operates the bioprocess workflow end-to-end.
+
+### MPI and scale (post-M1/M2 only)
+
+**BCFD-100 — MPI memory localisation for bioprocess-scale runs.**
+Depends: BCFD-010, BCFD-012.
+Targets: crates/lbm-core/src/{dist,solver}.rs, docs/LIMITATIONS.md.
+Impl: local geometry construction path for MPI; avoid global compact
+arrays; closures for solid mask, wall velocity, material fields,
+initial scalar; keep legacy path for small tests; per-rank memory
+estimate in manifest.
+DoD: bioprocess large-grid path not blocked by global-array
+replication.
+
+**BCFD-101 — Parallel field output.**
+Depends: BCFD-080, BCFD-100.
+Targets: crates/lbm-core/src/dist.rs, crates/lbm-cli/src/output.rs.
+Impl: per-rank output files; rank-0 writes manifest; fields (velocity,
+φ, oxygen, γ̇, gas_holdup); simple reader metadata; rank-0 gather kept
+for validation-small cases.
+DoD: parallel output no longer requires rank-0 full field gather.
+
+**BCFD-102 — Checkpoint includes particles, scalars, statistics.**
+Depends: BCFD-012, BCFD-034, BCFD-060, BCFD-070.
+Targets: crates/lbm-core/src/{solver,cells,bubbles,qoi}.rs.
+Impl: extend checkpoint format to include scalar/phase fields, cell
+tracers, point bubbles, QOI accumulators, RNG/deterministic-injection
+state; explicit mismatch errors; manifest reserved flags become true.
+DoD: long bioprocess runs restart without losing statistics.
+
+### Release sync
+
+**BCFD-110 — Product README and limitation sync.**
+Depends: all release-target tickets.
+Targets: README.md, docs/LIMITATIONS.md, docs/VALIDATION_BIOPROCESS.md,
+docs/SPEC_BIOPROCESS_CORE.md, docs/CREDIBILITY_BIOPROCESS.md.
+Impl: README describes actual supported bioprocess tiers; capability
+matrix generated from registry where possible; LIMITATIONS updated;
+no GMP/CMC claims; evidence-tier only if BCFD-091 passes.
+DoD: README, LIMITATIONS, and capability registry agree.
+
+---
+
+## 2. Validation-driven development protocol (preserved)
+
+1. Acceptance criteria are stated numerically in
+   [VALIDATION_BIOPROCESS.md](VALIDATION_BIOPROCESS.md), one entry per
+   VB-XX group.
+2. codex (or Opus / Sonnet) writes the tests **from the spec, without
+   looking at the implementation**. Test order and implementation order
+   never share a worktree.
+3. If a gate fails:
+   - **Engine bug** → fix the engine. The test is the source of truth.
+   - **Spec is physically wrong** → run an experiment, revise the spec,
+     record rationale in [PHYSICS.md](PHYSICS.md). Never fake the
+     physics to pass a gate.
+   - **Test bug** → send back to the test author with a repro. The
+     implementation is not changed.
+4. Bands frozen after a validation lands = **measured value + declared
+   headroom**, printed in the assert message. The denominator /
+   normalisation of every relative tolerance must be stated in the
+   assert (per-component vs scale-relative flipped pass/fail on
+   identical physics; this bit the pre-pivot session).
+5. Anomaly pins carry an ANOM id in the assert message; the fix flips
+   the pin **in the same commit** as the fix. Pin retighten is never
+   deferred.
+
+## 3. Merge-queue rules (hard requirements)
+
+Every BCFD landing follows these; violations block the merge:
+
+(a) Landing gate = `cargo test --workspace --release --no-fail-fast`
+    with **UNPIPED exit code** (`; echo EXIT:$?`). Never pipe a gate
+    through `tail` / `grep` — pipe eats the exit code.
+
+(b) GPU landing evidence is **PM-run outside the codex sandbox**.
+    In-sandbox Metal adapter access is intermittent. Codex GPU orders
+    say "build + CPU gates only; report BENCH/GPU-PENDING".
+
+(c) Audit / adversarial test orders **never share a worktree** with
+    implementation orders.
+
+(d) Band freezes = measured value + stated headroom; measured values
+    printed in assert messages. Loosening needs PHYSICS.md rationale
+    and owner sign-off.
+
+(e) Current-wrong-value pins carry their ANOM id in the assert
+    message; the fix flips the pin in the same commit as the fix.
+
+(f) [Anomaly log entry](archive/2026-07-07-pivot/qa/anomaly-log.md
+    format) required before merge for every P3-confirmed finding,
+    including test-side dispositions. Bioprocess-era finding log will
+    be re-established under `docs/BIOPROCESS_FINDINGS.md` when the
+    first V&V loop closes.
+
+## 4. Known traps (learned pre-pivot, all still active)
+
+- **Backticks in inline codex order strings** die in zsh command
+  substitution. Pass orders via file:
+  `codex exec ... "$(cat <order-file>)" < /dev/null > /tmp/codex-<tag>.log 2>&1 &`.
+- **Sandbox `git commit` fails intermittently** with `index.lock`
+  EPERM on the shared `.git` in worktrees. Order text must include the
+  "committed-ready fallback" clause — PM commits on codex's behalf at
+  merge time.
+- **Metal GPU adapter denial** in-sandbox is intermittent. GPU tests
+  / bench are PM-run.
+- **Loaded-window MLUPS false-negative trap**: on unified memory,
+  background cargo/codex load halves-to-thirds GPU MLUPS. NEVER flip
+  a perf gate RED (or dispatch kernel-opt orders) from a loaded-window
+  number; re-measure quiet with A/B/A interleave.
+- **`cargo test` fail-fast** masks regressions after the first
+  failing binary. Landing gates MUST use `--no-fail-fast`.
+- **Piping a gate through `| tail`** eats the exit code. Always
+  separate: run gate raw, then `echo EXIT:$?`.
+- **Keep-both merge resolution** via naive regex on `<<<<<<< HEAD` /
+  `=======` / `>>>>>>>` markers can drop the closing `}` of the HEAD
+  block when both sides are two full functions concatenated. Always
+  `cargo build --workspace --release` before committing the merge.
+- **Cargo test binary ordering** (alphabetical): earlier tests run
+  first, hiding later regressions when fail-fast is on. Landing gate
+  is `--no-fail-fast`.
+
+## 5. Master agent prompt (paste into every codex BCFD order)
+
+```
+You are working on TakuTsuzuki/lbmflow, the bioprocess-specific CFD core
+(2026-07-07 pivot). Read docs/BIOPROCESS_PIVOT.md, docs/SPEC_BIOPROCESS_CORE.md,
+docs/VALIDATION_BIOPROCESS.md, docs/LIMITATIONS.md, and CLAUDE.md before
+touching code.
+
+Your work must implement only the assigned BCFD ticket in docs/PLAN.md.
+Do not broaden scope. Do not add unsupported product claims. Do not
+prioritize GPU, FP16, WASM GUI, or generic CFD capabilities unless the
+ticket asks.
+
+Rules:
+  1. Existing tests must pass. Landing gate = cargo test --workspace
+     --release --no-fail-fast with UNPIPED exit code.
+  2. New physics must have a validation test or be marked Experimental
+     / Unsupported.
+  3. Unsupported combinations must fail loudly with structured errors,
+     never silently fall back.
+  4. Every QOI must include units, method, time window, averaging
+     region, and validation tier.
+  5. Evidence-tier claims require calibration + holdout + UQ +
+     sensitivity records (BCFD-091 gate).
+  6. Do not use Shan-Chen as the production gas-liquid path.
+  7. Do not report only max shear; percentiles and exposure
+     distributions are required.
+  8. Do not silently fallback to CPU/GPU/precision changes.
+  9. Keep old scenarios backward-compatible unless the ticket
+     explicitly deprecates them.
+ 10. Update docs/LIMITATIONS.md for every new experimental or
+     unsupported capability.
+
+After coding:
+  - Run cargo test --workspace --release --no-fail-fast ; echo EXIT:$?
+  - Add or update validation tests (VB-XX group).
+  - Update capability registry (BCFD-002 surface).
+  - Update manifest/provenance if output behaviour changes.
+
+Report unverified as unverified, skipped as skipped, failures with
+their output. Fabricated progress is the worst possible failure.
+```

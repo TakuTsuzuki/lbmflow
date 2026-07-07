@@ -1,78 +1,137 @@
-# LBMFlow Limitations
+# LBMFlow Limitations — Bioprocess CFD
 
-This file is a release-facing trust boundary for the current worktree. It states
-what LBMFlow supports today and where users should not rely on it yet. For
-planned work, see [PLAN.md](PLAN.md); this manifest does not make roadmap
-promises.
+Lifecycle: living (release-facing trust boundary; kept in sync with the
+capability registry defined in BCFD-002).
 
-## 1. Lattice and Boundaries
+This file is machine-readable in spirit — the capability registry in
+`crates/lbm-cli` should be able to regenerate it, and drift between the
+two is a merge-queue defect. The registry statuses used below map to the
+credibility tiers in
+[SPEC_BIOPROCESS_CORE.md](SPEC_BIOPROCESS_CORE.md) §3.
 
-| Area | Current limitation | Evidence |
+**Status legend:**
+
+- `Unsupported` — the combination is rejected with a structured error.
+- `Experimental` — code path runs, but not validated to a bioprocess band.
+  Results are demos / screening; do not use in decisions.
+- `Engineering` — bioprocess-band validation green; usable for
+  design-of-experiments and internal decisions; no calibration / holdout
+  pinned.
+- `EvidenceBlocked` — Engineering ceiling reached; needs
+  calibration + holdout + UQ + sensitivity for the specific QOI.
+- `EvidenceReady` — BCFD-091 gate passed for this QOI.
+
+Every row cites either a code location (source of truth) or a doc entry.
+
+## 1. Bioprocess capabilities (BCFD scope)
+
+| Capability | Status (2026-07-07) | Reason | Evidence |
+|---|---|---|---|
+| Single-phase stirred tank | Unsupported | Runner path (BCFD-030) not yet implemented; only legacy demo presets exist. | `docs/PLAN.md` M0 |
+| Rotating IBM (impeller) | Engineering (technical) / Unsupported (bioprocess QOI) | IBM landed pre-pivot but not wired into `BioprocessScenario` yet. | `crates/lbm-core/src/rotating_ibm.rs` |
+| Passive scalar transport | Unsupported | Scalar distribution not yet allocated (BCFD-010, BCFD-034). | BCFD-010 |
+| Phase-field VOF (Allen-Cahn) | Unsupported | Not implemented; Shan-Chen is not a substitute (demo-only). | BCFD-040 |
+| Sparger gas injection | Unsupported | Depends on BCFD-022 + BCFD-046. | — |
+| Oxygen transport / kLa | Unsupported | Depends on BCFD-050..052. | — |
+| Point bubbles / PBM | Unsupported | M3 work. | — |
+| Cell / microcarrier exposure | Unsupported | M2 work; BCFD-060..063. | — |
+| UQ / sweep runner | Unsupported | M2 work; BCFD-083. | — |
+| Scale-up operating window | Unsupported | M2 work; BCFD-084. | — |
+| Evidence-tier report | Unsupported | Gate not implemented; BCFD-091. | — |
+
+Every row above becomes `Experimental` on ticket landing, then
+`Engineering` once its VB group passes, then `EvidenceReady` per QOI
+after BCFD-091.
+
+## 2. Legacy LBM capabilities preserved (with demo warning)
+
+Legacy scenario paths continue to run and their tests remain green.
+`lbm presets run <name>` emits `legacy LBM demo preset; not bioprocess
+decision-grade` to stderr.
+
+### 2.1 Lattice and boundaries
+
+| Area | Status | Notes |
 |---|---|---|
-| D3Q27 open faces | D3Q27 supports CPU full boundary coverage including periodic, closed-wall, velocity-inlet, pressure-outlet, outflow, and convective open faces; GPU open faces are rejected explicitly; scenario JSON exposure landed 2026-07-07. | `crates/lbm-core/tests/d3q27_open_bc.rs`, `crates/lbm-core/src/kernels.rs` (NEBB), `crates/lbm-scenario/src/lib.rs` (`LatticeSpec`, `GPU_D3Q27_OPEN_FACES_UNSUPPORTED`), PHYSICS.md 2026-07-07 entry |
-| Curved walls | Curved-wall helpers are analytic Bouzidi circle and sphere records, plus an explicit low-level link hook for validation. They are not a general geometry importer. | `crates/lbm-core/src/bouzidi.rs:47-56`, `crates/lbm-core/src/bouzidi.rs:105-114`, `crates/lbm-core/src/solver.rs:1865-1896`, `crates/lbm-core/src/solver.rs:1919-1923` |
-| Geometry import | Scenario obstacles are built-in primitives (`circle`, `rect`, `sphere`). STL/CAD import is outside the current solver spec; no voxelization import path is exposed by the scenario schema. | `crates/lbm-scenario/src/lib.rs:306-320`, `docs/REQ_STIRRED_REACTOR.md:568-571` |
+| D3Q27 open faces | Engineering (technical); Unsupported (bioprocess) | CPU full boundary coverage; GPU rejects. `crates/lbm-core/tests/d3q27_open_bc.rs`. |
+| Curved walls (Bouzidi) | Engineering (technical); analytic-only geometries | `crates/lbm-core/src/bouzidi.rs`. Non-analytic geometry needs BCFD-023 STL import. |
+| Geometry import | Unsupported | BCFD-023 optional feature; not on M0 critical path. |
 
-## 2. Backend Coverage
+### 2.2 Backends
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| Scenario GPU dispatch | Scenario-level GPU dispatch rejects `f64`; for 3D scenarios it rejects multiphase, rotor, particles, non-rest initialization, and force probes. The error string also names non-f32 storage as unsupported in this path. | `crates/lbm-scenario/src/lib.rs:110-112`, `crates/lbm-scenario/src/lib.rs:148-164` |
-| Localized sources and face patches on GPU | The backend trait marks localized volume sources and masked face patches as optional; `WgpuBackend` returns `false`, and solver construction rejects non-empty sources or patches with `UnsupportedOnGpu`. | `crates/lbm-core/src/backend.rs:165-170`, `crates/lbm-core/src/gpu/backend.rs:1885-1890`, `crates/lbm-core/src/solver.rs:1378-1388` |
-| Gravity performance | Backend-side gravity body-force composition landed 2026-07-07: CPU scalar/SIMD and wgpu backends compose `rho*g` device/backend-resident and gravity runs use chunked submission again. The per-step host-staged path remains only as a fallback for backends without `supports_gravity_body_force()`. | `crates/lbm-core/src/backend.rs` (`supports_gravity_body_force`), `crates/lbm-core/src/solver.rs` (`params_with_backend_gravity`), T14 `t14_gravity_body_force_device_resident` (native PASS) |
-| GPU availability in tests | GPU tests are optional feature tests and require a native adapter. T14/T16 either require or skip based on adapter availability; default workspace tests do not cover GPU hosts. | `README.md:162-164`, `docs/VALIDATION.md:232-242`, `crates/lbm-core/tests/t14_backend_equiv.rs:40-43`, `crates/lbm-core/tests/t16_fp16_storage.rs:25-33` |
+| Scenario GPU dispatch | Unsupported for bioprocess coupled physics | Rejects multiphase, rotor, particles, non-rest initialization, force probes — the entire bioprocess coupled path. 2D f32 GPU scenarios run for demo purposes. |
+| Localized GPU sources / face patches | Unsupported | Backend trait marks optional; wgpu returns false. |
+| Gravity | Engineering (technical) | Backend-side body-force composition landed pre-pivot. |
+| GPU availability in tests | Optional feature | `--features gpu`; not covered by workspace default. |
 
-## 3. Precision and Collision Exposure
+### 2.3 Precision and collision
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| FP16 storage | FP16 is a capacity/throughput mode, not a validation-grade long-transient reference mode. Distribution storage narrows to f16 while arithmetic remains f32; steady flows re-converge, but long transients accumulate storage rounding. | `crates/lbm-core/src/gpu/backend.rs:142-148`, `crates/lbm-core/tests/t16_fp16_storage.rs:15-23`, `docs/PHYSICS.md:313-324`, `docs/PERFORMANCE.md:59-62` |
-| Scenario schema | Scenario JSON exposes `grid.lattice: d3q19 | d3q27` for 3D scenarios, `collision: bgk | trt | cumulant`, and `compute.storage: f32 | f16`, but with narrow honored paths: D3Q27 is CPU-only for open-face scenario dispatch, cumulant only on 3D CPU scenarios, and f16 only on 2D D2Q9 GPU scenarios (SHADER_F16 adapter required). All other combinations are rejected with explicit errors — no silent fallback. MPI hints remain unexposed. | `crates/lbm-scenario/src/lib.rs` (`LatticeSpec`, `CollisionSpec`, `StorageSpec`, `GPU_D3Q27_OPEN_FACES_UNSUPPORTED`/`GPU_F16_*` errors), manifest `provenance` in `crates/lbm-cli/src/runner.rs` |
+| FP16 storage | Unsupported (validation-grade) | Capacity / throughput mode only. Long transients accumulate storage rounding. Never used for a QOI reported in a bioprocess decision. |
+| Scenario schema (lattice, collision, storage) | Engineering (technical) for legacy | Narrow honored paths: D3Q27 CPU-only; cumulant 3D CPU-only; f16 only 2D D2Q9 GPU. Otherwise rejected with explicit errors — no silent fallback. |
 
-## 4. Particles
+### 2.4 Particles
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| Coupling model | Particles are one-way Lagrangian particles. They feel sampled velocity, buoyancy-reduced gravity, and Schiller-Naumann drag, but they do not apply reaction forces to the fluid. Two-way/four-way coupling, Saffman, Basset, Faxen, collision models, and stochastic LES dispersion are not implemented. | `crates/lbm-core/src/particles.rs:1-15` |
-| Schiller-Naumann range | Drag correction is valid for `Re_p <= 800`; exceeding it returns a `ParticleError` (particle index + offending Re) — runs do not silently continue outside the correlation's validity domain. | `crates/lbm-core/src/particles.rs` (`SCHILLER_NAUMANN_RE_MAX`), PHYSICS.md 2026-07-07 entry |
-| Near-wall sampling | `sample_grid` clamps sample positions to grid bounds, uses solid-neighbor velocity as zero, and returns the solid flag of the clamped lower node. Near-wall and out-of-domain particle samples therefore need interpretation as clamped grid samples, not extrapolated wall-resolved velocities. | `crates/lbm-core/src/particles.rs:276-285`, `crates/lbm-core/src/particles.rs:302-321`, `crates/lbm-core/src/particles.rs:324-331` |
+| Coupling model | Engineering (technical, one-way) | `ParticleSet` is deterministic one-way Lagrangian. No reaction force to fluid. Two-way (BCFD-063), four-way, Saffman, Basset, Faxen, collision, LES stochastic dispersion are not implemented. |
+| Schiller-Naumann range | Enforced Re_p ≤ 800 | Violations return `ParticleError` (particle index + offending Re); no silent extrapolation. |
+| Near-wall sampling | Clamped grid samples | Not extrapolated wall-resolved velocities; interpret as clamped. |
 
-## 5. LES
+### 2.5 LES
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| WALE scope | WALE is landed as a solver-level eddy-viscosity driver. It computes `nu_t`, converts it directly to an `omega_plus` field, and installs that field for the next collision, giving a one-step lag. | `crates/lbm-core/src/les.rs:1-7`, `crates/lbm-core/src/les.rs:49-57`, `crates/lbm-core/src/les.rs:104-113`, `crates/lbm-core/src/solver.rs:2483-2518` |
-| WALE clipping semantics | WALE `tau_eff` clipping is a diagnosed numerical-stability guard, not a turbulence-model calibration knob. The default is off, preserving the raw WALE closure. When clipping is enabled, any reported validation result must state that clipping was active and include `clipped_fraction` and `max_nu_t_before_clipping`. | `crates/lbm-core/src/les.rs:18-30`, `crates/lbm-core/src/les.rs:62-72`, `crates/lbm-core/src/les.rs:197-208` |
-| Remaining LES product treatment | tau_eff upper clipping with mandatory diagnostics landed 2026-07-07 (explicit config, default off — see PHYSICS.md entry). Still missing: y+ wall-function or wall-fitted near-wall handling (design spec in docs/proposals/LES_WALL_TREATMENT_SPEC.md) and turbulence-predictive acceptance beyond the channel Re_tau=180 characterization. | `docs/REQ_STIRRED_REACTOR.md:202-210`, `crates/lbm-core/src/les.rs` (`WaleLes` clipping + diagnostics) |
+| WALE eddy viscosity | Engineering (technical, channel Re_τ=180) | Solver-level driver; one-step lag. `crates/lbm-core/src/les.rs`. |
+| ν_t clipping | Diagnostic guard only | Default off. When enabled, `clipped_fraction` and `max_nu_t_before_clipping` are required in every reported validation. |
+| Wall treatment | Unsupported | y+ wall-function / wall-fitted near-wall handling not implemented; design spec in `docs/archive/2026-07-07-pivot/proposals/LES_WALL_TREATMENT_SPEC.md`. |
 
-## 6. Multiphase
+### 2.6 Multiphase (legacy)
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| Validated scope | Current multiphase validation covers Shan-Chen SCMP flat interface, Laplace law, contact angle, and two-component MCMP Rayleigh-Taylor growth within the documented bands. | `docs/VALIDATION.md:167-200`, `docs/MULTIPHASE_DESIGN.md:3-8`, `docs/MULTIPHASE_DESIGN.md:58-74`, `README.md:46-48` |
-| Method limits | The Shan-Chen design documents density-ratio and spurious-current weaknesses and coupling between surface tension and density ratio. | `docs/MULTIPHASE_DESIGN.md:19-23`, `crates/lbm-core/src/compat/multiphase.rs:42-49` |
-| Free surface and aeration | Conservative Allen-Cahn free surface (`W-VOF`) is pending. High-density-ratio gas-liquid and stirred-tank aeration acceptance remains T17 work with bands frozen after implementation, not a validated release claim today. | `docs/REQ_STIRRED_REACTOR.md:30-36`, `docs/REQ_STIRRED_REACTOR.md:229-233`, `docs/REQ_STIRRED_REACTOR.md:537-542`, `docs/REQ_STIRRED_REACTOR.md:590-594`, `docs/VALIDATION.md:286-311` |
+| Shan-Chen SCMP flat interface, Laplace law, contact angle | Demo | Documented density-ratio and spurious-current weaknesses. NOT production gas-liquid — see BCFD-040..048. |
+| Shan-Chen MCMP Rayleigh-Taylor | Demo | — |
+| Free surface / high-density-ratio gas-liquid / stirred-tank aeration | Unsupported | Belongs to BCFD-045..048. |
 
-## 7. Checkpoint and Restart
+### 2.7 Checkpoint and restart
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| Landed solver-state checkpoint | Multi-part and per-rank MPI checkpoint/restart of the current solver state landed 2026-07-07 (format v2): one payload per owned part, per-rank MPI files with a rank-0 manifest, layout/version guards, and native MPI roundtrip PASS at 2 and 4 ranks. Restart requires the identical partition layout and rank count; mismatches fail with `CKPT_DECOMP_MISMATCH`, `CKPT_RANK_MISMATCH`, or more precise errors, and v1 checkpoints fail with `CKPT_VERSION_MISMATCH` (no silent migration). | `crates/lbm-core/src/solver.rs:28-34`, `crates/lbm-core/src/solver.rs:2662-2745`, `crates/lbm-core/src/solver.rs:2873-2931`, `crates/lbm-core/src/dist.rs:786-828`, `crates/lbm-core/examples/mpi_t13.rs:85-181`, `docs/PLAN.md:149` |
-| Serialized state | The checkpoint writes populations, stale stash, moments, solid mask, and optional force field. The manifest explicitly reserves `rng`, `particles`, and `stats` as `false`, so RNG state, particle state, and statistics accumulators are not serialized today. | `crates/lbm-core/src/solver.rs:2662-2697`, `crates/lbm-core/src/solver.rs:2748-2770`, `crates/lbm-core/src/solver.rs:3111-3145` |
-| Large-scale checkpoint resilience | Remaining checkpoint limitations are production resilience and scale features beyond the landed solver-state path: failure recovery, atomic publish / full partial-write handling across ranks, and parallel field output remain open. Restart from a checkpoint still requires the identical rank count and partition layout; repartition-on-restart is not attempted. | `crates/lbm-core/src/dist.rs:786-828`, `crates/lbm-core/src/solver.rs:3004-3064`, `docs/SOLVER_IMPROVEMENT_SPEC.md:149-156` |
+| Solver-state checkpoint (v2 format) | Engineering (technical) | Populations + stale buffer + moments + solid mask + optional force field; per-rank MPI files with rank-0 manifest; strict layout / version guards. |
+| Serialized state coverage | Partial | Manifest reserves `rng`, `particles`, `stats` as `false` today. BCFD-102 extends this. |
+| Large-scale resilience | Unsupported | Failure recovery, atomic publish, partial-write handling across ranks, parallel field output are not implemented. |
 
-## 8. MPI and Scale
+### 2.8 MPI and scale
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| Functional coverage | MPI is verified for multi-rank execution within a single node; true multi-node weak scaling awaits cluster measurement. | `docs/MPI_GUIDE.md:7-17`, `docs/ARCHITECTURE_V2.md:157-160`, `docs/VALIDATION.md:220-227` |
-| Multi-node performance claim | The 64-rank multi-node weak-scaling claim is RED in the release status table. | `README.md:138-146`, `docs/PERFORMANCE.md:70-71`, `docs/PLAN.md:124` |
-| Memory scaling | `MpiSolver::new` still requires global compact arrays on all ranks, and the solver-improvement spec identifies this global-array replication as an OOM blocker at large grids. | `docs/SOLVER_IMPROVEMENT_SPEC.md:121-134` |
-| Parallel I/O | MPI output is rank-0 gather only; parallel VTK/HDF5 is not started. | `docs/MPI_GUIDE.md:18-26`, `docs/SOLVER_IMPROVEMENT_SPEC.md:149-156` |
+| Multi-rank single-node | Engineering (technical) | `crates/lbm-core/src/dist.rs`. |
+| Multi-node weak scaling ≥80% @ 64 rank | Unsupported | RED pre-pivot; deferred until BCFD-100 + cluster access. |
+| Memory scaling | Blocked by global-array replication | `MpiSolver::new` requires global compact arrays on all ranks; fix in BCFD-100. |
+| Parallel I/O | Unsupported | Rank-0 gather only; parallel VTK/HDF5 not started (BCFD-101). |
 
-## 9. Moving Bodies
+### 2.9 Moving bodies
 
-| Area | Current limitation | Evidence |
+| Area | Status | Notes |
 |---|---|---|
-| Prescribed rigid rotation | The native IBM body is a marker set with fixed center and angular velocity; target velocity is prescribed as `U = Omega x r`. The compat rotor similarly prescribes solid-body target velocity and a ramped angular speed. | `crates/lbm-core/src/rotating_ibm.rs:1-8`, `crates/lbm-core/src/rotating_ibm.rs:22-32`, `crates/lbm-core/src/rotating_ibm.rs:89-101`, `crates/lbm-core/src/compat/rotor.rs:192-210` |
-| Diagnostics, not structural FSI | The current moving-body implementation reports slip, reaction torque, force, and momentum-spreading diagnostics. It does not expose structural degrees of freedom, deformation state, or added-mass coupling analysis; current M-F requirements describe this landed path as IBM-inertial rotating-body forcing, with MRF and overset as separate reference/relaxation tracks. | `crates/lbm-core/src/rotating_ibm.rs:132-153`, `crates/lbm-core/src/solver.rs:2003-2015`, `crates/lbm-core/src/solver.rs:2148-2173`, `docs/REQ_STIRRED_REACTOR.md:52-55`, `docs/REQ_STIRRED_REACTOR.md:213-222` |
+| Prescribed rigid rotation | Engineering (technical) | Marker set with fixed centre and ω; target U = ω × r. `crates/lbm-core/src/rotating_ibm.rs`. |
+| Structural FSI / deformation / added mass DOF | Unsupported | Diagnostics (slip, reaction torque, force, momentum spreading) only. MRF and overset are out of scope. |
+
+## 3. Explicit non-goals
+
+The following are outside the product mission and will not be implemented
+even if the underlying code makes them feasible:
+
+- General-purpose OpenFOAM parity, arbitrary FVM numerics port.
+- General CAD mesher (BCFD-023 is a minimal STL voxeliser for
+  screening tier; not a mesher).
+- Compressible CFD, combustion, general solid mechanics.
+- Arbitrary chemistry kinetics engine (reaction hooks are for OUR /
+  simple source terms only, BCFD-053).
+- Fully general non-structured mesh solver.
+- Public web GUI ahead of BCFD-081 report generator.
+- GMP / CMC readiness claim without the BCFD-091 evidence gate.
