@@ -10,6 +10,14 @@
 //! These tests are adversarial holdouts, not calibration tests. Bands are
 //! derived from the existing T15 second-order decay-rate class or from the
 //! frame-coupled truncation scale; they are not fit to current output.
+//!
+//! Exception (documented change-detector, not a physics band): the
+//! `frozen_anchor` test pins the rest-frame decay rate to a measured
+//! snapshot. The ANOM-P4-008 offset removal shifted this observable by
+//! +2.3% and every wide physical band stayed green (band vacuity, PM bisect
+//! 2026-07-07 — see the PHYSICS.md r2-c triage entry). If the anchor fires,
+//! adjudicate the physics change and re-freeze with a PHYSICS.md entry;
+//! never widen it.
 
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
@@ -123,6 +131,35 @@ fn measure_decay<L: Lattice>(
         "{label}: rate={rate:.9e}, analytic={analytic_rate:.9e}, rel_err={rel_err:.9e}, E0={e0:.9e}, E1={e1:.9e}"
     );
     DecayMeasurement { rate, rel_err }
+}
+
+/// Frozen change-detector for the rest-frame TGV3D decay rate (see the
+/// module-header exception note). This is a measurement snapshot, NOT a
+/// physics claim: the physical acceptance remains the h^2-intercept audit
+/// (`accuracy_audit_cumulant.rs`) and the T15-class bands. Value measured at
+/// 6d55a50 (post ANOM-P4-008 offset removal), CpuScalar f64; the pre-removal
+/// tree measured 4.634861882e-3, so the trap width must stay far below that
+/// 2.3e-2-relative shift.
+#[test]
+fn tgv3d_u0_decay_rate_matches_frozen_anchor() {
+    const FROZEN_RATE: f64 = 4.742352837e-3;
+    const REL_HALF_WIDTH: f64 = 1.0e-5;
+    let m = measure_decay::<D3Q19>(
+        "D3Q19 cumulant frozen-anchor TGV3D u_frame=0",
+        N,
+        CALIBRATION_NU,
+        TGV_U0,
+        0.0,
+        ADVECTED_STEPS,
+    );
+    let shift = (m.rate - FROZEN_RATE).abs() / FROZEN_RATE;
+    assert!(
+        shift <= REL_HALF_WIDTH,
+        "D3Q19 CentralMoment TGV3D u_frame=0 decay rate {rate:e} moved {shift:e} (relative) \
+         from the frozen anchor {FROZEN_RATE:e}; adjudicate the physics change (PHYSICS.md \
+         r2-c triage entry) and re-freeze — do not widen",
+        rate = m.rate
+    );
 }
 
 #[test]

@@ -599,6 +599,22 @@ tight" chases physically impossible numbers.
     error `3.170276018e-3`; D3Q27 rate `9.299938977e-3`, analytic
     `9.252754126e-3`, relative error `5.099546655e-3`. D3Q19 is not an
     outlier against the D3Q27 error plus the T15 band (`2.509954666e-2`).
+- CORRECTION (2026-07-07 r2-c triage): the D3Q19 holdout numbers quoted in
+  the "Validation results" block above were measured on the PRE-removal tree
+  and were stale by the time this entry landed — the offset removal itself
+  shifts every D3Q19 central-moment decay observable by the nu_eff rescale
+  factor ≈1.0238 at nu=0.02 (≈1.0131 at nu=0.04). Post-removal holdout
+  measurements (6d55a50, same command): advected rates `{4.742352837e-3,
+  4.747148842e-3, 4.761124801e-3}` for `u_frame={0,0.05,0.1}`, relative
+  errors `{2.506837906e-2, 2.610504448e-2, 2.912597405e-2}`, frame spread
+  `3.951818763e-3` (FINDING unchanged in kind); off-calibration Re rate
+  `9.342134708e-3`, `nu_eff = 4.038639558e-2`, relative error
+  `9.659889417e-3` (T15 band green); cross-check D3Q19 `9.659889417e-3` vs
+  D3Q27 `5.099546655e-3` (D3Q27 bit-unchanged). The post-removal rest-frame
+  error `2.5e-2` IS the honest finite-N=32 D3Q19 viscosity defect the banned
+  offset was hiding; the resolution-independent accuracy claim stays with
+  the h² intercept (`a = 2.171836972e-5`). See the r2-c triage resolution
+  entry further below.
 - Corrected acceptance: the viscosity gate is resolution-aware h² intercept,
   not a single N=32 value. The finite-N smoke in
   `crates/lbm-core/tests/cumulant_acceptance.rs` is re-frozen to the
@@ -1115,6 +1131,40 @@ Routing: none.
   r2-c owner: intentional physics change to be recorded + holdout values
   re-frozen, or regression to be fixed). Do not rebuild the error model until
   the baseline is adjudicated.
+- RESOLVED (2026-07-07 triage): the cause is 3af4b3a (ANOM-P4-008 removal of
+  the banned D3Q19 `+0.0025` shear-relaxation offset), which rode the same
+  merge d35faf4 — NOT the scalar TRT collision seam and NOT the ANOM-P2-001
+  impulse fix. Elimination: the seam commit b28d88b rewrote only
+  `collide_row` (BGK/TRT); `CollisionKind::CentralMoment` dispatches to
+  `collide_row_central_moment`, untouched by it. The impulse fix fires only
+  in `set_gravity` / `set_body_force_field` / `clear_body_force_field`; the
+  holdout initializes via `init_with` only, and E0 is bit-identical across
+  the merge (`1.179648000e0`). Quantitative closure: at nu=0.02, deleting
+  `+0.0025` from `omega_eff` rescales `nu_eff` by 1.023830, predicting rest
+  rate `4.634861882e-3 * 1.023830 = 4.745309655e-3` vs measured
+  `4.742352837e-3` (residual 6.2e-4 relative, second-order `-0.16|u|^2`
+  interaction); at nu=0.04 the rescale 1.013053 predicts `9.343821e-3` vs
+  measured `9.342134708e-3`, including the error's sign flip
+  (`-3.170276018e-3` -> `+9.659889417e-3`). The offset was guarded by
+  `L::D == 3 && L::Q == 19`, hence the D3Q27 bit-identity.
+- Verdict: intentional, discipline-mandated physics correction; no code fix.
+  The new rest-frame rel_err `2.506837906e-2` is the honest finite-N=32
+  viscosity defect previously masked by the banned calibration (h²-intercept
+  audit `a = 2.171836972e-5` remains the accuracy claim). Post-removal
+  holdout values are recorded in the CORRECTION bullet of the ANOM-P4-008
+  entry above.
+- Band-vacuity fix: `cumulant_holdout.rs` now pins the rest-frame decay rate
+  to a frozen anchor `4.742352837e-3` (relative half-width 1e-5, runs in the
+  default suite, documented as a change-detector, not a physics band).
+  Firing => adjudicate + re-freeze with a PHYSICS.md entry; never widen.
+- Galilean round-2 UNBLOCKED: post-merge WITH-term anchors are re-measured
+  and recorded in docs/proposals/CUMULANT_GALILEAN_FIX.md (adjudication
+  note). The shift is a near-uniform multiplicative nu_eff rescale, so the
+  frame-growth structure survives (per-frame deltas vs u_frame=0:
+  pre `{1.074678841e-3, 4.210159412e-3}` -> post
+  `{1.036665420e-3, 4.057594990e-3}`), but STEP-0 gates (1)-(3) must use the
+  post-merge values and gate (4)'s kappa decomposition must be re-extracted
+  (requires the C=0 ablation rerun on the post-merge tree).
 
 ### 2026-07-07 W-VOF O1 counter-term interface-maintenance fix (`crates/lbm-core/src/phase_field.rs`, `Solver::phase_field_step_prescribed_velocity`)
 - Form: the D3Q19 conservative Allen-Cahn source remains the Fakhari
