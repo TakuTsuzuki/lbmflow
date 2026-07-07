@@ -118,6 +118,10 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   landed D2Q9 GPU-direct TGV (order 1.883) + pressure-channel sentinels;
   remaining: D3Q19 direct, GPU Ghia cavity, GPU conservation — GATE (R2-D3)
   for the full matrix.
+- 6.4 T13-MPI runtime harness — **GATE (off-sandbox MPI execution)**:
+  runner landed 2026-07-07 as `scripts/qa/mpi_runtime_check.sh`; guide:
+  `docs/qa/mpi-runtime-guide.md`. Status stays BENCH-PENDING until the PM or a
+  real cluster produces `t13-mpi.log` with rank counts {1, 2, 4, 8} passing.
 
 ## Axis 7 — Static & structural verification
 

@@ -2,10 +2,11 @@
 # T13-MPI verification driver (docs/MPI_GUIDE.md).
 #
 # Builds lbm-core with `--features mpi` and runs the distributed-vs-
-# monolithic equivalence example under mpirun -n {1, 2, 3, 4, 5, 6, 8}.
-# The example chooses a surface-minimising decomposition for each rank count;
-# n = 3, 5, 6 cover non-dividing dimensions. The script also runs a 2-rank
-# negative test that must reject mismatched viscosity with an explicit error.
+# monolithic equivalence example under mpirun -n ${MPI_RANKS}. Default:
+# {1, 2, 3, 4, 5, 6, 8}. The example chooses a surface-minimising
+# decomposition for each rank count; n = 3, 5, 6 cover non-dividing
+# dimensions. The script also runs a 2-rank negative test that must reject
+# mismatched viscosity with an explicit error.
 # Prints PASS/FAIL per case and exits non-zero on any failure.
 #
 # Requires a native (arm64 on Apple silicon) MPI. Default: the source-built
@@ -40,7 +41,8 @@ cargo build -p lbm-core --release --features mpi --example mpi_t13 || exit 1
 BIN="$ROOT/target/release/examples/mpi_t13"
 
 fail=0
-for n in 1 2 3 4 5 6 8; do
+MPI_RANKS=(${MPI_RANKS:-1 2 3 4 5 6 8})
+for n in "${MPI_RANKS[@]}"; do
     echo "== mpirun -n $n mpi_t13 =="
     if ! mpirun --oversubscribe -n "$n" "$BIN" "$@"; then
         fail=1
