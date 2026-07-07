@@ -182,6 +182,7 @@ fn run_gpu2d(
             total_mass: sim.total_mass() as f64,
             max_speed,
             tau: 3.0 * sc.physics.nu + 0.5,
+            phase_field: None,
         },
         provenance: provenance(
             sc,
@@ -544,6 +545,7 @@ fn run_t<T: Real>(
             total_mass: sim.total_mass_f64(),
             max_speed,
             tau: sim.tau(),
+            phase_field: None,
         },
         provenance: provenance(
             sc,
@@ -1097,6 +1099,7 @@ where
             total_mass: s.total_mass_f64(),
             max_speed,
             tau: s.tau(),
+            phase_field: None,
         },
         provenance: provenance(
             sc,

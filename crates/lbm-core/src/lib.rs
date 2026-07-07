@@ -28,6 +28,7 @@ mod collision;
 pub mod compat;
 #[cfg(feature = "mpi")]
 pub mod dist;
+pub mod divergence;
 pub mod fields;
 pub mod geometry;
 #[cfg(feature = "gpu")]
@@ -53,6 +54,7 @@ pub mod prelude {
     pub use crate::backend::{Backend, CellRange, CpuScalar, HostMoments, PARALLEL_MIN_CELLS};
     pub use crate::backend_simd::CpuSimd;
     pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
+    pub use crate::divergence::{DivergenceError, PhaseDiag};
     pub use crate::fields::{DistributionKind, LocalGeom, ScalarDistribution, SoaFields};
     pub use crate::geometry::{
         build_stirred_tank_geometry, generate_impeller_marker_set, BaffleTemplate, GeometryError,

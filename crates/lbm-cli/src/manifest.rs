@@ -178,6 +178,8 @@ pub struct Diagnostics {
     pub total_mass: f64,
     pub max_speed: f64,
     pub tau: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_field: Option<lbm_core::phase_field::PhaseFieldDiagnostics>,
 }
 
 pub fn scenario_hash<T: Serialize>(scenario: &T) -> Result<String, serde_json::Error> {
@@ -230,6 +232,7 @@ mod tests {
             total_mass: 1.0,
             max_speed: 0.0,
             tau: 1.0,
+            phase_field: None,
         }
     }
 

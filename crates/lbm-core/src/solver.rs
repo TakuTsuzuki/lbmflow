@@ -1911,6 +1911,76 @@ where
         Ok(())
     }
 
+    pub fn run_guarded_phase(
+        &mut self,
+        steps: u64,
+    ) -> Result<crate::divergence::PhaseDiag, crate::divergence::DivergenceError> {
+        let initial = self
+            .phase_last_diag
+            .as_ref()
+            .map(|d| d.total_phi)
+            .or(self.phase_initial_total)
+            .unwrap_or(0.0);
+        if self.phase_initial_total.is_none() {
+            self.phase_initial_total = Some(initial);
+        }
+        let mut last = self
+            .phase_last_diag
+            .clone()
+            .unwrap_or_else(crate::phase_field::PhaseFieldDiagnostics::empty);
+        for local_step in 1..=steps {
+            self.step();
+            last = self
+                .phase_last_diag
+                .clone()
+                .unwrap_or_else(crate::phase_field::PhaseFieldDiagnostics::empty);
+            self.check_phase_diag(&last)?;
+            if local_step % 100 == 0 {
+                self.check_phase_mass_drift(initial, &last)?;
+            }
+        }
+        if steps % 100 != 0 {
+            self.check_phase_mass_drift(initial, &last)?;
+        }
+        Ok(last)
+    }
+
+    fn check_phase_diag(
+        &self,
+        diag: &crate::phase_field::PhaseFieldDiagnostics,
+    ) -> Result<(), crate::divergence::DivergenceError> {
+        if diag.total_phi.is_nan() || diag.min_phi.is_nan() || diag.max_phi.is_nan() {
+            return Err(crate::divergence::DivergenceError::Nan { step: self.time });
+        }
+        let max_abs = diag.min_phi.abs().max(diag.max_phi.abs());
+        if max_abs > 1.5 {
+            return Err(crate::divergence::DivergenceError::PhiOutOfBounds {
+                step: self.time,
+                min_phi: diag.min_phi,
+                max_phi: diag.max_phi,
+            });
+        }
+        Ok(())
+    }
+
+    fn check_phase_mass_drift(
+        &self,
+        initial: f64,
+        diag: &crate::phase_field::PhaseFieldDiagnostics,
+    ) -> Result<(), crate::divergence::DivergenceError> {
+        let denom = initial.abs().max(1.0e-30);
+        let rel = (diag.total_phi - initial).abs() / denom;
+        if rel > 0.01 {
+            return Err(crate::divergence::DivergenceError::MassDriftExcessive {
+                step: self.time,
+                initial_total_phi: initial,
+                current_total_phi: diag.total_phi,
+                relative_drift: rel,
+            });
+        }
+        Ok(())
+    }
+
     fn check_mass_finite(&self) -> Result<(), Diverged> {
         let (fluid, m) = self.local_mass_partials();
         if (fluid + m).is_finite() {

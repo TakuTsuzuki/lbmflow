@@ -3,6 +3,7 @@
 use crate::fields::LocalGeom;
 use crate::lattice::{Lattice, D3Q19};
 use crate::real::Real;
+use serde::{Deserialize, Serialize};
 
 /// Explicit boundedness policy for transported phase fraction.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,7 +91,7 @@ impl std::fmt::Display for PhaseFieldError {
 
 impl std::error::Error for PhaseFieldError {}
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhaseFieldDiagnostics {
     pub total_phi: f64,
     pub min_phi: f64,
