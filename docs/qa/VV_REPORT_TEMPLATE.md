@@ -1,5 +1,7 @@
 # V&V Evidence Report Template
 
+Lifecycle: living — report template, updated in place.
+
 Use this template for adversarial validation campaign reports and per-branch
 evidence packs. Do not mark a claim as done unless the evidence is from the
 current session or from a linked artifact whose provenance is recorded here.

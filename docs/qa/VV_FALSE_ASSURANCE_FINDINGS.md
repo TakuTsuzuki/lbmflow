@@ -1,5 +1,7 @@
 # V&V False-Assurance Findings
 
+Lifecycle: living — append-type findings log.
+
 This file records mutation survivors from suborder C. A survivor means the test suite accepted a deliberately wrong physics mutation.
 
 ## 2026-07-06 Suborder C

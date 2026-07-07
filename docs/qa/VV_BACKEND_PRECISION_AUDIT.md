@@ -1,5 +1,7 @@
 # V&V Backend / Precision Audit
 
+Lifecycle: snapshot (2026-07-06) — dated audit record, never edited.
+
 Suborder: G, V&V-BACKEND  
 Date: 2026-07-06  
 Worktree: `/Users/taku/projects/lbmflow-wt-cx-vv-backend`  

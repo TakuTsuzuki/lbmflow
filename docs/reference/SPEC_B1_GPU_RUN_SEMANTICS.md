@@ -1,7 +1,7 @@
 # SPEC: B-1 GPU run() semantics — LANDED
 
 Status: **LANDED** (2026-07-06). This spec is retained as a one-page contract
-statement; the operational trap is duplicated in `docs/HANDOFF-PM-2026-07-07.md §9`.
+statement; the operational trap is duplicated in `docs/archive/HANDOFF-PM-2026-07-07.md §9`.
 
 ## Contract
 

@@ -1,5 +1,7 @@
 # V&V Traceability Matrix
 
+Lifecycle: snapshot (2026-07-06, base 4eac49e2) — generated coverage matrix; known-stale rows exist (T16 FP16 status, T18.4 example path). Live owners: [VALIDATION.md](../VALIDATION.md) (acceptance/status) and [anomaly-log.md](anomaly-log.md) (dispositions). Regenerate rather than edit in place. CSV companion: vv_traceability.csv.
+
 Generated for suborder B, V&V-TRACE, on 2026-07-06 from repository inspection only.
 
 This file is a coverage matrix, not a fresh test report. I did not run the physics

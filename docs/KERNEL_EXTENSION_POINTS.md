@@ -1,5 +1,7 @@
 # Kernel Extension Points
 
+Lifecycle: living — extension contracts, updated in place as kernels land.
+
 This note records the R-Phase 2 B-8 extension contracts for kernel work that
 must remain additive to the existing validated configurations. It is docs-only:
 it describes where future kernels attach, which current code paths define the

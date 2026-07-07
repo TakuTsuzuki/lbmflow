@@ -1,6 +1,8 @@
 # Code-to-Spec Back-Translation Diff — V&V Master Plan Lane 3.2
 
 Date: 2026-07-07 · Base ref: `main` at HEAD `6668e71`
+Lifecycle: snapshot (2026-07-07, base 6668e71) — findings reconciled in [anomaly-log.md](anomaly-log.md); check there for current dispositions (ANOM-P4-021/P4-022 are CLOSED there). The priority list below is NOT a live work queue.
+
 
 ## Purpose
 

@@ -483,3 +483,187 @@ Stokes settling geometry). Cross-tests: physics is unchanged; this is
 the third experiment-design pass on a single Axis-9.4 lane and each
 revision is producing a stronger physics anchor. Filed in PHYSICS.md
 (rev 2 dirty tree) — will fold into the rev-3 commit.
+
+## Pass 8 — 2026-07-07, core fix landings (P4-001 / P4-021 / P4-022 CLOSED)
+
+### ANOM-P4-001 CLOSED (merge 8a0c546)
+IBM force sizing targets realized full-step F/rho with row-sum overlap
+mobility + simultaneous Richardson sweeps (the collective-gain treatment
+verified by our diagnosis). Default relaxation=1.0 stable at ds/h ∈
+[0.39, 1.0]. Gate cx/audit-ibm: 8/8 GREEN in our environment.
+Independent re-verify: 7 passed, 3 ignored, 1.65s.
+
+### ANOM-P4-021 CLOSED (merge 434091f)
+Zou-He closes on raw Guo momentum ρ·u_phys − F/2 (uniform force + gravity
+analytic); whole-face + T18.2 patches share one corrected reconstruction;
+GPU BC mirrored. Independent re-verify: interaction_matrix 1 passed
+(previously 2 documented-red cells).
+
+### ANOM-P4-022 CLOSED (merge 084dee6)
+SC/MCMP force ADDS into the field with caller zero-fill; gravity+SC
+composition regression added. Additive composition convention now
+documented.
+
+### ANOM-P4-016 STOP-RULE'D BY CORE (documented-red pin)
+Core verified: i3 spec applies gravity to heavy component ONLY in a closed
+box, creating net bulk downward momentum that drives wall-adjacent
+failure before the RT cutoff mode is measurable. Additive-force fix did
+NOT cure it. Options to us: (a) revise i3 forcing spec, (b) pressure-
+balanced/zero-net-force buoyancy protocol, (c) literature MCMP RT
+closure. Route: keep our documented-red pin, revise spec in next
+mp-hard rev (option b — Boussinesq-analog with per-component gravity
+adjusted so net = 0 at t=0 — most physical fix).
+
+### ANOM-P4-010 PM RULING ACCEPTED (V&V concurs)
+"Volume penalization's validity domain = thin/porous structures.
+Coherent solid interiors → route to rotating IBM (now validated) or
+Bouzidi." Physics-principled: penalization approximates a distributed
+Darcy drag; coherent solid regions are outside its derivation. F1-F3
+re-scope order dispatched (thin-blade IBM cross-referee stays as F4;
+new F6 = paired forbidden-disc/valid-IBM domain-boundary witness).
+
+**Open ledger:** P4-023 (SC σ referee, characterization), P4-016 (i3, our
+spec revision), P4-018/019 (SC dynamic wetting family, characterization).
+Core routings CLEARED: **P4-001, P4-021, P4-022 all closed**; V&V loop
+has now driven 4 total core fixes to landing (P4-008/001/021/022).
+
+### Axis 9.8 Taylor-Couette wavy-vortex — heavy STOP-RULE (rev 1)
+Light laminar-Couette PASSES (bulk profile L2_rel 8.5e-2 within 10% band).
+Heavy wavy-vortex onset: z-invariant seed + z-invariant forcing kept
+axial-mode energy at 1e-14..1e-18 for all Ta (0.5, 1.5, 3.0 × Ta_c). This
+is a well-known DNS-practice matter: axial-mode instabilities need a
+finite axial seed to trigger the linear regime. Rev 2 dispatches with an
+explicit small cos(k_z z) seed on u_r (eps=1e-4, k_z=2π/nz or 4π/nz,
+chosen to match λ_c=2(R_o-R_i)). If the seed still fails to grow at
+1.5*Ta_c, that IS a finding — rotating-boundary path filters the
+instability, and the light Couette pass doesn't cover this regime.
+
+### ANOM-P4-024 — thin-shell penalization filters axial modes (Taylor-Couette rev 2 real finding)
+Explicit axial seed (eps=1e-4, cos(k_z z) at k_z = 4π/nz matching λ_c=32
+= 2(R_o-R_i)) DAMPS through 5000 spectrum-window steps at every Ta:
+- Ta=0.5*Ta_c: 1.24e-5 → 2.10e-9 (5000x damping)
+- Ta=1.5*Ta_c: 4.15e-6 → 2.04e-8 (200x damping — should GROW here)
+- Ta=3.0*Ta_c: 2.08e-6 → 2.32e-7 (10x damping — should grow more)
+The rotating-boundary path (thin cylindrical shells via volume
+penalization) FILTERS axial instabilities at every Ta up to 3*Ta_c. S2
+characterization candidate (not a defect — physics-motivated: the
+penalization sizing damps small-amplitude perturbations near the moving
+boundary faster than Rayleigh instability can grow). Fits the P4-010
+disposition family (penalization ≈ Darcy drag): the "thin structure" is
+still coherent-solid at the axial-perturbation scale.
+Route: rev 3 = replace thin cylindrical shells with rotating IBM
+cylinders (now validated post-P4-001) as the physically appropriate
+rotating boundary for the wavy-vortex study; if IBM path grows the
+axial mode at 1.5*Ta_c, the finding confirms the penalization filter
+class limit + provides the corrected acceptance route. Documented-red
+until then; gate = cx/vv-tayc heavy.
+
+### ANOM-P4-025 (formerly L1_7-001) — Bouzidi moving-wall qd<0.5 imposes σ·U_wall instead of U_wall
+Native Bouzidi supports moving walls (wall_u[wall_ref] path); qd=0.5
+degenerates to half-way MW bitwise; qd≥0.5 Couette profile matches
+analytic within 2e-3. BUT qd<0.5 branch scales the wall speed by
+sigma = 2*qd ≈ 0.5 at qd=0.25 (measured ~0.5·U_wall vs expected 1.0·U_wall).
+This is the missing (sigma_i · 2·w_q · rho · c·u_wall / cs²) correction on
+the qd<0.5 second-point interpolation branch — see Bouzidi 2001 §4;
+symmetric qd>0.5 gets it right, qd<0.5 was skipped. Current-wrong-value
+pin: qd=0.25 imposes σ·U_wall; #[ignore]'d all-qd exact test flips green
+when the fix lands. S3 (bounded impact - most Bouzidi records fall on
+qd>=0.5 side for well-resolved obstacles). Route: core-engine, small
+one-file fix in bouzidi.rs qd<0.5 branch. Gate = cx/vv-bmw
+qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd.
+
+### Wen-2014 GALILEAN-INVARIANT PROBE — COVERED (radar #16 closed, pitfall #10 upgraded)
+Decisive one-step test on cx/vv-wenmxg (main): co-moving frame with u_0 =
+0.05 everywhere and BOTH walls MovingWall at u_0 measured F_probe_x =
+4.44e-16, vs Ladd conventional prediction ρ·u_0·nx = 1.6, vs Wen-invariant
+prediction 0. Signal/floor = 3.6e15. The current LBMFlow momentum-exchange
+implementation is Galilean-invariant (Wen 2014-class) — pitfall #10
+upgrades from PARTIAL to COVERED. Rotor/rotating-boundary force diagnostics
+in moving frames are therefore trustworthy from a Galilean-invariance
+standpoint; this closes a longstanding open concern in the pitfall list.
+
+### ANOM-P4-024 STATUS UPDATE — rev 3 rotating IBM light PASSES, heavy still no onset (Ta_c estimate error)
+Rotating IBM cylinders WORK for the LAMINAR case: annular Couette profile
+L2_rel 6.87e-3, Linf/U_i 1.15e-2, IBM slip 2.18e-4 — well within the 15%
+band. This CONFIRMS rotating IBM (P4-001 fix) as a valid coherent-solid
+route. However, heavy wavy-vortex test still fails to grow the seed at
+Ta=1.5*Ta_c with damping 1.66e-5 -> 4.56e-8 (200x). Diagnosis on my side:
+Ta_c ~ 3390 is the NARROW-GAP Rayleigh estimate (valid for R_i/R_o -> 1);
+our geometry is R_i/R_o = 12/28 = 0.43 (WIDE gap). Chandrasekhar 1961
+Table X shows Ta_c climbs sharply for wide gaps — the true Ta_c(0.43) is
+much larger than 3390 (~4-5x higher), so our "1.5*Ta_c" was still BELOW
+critical. This is a TEST-DESIGN error, not a rotating-boundary filter.
+Rev 4 queued: use R_i=20, R_o=24 (narrow gap 0.83) with proper Ta_c ~
+1750 and the SAME 1.5*Ta_c and 3.0*Ta_c multipliers. ANOM-P4-024
+stays OPEN as characterization; the underlying rotating-boundary path is
+NOT filtering the mode — the test just used a wrong critical value.
+Also: rev 3 CONFIRMED rotating IBM cylinders work in Taylor-Couette
+setups (light PASS), which strengthens the P4-010 disposition endorsement
+in a NEW use case.
+
+### ANOM-P4-023 DEEPENED (sigma(R) sweep — radar #1, main 79d0cb0)
+9-point R-sweep + 2-point light: sigma_YL(R) fits EXACTLY the inverse-R
+Tolman form sigma_YL = sigma_inf + C/R with r² = 0.99977 (heavy 9-point:
+r² = 0.99971). Fitted constants (heavy):
+  sigma_inf = 3.610e-2, C = -1.085e-1
+- At R→∞: sigma_YL → 3.61e-2, ~9% ABOVE sigma_Laplace(T11) = 3.32e-2.
+- At R=12: sigma_YL = 2.71e-2, matches P4-023 P1 measurement (2.87e-2)
+  within 6% (consistency check).
+- At Jurin's meniscus r_m ~ 12 (gap 24): sigma_YL(12) = 2.71e-2
+- Jurin-inferred sigma_eff (P4-014 slope 1.54× Laplace) = 5.11e-2
+- **rel error 47%**: the R-dependence of sigma_YL DOES NOT explain
+  Jurin's 1.54× enhancement.
+
+Three-way referee status (Laplace T11: 1.00×, Jurin P4-014: 1.54×,
+Taylor-Culick P4-017: 0.49×, sigma_KB flat P4-023 P3: 1.10×,
+sigma_YL(R→∞) new: 1.09×) — flat-interface pressure-tensor sigma is
+~10% above the T11 Laplace calibration, static curved-drop sigma matches
+that in the R→∞ limit, both flat and asymptotic-curved cases converge to
+~3.6e-2. But the WETTING slot (Jurin, sigma_eff 5.1e-2) is 40% above
+even the asymptotic sigma_∞. Remaining hypothesis: WALL AFFINITY at the
+solid rim adds a solid-fluid interface tension γ_sl that Young's law
+naturally couples into cosθ_slot, effectively enhancing sigma·cosθ
+without changing the bulk sigma. This is a CLOSURE hypothesis, not a
+free-parameter fit — Young's γ_sl - γ_sv = γ_lv cosθ. Next investigation
+(radar rev): measure γ_sl/γ_lv via the contact-line curvature in T11c
+setup and see if 1.54× emerges from the correct Young-Laplace formulation
+in a bounded slot. LEFT AS OPEN for a targeted follow-up; the σ(R) test
+lands as a definitive characterization of the SC bulk sigma R-dependence.
+Model-domain status: SC static sigma DOES obey a Tolman-length-type
+correction, well-fit r²>0.9997 across R∈[6,32]. This is a physics finding
+worth PHYSICS.md documentation.
+
+### ANOM-P4-023 SC σ REFEREE — CLOSED WITH RESIDUAL (γ_sl direct measurement)
+γ_sl KB-integral measurement (main dfc7146 → f018f8c):
+- Wet wall (wall_rho=1.0, θ_T11c=63°): γ_sl = −2.517e-2, γ_sl/γ_lv = −0.70
+- Neutral wall (wall_rho=1.888): γ_sl = −1.84e-3 (~0, as expected)
+- **Wet−neutral shift**: 2.33e-2 (absolute); direct measurement of the
+  SC wall-interaction contribution to the interfacial band.
+- Young's law prediction γ_lv·cos(63°) = 1.63e-2
+- **Wet−neutral shift is 43% ABOVE Young's prediction** — the SC solid
+  interaction adds an EXTRA 7.0e-3 of interfacial-tension-band energy
+  beyond what Young's γ_sv−γ_sl = γ_lv·cos(θ) alone would predict.
+- Jurin-inferred σ_eff (P4-014) = 5.11e-2 = 1.42 × γ_lv (KB flat)
+
+**Physical picture (final)**: SC static physics at solid-liquid contacts
+is NOT purely Young's-law-consistent. There is a documented extra
+contact-band tension of order 40% γ_lv that becomes visible in wetting
+problems. This IS the physical origin of Jurin's 1.54× enhancement: the
+SC contact line does more work per unit length than γ_lv·cos(θ) alone.
+Verdict: (B) documented closure — this behavior is a known SC-model
+characteristic (wall interaction Ψ_wall term acts on top of the bulk
+cohesion), not a defect; the T11c contact-angle measurements themselves
+build in the wall interaction, so downstream tests using T11c θ are
+self-consistent. What this measurement OPENS is the option to (a) accept
+the SC contact-line as a validated closure with 1.42× enhancement factor,
+(b) route future high-precision wetting work to MF-γ phase-field.
+
+**Three-way referee CLOSED** with the residual explained:
+- σ_bulk (KB flat, Laplace R→∞) = 3.6e-2 (bulk sigma, Tolman-consistent)
+- σ_wetting_effective (Jurin, T11c contact line) = 5.1e-2 = 1.42× σ_bulk
+  → EXPLAINED by the extra wall-interaction contact-band tension
+- σ_dynamic (Taylor-Culick rim) = 1.6e-2 = 0.49× σ_bulk → still open,
+  moving-interface momentum coupling limit (P4-018/019 family)
+
+Radar #1 CLOSED, ANOM-P4-023 CLOSED as characterization. PHYSICS.md entry
+draft prepared in worktree; will land with next mp-hard rev.

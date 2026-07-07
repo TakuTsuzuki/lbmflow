@@ -66,7 +66,7 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 - 3.2 **W2** Code→spec back-translation — subagent derives "what equations
   does this code actually solve" per module; diff against PHYSICS.md.
 - 3.3 Claims-ledger cross-check — **DONE (by the parallel V&V campaign)**:
-  cx/vv-trace docs/VV_TRACEABILITY.md — 27 VALIDATED / 4 VERIFIED-ONLY /
+  cx/vv-trace docs/qa/VV_TRACEABILITY.md — 27 VALIDATED / 4 VERIFIED-ONLY /
   3 BENCH-PENDING / 8 SPEC-ONLY / 1 UNSAFE-CLAIM (T17-03 stress/LES/IBM,
   consistent with our ANOM-P4-001 routing). Merge via task #12.
 - 3.4 Review panel on fix designs — **GATE (P4-001/010 core landing)** —
@@ -95,8 +95,10 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   (force-field overwrite/add rules) live here.
 - 5.2 **W2** Randomized property sweep — proptest-style legal configs;
   invariants = conservation, boundedness, determinism, mirror equivariance.
-- 5.3 **W2** Visual anomaly trawl — scripted matrix × params → PNG/VTK
-  → sim-anomaly-scan + qa-viewer; PM behavior-review flagged cases.
+- 5.3 **W2** Visual anomaly trawl — **HARNESS LANDED 2026-07-07**:
+  `scripts/qa/visual_trawl.py` scans existing PNG/VTK outputs and gallery
+  `vtk_field` files; guide: `docs/qa/visual-trawl-guide.md`. Operator matrix
+  run + qa-viewer behavior review remains the W2 campaign task.
 - 5.4 **W2** Long-horizon soak — 10⁶-step runs of cavity / channel+cylinder /
   SC droplet / post-fix penalized blade rotor; drift ledgers.
 - 5.5 **W3** Stability-envelope cartography — automated (tau, Ma, grid-Re)

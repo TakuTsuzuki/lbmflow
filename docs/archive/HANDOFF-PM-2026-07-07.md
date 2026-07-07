@@ -1,5 +1,7 @@
 # PM Session Handoff — 2026-07-07 (refresh of 2026-07-06)
 
+Lifecycle: snapshot (2026-07-07), archived — for current state see [PLAN.md](../PLAN.md).
+
 Handoff document for the next PM thread. Refreshed 2026-07-07 with actual
 current trunk state (many QA-sweep-driven merges landed between the previous
 handoff and this one). Reflects owner directive to remove paper-as-truth

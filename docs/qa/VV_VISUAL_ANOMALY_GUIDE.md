@@ -1,5 +1,7 @@
 # V&V Visual Output and Anomaly Guide
 
+Lifecycle: living — V&V visual-evidence requirements, updated in place.
+
 This guide makes scalar-only V&V reports non-compliant. Any run that produces a
 spatial field or spatial behavior must leave a visual artifact path next to its
 scalar metrics, and the behavior review must cite that artifact before the run

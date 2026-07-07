@@ -797,6 +797,20 @@ Improving the mean-profile grade needs either finer near-wall resolution
 (delta >= 96, y+ <= 1.9 — GPU cost ~30 min, planned as a follow-up
 characterization) or a wall model (roadmap item, not implemented).
 
+Resolution ladder COMPLETE (2026-07-07, upsample-restart protocol for
+delta>=80): delta=96 (256x194x144, y+/cell = 1.9, stage-A delta=48
+equilibrium field upsampled trilinearly, 10 Te warmup, 30 Te statistics,
+EXIT:0): mean U+ L2rel = 0.0549, centerline U+ = 19.08 (DNS 18.30, +4.3%),
+total-stress balance L2rel 0.0674, -<u'v'>+ (y+~30, last 10 Te) = 0.740
+(DNS ~0.75), peak 0.803. The ladder 0.233 (y+3.7) -> 0.155 (y+2.8) ->
+0.055 (y+1.9) converges cleanly to the DNS profile: at near-wall-resolved
+spacing the WALE channel reproduces MKM within ~5% mean-profile error with
+DNS-grade Reynolds shear stress. Behavior review: all three equilibrium
+diagnostics (stress linearity, sustained -u'v'+, achieved Re_tau) hold at
+every rung; no closure or boundary artifact remains visible at delta=96.
+The frozen delta=48 routine gate stands (coarse-grade band 0.30); the
+ladder is the accuracy statement.
+
 Resolution trend (delta=64, 171x130x96, y+/cell = 2.8, 50 Te warmup,
 equilibrated — measured 2026-07-07, 1341 s GPU): mean U+ L2rel 0.1549
 (from 0.2328), centerline U+ 20.58 (from 22.02; DNS 18.30), total-stress
@@ -811,6 +825,20 @@ sign only to the viscous term — the Reynolds term needs the same fold
 warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
 the equilibrium ceiling, stress residual 34%) — equilibration is delta-
 dependent; 50 Te equilibrates it (measurements above).
+
+Fine-grid restart note (2026-07-07): PM-measured delta=80/96 GPU runs stayed
+laminar from t=0 under both the original 3-mode seed and the deterministic
+1/|k| multiscale ladder, then accelerated under the constant body force until
+the Mach ceiling was exceeded. This is a transition-tripping failure on clean
+fine grids, not a new turbulence model. The GPU validation path now uses the
+standard channel-DNS remedy for delta>=80: equilibrate the frozen delta=48
+case first, gather rho/u, trilinearly interpolate the turbulent field onto the
+target grid with periodic x/z wrapping and one-sided wall-normal interpolation,
+then run a short 10-Te relaxation warmup before collecting statistics.
+Velocity is carried over unscaled because u_tau is held fixed by construction;
+wall-rim velocities remain zero. The sustained-turbulence guard and the
+force-balance/mean-profile bands remain the seed-independence checks for the
+statistics window.
 
 ---
 
@@ -1205,3 +1233,26 @@ zero-net-force formulation) and a validation update; no mean-force
 subtraction or tuning was applied in this order.
 Routing: PM/spec decision for ANOM-P4-016; core implementation only after the
 forcing model is derived and accepted.
+
+---
+
+### 2026-07-07 checkerboard ghost-mode decay envelope (`crates/lbm-core/tests/accuracy_audit_modes.rs`)
+- Decision: the `(pi, pi)` odd-even density-mode audit asserts monotone
+  non-increase of a three-sample absolute-amplitude envelope, not strict
+  adjacent-sample monotonicity of `|amp(pi,pi)|`.
+- Rationale: the checkerboard perturbation is a Brillouin-corner ghost mode.
+  It is strongly damped by the BGK/TRT collision spectrum, but the signed
+  coefficient can oscillate after the mode reaches round-off and for TRT near
+  `tau=0.5`. Adjacent absolute values may therefore have tiny rebounds even
+  though the physical envelope is decaying. The load-bearing physics anchor is
+  envelope damping plus no growth and no transfer into orthogonal staggered
+  modes.
+- Validation: `cargo test -p lbm-core --release --test accuracy_audit_modes -- --nocapture`
+  passed on 2026-07-07. Measured BGK `tau=0.6`: raw monotonicity `0.300`,
+  envelope monotonicity `1.000`, final/initial `1.942077e-12`,
+  max growth `1.000000`, max leakage sum `1.409463e-18`. Measured TRT
+  `tau=0.51`, `Lambda=3/16`: raw monotonicity `0.800`, envelope monotonicity
+  `1.000`, final/initial `2.941800e-5`, max growth `1.000000`, max leakage
+  sum `1.843144e-18`.
+  The frozen gates are final/initial `<1e-8` for BGK and `<1e-3` for TRT,
+  leakage `<1e-12`, and max growth `<2`.
