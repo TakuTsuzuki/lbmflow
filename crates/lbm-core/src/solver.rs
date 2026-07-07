@@ -8,9 +8,9 @@
 
 use crate::backend::{Backend, HostMoments};
 use crate::fields::SoaFields;
-use crate::halo::{ExchangeScope, HaloExchange};
+use crate::halo::{exchange_g_generic, ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
-use crate::lattice::{Face, Lattice};
+use crate::lattice::{Face, Lattice, D3Q19};
 use crate::params::{
     CollisionKind, FaceBC, FacePatch, KParams, Reduction, SourceKind, SourceRegion, StepParams,
     VolumeSource, MAX_SPEED,
@@ -2527,6 +2527,386 @@ where
             }
         }
         self.host_dirty = true;
+    }
+
+    // ------------------------------------------------------------------
+    // W-VOF O1 conservative Allen-Cahn phase-field transport
+    // ------------------------------------------------------------------
+
+    fn require_phase_field_lattice() -> Result<(), crate::phase_field::PhaseFieldError> {
+        if L::D != 3 || L::Q != D3Q19::Q {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: "W-VOF O1 phase-field transport is implemented only for D3Q19".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn fill_phase_planes(&mut self) -> Result<(), crate::phase_field::PhaseFieldError> {
+        for ((sub, fields), plane) in self
+            .subs
+            .iter()
+            .zip(self.host_parts.iter())
+            .zip(self.psi_planes.iter_mut())
+        {
+            let Some(phi) = fields.phi.as_ref() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase field is not enabled".to_string(),
+                });
+            };
+            let geo = sub.geom;
+            plane.fill(T::zero());
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        if !fields.solid[pi] {
+                            plane[pi] = phi[geo.cidx(x, y, z)];
+                        }
+                    }
+                }
+            }
+        }
+        if self.psi_planes.len() == 1 {
+            let mut plane = self.psi_planes[0].as_mut_slice();
+            self.exchange
+                .exchange_scalar(&self.subs, std::slice::from_mut(&mut plane));
+        } else {
+            let mut refs: Vec<&mut [T]> = self
+                .psi_planes
+                .iter_mut()
+                .map(|p| p.as_mut_slice())
+                .collect();
+            self.exchange.exchange_scalar(&self.subs, &mut refs);
+        }
+        Ok(())
+    }
+
+    fn diagnose_phase_field(&self) -> crate::phase_field::PhaseFieldDiagnostics {
+        let mut total_phi = 0.0;
+        let mut min_phi = f64::INFINITY;
+        let mut max_phi = f64::NEG_INFINITY;
+        let mut seen = false;
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let Some(phi) = fields.phi.as_ref() else {
+                continue;
+            };
+            let geo = sub.geom;
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        if fields.solid[geo.pidx(x, y, z)] {
+                            continue;
+                        }
+                        let v = phi[geo.cidx(x, y, z)].as_f64();
+                        total_phi += v;
+                        if v < min_phi {
+                            min_phi = v;
+                        }
+                        if v > max_phi {
+                            max_phi = v;
+                        }
+                        seen = true;
+                    }
+                }
+            }
+        }
+        if !seen {
+            min_phi = 0.0;
+            max_phi = 0.0;
+        }
+        crate::phase_field::PhaseFieldDiagnostics {
+            total_phi,
+            min_phi,
+            max_phi,
+        }
+    }
+
+    /// Enable the W-VOF O1 phase-field distribution from a compact global
+    /// `phi` field and a prescribed velocity used for the initial `g_eq`.
+    pub fn enable_phase_field_prescribed_velocity(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        phi: &[T],
+        velocity: impl Fn(usize, usize, usize) -> [T; 3],
+    ) -> Result<(), crate::phase_field::PhaseFieldError> {
+        Self::require_phase_field_lattice()?;
+        params.validate()?;
+        if H::SCOPE == ExchangeScope::Remote {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: "W-VOF O1 phase-field transport currently supports local CPU decompositions only"
+                    .to_string(),
+            });
+        }
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        if phi.len() != n {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: format!(
+                    "phase field length {} does not match cell count {n}",
+                    phi.len()
+                ),
+            });
+        }
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            let nc = geo.n_core();
+            let local_phi = fields.phi.get_or_insert_with(|| vec![T::zero(); nc]);
+            if local_phi.len() != nc {
+                local_phi.resize(nc, T::zero());
+            }
+            let gset = fields
+                .g
+                .get_or_insert_with(|| vec![T::zero(); D3Q19::Q * np]);
+            if gset.len() != D3Q19::Q * np {
+                gset.resize(D3Q19::Q * np, T::zero());
+            }
+            let gtmp = fields
+                .gtmp
+                .get_or_insert_with(|| vec![T::zero(); D3Q19::Q * np]);
+            if gtmp.len() != D3Q19::Q * np {
+                gtmp.resize(D3Q19::Q * np, T::zero());
+            }
+            gset.fill(T::zero());
+            gtmp.fill(T::zero());
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let c = geo.cidx(x, y, z);
+                        let pi = geo.pidx(x, y, z);
+                        local_phi[c] = phi[gi];
+                        if fields.solid[pi] {
+                            continue;
+                        }
+                        let u = velocity(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
+                        let geq = crate::phase_field::equilibrium(phi[gi], u);
+                        for q in 0..D3Q19::Q {
+                            gset[q * np + pi] = geq[q];
+                        }
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        Ok(())
+    }
+
+    /// Advance only the W-VOF O1 phase-field distribution under a prescribed
+    /// velocity field. The hydrodynamic `f` step is not executed.
+    pub fn phase_field_step_prescribed_velocity(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        velocity: impl Fn(usize, usize, usize) -> [T; 3],
+    ) -> Result<crate::phase_field::PhaseFieldDiagnostics, crate::phase_field::PhaseFieldError>
+    {
+        Self::require_phase_field_lattice()?;
+        let params = params.validate()?;
+        if H::SCOPE == ExchangeScope::Remote {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: "W-VOF O1 phase-field transport currently supports local CPU decompositions only"
+                    .to_string(),
+            });
+        }
+        self.stage_out_all();
+        self.fill_phase_planes()?;
+
+        let omega = params.omega();
+        for (part, (sub, fields)) in self.subs.iter().zip(self.host_parts.iter_mut()).enumerate() {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            let Some(gset) = fields.g.as_mut() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase-field g distribution is not enabled".to_string(),
+                });
+            };
+            let Some(phi) = fields.phi.as_ref() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase field is not enabled".to_string(),
+                });
+            };
+            let phi_plane = &self.psi_planes[part];
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        if fields.solid[pi] {
+                            continue;
+                        }
+                        let c = geo.cidx(x, y, z);
+                        let p = phi[c];
+                        let u = velocity(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
+                        let geq = crate::phase_field::equilibrium(p, u);
+                        let (grad, _) = crate::phase_field::grad_lap(geo, phi_plane, x, y, z);
+                        for q in 0..D3Q19::Q {
+                            let idx = q * np + pi;
+                            let old = gset[idx];
+                            let src = crate::phase_field::collide_source(params, p, grad, q);
+                            // The relaxation supplies the `M grad(phi)` flux;
+                            // this source supplies the matching
+                            // `M (4/W) phi(1-phi) n_hat` counter-flux.
+                            gset[idx] = old - omega * (old - geq[q]) + params.mobility * src;
+                        }
+                    }
+                }
+            }
+        }
+
+        exchange_g_generic::<D3Q19, T>(&self.subs, &mut self.host_parts);
+
+        for (sub, fields) in self.subs.iter_mut().zip(self.host_parts.iter_mut()) {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            {
+                let gset = fields
+                    .g
+                    .as_ref()
+                    .expect("phase-field g distribution must be enabled");
+                let gout = fields
+                    .gtmp
+                    .as_mut()
+                    .expect("phase-field g ping-pong distribution must be enabled");
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let dst = geo.pidx(x, y, z);
+                            if fields.solid[dst] {
+                                continue;
+                            }
+                            for q in 0..D3Q19::Q {
+                                let c = D3Q19::C[q];
+                                let src = geo.pidx_i(
+                                    x as isize - c[0] as isize,
+                                    y as isize - c[1] as isize,
+                                    z as isize - c[2] as isize,
+                                );
+                                gout[q * np + dst] = gset[q * np + src];
+                            }
+                        }
+                    }
+                }
+            }
+            std::mem::swap(
+                fields.g.as_mut().expect("phase-field g distribution"),
+                fields
+                    .gtmp
+                    .as_mut()
+                    .expect("phase-field g ping-pong distribution"),
+            );
+            let gset = fields.g.as_ref().expect("phase-field g distribution");
+            let phi = fields.phi.as_mut().expect("phase field");
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        let c = geo.cidx(x, y, z);
+                        if fields.solid[pi] {
+                            phi[c] = T::zero();
+                            continue;
+                        }
+                        let mut sum = T::zero();
+                        for q in 0..D3Q19::Q {
+                            sum = sum + gset[q * np + pi];
+                        }
+                        phi[c] = sum;
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        Ok(self.diagnose_phase_field())
+    }
+
+    /// Run the phase-field prescribed-velocity pre-pass, then the existing
+    /// hydrodynamic step. The hydrodynamic pass order is unchanged.
+    pub fn step_with_phase_field_prescribed_velocity(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        velocity: impl Fn(usize, usize, usize) -> [T; 3],
+    ) -> Result<crate::phase_field::PhaseFieldDiagnostics, crate::phase_field::PhaseFieldError>
+    {
+        let diag = self.phase_field_step_prescribed_velocity(params, velocity)?;
+        self.step();
+        Ok(diag)
+    }
+
+    /// Compute the conservative Allen-Cahn interface flux `J_phi` at one
+    /// global cell from the current `phi` state.
+    pub fn phase_flux_jphi(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        x: usize,
+        y: usize,
+        z: usize,
+    ) -> Result<[T; 3], crate::phase_field::PhaseFieldError> {
+        Self::require_phase_field_lattice()?;
+        let params = params.validate()?;
+        self.stage_out_all();
+        self.fill_phase_planes()?;
+        let (part, lx, ly, lz) = self.locate(x, y, z);
+        let fields = &self.host_parts[part];
+        let geo = fields.geom;
+        let phi = fields
+            .phi
+            .as_ref()
+            .ok_or_else(|| crate::phase_field::PhaseFieldError {
+                message: "phase field is not enabled".to_string(),
+            })?;
+        let (grad, _) = crate::phase_field::grad_lap(geo, &self.psi_planes[part], lx, ly, lz);
+        Ok(crate::phase_field::phase_flux_jphi(
+            params,
+            phi[geo.cidx(lx, ly, lz)],
+            grad,
+        ))
+    }
+
+    /// Gather the compact global `phi` field.
+    pub fn gather_phi(&mut self) -> Result<Vec<T>, crate::phase_field::PhaseFieldError> {
+        self.stage_out_all();
+        let mut out = vec![T::zero(); self.dims[0] * self.dims[1] * self.dims[2]];
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let Some(phi) = fields.phi.as_ref() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase field is not enabled".to_string(),
+                });
+            };
+            let geo = sub.geom;
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        out[gi] = phi[geo.cidx(x, y, z)];
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Export `phi` along an x-directed line as CSV.
+    pub fn export_phi_x_profile_csv(
+        &mut self,
+        y: usize,
+        z: usize,
+        path: impl AsRef<Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let phi = self.gather_phi()?;
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(path)?;
+        writeln!(file, "x,phi")?;
+        for x in 0..self.dims[0] {
+            let gi = (z * self.dims[1] + y) * self.dims[0] + x;
+            writeln!(file, "{x},{}", phi[gi])?;
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
