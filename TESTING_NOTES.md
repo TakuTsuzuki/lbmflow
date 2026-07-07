@@ -1515,3 +1515,50 @@ real cluster with per-rank independent bandwidth. This preflight validates
 the distributed path is correct and instrumented; the industrial-throughput
 weak-scaling number is gated on cluster access (ME-3, awaiting AWS spend
 confirm — CLUSTER_OPTIONS.md).
+
+## 2026-07-07 central-moment transform factorization
+
+The CentralMoment collision no longer solves the shifted central-moment matrix
+per cell. Scalar CPU, fused CPU, and generated WGSL now use fixed raw-moment
+matrices plus analytic binomial shifts:
+`population -> raw -> central -> relaxed central -> raw -> population`.
+The relaxation rates, deviatoric/bulk split, velocity-correction ablation flag,
+and Guo source handling are unchanged.
+
+Targeted verification in this session:
+- `cargo check -p lbm-core`: passed.
+- `cargo test -p lbm-core --release cumulant_rest_equilibrium_is_exact_fixed_point -- --nocapture`:
+  passed.
+- `cargo test -p lbm-core --release cumulant_uniform_velocity_stays_uniform_after_collide -- --nocapture`:
+  passed.
+- `cargo test -p lbm-core --release cumulant_simd_matches_scalar_measured_tgv3d_tolerance -- --nocapture`:
+  passed; printed D3Q19=`0e0`, D3Q27=`0e0`.
+- `cargo test -p lbm-core --release --features gpu wgsl -- --nocapture`:
+  passed 9/9 WGSL generation/validation tests.
+- `cargo test -p lbm-core --release --test cumulant_acceptance -- --nocapture`:
+  passed 4/4 active tests, 1 ignored. Printed D3Q19 `nu_eff=2.0454550505417186e-2`,
+  D3Q27 `nu_eff=2.018763671050906e-2`; Galilean defects:
+  D3Q19 BGK=`2.570488584641333e-3`, CentralMoment=`9.996098135586268e-4`;
+  D3Q27 BGK=`2.5330625874489185e-3`, CentralMoment=`1.161447766632557e-3`.
+- `cargo test -p lbm-core --release --test accuracy_audit_cumulant -- --nocapture`:
+  passed 3/3 active canaries, 5 ignored; E2 h2 intercept
+  `2.171584547588923e-5` within `4e-3`.
+- `cargo test -p lbm-core --release --features gpu --test t14_3d_backend_equiv -- --nocapture`:
+  passed 3/3 on this sandbox adapter.
+- `cargo test -p lbm-core --release --features gpu cumulant_gpu_matches_cpu_measured_tgv3d_tolerance -- --nocapture`:
+  passed; printed D3Q19=`5.960464477539063e-7`, D3Q27=`4.0531158447265625e-6`.
+- `cargo test --workspace --release --no-fail-fast; echo EXIT:$?`: completed
+  with `EXIT:101`. Exact failed tests were
+  `sc_p1_curved_pressure_tensor_integral_matches_t11_laplace_sigma`,
+  `sc_p4_taylor_culick_momentum_flux_matches_flat_mechanical_sigma`,
+  `g3_multiphase_source_has_explicit_density_floor_or_guard`,
+  `val_mphard_i2_prosperetti_standing_wave_light_one_k`, and
+  `val_mphard_i3_rayleigh_taylor_cutoff_light_sign_canary`. The first, second,
+  fourth, and fifth match the order's documented-red `sc_p1/sc_p4/i2/i3` pins;
+  the `g3` A22 rho-positivity guard failure is separately documented in
+  `docs/qa/anomaly-log.md` as ANOM-P4-028.
+
+The Galilean-defect values moved only in the last displayed digits relative to
+the prior PHYSICS.md record, while staying inside the frozen bands:
+D3Q19 CentralMoment `9.996091795e-4 -> 9.996098135586268e-4`; D3Q27
+CentralMoment `1.161446988e-3 -> 1.161447766632557e-3`.
