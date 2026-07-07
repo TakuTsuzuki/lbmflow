@@ -161,7 +161,10 @@ fn fit_tanh_width(phi: &[f64], dims: [usize; 3]) -> f64 {
         }
     }
     let denom = n * srr - sr * sr;
-    assert!(n > 20.0 && denom.abs() > 1.0e-12, "not enough interface samples for tanh fit");
+    assert!(
+        n > 20.0 && denom.abs() > 1.0e-12,
+        "not enough interface samples for tanh fit"
+    );
     let slope = (n * sry - sr * sy) / denom;
     2.0 / slope
 }
@@ -211,6 +214,17 @@ fn write_midplane_pgm(path: impl AsRef<Path>, phi: &[f64], dims: [usize; 3]) {
     std::fs::write(path, bytes).expect("artifact should be writable");
 }
 
+fn write_width_csv(path: impl AsRef<Path>, rows: &[(usize, f64, f64)]) {
+    let path = path.as_ref();
+    std::fs::create_dir_all(path.parent().expect("artifact path should have parent"))
+        .expect("artifact directory should be creatable");
+    let mut csv = String::from("step,width,target_error\n");
+    for (step, width, target_error) in rows {
+        csv.push_str(&format!("{step},{width:.12e},{target_error:.12e}\n"));
+    }
+    std::fs::write(path, csv).expect("width CSV artifact should be writable");
+}
+
 fn assert_width_band(label: &str, width: f64) {
     assert!(
         (WIDTH_LO..=WIDTH_HI).contains(&width),
@@ -219,7 +233,6 @@ fn assert_width_band(label: &str, width: f64) {
 }
 
 #[test]
-#[ignore = "FINDING: long prescribed-velocity advection smears W=4 droplet beyond W-VOF [4,5] interface-width domain"]
 fn interface_width_survives_multiple_box_transits_at_low_and_high_mach() {
     let dims = [32, 24, 24];
     let initial = tanh_sphere_phi(dims, [16.0, 12.0, 12.0], 8.0, W_TARGET);
@@ -292,7 +305,6 @@ fn mobility_domain_edges_conserve_phi_and_validate_rejections() {
 }
 
 #[test]
-#[ignore = "FINDING: one-period two-droplet shape L2 exceeds second-order O((dx/W)^2) adversarial band"]
 fn two_droplet_zalesak_style_one_period_conserves_and_returns_shape() {
     let dims = [64, 32, 32];
     let speed = 0.08;
@@ -336,7 +348,6 @@ fn two_droplet_zalesak_style_one_period_conserves_and_returns_shape() {
 }
 
 #[test]
-#[ignore = "FINDING: phase-field prescribed-velocity transport is not coordinate-equivariant to the repo 1e-10 orientation convention"]
 fn rotation_metamorphic_phi_fields_are_index_permuted() {
     let dims = [32, 32, 32];
     let speed = 0.04;
@@ -389,7 +400,6 @@ fn rotation_metamorphic_phi_fields_are_index_permuted() {
 }
 
 #[test]
-#[ignore = "FINDING: counter-term sign anchor diffuses a W=5 interface farther from target W=4 instead of sharpening"]
 fn anti_diffusion_counter_term_sharpens_a_slightly_diffused_interface() {
     let dims = [40, 32, 32];
     let diffused_width = 5.0;
@@ -397,11 +407,27 @@ fn anti_diffusion_counter_term_sharpens_a_slightly_diffused_interface() {
     let p = params(M_DEFAULT);
     let initial_width = fit_tanh_width(&initial, dims);
     let initial_target_error = (initial_width - W_TARGET).abs();
-    let sim = enable(periodic_solver(dims), &initial, [0.0, 0.0, 0.0], p);
-    let (mut sim, diag) = run_phase(sim, 500, [0.0, 0.0, 0.0], p);
+    let mut sim = enable(periodic_solver(dims), &initial, [0.0, 0.0, 0.0], p);
+    let mut rows = vec![(0usize, initial_width, initial_target_error)];
+    let mut diag = PhaseFieldDiagnostics::default();
+    for step in 1..=500 {
+        diag = sim
+            .phase_field_step_prescribed_velocity(p, |_, _, _| [0.0, 0.0, 0.0])
+            .expect("phase field step should succeed");
+        if step % 50 == 0 || step == 500 {
+            let phi = sim.gather_phi().expect("phi should gather");
+            let width = fit_tanh_width(&phi, dims);
+            rows.push((step, width, (width - W_TARGET).abs()));
+        }
+    }
     let final_phi = sim.gather_phi().expect("phi should gather");
     let final_width = fit_tanh_width(&final_phi, dims);
     let final_target_error = (final_width - W_TARGET).abs();
+    write_width_csv(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wvof_o1/counter_term_width_vs_time.csv"),
+        &rows,
+    );
     write_midplane_pgm(
         "/tmp/lbmflow_wvof_o1_adversarial/counter_term_sharpening.pgm",
         &final_phi,
@@ -442,11 +468,7 @@ fn g_none_canonical_hydrodynamic_run_is_bit_identical() {
             let kz = 2.0 * PI * z as f64 / dims[2] as f64;
             (
                 1.0 + 1.0e-4 * (kx.cos() + ky.sin() * kz.cos()),
-                [
-                    0.01 * ky.sin(),
-                    0.008 * kz.cos(),
-                    -0.006 * kx.sin(),
-                ],
+                [0.01 * ky.sin(), 0.008 * kz.cos(), -0.006 * kx.sin()],
             )
         });
         s
@@ -469,10 +491,22 @@ fn g_none_canonical_hydrodynamic_run_is_bit_identical() {
     let uy_candidate = candidate.gather_uy();
     let uz_ref = reference.gather_uz();
     let uz_candidate = candidate.gather_uz();
-    assert_eq!(rho_candidate, rho_ref, "rho field must be bit-identical with g=None");
-    assert_eq!(ux_candidate, ux_ref, "ux field must be bit-identical with g=None");
-    assert_eq!(uy_candidate, uy_ref, "uy field must be bit-identical with g=None");
-    assert_eq!(uz_candidate, uz_ref, "uz field must be bit-identical with g=None");
+    assert_eq!(
+        rho_candidate, rho_ref,
+        "rho field must be bit-identical with g=None"
+    );
+    assert_eq!(
+        ux_candidate, ux_ref,
+        "ux field must be bit-identical with g=None"
+    );
+    assert_eq!(
+        uy_candidate, uy_ref,
+        "uy field must be bit-identical with g=None"
+    );
+    assert_eq!(
+        uz_candidate, uz_ref,
+        "uz field must be bit-identical with g=None"
+    );
     let d_rho = max_abs_delta(&rho_candidate, &rho_ref);
     let d_ux = max_abs_delta(&ux_candidate, &ux_ref);
     let d_uy = max_abs_delta(&uy_candidate, &uy_ref);

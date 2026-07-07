@@ -2753,14 +2753,22 @@ where
                         let u = velocity(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
                         let geq = crate::phase_field::equilibrium(p, u);
                         let (grad, _) = crate::phase_field::grad_lap(geo, phi_plane, x, y, z);
+                        let mut source = [T::zero(); 19];
+                        let mut source_sum = T::zero();
+                        for q in 0..D3Q19::Q {
+                            source[q] = crate::phase_field::collide_source(params, p, grad, q);
+                            source_sum = source_sum + source[q];
+                        }
+                        source[D3Q19::REST] = source[D3Q19::REST] - source_sum;
                         for q in 0..D3Q19::Q {
                             let idx = q * np + pi;
                             let old = gset[idx];
-                            let src = crate::phase_field::collide_source(params, p, grad, q);
-                            // The relaxation supplies the `M grad(phi)` flux;
-                            // this source supplies the matching
-                            // `M (4/W) phi(1-phi) n_hat` counter-flux.
-                            gset[idx] = old - omega * (old - geq[q]) + params.mobility * src;
+                            // The source first moment is multiplied by
+                            // tau_phi in the recovered flux, so the discrete
+                            // update uses omega_phi*M to recover the
+                            // governing M(4/W)phi(1-phi)n_hat counter-flux.
+                            gset[idx] =
+                                old - omega * (old - geq[q]) + omega * params.mobility * source[q];
                         }
                     }
                 }
@@ -2819,11 +2827,11 @@ where
                             phi[c] = T::zero();
                             continue;
                         }
-                        let mut sum = T::zero();
+                        let mut populations = [T::zero(); 19];
                         for q in 0..D3Q19::Q {
-                            sum = sum + gset[q * np + pi];
+                            populations[q] = gset[q * np + pi];
                         }
-                        phi[c] = sum;
+                        phi[c] = crate::phase_field::sum_populations(populations);
                     }
                 }
             }
