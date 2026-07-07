@@ -20,12 +20,20 @@ Licensed under MIT OR Apache-2.0.
   non-advected decay; a Galilean-invariance holdout at finite frame velocity
   is an open finding — see PHYSICS.md). Pick your point on the curve; the
   trade-off is measured, not asserted.
-- **Physically rigorous.** Every model term is derived from the governing
+- **Physically rigorous — by enforced policy, with open items inventoried.**
+  The prime directive is that every model term is derived from the governing
   equations or a literature-backed closure with a recorded derivation, validity
   domain, and its own validation test (`docs/PHYSICS.md`). Constants calibrated
   to pass a band, case-keyed branches, silent clamps that absorb transport, and
-  decorative physics are prohibited by policy — if a gate cannot be met without
-  a hack, the spec is revised, not the physics.
+  decorative physics are prohibited — if a gate cannot be met without a hack,
+  the spec is revised, not the physics. This is the standard the codebase is
+  held to and audited against; terms not yet fully at that bar (e.g. the
+  central-moment velocity-correction coefficient, whose footprint is
+  ablation-verified but whose value is not yet derived from first principles)
+  are tracked as open findings in `docs/PHYSICS.md` and bounded in
+  `docs/LIMITATIONS.md`, never hidden. `docs/LIMITATIONS.md` is the
+  authoritative statement of what is validated vs. characterized vs.
+  implemented-but-unvalidated today.
 - **Validated adversarially.** The validation suite (`docs/VALIDATION.md`,
   T1–T18.x) is authored independently of the engine from a public spec. The
   engine is fixed until the tests pass — not the other way around.
@@ -48,21 +56,31 @@ Licensed under MIT OR Apache-2.0.
 - **Multiphase**: Shan-Chen single-component (droplets, Laplace law, full
   contact-angle range via virtual wall density) and two-component MCMP
   (Rayleigh–Taylor growth rate) — measurement-calibrated, T11/T11b/T11c/T12.
-- **Turbulence**: WALE subgrid-scale model with near-wall damping recovered
-  by construction; MKM 1999 channel-flow reference profiles landed for
-  Re_τ = 180 characterisation.
+- **Turbulence**: WALE subgrid-scale model — the operator is designed to give
+  the correct near-wall eddy-viscosity scaling, and MKM 1999 channel-flow
+  reference profiles are landed for Re_τ = 180 **characterisation**. A wall
+  treatment / wall function and a Re_τ DNS **acceptance** line remain
+  validation-queue items; predictive turbulence accuracy for unresolved-y⁺
+  bounce-back walls is not yet claimed (see `docs/LIMITATIONS.md`).
 - **Rotating machinery**: rotating immersed-boundary method for impellers and
   stirred-reactor geometries; rotating-body IBM is prescribed rigid rotation
   with torque/force diagnostics, not general FSI or structural degrees of
-  freedom; dispersed-phase deposition tracking (D-track) with
-  adhesion-capture and resuspension closures.
+  freedom; dispersed-phase deposition tracking (D-track) is **one-way**
+  Lagrangian (semi-implicit Stokes / Schiller–Naumann drag + gravity +
+  agitation body force) with deterministic floor-crossing deposition
+  bookkeeping — particle-level adhesion-capture and resuspension closures are
+  **not** implemented (`docs/DISPERSED_DEPOSITION.md` §3, `docs/LIMITATIONS.md`).
 - **Curved walls**: Bouzidi second-order interpolated bounce-back.
 - **Rich boundary catalogue**: periodic, half-way bounce-back (static /
   moving), Zou-He velocity inlet (uniform or `set_inlet_profile`), Zou-He
   pressure, zero-gradient and convective outflow, arbitrary internal
   obstacles, momentum-exchange force probes.
-- **Bit-reproducible across backends and partitions**: T13 (partition
-  invariance) and T14 (backend equivalence) are gate-tested every commit.
+- **Bit-reproducible across backends and partitions** for the covered
+  field/output matrix: T13 (partition invariance) and T14 (backend equivalence)
+  are gate-tested every commit. Scope caveat: a known blind spot exists for
+  two-pass boundary-shell probe reductions (double-counting, spec E8/C-2 —
+  handled separately, not by the bitwise field gate); diagnostic reductions are
+  not universally bit-identical across all feature × partition combinations.
 
 ## Getting started
 

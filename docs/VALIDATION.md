@@ -264,14 +264,21 @@ File: `crates/lbm-core/tests/t15_3d.rs`.
    **u0 coefficient frozen at u0 = 1.28e-4/N** (classic 3D TGV isn't an exact NS solution → a
    resolution-independent relative offset ≈ 0.13·u0/(νk) under diffusive scaling would
    destroy the order; PHYSICS.md).
-   D3Q27 open-face coverage (updated 2026-07-07): velocity inlet and pressure
-   outlet are supported on CPU via a non-equilibrium bounce-back moment
-   closure with dedicated gates — moment exactness on all six faces at
+   D3Q27 open-face coverage (updated 2026-07-07, second landing same day):
+   velocity inlet, pressure outlet, **and now `Outflow` / `Convective`** are
+   all supported on CPU. Velocity/pressure use a non-equilibrium bounce-back
+   moment closure; `Outflow` (zero-gradient) and `Convective` extrapolate the
+   incoming plane. Dedicated gates — moment exactness on all six faces at
    machine precision, duct profile vs series + D3Q19 consistency, mass-flux
-   balance, and T13 split invariance with seams crossing BC cells
-   (`crates/lbm-core/tests/d3q27_open_bc.rs`). D3Q27 `Outflow` / `Convective`
-   faces and GPU-path D3Q27 open faces remain explicitly rejected
-   (`UnsupportedOpenFaceKind`).
+   balance (uniform-flow imbalance `0.000e0` Outflow / `1.735e-16` Convective),
+   and T13 split invariance with seams crossing BC cells for pressure, outflow,
+   and convective outlets (`crates/lbm-core/tests/d3q27_open_bc.rs`,
+   `crates/lbm-core/tests/d3q27_open_metamorphic.rs`). Only **GPU-path** D3Q27
+   open faces remain explicitly rejected (`GPU_D3Q27_OPEN_FACES_UNSUPPORTED`);
+   the CPU `UnsupportedOpenFaceKind` guard for D3Q27 was lifted for these kinds.
+   See PHYSICS.md "2026-07-07 behavior review — D3Q27 outflow/convective ducts"
+   for the resolved-vs-closure boundary (outlet-local flux/transverse distortion
+   in wall-bounded ducts is a known extrapolation-outlet artifact, not a defect).
 5. **T15.5 3D cavity** (Albensoeder & Kuhlmann 2005, Re=1000): reference in
    [T15_5_CAVITY3D_REFERENCE.md](T15_5_CAVITY3D_REFERENCE.md); file `t15_5_cavity3d.rs`.
    - Default N=64 qualitative sentinel: mass drift, symmetry-plane |v|/U, extrema
