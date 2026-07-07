@@ -276,3 +276,13 @@ the gravity suite (force, no patches) could see it — a pure
 pair-interaction defect, exactly what lane 5.1 exists for. Gate =
 cx/interaction-matrix (2 documented-red cells, interpretation rule in the
 asserts). All other 18 pairs PASS (or SKIP with stated reasons).
+
+### Lane 2.1 mutation-testing extension CLOSED (merge 8c26f14)
+10-mutant matrix all CAUGHT: Guo-source sign, moving-wall factor 2, D2Q9
+weight non-opposite swap, half-way source-cell off-by-one, probe-corner
+link drop, TRT ω⁻ tau/λ typo, feq u² coefficient 4.5→4.0 — plus the
+baseline 3 (MW sign, Zou-He pressure sign, outflow stale slot). Zero
+survivors ⇒ zero silent physics-kernel mutants in the current validation
+net. Complements ANOM-P4-021 (interaction-matrix): the pair-only defect
+class is NOT reachable by single-mutation coverage — the two lanes are
+complementary and both are needed.
