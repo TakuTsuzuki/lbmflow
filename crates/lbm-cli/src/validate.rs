@@ -41,7 +41,7 @@ fn validate_bioprocess(text: &str, json_output: bool) -> Result<i32> {
             return Ok(1);
         }
     };
-    let report = match scenario.unit_report_with_diagnostics() {
+    let mut report = match scenario.unit_report_with_diagnostics() {
         Ok(report) => report,
         Err(err) => {
             if json_output {
@@ -59,6 +59,19 @@ fn validate_bioprocess(text: &str, json_output: bool) -> Result<i32> {
             return Ok(1);
         }
     };
+    if scenario.credibility_tier == lbm_scenario::bioprocess::CredibilityTier::Engineering {
+        for warning in scenario.qoi.engineering_calibration_only_warnings() {
+            report
+                .feasibility
+                .warnings
+                .push(lbm_scenario::FeasibilityIssue {
+                    code: "engineering_calibration_only".to_string(),
+                    message: warning,
+                    value: None,
+                    threshold: None,
+                });
+        }
+    }
     if scenario.has_stl_import() {
         if let Err(err) = crate::runner::prepare_bioprocess_geometry(&scenario) {
             if json_output {

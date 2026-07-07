@@ -57,9 +57,9 @@ impl BioprocessScenario {
             ));
         }
 
-        if self.credibility_tier == CredibilityTier::Evidence
-            && (self.qoi.calibration_dataset_id.is_none() || self.qoi.holdout_dataset_id.is_none())
-        {
+        self.qoi.validate_dataset_references()?;
+
+        if self.credibility_tier == CredibilityTier::Evidence && !self.qoi.has_evidence_refs() {
             return Err(BioprocessScenarioError::unsupported(
                 "evidence tier requires calibration and holdout dataset registry references",
                 UnsupportedReason::EvidenceGateFailed {
@@ -1200,8 +1200,82 @@ pub struct QoiSpec {
     pub kla: Option<KlaQoiOpts>,
     pub shear_exposure: Option<ShearExposureQoiOpts>,
     pub oxygen_exposure: Option<OxygenExposureQoiOpts>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataset_refs: Vec<QoiDatasetRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calibration_dataset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holdout_dataset_id: Option<String>,
+}
+
+impl QoiSpec {
+    fn has_evidence_refs(&self) -> bool {
+        let legacy = self.calibration_dataset_id.is_some() && self.holdout_dataset_id.is_some();
+        legacy
+            || self.dataset_refs.iter().any(|refs| {
+                !refs.calibration_dataset_ids.is_empty() && !refs.holdout_dataset_ids.is_empty()
+            })
+    }
+
+    fn validate_dataset_references(&self) -> Result<(), BioprocessScenarioError> {
+        if let (Some(calibration), Some(holdout)) =
+            (&self.calibration_dataset_id, &self.holdout_dataset_id)
+        {
+            if calibration == holdout {
+                return Err(dataset_reuse_conflict("all_requested_qois"));
+            }
+        }
+        for refs in &self.dataset_refs {
+            for calibration in &refs.calibration_dataset_ids {
+                if refs
+                    .holdout_dataset_ids
+                    .iter()
+                    .any(|holdout| holdout == calibration)
+                {
+                    return Err(dataset_reuse_conflict(&refs.qoi));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn engineering_calibration_only_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some(id) = &self.calibration_dataset_id {
+            if self.holdout_dataset_id.is_none() {
+                warnings.push(format!("calibrated to {id}, not validated against holdout"));
+            }
+        }
+        for refs in &self.dataset_refs {
+            if !refs.calibration_dataset_ids.is_empty() && refs.holdout_dataset_ids.is_empty() {
+                warnings.push(format!(
+                    "{} calibrated to {}, not validated against holdout",
+                    refs.qoi,
+                    refs.calibration_dataset_ids.join(",")
+                ));
+            }
+        }
+        warnings
+    }
+}
+
+fn dataset_reuse_conflict(qoi: &str) -> BioprocessScenarioError {
+    BioprocessScenarioError::unsupported(
+        format!("dataset id cannot appear in both calibration and holdout for {qoi}"),
+        UnsupportedReason::EvidenceGateFailed {
+            missing: vec!["dataset_reuse_conflict".to_string()],
+        },
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct QoiDatasetRef {
+    pub qoi: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calibration_dataset_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holdout_dataset_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1335,6 +1409,7 @@ mod tests {
                 kla: None,
                 shear_exposure: None,
                 oxygen_exposure: None,
+                dataset_refs: Vec::new(),
                 calibration_dataset_id: None,
                 holdout_dataset_id: None,
             },
@@ -1491,5 +1566,36 @@ mod tests {
         });
         let err = scenario.validate().unwrap_err();
         assert!(err.message.contains("mass_loading > 0.1"));
+    }
+
+    #[test]
+    fn qoi_dataset_same_id_rejected_for_same_qoi() {
+        let mut scenario = base_scenario(stirred_tank(None, vec![]));
+        scenario.qoi.dataset_refs.push(QoiDatasetRef {
+            qoi: "kla".to_string(),
+            calibration_dataset_ids: vec!["dataset-1".to_string()],
+            holdout_dataset_ids: vec!["dataset-1".to_string()],
+        });
+        let err = scenario.validate().unwrap_err();
+        assert!(matches!(
+            err.reason,
+            UnsupportedReason::EvidenceGateFailed { .. }
+        ));
+        assert!(err.message.contains("calibration and holdout"));
+    }
+
+    #[test]
+    fn engineering_tier_calibration_only_allowed_with_warning() {
+        let mut scenario = base_scenario(stirred_tank(None, vec![]));
+        scenario.credibility_tier = CredibilityTier::Engineering;
+        scenario.qoi.dataset_refs.push(QoiDatasetRef {
+            qoi: "kla".to_string(),
+            calibration_dataset_ids: vec!["dataset-1".to_string()],
+            holdout_dataset_ids: Vec::new(),
+        });
+        scenario.validate().unwrap();
+        let warnings = scenario.qoi.engineering_calibration_only_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("not validated against holdout"));
     }
 }

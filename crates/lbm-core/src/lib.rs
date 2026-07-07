@@ -29,6 +29,7 @@ pub mod bubbles;
 pub mod cells;
 mod collision;
 pub mod compat;
+pub mod credibility;
 pub mod damage;
 #[cfg(feature = "mpi")]
 pub mod dist;
@@ -82,6 +83,9 @@ pub mod prelude {
     };
     pub use crate::cells::{
         CellCheckpointSection, CellFieldSample, CellTracer, CellTracerPopulation,
+    };
+    pub use crate::credibility::{
+        CalibrationDataset, CredibilityError, DatasetRegistry, HoldoutDataset,
     };
     pub use crate::damage::{
         exposure_distribution, DamageIncrement, DamageModelError, DamageThreshold,
