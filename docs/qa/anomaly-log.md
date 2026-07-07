@@ -483,3 +483,46 @@ Stokes settling geometry). Cross-tests: physics is unchanged; this is
 the third experiment-design pass on a single Axis-9.4 lane and each
 revision is producing a stronger physics anchor. Filed in PHYSICS.md
 (rev 2 dirty tree) — will fold into the rev-3 commit.
+
+## Pass 8 — 2026-07-07, core fix landings (P4-001 / P4-021 / P4-022 CLOSED)
+
+### ANOM-P4-001 CLOSED (merge 8a0c546)
+IBM force sizing targets realized full-step F/rho with row-sum overlap
+mobility + simultaneous Richardson sweeps (the collective-gain treatment
+verified by our diagnosis). Default relaxation=1.0 stable at ds/h ∈
+[0.39, 1.0]. Gate cx/audit-ibm: 8/8 GREEN in our environment.
+Independent re-verify: 7 passed, 3 ignored, 1.65s.
+
+### ANOM-P4-021 CLOSED (merge 434091f)
+Zou-He closes on raw Guo momentum ρ·u_phys − F/2 (uniform force + gravity
+analytic); whole-face + T18.2 patches share one corrected reconstruction;
+GPU BC mirrored. Independent re-verify: interaction_matrix 1 passed
+(previously 2 documented-red cells).
+
+### ANOM-P4-022 CLOSED (merge 084dee6)
+SC/MCMP force ADDS into the field with caller zero-fill; gravity+SC
+composition regression added. Additive composition convention now
+documented.
+
+### ANOM-P4-016 STOP-RULE'D BY CORE (documented-red pin)
+Core verified: i3 spec applies gravity to heavy component ONLY in a closed
+box, creating net bulk downward momentum that drives wall-adjacent
+failure before the RT cutoff mode is measurable. Additive-force fix did
+NOT cure it. Options to us: (a) revise i3 forcing spec, (b) pressure-
+balanced/zero-net-force buoyancy protocol, (c) literature MCMP RT
+closure. Route: keep our documented-red pin, revise spec in next
+mp-hard rev (option b — Boussinesq-analog with per-component gravity
+adjusted so net = 0 at t=0 — most physical fix).
+
+### ANOM-P4-010 PM RULING ACCEPTED (V&V concurs)
+"Volume penalization's validity domain = thin/porous structures.
+Coherent solid interiors → route to rotating IBM (now validated) or
+Bouzidi." Physics-principled: penalization approximates a distributed
+Darcy drag; coherent solid regions are outside its derivation. F1-F3
+re-scope order dispatched (thin-blade IBM cross-referee stays as F4;
+new F6 = paired forbidden-disc/valid-IBM domain-boundary witness).
+
+**Open ledger:** P4-023 (SC σ referee, characterization), P4-016 (i3, our
+spec revision), P4-018/019 (SC dynamic wetting family, characterization).
+Core routings CLEARED: **P4-001, P4-021, P4-022 all closed**; V&V loop
+has now driven 4 total core fixes to landing (P4-008/001/021/022).
