@@ -1,5 +1,7 @@
 # V&V-MULTIPHASE Findings
 
+Lifecycle: snapshot (2026-07-06) — dated audit record, never edited.
+
 Date: 2026-07-06
 Branch: `cx/vv-multiphase`
 Base commit audited: `4eac49e2aebccfa52283c29cd7f22aabba3120f5`

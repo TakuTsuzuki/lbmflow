@@ -102,4 +102,4 @@ Acceptance lives under the MF-alpha rows in `docs/paper/claims-ledger.md`.
 
 - **W-VOF proper** (Allen-Cahn free surface, MF-γ): gated on W-GRAV proper
   (already landed). Owned by the QA-sweep session; see
-  `docs/HANDOFF-PM-2026-07-07.md` §4.
+  `docs/archive/HANDOFF-PM-2026-07-07.md` §4.

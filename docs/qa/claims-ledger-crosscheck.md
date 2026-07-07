@@ -13,9 +13,9 @@ changes made here.
 - `docs/paper/claims-ledger.md` (34 lines, status-snapshot ledger).
 - `docs/paper/benchmark-results.md` (69 lines, raw benchmark tables).
 - `docs/qa/anomaly-log.md` (278 lines, live ANOM ledger).
-- `docs/qa/VV_MASTER_PLAN.md` §3.3 (references `docs/VV_TRACEABILITY.md`).
+- `docs/qa/VV_MASTER_PLAN.md` §3.3 (references `docs/qa/VV_TRACEABILITY.md`).
 
-**Missing companion file (finding):** `docs/VV_TRACEABILITY.md` is named in
+**Missing companion file (finding):** `docs/qa/VV_TRACEABILITY.md` is named in
 `VV_MASTER_PLAN.md` §3.3 as landed by `cx/vv-trace` (27 VALIDATED / 4
 VERIFIED-ONLY / 3 BENCH-PENDING / 8 SPEC-ONLY / 1 UNSAFE-CLAIM). No such file
 exists in `docs/` or `docs/qa/`. Either the merge is pending or the file was
@@ -132,14 +132,14 @@ Tests referenced are inside `crates/lbm-core/tests/` unless noted.
   the 2026-07-07 ANOM-P4-008 entry (both cited above). The remaining
   `-0.16|u|²` term is under ablation flag and validated as (B) per
   ANOM-P4-008 FULLY CLOSED addendum. **No live stale text**.
-- **STALE (traceability infrastructure).** `docs/VV_TRACEABILITY.md` is
+- **STALE (traceability infrastructure).** `docs/qa/VV_TRACEABILITY.md` is
   named as landed in VV_MASTER_PLAN §3.3 but does not exist in the tree.
   Either merge is pending (task #12) or the file was lost. This
   cross-check is the interim substitute.
 
 ## Traceability-only rows lacking a paper anchor (informational)
 
-Not applicable this pass — `docs/VV_TRACEABILITY.md` is absent, so no
+Not applicable this pass — `docs/qa/VV_TRACEABILITY.md` is absent, so no
 traceability-only rows exist to reconcile against paper anchors. When the
 master matrix lands, this section should be re-scanned for rows whose
 `Claim` column does not tie to `PHYSICS.md` or the whitepaper text.
@@ -183,7 +183,7 @@ master matrix lands, this section should be re-scanned for rows whose
   3. PHYSICS.md §2 → new entry summarizing the SC three-way referee
      status so the whitepaper footnote has a canonical PHYSICS-side
      anchor.
-  4. Land `docs/VV_TRACEABILITY.md` (VV_MASTER_PLAN §3.3 task #12) or
+  4. Land `docs/qa/VV_TRACEABILITY.md` (VV_MASTER_PLAN §3.3 task #12) or
      mark the master-plan row as SUPERSEDED-BY-THIS-DOC.
 
 **Ledger health, one line:** the paper is measurement-honest — every

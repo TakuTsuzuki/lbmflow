@@ -1,5 +1,7 @@
 # V&V Scenario / CLI / MCP Audit
 
+Lifecycle: snapshot (2026-07-06) — dated audit record, never edited.
+
 Date: 2026-07-06  
 Base commit: `4eac49e2aebccfa52283c29cd7f22aabba3120f5`  
 Scope: suborder H, scenario schema, built-in presets, CLI, gallery, and MCP product paths.
