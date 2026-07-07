@@ -7,6 +7,7 @@ mod capabilities;
 mod gallery;
 mod manifest;
 mod mcp;
+mod output;
 mod render;
 mod runner;
 mod schema;
@@ -62,6 +63,9 @@ enum Command {
         /// Restore from an existing checkpoint directory before running
         #[arg(long)]
         restore: Option<PathBuf>,
+        /// Output strategy: gather writes legacy whole-field files; per-rank is MPI-only
+        #[arg(long, value_enum)]
+        output_mode: Option<output::OutputMode>,
         /// Print the result manifest to stdout as JSON
         #[arg(long)]
         json: bool,
@@ -175,6 +179,7 @@ fn main() -> Result<()> {
             save_every,
             checkpoint_dir,
             restore,
+            output_mode,
             json,
         } => {
             let sc = load_scenario(&scenario)?;
@@ -187,6 +192,7 @@ fn main() -> Result<()> {
                     save_every,
                     checkpoint_dir,
                     restore,
+                    output_mode,
                 },
             )?;
         }

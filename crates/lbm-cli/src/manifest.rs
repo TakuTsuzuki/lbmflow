@@ -26,11 +26,22 @@ pub struct Manifest {
     pub wall_seconds: f64,
     pub mlups: f64,
     pub diagnostics: Diagnostics,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mpi_ranks: Vec<MpiRankManifest>,
     pub provenance: Provenance,
     pub warnings: Vec<lbm_scenario::Warning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub units: Option<lbm_scenario::LegacyUnitReport>,
     pub files: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpiRankManifest {
+    pub rank: usize,
+    pub offset: [usize; 3],
+    pub extent: [usize; 3],
+    pub mem_estimate_bytes: usize,
 }
 
 #[allow(dead_code)]
@@ -279,6 +290,7 @@ mod tests {
             wall_seconds: 0.0,
             mlups: 0.0,
             diagnostics: diagnostics(),
+            mpi_ranks: Vec::new(),
             provenance: provenance(),
             warnings: Vec::new(),
             units: None,

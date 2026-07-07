@@ -15,13 +15,23 @@ Design: docs/ARCHITECTURE_V2.md §2.3.
   n=8 (73.2%) drops due to M5 Max E/P core heterogeneity + lockstep jitter,
   not communication volume (~50 KB/step/rank). True weak scaling awaits
   cluster measurement.
+- **Supported after BCFD-100..101**:
+  - Large-grid local geometry construction via `MpiSolver::new_local`, where
+    ranks evaluate solid, wall-velocity, and material callbacks only for owned
+    cells. The older `MpiSolver::new` global-array constructor remains for
+    small compatibility tests.
+  - Per-rank binary field slabs plus a rank-0 manifest for velocity, `phi`,
+    named scalar concentrations such as oxygen `C_L`, shear rate, and gas
+    holdup. Use `read_parallel_field` to reconstruct a compact global vector
+    for small validation comparisons.
 - **Not yet supported**:
   - `mpi` + `gpu`: builds, but `MpiSolver` assumes a `CpuScalar`-family
     `SoaFields` backend. Device-resident halo + GPUDirect is M-E or later.
   - Communication/computation overlap: `exchange_f` is synchronous per
     axis phase. The two-pass streaming seam exists; switching to
     Isend → interior → wait → boundary is M-E.
-  - Parallel I/O: rank-0 gather only. Parallel VTK / HDF5 not started.
+  - Parallel VTK / HDF5. BCFD-101 writes raw per-rank slabs; richer container
+    formats remain future work.
   - Multi-node measurements: **ME-3 = RED**, blocked on cluster spend
     confirm (see [CLUSTER_OPTIONS.md](CLUSTER_OPTIONS.md)).
 
@@ -77,6 +87,26 @@ s.run(1000);                       // step/diagnostics/gather are collective
 let mass = s.total_mass();         // Allreduce (same on all ranks)
 let rho  = s.gather_rho();         // Some(field) on rank 0 only
 drop(s);                           // drop the duplicated comm before finalize
+```
+
+Large-grid API (BCFD-100):
+
+```rust
+use lbm_core::prelude::*;
+
+let mut s: MpiSolver<D3Q19, f64, CpuScalar> = MpiSolver::new_local(
+    &world,
+    &spec,
+    [2, 2, 2],
+    CpuScalar::default(),
+    |g| tank_mask(g.x, g.y, g.z),
+    |g| tank_wall_velocity(g.x, g.y, g.z),
+    |_g| None,
+    |_g, _name| None,
+);
+let local_bytes = s.mem_estimate_bytes();
+let _manifest = s.write_velocity_slabs("out/fields")?; // Some(...) on rank 0
+drop(s);
 ```
 
 **Collective contract.** `step` / `init_with` / `update_shan_chen_force` /

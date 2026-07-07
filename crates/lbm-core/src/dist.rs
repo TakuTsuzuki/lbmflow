@@ -36,6 +36,7 @@ use mpi::topology::SimpleCommunicator;
 use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Root, Source};
 use mpi::{Rank, Tag};
 use std::cell::RefCell;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::backend::Backend;
@@ -45,6 +46,7 @@ use crate::halo::{
     unpack_scalar_layer, ExchangeScope, HaloExchange,
 };
 use crate::lattice::{Face, Lattice};
+use crate::materials::MaterialSample;
 use crate::params::{CollisionKind, FaceBC};
 use crate::real::Real;
 use crate::solver::{decomp_hash, partition, CheckpointError, CheckpointRank, GlobalSpec, Solver};
@@ -56,6 +58,92 @@ const TAG_MASK_META: Tag = 300;
 const TAG_MASK_WALL: Tag = 400;
 const TAG_GATHER: Tag = 500;
 const TAG_MASS_ROWS: Tag = 600;
+
+/// Compact global cell coordinate supplied to MPI-local geometry callbacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalIndex {
+    pub x: usize,
+    pub y: usize,
+    pub z: usize,
+}
+
+/// Stable scalar identifier used by MPI-local scalar initializers.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ScalarName(pub String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldDtype {
+    F32,
+    F64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankFieldSlab {
+    pub rank: usize,
+    pub file: String,
+    pub offset: [usize; 3],
+    pub extent: [usize; 3],
+    pub ncomp: usize,
+    pub dtype: FieldDtype,
+    pub bytes: u64,
+    pub mem_estimate_bytes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParallelFieldManifest {
+    pub kind: String,
+    pub field: String,
+    pub global: [usize; 3],
+    pub ncomp: usize,
+    pub dtype: FieldDtype,
+    pub ranks: Vec<RankFieldSlab>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelFieldError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ParallelFieldError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ParallelFieldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for ParallelFieldError {}
+
+impl From<std::io::Error> for ParallelFieldError {
+    fn from(e: std::io::Error) -> Self {
+        Self::new("FIELD_IO", e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ParallelFieldError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::new("FIELD_MANIFEST_INVALID", e.to_string())
+    }
+}
+
+fn field_dtype<T: Real>() -> FieldDtype {
+    if std::mem::size_of::<T>() == std::mem::size_of::<f32>() {
+        FieldDtype::F32
+    } else {
+        FieldDtype::F64
+    }
+}
 
 #[derive(Clone)]
 struct AxisBuffers<E> {
@@ -259,6 +347,75 @@ fn assert_rank_specs_match<T: Real>(
             "MPI rank specification mismatch: {name} differs across ranks"
         );
     }
+}
+
+fn mpi_local_geometry_precheck<T: Real>(
+    world: &SimpleCommunicator,
+    spec: &GlobalSpec<T>,
+    sub: &Subdomain,
+    solid_mask_fn: &impl Fn(GlobalIndex) -> bool,
+) {
+    let mut missing_wall = 0.0f64;
+    let mut source_overlap = 0.0f64;
+    let g = sub.geom;
+    for z in 0..g.core[2] {
+        for y in 0..g.core[1] {
+            for x in 0..g.core[0] {
+                let idx = GlobalIndex {
+                    x: sub.origin[0] + x,
+                    y: sub.origin[1] + y,
+                    z: sub.origin[2] + z,
+                };
+                let solid = solid_mask_fn(idx);
+                for face in Face::ALL {
+                    let axis = face.axis();
+                    if axis >= g.d || spec.periodic[axis] || spec.faces[face.index()].is_open() {
+                        continue;
+                    }
+                    if spec.face_patches.iter().any(|p| p.face == face.index()) {
+                        continue;
+                    }
+                    let on_face = if face.is_neg() {
+                        [idx.x, idx.y, idx.z][axis] == 0
+                    } else {
+                        [idx.x, idx.y, idx.z][axis] + 1 == spec.dims[axis]
+                    };
+                    if on_face && !solid {
+                        missing_wall += 1.0;
+                    }
+                }
+                if solid {
+                    for source in &spec.sources {
+                        let lo = source.region.lo;
+                        let hi = source.region.hi;
+                        if idx.x >= lo[0]
+                            && idx.x <= hi[0]
+                            && idx.y >= lo[1]
+                            && idx.y <= hi[1]
+                            && idx.z >= lo[2]
+                            && idx.z <= hi[2]
+                        {
+                            source_overlap += 1.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut global = [0.0f64; 2];
+    world.all_reduce_into(
+        &[missing_wall, source_overlap],
+        &mut global,
+        SystemOperation::sum(),
+    );
+    assert_eq!(
+        global[0], 0.0,
+        "MPI local geometry leaves closed non-periodic face cells uncovered"
+    );
+    assert_eq!(
+        global[1], 0.0,
+        "MPI local geometry places solid cells inside a volume source region"
+    );
 }
 
 /// MPI implementation of [`HaloExchange`]: serves exactly the local part of a
@@ -530,6 +687,128 @@ impl<T: Real> HaloExchange<T> for MpiExchange<T> {
     }
 }
 
+const FIELD_MAGIC: &[u8; 8] = b"LBFIELD\0";
+const FIELD_VERSION: u32 = 1;
+
+fn write_field_file<T: Real>(
+    path: &Path,
+    offset: [usize; 3],
+    extent: [usize; 3],
+    ncomp: usize,
+    values: &[T],
+) -> std::io::Result<u64> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(FIELD_MAGIC)?;
+    file.write_all(&FIELD_VERSION.to_le_bytes())?;
+    file.write_all(&[match field_dtype::<T>() {
+        FieldDtype::F32 => 0,
+        FieldDtype::F64 => 1,
+    }])?;
+    file.write_all(&(ncomp as u64).to_le_bytes())?;
+    for v in offset {
+        file.write_all(&(v as u64).to_le_bytes())?;
+    }
+    for v in extent {
+        file.write_all(&(v as u64).to_le_bytes())?;
+    }
+    file.write_all(as_bytes(values))?;
+    Ok(8 + 4 + 1 + 8 + 6 * 8 + std::mem::size_of_val(values) as u64)
+}
+
+fn read_field_file<T: Real>(
+    path: &Path,
+) -> Result<([usize; 3], [usize; 3], usize, Vec<T>), String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|e| e.to_string())?
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let mut pos = 0usize;
+    let take = |bytes: &[u8], pos: &mut usize, n: usize| -> Result<Vec<u8>, String> {
+        if *pos + n > bytes.len() {
+            return Err("field slab file is truncated".to_string());
+        }
+        let out = bytes[*pos..*pos + n].to_vec();
+        *pos += n;
+        Ok(out)
+    };
+    if take(&bytes, &mut pos, 8)? != FIELD_MAGIC {
+        return Err("field slab has bad magic".to_string());
+    }
+    let version = u32::from_le_bytes(take(&bytes, &mut pos, 4)?.try_into().unwrap());
+    if version != FIELD_VERSION {
+        return Err(format!(
+            "field slab version {version} differs from supported {FIELD_VERSION}"
+        ));
+    }
+    let dtype = take(&bytes, &mut pos, 1)?[0];
+    let expected_dtype = match field_dtype::<T>() {
+        FieldDtype::F32 => 0,
+        FieldDtype::F64 => 1,
+    };
+    if dtype != expected_dtype {
+        return Err("field slab dtype differs from requested type".to_string());
+    }
+    let ncomp = u64::from_le_bytes(take(&bytes, &mut pos, 8)?.try_into().unwrap()) as usize;
+    let mut offset = [0usize; 3];
+    let mut extent = [0usize; 3];
+    for v in &mut offset {
+        *v = u64::from_le_bytes(take(&bytes, &mut pos, 8)?.try_into().unwrap()) as usize;
+    }
+    for v in &mut extent {
+        *v = u64::from_le_bytes(take(&bytes, &mut pos, 8)?.try_into().unwrap()) as usize;
+    }
+    let payload = &bytes[pos..];
+    if payload.len() % std::mem::size_of::<T>() != 0 {
+        return Err("field slab payload length is not aligned to dtype".to_string());
+    }
+    let count = payload.len() / std::mem::size_of::<T>();
+    let expected = extent[0] * extent[1] * extent[2] * ncomp;
+    if count != expected {
+        return Err(format!(
+            "field slab value count {count} differs from header count {expected}"
+        ));
+    }
+    let mut values = vec![T::zero(); count];
+    as_bytes_mut(values.as_mut_slice()).copy_from_slice(payload);
+    Ok((offset, extent, ncomp, values))
+}
+
+pub fn read_parallel_field<T: Real>(manifest_path: impl AsRef<Path>) -> Result<Vec<T>, String> {
+    let manifest_path = manifest_path.as_ref();
+    let manifest: ParallelFieldManifest =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    if manifest.dtype != field_dtype::<T>() {
+        return Err("manifest dtype differs from requested type".to_string());
+    }
+    let n = manifest.global[0] * manifest.global[1] * manifest.global[2] * manifest.ncomp;
+    let mut out = vec![T::zero(); n];
+    let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    for rank in &manifest.ranks {
+        let (offset, extent, ncomp, values) = read_field_file::<T>(&base.join(&rank.file))?;
+        if offset != rank.offset || extent != rank.extent || ncomp != manifest.ncomp {
+            return Err(format!(
+                "rank {} field slab header differs from manifest",
+                rank.rank
+            ));
+        }
+        for z in 0..extent[2] {
+            for y in 0..extent[1] {
+                for x in 0..extent[0] {
+                    let gi = (((offset[2] + z) * manifest.global[1] + (offset[1] + y))
+                        * manifest.global[0]
+                        + (offset[0] + x))
+                        * manifest.ncomp;
+                    let li = ((z * extent[1] + y) * extent[0] + x) * manifest.ncomp;
+                    out[gi..gi + manifest.ncomp].copy_from_slice(&values[li..li + manifest.ncomp]);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Distributed driver: rank `r` of the communicator runs part `r` of the
 /// Cartesian decomposition through a [`Solver`] wired to [`MpiExchange`],
 /// with the V1 diagnostics reduced across ranks and rank-0 field gathers.
@@ -561,6 +840,10 @@ where
     /// Build the local part of `decomp` on this rank (collective).
     /// `decomp[0]·decomp[1]·decomp[2]` must equal the communicator size;
     /// `solid` / `wall_u` are the global compact arrays (see [`Solver::new`]).
+    ///
+    /// Small-scale compatibility path only: BCFD-100 introduced
+    /// [`MpiSolver::new_local`] so large MPI grids do not replicate global
+    /// geometry arrays on every rank.
     pub fn new(
         world: &SimpleCommunicator,
         spec: &GlobalSpec<T>,
@@ -581,6 +864,57 @@ where
         let comm = world.duplicate();
         let subs_meta = partition(L::D, spec.dims, spec.periodic, decomp);
         let inner = Solver::new_local_part(spec, solid, wall_u, decomp, rank, backend, exchange);
+        Self {
+            inner,
+            comm,
+            rank,
+            size,
+            subs_meta,
+            periodic: spec.periodic,
+            probe_active: false,
+            probed_force: [T::zero(); 3],
+        }
+    }
+
+    /// Build the local part of `decomp` from geometry callbacks evaluated only
+    /// for cells owned by this rank (collective). This is the BCFD-100 path for
+    /// bioprocess-scale grids where global compact masks would not fit on
+    /// every rank.
+    pub fn new_local(
+        world: &SimpleCommunicator,
+        spec: &GlobalSpec<T>,
+        decomp: [usize; 3],
+        backend: B,
+        solid_mask_fn: impl Fn(GlobalIndex) -> bool,
+        wall_velocity_fn: impl Fn(GlobalIndex) -> [f64; 3],
+        material_fields_fn: impl Fn(GlobalIndex) -> Option<MaterialSample>,
+        _initial_scalar_fn: impl Fn(GlobalIndex, ScalarName) -> Option<f64>,
+    ) -> Self {
+        let size = world.size() as usize;
+        let rank = world.rank() as usize;
+        assert_eq!(
+            decomp[0] * decomp[1] * decomp[2],
+            size,
+            "decomp {decomp:?} must cover exactly the communicator size {size}"
+        );
+        assert_rank_specs_match(world, spec, &[], &[]);
+        let subs_meta = partition(L::D, spec.dims, spec.periodic, decomp);
+        mpi_local_geometry_precheck(world, spec, &subs_meta[rank], &solid_mask_fn);
+        let exchange = MpiExchange::<T>::new(world);
+        let comm = world.duplicate();
+        let inner = Solver::new_local_part_with_geometry(
+            spec,
+            decomp,
+            rank,
+            backend,
+            exchange,
+            |x, y, z| solid_mask_fn(GlobalIndex { x, y, z }),
+            |x, y, z| {
+                let u = wall_velocity_fn(GlobalIndex { x, y, z });
+                [T::r(u[0]), T::r(u[1]), T::r(u[2])]
+            },
+            |x, y, z| material_fields_fn(GlobalIndex { x, y, z }),
+        );
         Self {
             inner,
             comm,
@@ -615,6 +949,146 @@ where
     /// ranks leaves host staging dirty before [`MpiSolver::step`].
     pub fn local_mut(&mut self) -> &mut Solver<L, T, B, MpiExchange<T>> {
         &mut self.inner
+    }
+
+    /// Estimated bytes held by this rank's local solver state.
+    pub fn mem_estimate_bytes(&self) -> usize {
+        self.inner.mem_estimate_bytes()
+    }
+
+    /// Write one compact field block per rank and a rank-0 manifest.
+    pub fn write_field_slabs(
+        &self,
+        dir: impl AsRef<Path>,
+        field: &str,
+        local: &[T],
+        ncomp: usize,
+    ) -> Result<Option<ParallelFieldManifest>, ParallelFieldError> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        let sub = &self.subs_meta[self.rank];
+        let expected = sub.geom.n_core() * ncomp;
+        if local.len() != expected {
+            return Err(ParallelFieldError::new(
+                "FIELD_GEOM_MISMATCH",
+                format!(
+                    "local field length {} differs from local cell count {} * ncomp {ncomp}",
+                    local.len(),
+                    sub.geom.n_core()
+                ),
+            ));
+        }
+        let file = format!("field_{field}_rank{:04}.bin", self.rank);
+        let bytes = write_field_file(&dir.join(&file), sub.origin, sub.geom.core, ncomp, local)?;
+        let entry = RankFieldSlab {
+            rank: self.rank,
+            file,
+            offset: sub.origin,
+            extent: sub.geom.core,
+            ncomp,
+            dtype: field_dtype::<T>(),
+            bytes,
+            mem_estimate_bytes: self.mem_estimate_bytes(),
+        };
+        let meta = dir.join(format!(".field_{field}_rank_{:04}.json", self.rank));
+        std::fs::write(&meta, serde_json::to_vec(&entry)?)?;
+        self.comm.barrier();
+        if self.rank != 0 {
+            self.comm.barrier();
+            return Ok(None);
+        }
+        let mut ranks = Vec::with_capacity(self.size);
+        for rank in 0..self.size {
+            let text =
+                std::fs::read_to_string(dir.join(format!(".field_{field}_rank_{rank:04}.json")))?;
+            ranks.push(serde_json::from_str::<RankFieldSlab>(&text)?);
+        }
+        ranks.sort_by_key(|r| r.rank);
+        let manifest = ParallelFieldManifest {
+            kind: "lbmflow-parallel-field".to_string(),
+            field: field.to_string(),
+            global: self.dims(),
+            ncomp,
+            dtype: field_dtype::<T>(),
+            ranks,
+        };
+        let manifest_name = format!("field_{field}_manifest.json");
+        std::fs::write(
+            dir.join(&manifest_name),
+            serde_json::to_string_pretty(&manifest)?,
+        )?;
+        for rank in 0..self.size {
+            let _ = std::fs::remove_file(dir.join(format!(".field_{field}_rank_{rank:04}.json")));
+        }
+        self.comm.barrier();
+        Ok(Some(manifest))
+    }
+
+    /// Parallel velocity output (`ux`, `uy`, `uz`) as cell-major triples.
+    pub fn write_velocity_slabs(
+        &self,
+        dir: impl AsRef<Path>,
+    ) -> Result<Option<ParallelFieldManifest>, ParallelFieldError> {
+        let fields = self.inner.fields(0);
+        let mut local = Vec::with_capacity(fields.geom.n_core() * 3);
+        for c in 0..fields.geom.n_core() {
+            local.extend_from_slice(&[fields.ux[c], fields.uy[c], fields.uz[c]]);
+        }
+        self.write_field_slabs(dir, "velocity", &local, 3)
+    }
+
+    /// Parallel phase-field `phi` output.
+    pub fn write_phi_slabs(
+        &self,
+        dir: impl AsRef<Path>,
+    ) -> Result<Option<ParallelFieldManifest>, ParallelFieldError> {
+        let phi = self.inner.fields(0).phi.as_ref().ok_or_else(|| {
+            ParallelFieldError::new("FIELD_UNAVAILABLE", "phase field phi is not enabled")
+        })?;
+        self.write_field_slabs(dir, "phi", phi, 1)
+    }
+
+    /// Parallel scalar concentration output, e.g. `oxygen`.
+    pub fn write_scalar_concentration_slabs(
+        &self,
+        dir: impl AsRef<Path>,
+        name: &str,
+    ) -> Result<Option<ParallelFieldManifest>, ParallelFieldError> {
+        let fields = self.inner.fields(0);
+        let idx = fields.scalar_index(name).ok_or_else(|| {
+            ParallelFieldError::new("FIELD_UNAVAILABLE", format!("scalar {name} is not enabled"))
+        })?;
+        self.write_field_slabs(dir, name, &fields.scalars[idx].concentration, 1)
+    }
+
+    /// Parallel shear-rate `gamma_dot` output.
+    pub fn write_shear_rate_slabs(
+        &self,
+        dir: impl AsRef<Path>,
+    ) -> Result<Option<ParallelFieldManifest>, ParallelFieldError> {
+        let mut blocks = self.inner.local_shear_rate_blocks();
+        let local = blocks.pop().ok_or_else(|| {
+            ParallelFieldError::new("FIELD_GEOM_MISMATCH", "MPI solver has no local block")
+        })?;
+        self.write_field_slabs(dir, "shear_rate", &local, 1)
+    }
+
+    /// Parallel gas holdup `alpha_g` output from material fields.
+    pub fn write_gas_holdup_slabs(
+        &self,
+        dir: impl AsRef<Path>,
+    ) -> Result<Option<ParallelFieldManifest>, ParallelFieldError> {
+        let alpha_gas = self
+            .inner
+            .fields(0)
+            .material
+            .as_ref()
+            .map(|m| m.alpha_gas())
+            .ok_or_else(|| {
+                ParallelFieldError::new("FIELD_UNAVAILABLE", "material alpha_gas is not enabled")
+            })?;
+        let local: Vec<T> = alpha_gas.iter().map(|&v| T::r(v)).collect();
+        self.write_field_slabs(dir, "gas_holdup", &local, 1)
     }
 
     /// Whether this rank owns global cell `(x, y, z)`.

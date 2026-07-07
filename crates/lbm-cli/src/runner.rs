@@ -6,6 +6,7 @@ use crate::manifest::{
     active_models_for_legacy, capability_report, lattice_id, precision_id, scenario_hash,
     BackendId, CollisionProvenance, Diagnostics, LatticeId, Provenance, MANIFEST_PATH,
 };
+use crate::output::{select_output_mode, OutputMode};
 use crate::render::{write_png_scaled, Colormap};
 use anyhow::{Context, Result};
 use lbm_core::compat::multiphase::ShanChen;
@@ -57,6 +58,7 @@ pub struct RunOptions {
     pub save_every: Option<usize>,
     pub checkpoint_dir: Option<PathBuf>,
     pub restore: Option<PathBuf>,
+    pub output_mode: Option<OutputMode>,
 }
 
 pub fn run(sc: &Scenario, out_dir: &Path) -> Result<Manifest> {
@@ -75,6 +77,9 @@ pub fn prepare_bioprocess_geometry(
 }
 
 pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> Result<Manifest> {
+    if select_output_mode(1, options.output_mode) == OutputMode::PerRank {
+        anyhow::bail!("--output-mode per-rank requires an MPI run; the current legacy runner has world_size=1");
+    }
     fs::create_dir_all(out_dir)
         .with_context(|| format!("cannot create output directory: {}", out_dir.display()))?;
     let resolved = lbm_scenario::resolve(sc).map_err(anyhow::Error::msg)?;
@@ -184,6 +189,7 @@ fn run_gpu2d(
             tau: 3.0 * sc.physics.nu + 0.5,
             phase_field: None,
         },
+        mpi_ranks: Vec::new(),
         provenance: provenance(
             sc,
             lbm_scenario::BackendChoice::Gpu,
@@ -547,6 +553,7 @@ fn run_t<T: Real>(
             tau: sim.tau(),
             phase_field: None,
         },
+        mpi_ranks: Vec::new(),
         provenance: provenance(
             sc,
             lbm_scenario::BackendChoice::Cpu,
@@ -1101,6 +1108,7 @@ where
             tau: s.tau(),
             phase_field: None,
         },
+        mpi_ranks: Vec::new(),
         provenance: provenance(
             sc,
             lbm_scenario::BackendChoice::Cpu,

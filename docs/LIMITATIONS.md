@@ -101,9 +101,9 @@ decision-grade` to stderr.
 
 | Area | Status | Notes |
 |---|---|---|
-| Solver-state checkpoint (v2 format) | Engineering (technical) | Populations + stale buffer + moments + solid mask + optional force field; per-rank MPI files with rank-0 manifest; strict layout / version guards. |
-| Serialized state coverage | Partial | Manifest reserves `rng`, `particles`, `stats` as `false` today. BCFD-102 extends this. |
-| Large-scale resilience | Unsupported | Failure recovery, atomic publish, partial-write handling across ranks, parallel field output are not implemented. |
+| Solver-state checkpoint (v3 format) | Engineering (technical) | Populations + stale buffer + moments + solid mask + optional force field + scalar distributions + phase field + QOI accumulators; per-rank MPI files with rank-0 manifest; strict layout / version guards. |
+| Serialized state coverage | Partial | Scalar, phase, and QOI-stat sections are serialized when present; future cell-tracer / bubble / RNG sections have scaffolded traits but remain absent until BCFD-060 / BCFD-070 producers land. |
+| Large-scale resilience | Partial | Parallel field slabs are supported for MPI source fields; failure recovery, atomic publish, and partial-write repair across ranks are still not implemented. |
 
 ### 2.8 MPI and scale
 
@@ -111,8 +111,8 @@ decision-grade` to stderr.
 |---|---|---|
 | Multi-rank single-node | Engineering (technical) | `crates/lbm-core/src/dist.rs`. |
 | Multi-node weak scaling ≥80% @ 64 rank | Unsupported | RED pre-pivot; deferred until BCFD-100 + cluster access. |
-| Memory scaling | Blocked by global-array replication | `MpiSolver::new` requires global compact arrays on all ranks; fix in BCFD-100. |
-| Parallel I/O | Unsupported | Rank-0 gather only; parallel VTK/HDF5 not started (BCFD-101). |
+| Memory scaling | Engineering (technical) | `MpiSolver::new_local` builds masks/material samples from owned-cell callbacks; legacy `MpiSolver::new` remains small-scale only. |
+| Parallel I/O | Engineering (technical) | MPI ranks can write per-rank binary field slabs plus a manifest for velocity, phase `phi`, oxygen/scalar `C`, shear rate, and gas holdup; legacy rank-0 gather remains for small validation cases. |
 
 ### 2.9 Moving bodies
 

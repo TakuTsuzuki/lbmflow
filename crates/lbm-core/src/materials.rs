@@ -14,6 +14,17 @@ pub struct MaterialFields {
     pub alpha_gas: Vec<f64>,
 }
 
+/// One compact-core material sample supplied by localized geometry builders.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialSample {
+    pub rho_phys: f64,
+    pub mu_phys: f64,
+    pub nu_phys: f64,
+    pub sigma: f64,
+    pub alpha_liquid: f64,
+    pub alpha_gas: f64,
+}
+
 impl MaterialFields {
     pub fn new(n: usize) -> Self {
         Self {
@@ -86,6 +97,15 @@ impl MaterialFields {
 
     pub fn alpha_gas(&self) -> &[f64] {
         &self.alpha_gas
+    }
+
+    pub fn set_sample(&mut self, i: usize, sample: MaterialSample) {
+        self.rho_phys[i] = sample.rho_phys;
+        self.mu_phys[i] = sample.mu_phys;
+        self.nu_phys[i] = sample.nu_phys;
+        self.sigma[i] = sample.sigma;
+        self.alpha_liquid[i] = sample.alpha_liquid;
+        self.alpha_gas[i] = sample.alpha_gas;
     }
 }
 

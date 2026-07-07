@@ -26,6 +26,7 @@ pub mod bench_regression;
 pub mod bouzidi;
 pub mod bubble_forces;
 pub mod bubbles;
+pub mod cells;
 mod collision;
 pub mod compat;
 #[cfg(feature = "mpi")]
@@ -47,6 +48,7 @@ pub mod params;
 pub mod particles;
 pub mod pbm;
 pub mod phase_field;
+pub mod qoi;
 pub mod real;
 pub mod rotating_ibm;
 pub mod solver;
@@ -91,7 +93,7 @@ pub mod prelude {
     };
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
-    pub use crate::materials::MaterialFields;
+    pub use crate::materials::{MaterialFields, MaterialSample};
     pub use crate::params::{
         CollisionKind, FaceBC, FacePatch, MaterialModel, MaterialParamError,
         PhaseFieldMixtureParams, Reduction, SourceKind, SourceRegion, StepParams,
@@ -104,6 +106,7 @@ pub mod prelude {
     pub use crate::phase_field::{
         ClippingPolicy, PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams,
     };
+    pub use crate::qoi::{QoiAccumulatorSnapshot, QoiCheckpointState};
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{
@@ -122,5 +125,8 @@ pub mod prelude {
     pub use crate::gpu::{GpuContext, GpuSolver, WgpuBackend};
 
     #[cfg(feature = "mpi")]
-    pub use crate::dist::{MpiExchange, MpiSolver};
+    pub use crate::dist::{
+        read_parallel_field, FieldDtype, GlobalIndex, MpiExchange, MpiSolver, ParallelFieldError,
+        ParallelFieldManifest, RankFieldSlab, ScalarName,
+    };
 }

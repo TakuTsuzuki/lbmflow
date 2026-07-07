@@ -26,13 +26,22 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
-const CKPT_FORMAT_VERSION: u32 = 2;
+const CKPT_FORMAT_VERSION: u32 = 3;
 const CKPT_MAGIC: &[u8; 8] = b"LBMKPT\0\0";
 const SEC_F_PRIMARY: u32 = 1;
 const SEC_STALE_STASH: u32 = 2;
 const SEC_MOMENTS: u32 = 3;
 const SEC_SOLID: u32 = 4;
 const SEC_FORCE_FIELD: u32 = 5;
+const SEC_SCALAR_FIELDS: u32 = 6;
+const SEC_PHASE_FIELD: u32 = 7;
+#[allow(dead_code)]
+const SEC_CELL_TRACERS: u32 = 8;
+#[allow(dead_code)]
+const SEC_POINT_BUBBLES: u32 = 9;
+const SEC_QOI_ACCUMULATORS: u32 = 10;
+#[allow(dead_code)]
+const SEC_RNG_STATE: u32 = 11;
 
 /// Structured checkpoint/restart failure. The `code` field is intentionally
 /// stable for CLI/MCP agents.
@@ -467,6 +476,20 @@ impl<T: Real> GlobalSpec<T> {
     /// rim; open-face velocity ≤ MAX_SPEED (NaN-safe); outlet ρ > 0; convective
     /// u_conv ∈ (0, 1]; each open face's own axis ≥ 3 cells.
     pub fn validate(&self, d: usize, solid: &[bool]) -> Result<(), SpecError> {
+        self.validate_with_policy(d, solid, false)
+    }
+
+    pub(crate) fn validate_local_geometry_prechecked<L: Lattice>(&self) -> Result<(), SpecError> {
+        self.validate_with_policy(L::D, &[], true)?;
+        self.validate_lattice_open_faces::<L>()
+    }
+
+    fn validate_with_policy(
+        &self,
+        d: usize,
+        solid: &[bool],
+        local_geometry_prechecked: bool,
+    ) -> Result<(), SpecError> {
         // Viscosity (finite & positive: ν = 0 ⇒ omega_m = 0, E3).
         if !self.nu.is_finite() {
             return Err(SpecError::NonFiniteParameter { what: "nu" });
@@ -561,19 +584,25 @@ impl<T: Real> GlobalSpec<T> {
                 // unless open patches cover part of the face. A Closed base
                 // with open patches is legal: closed cells are handled by the
                 // solid rim and patched cells run the open-BC pass.
-                if !face_is_full_solid_rim(face, self.dims, solid)
+                if !local_geometry_prechecked
+                    && !face_is_full_solid_rim(face, self.dims, solid)
                     && !self.face_patches.iter().any(|p| p.face == face.index())
                 {
                     return Err(SpecError::UncoveredFace { face: face.index() });
                 }
             }
         }
-        self.validate_sources(d, solid)?;
+        self.validate_sources(d, solid, local_geometry_prechecked)?;
         self.validate_face_patches(d)?;
         Ok(())
     }
 
-    fn validate_sources(&self, d: usize, solid: &[bool]) -> Result<(), SpecError> {
+    fn validate_sources(
+        &self,
+        d: usize,
+        solid: &[bool],
+        local_geometry_prechecked: bool,
+    ) -> Result<(), SpecError> {
         for (i, source) in self.sources.iter().enumerate() {
             let SourceRegion { lo, hi } = source.region;
             let mut volume = 1usize;
@@ -609,7 +638,7 @@ impl<T: Real> GlobalSpec<T> {
             if !(q_cell > -1.0) {
                 return Err(SpecError::SourceSinkTooStrong { source: i, q_cell });
             }
-            if !solid.is_empty() {
+            if !local_geometry_prechecked && !solid.is_empty() {
                 for z in lo[2]..=hi[2] {
                     for y in lo[1]..=hi[1] {
                         for x in lo[0]..=hi[0] {
@@ -638,6 +667,10 @@ impl<T: Real> GlobalSpec<T> {
     /// Validate against the full lattice, including open-face kernel support.
     pub fn validate_lattice<L: Lattice>(&self, solid: &[bool]) -> Result<(), SpecError> {
         self.validate(L::D, solid)?;
+        self.validate_lattice_open_faces::<L>()
+    }
+
+    fn validate_lattice_open_faces<L: Lattice>(&self) -> Result<(), SpecError> {
         if (0..L::D).any(|a| {
             let neg = Face::ALL[2 * a];
             let pos = Face::ALL[2 * a + 1];
@@ -1049,6 +1082,14 @@ fn read_u64(bytes: &[u8], pos: &mut usize) -> Result<u64, CheckpointError> {
     Ok(u64::from_le_bytes(take(bytes, pos, 8)?.try_into().unwrap()))
 }
 
+fn write_f64(out: &mut Vec<u8>, v: f64) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn read_f64(bytes: &[u8], pos: &mut usize) -> Result<f64, CheckpointError> {
+    Ok(f64::from_le_bytes(take(bytes, pos, 8)?.try_into().unwrap()))
+}
+
 fn read_rank_file(path: &Path) -> Result<(RankHeader, BTreeMap<u32, Vec<u8>>), CheckpointError> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?.read_to_end(&mut bytes)?;
@@ -1063,7 +1104,9 @@ fn read_rank_file(path: &Path) -> Result<(RankHeader, BTreeMap<u32, Vec<u8>>), C
     if format_ver != CKPT_FORMAT_VERSION {
         return Err(CheckpointError::new(
             "CKPT_VERSION_MISMATCH",
-            format!("rank file format_version {format_ver} differs from supported {CKPT_FORMAT_VERSION}"),
+            format!(
+                "rank file format_version {format_ver} differs from supported {CKPT_FORMAT_VERSION}; rerun from the original scenario or migrate with a checkpoint upgrader before restart"
+            ),
         ));
     }
     let endian = read_u8(&bytes, &mut pos)?;
@@ -1136,6 +1179,135 @@ fn read_rank_file(path: &Path) -> Result<(RankHeader, BTreeMap<u32, Vec<u8>>), C
         },
         sections,
     ))
+}
+
+fn scalar_checkpoint_bytes<T: Real>(fields: &SoaFields<T>) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_u32(&mut out, fields.scalars.len() as u32);
+    for scalar in &fields.scalars {
+        write_u32(&mut out, scalar.name.len() as u32);
+        out.extend_from_slice(scalar.name.as_bytes());
+        write_f64(&mut out, scalar.diffusivity);
+        write_u64(&mut out, scalar.h.len() as u64);
+        push_real_bytes(&mut out, &scalar.h);
+        write_u64(&mut out, scalar.htmp.len() as u64);
+        push_real_bytes(&mut out, &scalar.htmp);
+        write_u64(&mut out, scalar.concentration.len() as u64);
+        push_real_bytes(&mut out, &scalar.concentration);
+    }
+    out
+}
+
+fn restore_scalar_checkpoint<T: Real>(
+    bytes: &[u8],
+    fields: &mut SoaFields<T>,
+) -> Result<(), CheckpointError> {
+    let mut pos = 0usize;
+    let count = read_u32(bytes, &mut pos)? as usize;
+    let mut scalars = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name_len = read_u32(bytes, &mut pos)? as usize;
+        let name = std::str::from_utf8(take(bytes, &mut pos, name_len)?)
+            .map_err(|e| CheckpointError::new("CKPT_PAYLOAD_CORRUPT", e.to_string()))?
+            .to_string();
+        let diffusivity = read_f64(bytes, &mut pos)?;
+        let h_len = read_u64(bytes, &mut pos)? as usize;
+        let h_bytes = take(bytes, &mut pos, h_len * std::mem::size_of::<T>())?;
+        let h = read_real_bytes(h_bytes, h_len)?;
+        let htmp_len = read_u64(bytes, &mut pos)? as usize;
+        let htmp_bytes = take(bytes, &mut pos, htmp_len * std::mem::size_of::<T>())?;
+        let htmp = read_real_bytes(htmp_bytes, htmp_len)?;
+        let c_len = read_u64(bytes, &mut pos)? as usize;
+        let c_bytes = take(bytes, &mut pos, c_len * std::mem::size_of::<T>())?;
+        let concentration = read_real_bytes(c_bytes, c_len)?;
+        if h_len != fields.q * fields.geom.n_padded()
+            || htmp_len != fields.q * fields.geom.n_padded()
+            || c_len != fields.geom.n_core()
+        {
+            return Err(CheckpointError::new(
+                "CKPT_GEOM_MISMATCH",
+                "scalar checkpoint section length differs from current geometry",
+            ));
+        }
+        scalars.push(crate::fields::ScalarDistribution {
+            name,
+            diffusivity,
+            h,
+            htmp,
+            concentration,
+        });
+    }
+    if pos != bytes.len() {
+        return Err(CheckpointError::new(
+            "CKPT_PAYLOAD_CORRUPT",
+            "scalar checkpoint section has trailing bytes",
+        ));
+    }
+    fields.scalars = scalars;
+    Ok(())
+}
+
+fn phase_checkpoint_bytes<T: Real>(fields: &SoaFields<T>) -> Option<Vec<u8>> {
+    let (Some(g), Some(gtmp), Some(phi), Some(params)) = (
+        fields.g.as_ref(),
+        fields.gtmp.as_ref(),
+        fields.phi.as_ref(),
+        fields.phase_params,
+    ) else {
+        return None;
+    };
+    let mut out = Vec::new();
+    write_f64(&mut out, params.interface_width.as_f64());
+    write_f64(&mut out, params.mobility.as_f64());
+    write_u64(&mut out, g.len() as u64);
+    push_real_bytes(&mut out, g);
+    write_u64(&mut out, gtmp.len() as u64);
+    push_real_bytes(&mut out, gtmp);
+    write_u64(&mut out, phi.len() as u64);
+    push_real_bytes(&mut out, phi);
+    Some(out)
+}
+
+fn restore_phase_checkpoint<T: Real>(
+    bytes: &[u8],
+    fields: &mut SoaFields<T>,
+) -> Result<(), CheckpointError> {
+    let mut pos = 0usize;
+    let interface_width = T::r(read_f64(bytes, &mut pos)?);
+    let mobility = T::r(read_f64(bytes, &mut pos)?);
+    let g_len = read_u64(bytes, &mut pos)? as usize;
+    let g_bytes = take(bytes, &mut pos, g_len * std::mem::size_of::<T>())?;
+    let g = read_real_bytes(g_bytes, g_len)?;
+    let gtmp_len = read_u64(bytes, &mut pos)? as usize;
+    let gtmp_bytes = take(bytes, &mut pos, gtmp_len * std::mem::size_of::<T>())?;
+    let gtmp = read_real_bytes(gtmp_bytes, gtmp_len)?;
+    let phi_len = read_u64(bytes, &mut pos)? as usize;
+    let phi_bytes = take(bytes, &mut pos, phi_len * std::mem::size_of::<T>())?;
+    let phi = read_real_bytes(phi_bytes, phi_len)?;
+    if g_len != fields.q * fields.geom.n_padded()
+        || gtmp_len != fields.q * fields.geom.n_padded()
+        || phi_len != fields.geom.n_core()
+    {
+        return Err(CheckpointError::new(
+            "CKPT_GEOM_MISMATCH",
+            "phase checkpoint section length differs from current geometry",
+        ));
+    }
+    if pos != bytes.len() {
+        return Err(CheckpointError::new(
+            "CKPT_PAYLOAD_CORRUPT",
+            "phase checkpoint section has trailing bytes",
+        ));
+    }
+    fields.g = Some(g);
+    fields.gtmp = Some(gtmp);
+    fields.phi = Some(phi);
+    fields.phase_params = Some(crate::phase_field::PhaseFieldParams {
+        interface_width,
+        mobility,
+        clipping_policy: crate::phase_field::ClippingPolicy::default(),
+    });
+    Ok(())
 }
 
 /// Which global faces are walls, and their tangential velocities.
@@ -1343,6 +1515,7 @@ where
     contact_angles: crate::geometry::ContactAngleMap,
     top_boundary: crate::free_surface::TopBoundaryMode,
     degassing_ledger: crate::free_surface::DegassingLedger,
+    qoi_checkpoint_state: crate::qoi::QoiCheckpointState,
     /// Split streaming into interior + boundary-shell passes (the overlap
     /// seam for asynchronous exchanges). Off by default: the single full
     /// pass reproduces V1's probe summation order bit-for-bit.
@@ -1423,6 +1596,141 @@ where
         exchange: H,
     ) -> Result<Self, SpecError> {
         Self::build(spec, solid, wall_u, decomp, Some(part), backend, exchange)
+    }
+
+    /// Build a single owned part from local geometry callbacks instead of
+    /// replicated compact global arrays. The caller must precheck global face
+    /// rim coverage and source/solid overlap collectively when `part` is one
+    /// rank of a distributed run.
+    pub fn new_local_part_with_geometry(
+        spec: &GlobalSpec<T>,
+        decomp: [usize; 3],
+        part: usize,
+        backend: B,
+        exchange: H,
+        solid_mask_fn: impl Fn(usize, usize, usize) -> bool,
+        wall_velocity_fn: impl Fn(usize, usize, usize) -> [T; 3],
+        material_fields_fn: impl Fn(usize, usize, usize) -> Option<crate::materials::MaterialSample>,
+    ) -> Self {
+        Self::try_new_local_part_with_geometry(
+            spec,
+            decomp,
+            part,
+            backend,
+            exchange,
+            solid_mask_fn,
+            wall_velocity_fn,
+            material_fields_fn,
+        )
+        .unwrap_or_else(|e| panic!("invalid GlobalSpec: {e}"))
+    }
+
+    /// Fallible variant of [`Self::new_local_part_with_geometry`].
+    pub fn try_new_local_part_with_geometry(
+        spec: &GlobalSpec<T>,
+        decomp: [usize; 3],
+        part: usize,
+        backend: B,
+        exchange: H,
+        solid_mask_fn: impl Fn(usize, usize, usize) -> bool,
+        wall_velocity_fn: impl Fn(usize, usize, usize) -> [T; 3],
+        material_fields_fn: impl Fn(usize, usize, usize) -> Option<crate::materials::MaterialSample>,
+    ) -> Result<Self, SpecError> {
+        if L::D == 2 {
+            assert_eq!(spec.dims[2], 1, "2D lattice requires nz == 1");
+        }
+        spec.validate_local_geometry_prechecked::<L>()?;
+        let (omega_p, omega_m) = spec.collision.omegas(spec.nu);
+        let params = StepParams {
+            collision: spec.collision,
+            omega_p,
+            omega_m,
+            force: spec.force,
+            gravity: None,
+            faces: spec.faces,
+            sources: spec.sources.clone(),
+            face_patches: spec.face_patches.clone(),
+        };
+        let all_subs = partition(L::D, spec.dims, spec.periodic, decomp);
+        assert!(
+            part < all_subs.len(),
+            "part {part} out of range for {decomp:?}"
+        );
+        assert_eq!(
+            H::SCOPE,
+            ExchangeScope::Remote,
+            "new_local_part_with_geometry requires a Remote halo exchange"
+        );
+        let subs = vec![all_subs[part].clone()];
+        let mut host_parts: Vec<SoaFields<T>> =
+            subs.iter().map(|s| SoaFields::new(L::Q, s.geom)).collect();
+        for (sub, fields) in subs.iter().zip(host_parts.iter_mut()) {
+            let g = sub.geom;
+            let mut material = None;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gx = sub.origin[0] + x;
+                        let gy = sub.origin[1] + y;
+                        let gz = sub.origin[2] + z;
+                        let pi = g.pidx(x, y, z);
+                        fields.solid[pi] = solid_mask_fn(gx, gy, gz);
+                        fields.wall_u[pi] = wall_velocity_fn(gx, gy, gz);
+                        if let Some(sample) = material_fields_fn(gx, gy, gz) {
+                            let mat = material.get_or_insert_with(|| {
+                                crate::materials::MaterialFields::new(g.n_core())
+                            });
+                            mat.set_sample(g.cidx(x, y, z), sample);
+                        }
+                    }
+                }
+            }
+            fields.material = material;
+        }
+        let parts = subs.iter().map(|s| backend.alloc(s)).collect();
+        let mut solver = Self {
+            params,
+            nu: spec.nu,
+            collision: spec.collision,
+            dims: spec.dims,
+            periodic: spec.periodic,
+            subs,
+            host_parts,
+            parts,
+            backend,
+            exchange,
+            time: 0,
+            probed_force: [T::zero(); 3],
+            masks_dirty: true,
+            host_dirty: true,
+            device_ahead: false,
+            psi_planes: Vec::new(),
+            gravity: None,
+            material_model: MaterialModel::SinglePhase,
+            phase_initial_total: None,
+            phase_last_diag: None,
+            phase_last_jrho: None,
+            contact_angles: crate::geometry::ContactAngleMap::default(),
+            top_boundary: crate::free_surface::TopBoundaryMode::ClosedLid,
+            degassing_ledger: crate::free_surface::DegassingLedger::default(),
+            qoi_checkpoint_state: crate::qoi::QoiCheckpointState::default(),
+            two_pass: false,
+            _lattice: std::marker::PhantomData,
+        };
+        solver.psi_planes = solver
+            .subs
+            .iter()
+            .map(|sub| vec![T::zero(); sub.geom.n_padded()])
+            .collect();
+        solver.sync_masks();
+        solver.stage_in_if_dirty();
+        for i in 0..solver.parts.len() {
+            solver
+                .backend
+                .update_moments(&solver.subs[i], &mut solver.parts[i], &solver.params);
+        }
+        solver.device_ahead = true;
+        Ok(solver)
     }
 
     fn build(
@@ -1543,6 +1851,7 @@ where
             contact_angles: crate::geometry::ContactAngleMap::default(),
             top_boundary: crate::free_surface::TopBoundaryMode::ClosedLid,
             degassing_ledger: crate::free_surface::DegassingLedger::default(),
+            qoi_checkpoint_state: crate::qoi::QoiCheckpointState::default(),
             two_pass: false,
             _lattice: std::marker::PhantomData,
         };
@@ -3910,6 +4219,30 @@ where
     pub fn fields(&self, i: usize) -> &SoaFields<T> {
         &self.host_parts[i]
     }
+
+    /// Estimated bytes held by host-side solver state for owned parts.
+    pub fn mem_estimate_bytes(&self) -> usize {
+        self.host_parts
+            .iter()
+            .map(SoaFields::mem_estimate_bytes)
+            .sum::<usize>()
+            + self
+                .psi_planes
+                .iter()
+                .map(|v| v.len() * std::mem::size_of::<T>())
+                .sum::<usize>()
+    }
+
+    /// Install serializable running QOI statistics for checkpoint v3.
+    pub fn set_qoi_checkpoint_state(&mut self, state: crate::qoi::QoiCheckpointState) {
+        self.qoi_checkpoint_state = state;
+    }
+
+    /// Running QOI statistics currently staged for checkpoint v3.
+    pub fn qoi_checkpoint_state(&self) -> &crate::qoi::QoiCheckpointState {
+        &self.qoi_checkpoint_state
+    }
+
     /// Mutable fields of part `i` for crate-internal setup and fault-injection
     /// tests. Public callers must use dedicated methods so host/mask dirty
     /// flags cannot be forgotten.
@@ -4024,6 +4357,7 @@ where
         part: usize,
         sub: &Subdomain,
         fields: &SoaFields<T>,
+        qoi_state: &crate::qoi::QoiCheckpointState,
     ) -> Result<CheckpointRank, CheckpointError> {
         let np = fields.geom.n_padded();
         let nc = fields.geom.n_core();
@@ -4053,6 +4387,15 @@ where
                 push_real_bytes(&mut bytes, v);
             }
             sections.push((SEC_FORCE_FIELD, bytes));
+        }
+        if !fields.scalars.is_empty() {
+            sections.push((SEC_SCALAR_FIELDS, scalar_checkpoint_bytes(fields)));
+        }
+        if let Some(phase) = phase_checkpoint_bytes(fields) {
+            sections.push((SEC_PHASE_FIELD, phase));
+        }
+        if !qoi_state.is_empty() {
+            sections.push((SEC_QOI_ACCUMULATORS, serde_json::to_vec(qoi_state)?));
         }
 
         let mut payload = Vec::new();
@@ -4113,7 +4456,7 @@ where
         let mut reserved = BTreeMap::new();
         reserved.insert("rng".to_string(), false);
         reserved.insert("particles".to_string(), false);
-        reserved.insert("stats".to_string(), false);
+        reserved.insert("stats".to_string(), !self.qoi_checkpoint_state.is_empty());
         CheckpointManifest {
             kind: "lbmflow-checkpoint".to_string(),
             format_version: CKPT_FORMAT_VERSION,
@@ -4167,7 +4510,14 @@ where
             .zip(self.host_parts.iter())
             .zip(part_ids.iter())
         {
-            out.push(Self::write_part_checkpoint(dir, rank, part, sub, fields)?);
+            out.push(Self::write_part_checkpoint(
+                dir,
+                rank,
+                part,
+                sub,
+                fields,
+                &self.qoi_checkpoint_state,
+            )?);
         }
         Ok(out)
     }
@@ -4242,7 +4592,7 @@ where
             return Err(CheckpointError::new(
                 "CKPT_VERSION_MISMATCH",
                 format!(
-                    "checkpoint format_version {} differs from supported {}",
+                    "checkpoint format_version {} differs from supported {}; rerun from the original scenario or migrate with a checkpoint upgrader before restart",
                     manifest.format_version, CKPT_FORMAT_VERSION
                 ),
             ));
@@ -4312,7 +4662,7 @@ where
             return Err(CheckpointError::new(
                 "CKPT_VERSION_MISMATCH",
                 format!(
-                    "checkpoint format_version {} differs from supported {}",
+                    "checkpoint format_version {} differs from supported {}; rerun from the original scenario or migrate with a checkpoint upgrader before restart",
                     manifest.format_version, CKPT_FORMAT_VERSION
                 ),
             ));
@@ -4404,6 +4754,7 @@ where
             ));
         }
 
+        let mut qoi_checkpoint_state: Option<crate::qoi::QoiCheckpointState> = None;
         for ((entry, sub), fields) in entries
             .into_iter()
             .zip(self.subs.iter())
@@ -4502,10 +4853,27 @@ where
             } else {
                 fields.force_field = None;
             }
+            if let Some(scalar) = payload.get(&SEC_SCALAR_FIELDS) {
+                restore_scalar_checkpoint(scalar, fields)?;
+            } else {
+                fields.scalars.clear();
+            }
+            if let Some(phase) = payload.get(&SEC_PHASE_FIELD) {
+                restore_phase_checkpoint(phase, fields)?;
+            } else {
+                fields.g = None;
+                fields.gtmp = None;
+                fields.phi = None;
+                fields.phase_params = None;
+            }
+            if let Some(stats) = payload.get(&SEC_QOI_ACCUMULATORS) {
+                qoi_checkpoint_state = Some(serde_json::from_slice(stats)?);
+            }
             fields.fused = None;
         }
         self.time = manifest.step;
         self.probed_force = [T::zero(); 3];
+        self.qoi_checkpoint_state = qoi_checkpoint_state.unwrap_or_default();
         self.host_dirty = true;
         self.device_ahead = false;
         self.masks_dirty = false;
@@ -5046,6 +5414,29 @@ where
                 (T::r(2.0) * ss).sqrt()
             })
             .collect()
+    }
+
+    /// Owned compact shear-rate blocks, one vector per local part.
+    pub fn local_shear_rate_blocks(&self) -> Vec<Vec<T>> {
+        let mut blocks = Vec::with_capacity(self.subs.len());
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let g = sub.geom;
+            let mut block = vec![T::zero(); g.n_core()];
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let s = self.strain_rate_at(fields, x, y, z);
+                        let ss = s[0] * s[0]
+                            + s[1] * s[1]
+                            + s[2] * s[2]
+                            + T::r(2.0) * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
+                        block[g.cidx(x, y, z)] = (T::r(2.0) * ss).sqrt();
+                    }
+                }
+            }
+            blocks.push(block);
+        }
+        blocks
     }
 
     /// Global deviation-population plane `q` (compact layout).
@@ -5693,7 +6084,7 @@ mod tests {
         let manifest_path = dir.join("manifest.json");
         let mut manifest: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
-        manifest["format_version"] = serde_json::Value::from(1);
+        manifest["format_version"] = serde_json::Value::from(2);
         std::fs::write(
             &manifest_path,
             serde_json::to_string_pretty(&manifest).unwrap(),
@@ -5712,7 +6103,137 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(err.code, "CKPT_VERSION_MISMATCH");
-        assert!(err.message.contains("format_version 1"));
+        assert!(err.message.contains("format_version 2"));
+        assert!(err.message.contains("migrate"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_v3_roundtrips_scalar_distribution_state() {
+        let spec = aux_spec();
+        let mut s: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        s.enable_scalar_distribution("oxygen", 0.02).unwrap();
+        {
+            let fields = s.fields_mut(0);
+            let idx = fields.scalar_index("oxygen").unwrap();
+            for (i, v) in fields.scalars[idx].h.iter_mut().enumerate() {
+                *v = i as f64 * 1.0e-6;
+            }
+            for (i, v) in fields.scalars[idx].htmp.iter_mut().enumerate() {
+                *v = -(i as f64) * 2.0e-6;
+            }
+            for (i, v) in fields.scalars[idx].concentration.iter_mut().enumerate() {
+                *v = 0.1 + i as f64 * 1.0e-3;
+            }
+        }
+        let dir = tmp_ckpt("scalar-v3");
+        s.save(&dir).unwrap();
+        let loaded: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .unwrap();
+        assert_eq!(s.fields(0).scalars, loaded.fields(0).scalars);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_v3_roundtrips_phase_distribution_state() {
+        let spec = aux_spec();
+        let params = phase_params();
+        let mut s: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        s.enable_phase_distribution(params).unwrap();
+        {
+            let fields = s.fields_mut(0);
+            for (i, v) in fields.g.as_mut().unwrap().iter_mut().enumerate() {
+                *v = i as f64 * 1.0e-5;
+            }
+            for (i, v) in fields.gtmp.as_mut().unwrap().iter_mut().enumerate() {
+                *v = -(i as f64) * 1.0e-5;
+            }
+            for (i, v) in fields.phi.as_mut().unwrap().iter_mut().enumerate() {
+                *v = 0.25 + i as f64 * 1.0e-4;
+            }
+        }
+        let dir = tmp_ckpt("phase-v3");
+        s.save(&dir).unwrap();
+        let loaded: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .unwrap();
+        assert_eq!(s.fields(0).g, loaded.fields(0).g);
+        assert_eq!(s.fields(0).gtmp, loaded.fields(0).gtmp);
+        assert_eq!(s.fields(0).phi, loaded.fields(0).phi);
+        assert_eq!(s.fields(0).phase_params, loaded.fields(0).phase_params);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_v3_roundtrips_qoi_accumulators_and_manifest_flag() {
+        let spec = aux_spec();
+        let mut s: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let state = crate::qoi::QoiCheckpointState {
+            accumulators: vec![crate::qoi::QoiAccumulatorSnapshot {
+                name: "shear_p95".to_string(),
+                count: 7,
+                sum: 3.5,
+                min: 0.1,
+                max: 1.2,
+                reservoir: vec![0.2, 0.5, 0.9],
+            }],
+        };
+        s.set_qoi_checkpoint_state(state.clone());
+        let dir = tmp_ckpt("qoi-v3");
+        s.save(&dir).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["reserved"]["stats"], true);
+        assert_eq!(manifest["reserved"]["particles"], false);
+        assert_eq!(manifest["reserved"]["rng"], false);
+        let loaded: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::load(
+            &dir,
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .unwrap();
+        assert_eq!(loaded.qoi_checkpoint_state(), &state);
         let _ = std::fs::remove_dir_all(dir);
     }
 

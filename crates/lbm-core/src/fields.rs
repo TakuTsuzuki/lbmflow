@@ -35,7 +35,7 @@ pub enum DistributionKind {
 }
 
 /// Named scalar distribution storage.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScalarDistribution<T: Real> {
     /// Stable scalar identifier from the scenario or caller.
     pub name: String,
@@ -61,6 +61,11 @@ impl<T: Real> ScalarDistribution<T> {
             htmp: vec![T::zero(); q * np],
             concentration: vec![T::zero(); nc],
         }
+    }
+
+    pub fn mem_estimate_bytes(&self) -> usize {
+        let t = std::mem::size_of::<T>();
+        self.h.len() * t + self.htmp.len() * t + self.concentration.len() * t + self.name.len()
     }
 }
 
@@ -342,6 +347,48 @@ impl<T: Real> SoaFields<T> {
     pub fn f_plane(&self, q: usize) -> &[T] {
         let n = self.plane_len();
         &self.f[q * n..(q + 1) * n]
+    }
+
+    pub fn mem_estimate_bytes(&self) -> usize {
+        let t = std::mem::size_of::<T>();
+        let mut bytes = 0usize;
+        bytes += self.f.len() * t;
+        bytes += self.ftmp.len() * t;
+        bytes += self.g.as_ref().map_or(0, |v| v.len() * t);
+        bytes += self.gtmp.as_ref().map_or(0, |v| v.len() * t);
+        bytes += self.phi.as_ref().map_or(0, |v| v.len() * t);
+        bytes += self
+            .scalars
+            .iter()
+            .map(ScalarDistribution::mem_estimate_bytes)
+            .sum::<usize>();
+        if let Some(material) = &self.material {
+            bytes += material.rho_phys.len() * std::mem::size_of::<f64>();
+            bytes += material.mu_phys.len() * std::mem::size_of::<f64>();
+            bytes += material.nu_phys.len() * std::mem::size_of::<f64>();
+            bytes += material.sigma.len() * std::mem::size_of::<f64>();
+            bytes += material.alpha_liquid.len() * std::mem::size_of::<f64>();
+            bytes += material.alpha_gas.len() * std::mem::size_of::<f64>();
+        }
+        bytes += self.rho.len() * t;
+        bytes += self.ux.len() * t;
+        bytes += self.uy.len() * t;
+        bytes += self.uz.len() * t;
+        bytes += self.solid.len() * std::mem::size_of::<bool>();
+        bytes += self.wall_u.len() * 3 * t;
+        bytes += self
+            .probe
+            .as_ref()
+            .map_or(0, |v| v.len() * std::mem::size_of::<bool>());
+        bytes += self.force_field.as_ref().map_or(0, |v| v.len() * 3 * t);
+        bytes += self.omega_field.as_ref().map_or(0, |v| v.len() * t);
+        bytes += self
+            .inlet_profiles
+            .iter()
+            .filter_map(|v| v.as_ref())
+            .map(|v| v.len() * 3 * t)
+            .sum::<usize>();
+        bytes
     }
 }
 
