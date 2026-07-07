@@ -913,3 +913,23 @@ introduced; no field visualization artifact is expected for this code+test
 diagnostic-only order.
 Verdict: PHYSICAL for diagnostics; no computed-field behavior claim is made.
 Routing: none.
+
+### 2026-07-07 falsification record — cumulant |u|^2 term removal experiment
+- Experiment (branch cx/galilean-fix, not merged): removed the D3Q19
+  `omega_eff = omega_shear * (1 - 0.16 |u|^2)` factor per
+  docs/proposals/CUMULANT_GALILEAN_FIX.md path (c), which PREDICTED the
+  advected-TGV3D frame spread would drop below the derived band 1.156594266e-3.
+- Measured: spread WITH the term 4.195075506e-3 (prior holdout record);
+  spread WITHOUT the term 1.051034711e-2 — 2.5x WORSE. The falsifier fired;
+  the term was restored and no change was merged.
+- Interpretation: the scalar |u|^2 factor does compensate a real |u|^2-scaling
+  portion of the D3Q19 defect (presumably the isotropic/trace part); the
+  proposal's diagnosis that removal would land sub-band is falsified. The
+  residual anisotropic (tensorial) part remains uncorrected either way.
+- Standing state: the calibrated term is RETAINED with the narrowed claim
+  (valid for non-advected/weakly-framed decay; Galilean invariance at finite
+  frame velocity NOT established on D3Q19 — holdout test stays
+  `#[ignore = FINDING]` at its derived band). Any future fix must reproduce
+  BOTH measured spreads (with-term 4.20e-3, without-term 1.05e-2 at
+  u_frame <= 0.1, N=32, nu=0.02, u0=0.012) before its correction claim is
+  trusted.
