@@ -65,6 +65,16 @@ fn bioprocess_schema() -> Value {
                     "vessel_diameter_m": { "type": "number" },
                     "liquid_height_m": { "type": "number" },
                     "working_volume_m3": { "type": "number" },
+                    "bottom": { "type": "string", "enum": ["flat", "dished"] },
+                    "stl_import": {
+                        "type": ["object", "null"],
+                        "additionalProperties": false,
+                        "required": ["path"],
+                        "properties": {
+                            "path": { "type": "string" },
+                            "labels_path": { "type": ["string", "null"] }
+                        }
+                    },
                     "impellers": {
                         "type": "array",
                         "items": { "$ref": "#/$defs/ImpellerSpec" }
@@ -80,25 +90,65 @@ fn bioprocess_schema() -> Value {
                 }
             },
             "ImpellerSpec": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                    "kind",
-                    "diameter_m",
-                    "clearance_from_bottom_m",
-                    "rotational_speed_rpm",
-                    "blade_count"
-                ],
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["rushton", "pitched_blade", "marine", "custom_marker_set"]
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "diameter_m", "clearance_from_bottom_m", "rotational_speed_rpm", "blade_count"],
+                        "properties": {
+                            "kind": { "const": "rushton" },
+                            "diameter_m": { "type": "number" },
+                            "clearance_from_bottom_m": { "type": "number" },
+                            "rotational_speed_rpm": { "type": "number" },
+                            "blade_count": { "type": "integer", "minimum": 0 }
+                        }
                     },
-                    "diameter_m": { "type": "number" },
-                    "clearance_from_bottom_m": { "type": "number" },
-                    "rotational_speed_rpm": { "type": "number" },
-                    "blade_count": { "type": "integer", "minimum": 0 }
-                }
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "diameter_m", "clearance_from_bottom_m", "rotational_speed_rpm", "blade_count"],
+                        "properties": {
+                            "kind": { "const": "pitched_blade" },
+                            "diameter_m": { "type": "number" },
+                            "clearance_from_bottom_m": { "type": "number" },
+                            "rotational_speed_rpm": { "type": "number" },
+                            "blade_count": { "type": "integer", "minimum": 0 }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "diameter_m", "clearance_from_bottom_m", "rotational_speed_rpm", "blade_count"],
+                        "properties": {
+                            "kind": { "const": "marine" },
+                            "diameter_m": { "type": "number" },
+                            "clearance_from_bottom_m": { "type": "number" },
+                            "rotational_speed_rpm": { "type": "number" },
+                            "blade_count": { "type": "integer", "minimum": 0 }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind", "markers", "rotational_speed_rpm"],
+                        "properties": {
+                            "kind": { "const": "custom_marker_set" },
+                            "markers": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "prefixItems": [
+                                        { "type": "number" },
+                                        { "type": "number" },
+                                        { "type": "number" }
+                                    ],
+                                    "items": false
+                                }
+                            },
+                            "rotational_speed_rpm": { "type": "number" }
+                        }
+                    }
+                ]
             },
             "BaffleSpec": {
                 "type": "object",
@@ -132,6 +182,10 @@ fn bioprocess_schema() -> Value {
                             "outer_radius_m": { "type": "number" },
                             "orifice_count": { "type": "integer", "minimum": 0 },
                             "orifice_diameter_m": { "type": "number" },
+                            "raw_phi_boundary_fields": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
                             "gas_volumetric_flow_m3_per_s": { "type": ["number", "null"] },
                             "vvm": { "type": ["number", "null"] },
                             "inlet_phase": { "type": "string" }
@@ -145,6 +199,9 @@ fn bioprocess_schema() -> Value {
                             "center_z_m",
                             "length_m",
                             "diameter_m",
+                            "axis",
+                            "orifice_count",
+                            "orifice_diameter_m",
                             "gas_volumetric_flow_m3_per_s",
                             "vvm",
                             "inlet_phase"
@@ -154,6 +211,13 @@ fn bioprocess_schema() -> Value {
                             "center_z_m": { "type": "number" },
                             "length_m": { "type": "number" },
                             "diameter_m": { "type": "number" },
+                            "axis": { "type": "string", "enum": ["x", "y"] },
+                            "orifice_count": { "type": "integer", "minimum": 0 },
+                            "orifice_diameter_m": { "type": "number" },
+                            "raw_phi_boundary_fields": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
                             "gas_volumetric_flow_m3_per_s": { "type": ["number", "null"] },
                             "vvm": { "type": ["number", "null"] },
                             "inlet_phase": { "type": "string" }
@@ -166,6 +230,7 @@ fn bioprocess_schema() -> Value {
                             "kind",
                             "center_z_m",
                             "positions",
+                            "orifice_diameter_m",
                             "gas_volumetric_flow_m3_per_s",
                             "vvm",
                             "inlet_phase"
@@ -184,6 +249,11 @@ fn bioprocess_schema() -> Value {
                                     ],
                                     "items": false
                                 }
+                            },
+                            "orifice_diameter_m": { "type": "number" },
+                            "raw_phi_boundary_fields": {
+                                "type": "array",
+                                "items": { "type": "string" }
                             },
                             "gas_volumetric_flow_m3_per_s": { "type": ["number", "null"] },
                             "vvm": { "type": ["number", "null"] },
