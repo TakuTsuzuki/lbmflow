@@ -30,20 +30,29 @@ context in commits 82946d3 / cd3999f / 20d0e10).
   marker interpolation-spreading Gram operator and still needs its own derived
   implicit/relaxation treatment.
 
-## OPEN — core-engine fix pending
-
 ### ANOM-P4-008 — cumulant D3Q19 "+0.0025 viscosity offset" is a resolution-point calibration (verdict C)
 - Severity: **S2** leaning S0 (silent tau-dependent bias at every N except
   calibration point).
-- Gate: `cx/audit-cumulant` e2 canary (|a| ≤ 2e-3 after removal).
+- Status: **RESOLVED 2026-07-07** (fix 3af4b3a, merged via d35faf4;
+  adjudicated by the r2-c triage — see PHYSICS.md).
+- Fix: offset removed from CPU scalar/SIMD/WGSL; TGV3D acceptance re-frozen
+  to the uncorrected finite-N value with the h²-intercept audit as the
+  accuracy claim (measured `a = 2.171836972e-5`, canary green). −0.16·u²
+  term stays separately ablatable (E1 SPEC-GAP pending).
+- Trailing finding (closed): the removal legitimately shifted D3Q19 TGV3D
+  decay observables by the nu_eff rescale ×1.0238 (rest-frame rel_err
+  1.834e-3 → 2.507e-2 = the honest finite-N=32 defect) and no default band
+  saw it (band vacuity). Regression pin added:
+  `cumulant_holdout::tgv3d_u0_decay_rate_matches_frozen_anchor` (frozen rate
+  `4.742352837e-3`, half-width 1e-5 relative, default suite).
 - Measured (N ∈ {24,32,48}, diffusive u0): D3Q19 defects fit
   d = a + b/N² exactly with a = −2.3275e-2, b = +23.22. The intercept matches
   the offset's own nu-space footprint −0.0025·2/(2−ω) at ω=1.7857 to 99.8%.
   D3Q27 control (offset=0): a27 ≈ 0. Confirms the uncorrected cumulant has
   ~zero resolution-independent bias — the offset cancels ordinary O(h²) at
   one resolution only.
-- Recommended: remove offset; re-freeze TGV3D acceptance with h²-intercept
-  criterion; ablate the −0.16·u² term separately.
+
+## OPEN — core-engine fix pending
 
 ### ANOM-P4-010 — compat volume penalization diverges for solid disc at Re 0.09
 - Severity: **S1**. Same family as P4-001 (target-the-half-force sizing).
