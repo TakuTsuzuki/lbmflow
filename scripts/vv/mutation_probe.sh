@@ -46,19 +46,26 @@ mutation_catalog() {
   cat <<'CATALOG'
 guo-f2-velocity-removed
 forcing-sign-flipped
+guo-source-sign-flipped
 trt-relaxation-swapped
+trt-omega-minus-uses-tau
 d2q9-opposite-broken
+d2q9-weight-nonopposite-swapped
 d3q19-opposite-broken
 d3q27-face-unknown-broken
 halfway-wall-shifted
+halfway-wall-source-cell-offbyone
 moving-wall-sign-flipped
+moving-wall-factor-two
 zou-he-pressure-normal-sign-flipped
 pressure-outlet-correction-removed
 outflow-stale-slot-broken
 mpi-halo-x-direction-swapped
 probe-force-physicalization-removed
+probe-corner-links-dropped
 shan-chen-force-sign-flipped
 contact-angle-wall-term-sign-flipped
+equilibrium-u2-coefficient-four
 f32-deviation-storage-disabled
 CATALOG
 }
@@ -131,13 +138,28 @@ set_mutation() {
       TARGETS=(crates/lbm-core/src/kernels.rs)
       CMD=(cargo test --release -p lbm-core --test validation_conservation t6_periodic_uniform_force_adds_exact_momentum -- --exact)
       ;;
+    guo-source-sign-flipped)
+      DESC="Lane 2.1: flip the sign of the Guo source term in collide_row."
+      TARGETS=(crates/lbm-core/src/kernels.rs)
+      CMD=(cargo test --release -p lbm-core --test validation_conservation t6_periodic_uniform_force_adds_exact_momentum -- --exact)
+      ;;
     trt-relaxation-swapped)
       DESC="Use omega+ for the TRT antisymmetric relaxation."
       TARGETS=(crates/lbm-core/src/kernels.rs)
       CMD=(cargo test --release -p lbm-core --test validation_channel t2_trt_magic_poiseuille_is_exact_and_symmetric -- --exact)
       ;;
+    trt-omega-minus-uses-tau)
+      DESC="Lane 2.1: compute TRT omega_minus using tau instead of lambda_plus."
+      TARGETS=(crates/lbm-core/src/params.rs)
+      CMD=(cargo test --release -p lbm-core params::tests::omegas_match_v1_derivation -- --exact)
+      ;;
     d2q9-opposite-broken)
       DESC="Break one D2Q9 opposite-direction table entry."
+      TARGETS=(crates/lbm-core/src/lattice.rs)
+      CMD=(cargo test --release -p lbm-core lattice::tests::d2q9_invariants -- --exact)
+      ;;
+    d2q9-weight-nonopposite-swapped)
+      DESC="Lane 2.1: swap two non-opposite D2Q9 quadrature weights."
       TARGETS=(crates/lbm-core/src/lattice.rs)
       CMD=(cargo test --release -p lbm-core lattice::tests::d2q9_invariants -- --exact)
       ;;
@@ -156,8 +178,18 @@ set_mutation() {
       TARGETS=(crates/lbm-core/src/kernels.rs)
       CMD=(cargo test --release -p lbm-core --test validation_channel t2_trt_magic_poiseuille_is_exact_and_symmetric -- --exact)
       ;;
+    halfway-wall-source-cell-offbyone)
+      DESC="Lane 2.1: read the reflected wall-link population from the solid source cell instead of the adjacent fluid cell."
+      TARGETS=(crates/lbm-core/src/kernels.rs)
+      CMD=(cargo test --release -p lbm-core --test validation_channel t2_trt_magic_poiseuille_is_exact_and_symmetric -- --exact)
+      ;;
     moving-wall-sign-flipped)
       DESC="Flip the moving-wall bounce-back momentum-injection sign."
+      TARGETS=(crates/lbm-core/src/kernels.rs)
+      CMD=(cargo test --release -p lbm-core --test validation_channel t3_top_wall_couette_exact_for_bgk_and_trt_all_taus -- --exact)
+      ;;
+    moving-wall-factor-two)
+      DESC="Lane 2.1: use factor 2.0 instead of 6.0 in the half-way moving-wall term."
       TARGETS=(crates/lbm-core/src/kernels.rs)
       CMD=(cargo test --release -p lbm-core --test validation_channel t3_top_wall_couette_exact_for_bgk_and_trt_all_taus -- --exact)
       ;;
@@ -186,6 +218,11 @@ set_mutation() {
       TARGETS=(crates/lbm-core/src/kernels.rs)
       CMD=(cargo test --release -p lbm-core --test accuracy_audit_probe a2_steady_poiseuille_wall_friction_balance -- --exact)
       ;;
+    probe-corner-links-dropped)
+      DESC="Lane 2.1: drop diagonal/corner bounce-back links from momentum-exchange probe accumulation."
+      TARGETS=(crates/lbm-core/src/kernels.rs)
+      CMD=(cargo test --release -p lbm-core --test accuracy_audit_probe a2_steady_poiseuille_wall_friction_balance -- --exact)
+      ;;
     shan-chen-force-sign-flipped)
       DESC="Flip the single-component Shan-Chen cohesion force sign."
       TARGETS=(crates/lbm-core/src/compat/multiphase.rs)
@@ -195,6 +232,11 @@ set_mutation() {
       DESC="Flip the legacy Shan-Chen wall-adhesion term sign."
       TARGETS=(crates/lbm-core/src/compat/multiphase.rs)
       CMD=(cargo test --release -p lbm-core --test validation_contact_angle t11b_wall_adhesion_contact_angles_are_monotone_and_frozen -- --exact)
+      ;;
+    equilibrium-u2-coefficient-four)
+      DESC="Lane 2.1: change equilibrium()'s c_u^2 coefficient from 4.5 to 4.0."
+      TARGETS=(crates/lbm-core/src/kernels.rs)
+      CMD=(cargo test --release -p lbm-core kernels::tests::collide_feq_matches_equilibrium_bitwise_d2q9 -- --exact)
       ;;
     f32-deviation-storage-disabled)
       DESC="Remove the +1 rest-state term from deviation-storage density reconstruction."
@@ -219,11 +261,40 @@ apply_mutation() {
     forcing-sign-flipped)
       replace_exact crates/lbm-core/src/kernels.rs "src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);" "src[q] = -p.wr[q] * (three * (cf - uf) + nine * cu * cf);"
       ;;
+    guo-source-sign-flipped)
+      replace_exact crates/lbm-core/src/kernels.rs "src[q] = p.wr[q] * (three * (cf - uf) + nine * cu * cf);" "src[q] = -p.wr[q] * (three * (cf - uf) + nine * cu * cf);"
+      ;;
     trt-relaxation-swapped)
       replace_exact crates/lbm-core/src/kernels.rs "let rm = p.omega_m * (fm - em);" "let rm = op * (fm - em);"
       ;;
+    trt-omega-minus-uses-tau)
+      replace_exact crates/lbm-core/src/params.rs "let lam_p = tau - 0.5;" "let lam_p = tau;"
+      ;;
     d2q9-opposite-broken)
       replace_exact crates/lbm-core/src/lattice.rs "const D2Q9_OPP: [usize; 9] = opp_table(&D2Q9_C);" "const D2Q9_OPP: [usize; 9] = [0, 3, 4, 1, 2, 8, 7, 6, 5];"
+      ;;
+    d2q9-weight-nonopposite-swapped)
+      replace_exact crates/lbm-core/src/lattice.rs "const D2Q9_W: [f64; 9] = [
+    4.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+];" "const D2Q9_W: [f64; 9] = [
+    4.0 / 9.0,
+    1.0 / 36.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+];"
       ;;
     d3q19-opposite-broken)
       replace_exact crates/lbm-core/src/lattice.rs "const D3Q19_OPP: [usize; 19] = opp_table(&D3Q19_C);" "const D3Q19_OPP: [usize; 19] = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17];"
@@ -234,8 +305,14 @@ apply_mutation() {
     halfway-wall-shifted)
       replace_exact crates/lbm-core/src/kernels.rs "let fout = f[L::OPP[q] * np + i];" "let fout = f[L::OPP[q] * np + si];"
       ;;
+    halfway-wall-source-cell-offbyone)
+      replace_exact crates/lbm-core/src/kernels.rs "let fout = f[L::OPP[q] * np + i];" "let fout = f[L::OPP[q] * np + si];"
+      ;;
     moving-wall-sign-flipped)
       replace_exact crates/lbm-core/src/kernels.rs "let fin = fout + six * p.wr[q] * rho_row[x] * cu;" "let fin = fout - six * p.wr[q] * rho_row[x] * cu;"
+      ;;
+    moving-wall-factor-two)
+      replace_exact crates/lbm-core/src/kernels.rs "let six = T::r(6.0);" "let six = T::r(2.0);"
       ;;
     zou-he-pressure-normal-sign-flipped)
       replace_exact crates/lbm-core/src/kernels.rs "let un = T::one() - closure / rho_bc;" "let un = closure / rho_bc - T::one();"
@@ -255,6 +332,9 @@ apply_mutation() {
     probe-force-physicalization-removed)
       replace_exact crates/lbm-core/src/kernels.rs "let ftot = fout + fin + two * p.wr[q];" "let ftot = fout + fin;"
       ;;
+    probe-corner-links-dropped)
+      replace_exact crates/lbm-core/src/kernels.rs "if mask[si] {" "if mask[si] && (c[0] == 0 || c[1] == 0) {"
+      ;;
     shan-chen-force-sign-flipped)
       replace_exact crates/lbm-core/src/compat/multiphase.rs "-psi_i * (self.g * sx + self.g_wall * ax)," "psi_i * (self.g * sx + self.g_wall * ax),"
       replace_exact crates/lbm-core/src/compat/multiphase.rs "-psi_i * (self.g * sy + self.g_wall * ay)," "psi_i * (self.g * sy + self.g_wall * ay),"
@@ -262,6 +342,13 @@ apply_mutation() {
     contact-angle-wall-term-sign-flipped)
       replace_exact crates/lbm-core/src/compat/multiphase.rs "self.g * sx + self.g_wall * ax" "self.g * sx - self.g_wall * ax"
       replace_exact crates/lbm-core/src/compat/multiphase.rs "self.g * sy + self.g_wall * ay" "self.g * sy - self.g_wall * ay"
+      ;;
+    equilibrium-u2-coefficient-four)
+      replace_exact crates/lbm-core/src/kernels.rs "let f45 = T::r(4.5);
+    let f15 = T::r(1.5);
+    let mut usq = u[0] * u[0];" "let f45 = T::r(4.0);
+    let f15 = T::r(1.5);
+    let mut usq = u[0] * u[0];"
       ;;
     f32-deviation-storage-disabled)
       replace_exact crates/lbm-core/src/kernels.rs "let r = T::one() + dr;" "let r = dr;"
