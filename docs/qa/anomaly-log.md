@@ -526,3 +526,14 @@ new F6 = paired forbidden-disc/valid-IBM domain-boundary witness).
 spec revision), P4-018/019 (SC dynamic wetting family, characterization).
 Core routings CLEARED: **P4-001, P4-021, P4-022 all closed**; V&V loop
 has now driven 4 total core fixes to landing (P4-008/001/021/022).
+
+### Axis 9.8 Taylor-Couette wavy-vortex — heavy STOP-RULE (rev 1)
+Light laminar-Couette PASSES (bulk profile L2_rel 8.5e-2 within 10% band).
+Heavy wavy-vortex onset: z-invariant seed + z-invariant forcing kept
+axial-mode energy at 1e-14..1e-18 for all Ta (0.5, 1.5, 3.0 × Ta_c). This
+is a well-known DNS-practice matter: axial-mode instabilities need a
+finite axial seed to trigger the linear regime. Rev 2 dispatches with an
+explicit small cos(k_z z) seed on u_r (eps=1e-4, k_z=2π/nz or 4π/nz,
+chosen to match λ_c=2(R_o-R_i)). If the seed still fails to grow at
+1.5*Ta_c, that IS a finding — rotating-boundary path filters the
+instability, and the light Couette pass doesn't cover this regime.
