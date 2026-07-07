@@ -54,6 +54,35 @@ context in commits 82946d3 / cd3999f / 20d0e10).
 
 ## OPEN — audit-side revision
 
+### ANOM-P4-014 — Jurin SC coefficient is linear but high after wetted-wall audit
+- Severity: **S2 characterization**.
+- Gate: `validation_multiphase_hard.rs::val_mphard_i1_jurin_capillary_rise_zero_parameter`
+  rev 5 freezes linearity plus measured slope while the coefficient question
+  remains open.
+- Measured (2026-07-07, rev 5): `h` vs two-wetted-channel inverse-width
+  contrast has slope 1312.71105871, intercept -1.38619080, R² 0.99998340.
+  Flat-wall Jurin theory from T11/T11c constants gives 852.22687953, so the
+  measured coefficient is 1.54033050× theory.
+- Wetted-wall audit: `ShanChen::with_wall_rho` applies to all solid
+  neighbours, including the domain rim and the inserted slot walls, because
+  `compat::multiphase::ShanChen::update_force` branches on
+  `sim.solid_field()[j]` and adds `psi_wall`.
+- Gap-24 measured meniscus angles: slot 66.416148°, outside 65.505811°
+  (left 65.504972°, right 65.506650°), so rim and inserted walls do not show
+  a distinct wall-density class in this setup.
+- Behavior review: the slot rise/depression pattern is monotone with gap and
+  flips sign for the dry wall-density case. The dominant mechanism is
+  capillary rise in finite outside channels connected through the reservoir.
+  The unresolved part is coefficient magnitude, plausibly SC diffuse-meniscus
+  curvature vs flat-wall contact-angle calibration. Artifacts checked:
+  generated density maps at `target/vv_jurin/jurin_gap16_wallrho1.000.pgm`,
+  `target/vv_jurin/jurin_gap24_wallrho1.000.pgm`,
+  `target/vv_jurin/jurin_gap32_wallrho1.000.pgm`, and
+  `target/vv_jurin/jurin_gap24_wallrho0.600.pgm`; no disconnected liquid
+  column was observed by the connectivity diagnostic.
+- Disposition: keep as characterization until a curvature-aware SC capillary
+  coefficient or a matched meniscus/flat-wall calibration gate is derived.
+
 ### ANOM-P4-007 — cumulant viscosity-offset audit design confounded
 - Severity: audit design.
 - Standing: orientation consistency PASSED (spread 2.2e-10); calibration
