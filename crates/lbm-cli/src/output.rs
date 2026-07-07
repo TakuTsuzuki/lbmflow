@@ -98,3 +98,14 @@ pub fn write_kla_qoi_json(
     fs::write(out_dir.join(name), bytes)?;
     Ok(name.to_string())
 }
+
+pub fn write_qoi_bundle_json(
+    bundle: &lbm_core::qoi::QoiBundle,
+    out_dir: &Path,
+) -> std::io::Result<String> {
+    let name = lbm_scenario::QOI_BUNDLE_JSON;
+    let bytes = serde_json::to_vec_pretty(bundle)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(out_dir.join(name), bytes)?;
+    Ok(name.to_string())
+}

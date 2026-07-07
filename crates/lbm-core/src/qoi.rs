@@ -1,6 +1,8 @@
-//! Quantity-of-interest formula helpers for bioprocess reports.
+//! Quantity-of-interest formula helpers and serializable bioprocess QOI schema.
 
+use serde::ser::{Error as SerError, SerializeStruct};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PowerQoiInput {
@@ -26,6 +28,347 @@ pub struct PowerQoiResult {
 pub struct SkippedQoi {
     pub qoi: String,
     pub reason: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationTier {
+    Screening,
+    Engineering,
+    Evidence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Unsupported,
+    Experimental,
+    Engineering,
+    EvidenceBlocked,
+    EvidenceReady,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QoiProvenance {
+    pub source_fields: Option<Vec<String>>,
+    pub averaging_window: Option<String>,
+    pub averaging_region: Option<String>,
+    pub units: Option<String>,
+    pub method: Option<String>,
+    pub validation_tier: Option<ValidationTier>,
+}
+
+impl QoiProvenance {
+    pub fn new(
+        source_fields: Vec<String>,
+        averaging_window: impl Into<String>,
+        averaging_region: impl Into<String>,
+        units: impl Into<String>,
+        method: impl Into<String>,
+        validation_tier: ValidationTier,
+    ) -> Self {
+        Self {
+            source_fields: Some(source_fields),
+            averaging_window: Some(averaging_window.into()),
+            averaging_region: Some(averaging_region.into()),
+            units: Some(units.into()),
+            method: Some(method.into()),
+            validation_tier: Some(validation_tier),
+        }
+    }
+
+    #[cfg(test)]
+    fn missing_units_for_test() -> Self {
+        Self {
+            source_fields: Some(vec!["ux".to_string()]),
+            averaging_window: Some("final_step".to_string()),
+            averaging_region: Some("tank_fluid_cells".to_string()),
+            units: None,
+            method: Some("test_method".to_string()),
+            validation_tier: Some(ValidationTier::Screening),
+        }
+    }
+
+    #[cfg(test)]
+    fn missing_method_for_test() -> Self {
+        Self {
+            source_fields: Some(vec!["ux".to_string()]),
+            averaging_window: Some("final_step".to_string()),
+            averaging_region: Some("tank_fluid_cells".to_string()),
+            units: Some("m/s".to_string()),
+            method: None,
+            validation_tier: Some(ValidationTier::Screening),
+        }
+    }
+}
+
+impl Serialize for QoiProvenance {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let source_fields = self
+            .source_fields
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("QoiProvenance.source_fields is mandatory"))?;
+        let averaging_window = self
+            .averaging_window
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("QoiProvenance.averaging_window is mandatory"))?;
+        let averaging_region = self
+            .averaging_region
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("QoiProvenance.averaging_region is mandatory"))?;
+        let units = self
+            .units
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("QoiProvenance.units is mandatory"))?;
+        let method = self
+            .method
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("QoiProvenance.method is mandatory"))?;
+        let validation_tier = self
+            .validation_tier
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("QoiProvenance.validation_tier is mandatory"))?;
+        let mut state = serializer.serialize_struct("QoiProvenance", 6)?;
+        state.serialize_field("source_fields", source_fields)?;
+        state.serialize_field("averaging_window", averaging_window)?;
+        state.serialize_field("averaging_region", averaging_region)?;
+        state.serialize_field("units", units)?;
+        state.serialize_field("method", method)?;
+        state.serialize_field("validation_tier", validation_tier)?;
+        state.end()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QoiInterval {
+    pub q_hat: f64,
+    pub q_lo: f64,
+    pub q_hi: f64,
+    pub method: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QoiScalar {
+    pub value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<QoiInterval>,
+    pub provenance: QoiProvenance,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<SkippedQoi>,
+}
+
+impl QoiScalar {
+    pub fn measured(value: f64, provenance: QoiProvenance) -> Self {
+        Self {
+            value: Some(value),
+            interval: None,
+            provenance,
+            skipped: None,
+        }
+    }
+
+    pub fn skipped(
+        qoi: impl Into<String>,
+        reason: impl Into<String>,
+        provenance: QoiProvenance,
+    ) -> Self {
+        Self {
+            value: None,
+            interval: None,
+            provenance,
+            skipped: Some(SkippedQoi {
+                qoi: qoi.into(),
+                reason: reason.into(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QoiPercentiles {
+    pub p50: f64,
+    pub p90: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub max: f64,
+    pub fraction_above_threshold: f64,
+    pub provenance: QoiProvenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PowerQoiSection {
+    pub torque_n_m: QoiScalar,
+    pub power_w: QoiScalar,
+    pub rotational_speed_hz: QoiScalar,
+    pub np: QoiScalar,
+    pub p_over_v_w_m3: QoiScalar,
+    pub nq: QoiScalar,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MixingQoiSection {
+    pub cv0: QoiScalar,
+    pub t95_s: QoiScalar,
+    pub t99_s: QoiScalar,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compartments: Vec<CompartmentQoi>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CompartmentQoi {
+    pub name: String,
+    pub cv: Option<f64>,
+    pub cell_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GasQoiSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_holdup: Option<QoiScalar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub d32_m: Option<QoiScalar>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct OxygenQoiSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dissolved_oxygen: Option<QoiScalar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oxygen_uptake_rate: Option<QoiScalar>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct KlaQoiSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_gassing: Option<QoiScalar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pbm: Option<QoiScalar>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ShearQoiSection {
+    pub gamma_dot_1_s: QoiPercentiles,
+    pub viscous_stress_pa: QoiPercentiles,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_pa_s: Option<QoiPercentiles>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CellsQoiSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shear_exposure: Option<QoiPercentiles>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oxygen_exposure: Option<QoiPercentiles>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MicrocarriersQoiSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_fraction: Option<QoiScalar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspension_index: Option<QoiScalar>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QoiValidationStatus {
+    pub qoi: String,
+    pub status: CapabilityStatus,
+    pub tier: ValidationTier,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QoiBundle {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power: Option<PowerQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mixing: Option<MixingQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas: Option<GasQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oxygen: Option<OxygenQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kla: Option<KlaQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shear: Option<ShearQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cells: Option<CellsQoiSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microcarriers: Option<MicrocarriersQoiSection>,
+    pub validation_status: Vec<QoiValidationStatus>,
+}
+
+impl QoiBundle {
+    pub fn scalar_values(&self) -> BTreeMap<String, f64> {
+        let mut out = BTreeMap::new();
+        if let Some(power) = &self.power {
+            insert_scalar(&mut out, "power.torque_n_m", &power.torque_n_m);
+            insert_scalar(&mut out, "power.power_w", &power.power_w);
+            insert_scalar(
+                &mut out,
+                "power.rotational_speed_hz",
+                &power.rotational_speed_hz,
+            );
+            insert_scalar(&mut out, "power.np", &power.np);
+            insert_scalar(&mut out, "power.p_over_v_w_m3", &power.p_over_v_w_m3);
+            insert_scalar(&mut out, "power.nq", &power.nq);
+        }
+        if let Some(mixing) = &self.mixing {
+            insert_scalar(&mut out, "mixing.cv0", &mixing.cv0);
+            insert_scalar(&mut out, "mixing.t95_s", &mixing.t95_s);
+            insert_scalar(&mut out, "mixing.t99_s", &mixing.t99_s);
+        }
+        if let Some(gas) = &self.gas {
+            if let Some(v) = &gas.gas_holdup {
+                insert_scalar(&mut out, "gas.gas_holdup", v);
+            }
+            if let Some(v) = &gas.d32_m {
+                insert_scalar(&mut out, "gas.d32_m", v);
+            }
+        }
+        if let Some(kla) = &self.kla {
+            if let Some(v) = &kla.dynamic_gassing {
+                insert_scalar(&mut out, "kla.dynamic_gassing", v);
+            }
+            if let Some(v) = &kla.pbm {
+                insert_scalar(&mut out, "kla.pbm", v);
+            }
+        }
+        if let Some(shear) = &self.shear {
+            out.insert(
+                "shear.gamma_dot_1_s.p95".to_string(),
+                shear.gamma_dot_1_s.p95,
+            );
+            out.insert(
+                "shear.viscous_stress_pa.p95".to_string(),
+                shear.viscous_stress_pa.p95,
+            );
+        }
+        out
+    }
+}
+
+fn insert_scalar(out: &mut BTreeMap<String, f64>, key: &'static str, qoi: &QoiScalar) {
+    if let Some(value) = qoi.value {
+        out.insert(key.to_string(), value);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -471,6 +814,59 @@ mod tests {
         assert!(comps
             .iter()
             .any(|c| c.name == "near_impeller" && c.cv.is_some()));
+    }
+
+    fn test_provenance(units: &str, method: &str) -> QoiProvenance {
+        QoiProvenance::new(
+            vec!["ux".to_string()],
+            "final_step",
+            "tank_fluid_cells",
+            units,
+            method,
+            ValidationTier::Screening,
+        )
+    }
+
+    #[test]
+    fn qoi_bundle_serialisation_roundtrip() {
+        let bundle = QoiBundle {
+            power: Some(PowerQoiSection {
+                torque_n_m: QoiScalar::measured(1.0, test_provenance("N*m", "torque")),
+                power_w: QoiScalar::measured(2.0, test_provenance("W", "power")),
+                rotational_speed_hz: QoiScalar::measured(3.0, test_provenance("1/s", "speed")),
+                np: QoiScalar::measured(4.0, test_provenance("dimensionless", "np")),
+                p_over_v_w_m3: QoiScalar::measured(5.0, test_provenance("W/m^3", "p_over_v")),
+                nq: QoiScalar::skipped(
+                    "nq",
+                    "discharge surface undefined",
+                    test_provenance("dimensionless", "nq"),
+                ),
+            }),
+            validation_status: vec![QoiValidationStatus {
+                qoi: "power".to_string(),
+                status: CapabilityStatus::Experimental,
+                tier: ValidationTier::Screening,
+            }],
+            ..QoiBundle::default()
+        };
+        let text = serde_json::to_string_pretty(&bundle).unwrap();
+        let parsed: QoiBundle = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, bundle);
+        assert_eq!(parsed.scalar_values()["power.power_w"], 2.0);
+    }
+
+    #[test]
+    fn qoi_missing_units_fails_serialisation() {
+        let qoi = QoiScalar::measured(1.0, QoiProvenance::missing_units_for_test());
+        let err = serde_json::to_string(&qoi).unwrap_err();
+        assert!(err.to_string().contains("units"));
+    }
+
+    #[test]
+    fn qoi_missing_method_fails_serialisation() {
+        let qoi = QoiScalar::measured(1.0, QoiProvenance::missing_method_for_test());
+        let err = serde_json::to_string(&qoi).unwrap_err();
+        assert!(err.to_string().contains("method"));
     }
 }
 

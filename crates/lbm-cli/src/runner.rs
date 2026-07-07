@@ -913,7 +913,7 @@ mod stress_summary {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct MixingQoiFile {
     provenance: QoiFileProvenance,
@@ -924,7 +924,7 @@ struct MixingQoiFile {
     compartments: Vec<CompartmentCvFile>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct CompartmentCvFile {
     name: String,
@@ -932,14 +932,14 @@ struct CompartmentCvFile {
     cell_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct SkippedQoiFile {
     qoi: String,
     reason: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct QoiFileProvenance {
     units: String,
@@ -1020,6 +1020,11 @@ where
         .max(1);
     let mut files = Vec::new();
     let mut qoi_methods = Vec::new();
+    fs::write(
+        out_dir.join("scenario.json"),
+        serde_json::to_string_pretty(sc)?,
+    )?;
+    files.push("scenario.json".to_string());
     let mut active_models = vec![ActiveModelTag::SinglePhase, ActiveModelTag::RotatingIbm];
     if sc
         .physics
@@ -1120,13 +1125,13 @@ where
         )?);
     }
 
+    let mut qoi_bundle = lbm_core::qoi::QoiBundle::default();
+
     if sc.qoi.power.is_some() {
-        files.extend(write_power_qois(
-            sc,
-            &unit_report,
-            &torque_records,
-            out_dir,
-        )?);
+        let (power_files, power_section) =
+            write_power_qois(sc, &unit_report, &torque_records, out_dir)?;
+        files.extend(power_files);
+        qoi_bundle.power = power_section;
         qoi_methods.push(QoiMethodDescriptor {
             qoi: "power".to_string(),
             method: "IBM marker drive torque: P = omega*Tq, Np = P/(rho*N^3*D^5)".to_string(),
@@ -1140,14 +1145,16 @@ where
         });
     }
 
-    files.extend(write_stress_and_wall_outputs(
+    let (stress_files, shear_section) = write_stress_and_wall_outputs(
         &solver,
         sc,
         &unit_report,
         &solid,
         &geometry.wall_velocity,
         out_dir,
-    )?);
+    )?;
+    files.extend(stress_files);
+    qoi_bundle.shear = Some(shear_section);
     qoi_methods.push(QoiMethodDescriptor {
         qoi: "shear_rate".to_string(),
         method: "central finite differences on velocity moments".to_string(),
@@ -1161,7 +1168,7 @@ where
     });
 
     if sc.qoi.mixing.is_some() {
-        files.extend(write_mixing_qois(
+        let (mixing_files, mixing_section) = write_mixing_qois(
             sc,
             &mut solver,
             &unit_report,
@@ -1169,7 +1176,9 @@ where
             &solid,
             &cv_series,
             out_dir,
-        )?);
+        )?;
+        files.extend(mixing_files);
+        qoi_bundle.mixing = Some(mixing_section);
         qoi_methods.push(QoiMethodDescriptor {
             qoi: "mixing_time".to_string(),
             method: "scalar coefficient-of-variation threshold".to_string(),
@@ -1181,6 +1190,12 @@ where
                 "screening",
             ),
         });
+    }
+    qoi_bundle.validation_status = validation_status_for_bundle(&qoi_bundle);
+    files.extend(write_empty_bioprocess_qoi_csvs(out_dir)?);
+    if sc.outputs.emit_qoi_json {
+        let qoi_name = crate::output::write_qoi_bundle_json(&qoi_bundle, out_dir)?;
+        files.push(qoi_name);
     }
 
     let fields = gather_core3(&solver);
@@ -1473,9 +1488,9 @@ fn write_power_qois(
     unit_report: &lbm_scenario::UnitReport,
     records: &[TorqueRecord],
     out_dir: &Path,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Option<lbm_core::qoi::PowerQoiSection>)> {
     if records.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
     let start = sc.run.steps / 2;
     let window: Vec<_> = records.iter().filter(|r| r.step >= start).collect();
@@ -1515,7 +1530,7 @@ fn write_power_qois(
         np: power.np,
         p_over_v_w_m3: power.p_over_v_w_m3,
         nq: power.nq,
-        skipped,
+        skipped: skipped.clone(),
     };
     fs::write(
         out_dir.join("qoi_power.json"),
@@ -1545,10 +1560,61 @@ fn write_power_qois(
         power.p_over_v_w_m3, "W/m^3"
     )?;
     let _ = unit_report;
-    Ok(vec![
-        "qoi_power.json".to_string(),
-        "qoi_power.csv".to_string(),
-    ])
+    let section = lbm_core::qoi::PowerQoiSection {
+        torque_n_m: scalar_qoi(
+            power.torque_n_m,
+            "N*m",
+            "IBM marker shaft torque",
+            "last_half_of_run",
+            "impeller_marker_set",
+            &["ibm_marker_force"],
+        ),
+        power_w: scalar_qoi(
+            power.power_w,
+            "W",
+            "P = omega*Tq",
+            "last_half_of_run",
+            "impeller_marker_set",
+            &["ibm_marker_force"],
+        ),
+        rotational_speed_hz: scalar_qoi(
+            power.rotational_speed_hz,
+            "1/s",
+            "N = omega/(2*pi)",
+            "declared_operation",
+            "impeller",
+            &["operation.rotational_speed_rpm"],
+        ),
+        np: scalar_qoi(
+            power.np,
+            "dimensionless",
+            "Np = P/(rho*N^3*D^5)",
+            "last_half_of_run",
+            "impeller_marker_set",
+            &["ibm_marker_force", "reactor.impeller_diameter_m"],
+        ),
+        p_over_v_w_m3: scalar_qoi(
+            power.p_over_v_w_m3,
+            "W/m^3",
+            "P/V",
+            "last_half_of_run",
+            "working_volume",
+            &["ibm_marker_force", "reactor.working_volume_m3"],
+        ),
+        nq: skipped_scalar_qoi(
+            "nq",
+            "discharge surface is not defined in the M0 scenario schema",
+            "dimensionless",
+            "Nq = Q/(N*D^3)",
+            "not_available",
+            "discharge_surface",
+            &["discharge_flow_m3_s"],
+        ),
+    };
+    Ok((
+        vec!["qoi_power.json".to_string(), "qoi_power.csv".to_string()],
+        Some(section),
+    ))
 }
 
 fn write_stress_and_wall_outputs<L, T>(
@@ -1558,7 +1624,7 @@ fn write_stress_and_wall_outputs<L, T>(
     solid: &[bool],
     wall_velocity_si: &[[f64; 3]],
     out_dir: &Path,
-) -> Result<Vec<String>>
+) -> Result<(Vec<String>, lbm_core::qoi::ShearQoiSection)>
 where
     L: Lattice,
     T: lbm_core::real::Real,
@@ -1610,6 +1676,51 @@ where
         out_dir.join("stress_summary.json"),
         serde_json::to_string_pretty(&stress_json)?,
     )?;
+    let mut qoi_shear = fs::File::create(out_dir.join("qoi_shear.csv"))?;
+    writeln!(
+        qoi_shear,
+        "qoi,p50,p90,p95,p99,max,fraction_above_threshold,units,method,time_window"
+    )?;
+    writeln!(qoi_shear, "# manifest_path={MANIFEST_PATH}")?;
+    writeln!(
+        qoi_shear,
+        "gamma_dot_1_s,{},{},{},{},{},{},1/s,central finite differences,final_step",
+        gamma.p50,
+        gamma.p90,
+        gamma.p95,
+        gamma.p99,
+        gamma.max,
+        gamma.fraction_above_threshold.unwrap_or(0.0)
+    )?;
+    writeln!(
+        qoi_shear,
+        "viscous_stress_pa,{},{},{},{},{},{},Pa,mu_eff*gamma_dot,final_step",
+        tau.p50,
+        tau.p90,
+        tau.p95,
+        tau.p99,
+        tau.max,
+        tau.fraction_above_threshold.unwrap_or(0.0)
+    )?;
+    let shear_section = lbm_core::qoi::ShearQoiSection {
+        gamma_dot_1_s: percentile_qoi(
+            gamma,
+            "1/s",
+            "central finite differences on velocity moments",
+            "final_step",
+            "tank_fluid_cells",
+            &["ux", "uy", "uz"],
+        ),
+        viscous_stress_pa: percentile_qoi(
+            tau,
+            "Pa",
+            "mu_eff * gamma_dot",
+            "final_step",
+            "tank_fluid_cells",
+            &["ux", "uy", "uz", "mu_eff"],
+        ),
+        exposure_pa_s: None,
+    };
 
     let wall = lbm_core::stress::wall_shear_proxy(
         dims,
@@ -1642,10 +1753,14 @@ where
             w.normal[2]
         )?;
     }
-    Ok(vec![
-        "stress_summary.json".to_string(),
-        "wall_shear.csv".to_string(),
-    ])
+    Ok((
+        vec![
+            "stress_summary.json".to_string(),
+            "qoi_shear.csv".to_string(),
+            "wall_shear.csv".to_string(),
+        ],
+        shear_section,
+    ))
 }
 
 fn write_mixing_qois<L, T>(
@@ -1656,7 +1771,7 @@ fn write_mixing_qois<L, T>(
     solid: &[bool],
     cv_series: &[(f64, f64)],
     out_dir: &Path,
-) -> Result<Vec<String>>
+) -> Result<(Vec<String>, lbm_core::qoi::MixingQoiSection)>
 where
     L: Lattice,
     T: lbm_core::real::Real,
@@ -1707,14 +1822,96 @@ where
         cv0: result.as_ref().map(|r| r.cv0),
         t95_s: result.as_ref().and_then(|r| r.t95_s),
         t99_s: result.as_ref().and_then(|r| r.t99_s),
-        skipped,
-        compartments,
+        skipped: skipped.clone(),
+        compartments: compartments.clone(),
     };
     fs::write(
         out_dir.join("mixing_time.json"),
         serde_json::to_string_pretty(&json)?,
     )?;
-    Ok(vec!["mixing_time.json".to_string()])
+    let mut csv = fs::File::create(out_dir.join("qoi_mixing.csv"))?;
+    writeln!(csv, "time_s,cv")?;
+    writeln!(csv, "# manifest_path={MANIFEST_PATH}")?;
+    for (time_s, cv) in cv_series {
+        writeln!(csv, "{time_s},{cv}")?;
+    }
+    let cv0 = match &result {
+        Some(r) => scalar_qoi(
+            r.cv0,
+            "dimensionless",
+            "CV(t)=std(C)/mean(C)",
+            "post_pulse_time_series",
+            "tank_fluid_cells",
+            &["C:tracer"],
+        ),
+        None => skipped_scalar_qoi(
+            "cv0",
+            skipped
+                .as_ref()
+                .map(|s| s.reason.as_str())
+                .unwrap_or("mixing-time threshold not reached"),
+            "dimensionless",
+            "CV(t)=std(C)/mean(C)",
+            "post_pulse_time_series",
+            "tank_fluid_cells",
+            &["C:tracer"],
+        ),
+    };
+    let t95_s = match result.as_ref().and_then(|r| r.t95_s) {
+        Some(v) => scalar_qoi(
+            v,
+            "s",
+            "first time CV <= 0.05*CV0",
+            "post_pulse_time_series",
+            "tank_fluid_cells",
+            &["C:tracer"],
+        ),
+        None => skipped_scalar_qoi(
+            "t95_s",
+            "threshold not reached or scalar pulse unavailable",
+            "s",
+            "first time CV <= 0.05*CV0",
+            "post_pulse_time_series",
+            "tank_fluid_cells",
+            &["C:tracer"],
+        ),
+    };
+    let t99_s = match result.as_ref().and_then(|r| r.t99_s) {
+        Some(v) => scalar_qoi(
+            v,
+            "s",
+            "first time CV <= 0.01*CV0",
+            "post_pulse_time_series",
+            "tank_fluid_cells",
+            &["C:tracer"],
+        ),
+        None => skipped_scalar_qoi(
+            "t99_s",
+            "threshold not reached or scalar pulse unavailable",
+            "s",
+            "first time CV <= 0.01*CV0",
+            "post_pulse_time_series",
+            "tank_fluid_cells",
+            &["C:tracer"],
+        ),
+    };
+    let section = lbm_core::qoi::MixingQoiSection {
+        cv0,
+        t95_s,
+        t99_s,
+        compartments: compartments
+            .iter()
+            .map(|c| lbm_core::qoi::CompartmentQoi {
+                name: c.name.clone(),
+                cv: c.cv,
+                cell_count: c.cell_count,
+            })
+            .collect(),
+    };
+    Ok((
+        vec!["mixing_time.json".to_string(), "qoi_mixing.csv".to_string()],
+        section,
+    ))
 }
 
 fn first_impeller_center_z_lu(
@@ -1740,6 +1937,147 @@ fn first_impeller_center_z_lu(
             })
         }
     }
+}
+
+fn qoi_provenance(
+    units: &str,
+    method: &str,
+    averaging_window: &str,
+    averaging_region: &str,
+    source_fields: &[&str],
+) -> lbm_core::qoi::QoiProvenance {
+    lbm_core::qoi::QoiProvenance::new(
+        source_fields.iter().map(|s| (*s).to_string()).collect(),
+        averaging_window,
+        averaging_region,
+        units,
+        method,
+        lbm_core::qoi::ValidationTier::Screening,
+    )
+}
+
+fn scalar_qoi(
+    value: f64,
+    units: &str,
+    method: &str,
+    averaging_window: &str,
+    averaging_region: &str,
+    source_fields: &[&str],
+) -> lbm_core::qoi::QoiScalar {
+    lbm_core::qoi::QoiScalar::measured(
+        value,
+        qoi_provenance(
+            units,
+            method,
+            averaging_window,
+            averaging_region,
+            source_fields,
+        ),
+    )
+}
+
+fn skipped_scalar_qoi(
+    qoi: &str,
+    reason: &str,
+    units: &str,
+    method: &str,
+    averaging_window: &str,
+    averaging_region: &str,
+    source_fields: &[&str],
+) -> lbm_core::qoi::QoiScalar {
+    lbm_core::qoi::QoiScalar::skipped(
+        qoi,
+        reason,
+        qoi_provenance(
+            units,
+            method,
+            averaging_window,
+            averaging_region,
+            source_fields,
+        ),
+    )
+}
+
+fn percentile_qoi(
+    summary: lbm_core::stress::PercentileSummary,
+    units: &str,
+    method: &str,
+    averaging_window: &str,
+    averaging_region: &str,
+    source_fields: &[&str],
+) -> lbm_core::qoi::QoiPercentiles {
+    lbm_core::qoi::QoiPercentiles {
+        p50: summary.p50,
+        p90: summary.p90,
+        p95: summary.p95,
+        p99: summary.p99,
+        max: summary.max,
+        fraction_above_threshold: summary.fraction_above_threshold.unwrap_or(0.0),
+        provenance: qoi_provenance(
+            units,
+            method,
+            averaging_window,
+            averaging_region,
+            source_fields,
+        ),
+    }
+}
+
+fn validation_status_for_bundle(
+    bundle: &lbm_core::qoi::QoiBundle,
+) -> Vec<lbm_core::qoi::QoiValidationStatus> {
+    let mut status = Vec::new();
+    if bundle.power.is_some() {
+        status.push(validation_status("power"));
+    }
+    if bundle.mixing.is_some() {
+        status.push(validation_status("mixing"));
+    }
+    if bundle.shear.is_some() {
+        status.push(validation_status("shear"));
+    }
+    if bundle.gas.is_some() {
+        status.push(validation_status("gas"));
+    }
+    if bundle.kla.is_some() {
+        status.push(validation_status("kla"));
+    }
+    if bundle.cells.is_some() {
+        status.push(validation_status("cells"));
+    }
+    if bundle.microcarriers.is_some() {
+        status.push(validation_status("microcarriers"));
+    }
+    status
+}
+
+fn validation_status(qoi: &str) -> lbm_core::qoi::QoiValidationStatus {
+    lbm_core::qoi::QoiValidationStatus {
+        qoi: qoi.to_string(),
+        status: lbm_core::qoi::CapabilityStatus::Experimental,
+        tier: lbm_core::qoi::ValidationTier::Screening,
+    }
+}
+
+fn write_empty_bioprocess_qoi_csvs(out_dir: &Path) -> Result<Vec<String>> {
+    let specs = [
+        (lbm_scenario::QOI_GAS_CSV, "qoi,status,reason\n"),
+        (lbm_scenario::QOI_KLA_CSV, "qoi,status,reason\n"),
+        (lbm_scenario::QOI_CELLS_CSV, "qoi,status,reason\n"),
+    ];
+    let mut files = Vec::new();
+    for (name, header) in specs {
+        let path = out_dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        let mut file = fs::File::create(&path)?;
+        write!(file, "{header}")?;
+        writeln!(file, "# manifest_path={MANIFEST_PATH}")?;
+        writeln!(file, "section,skipped,not active in this runner path")?;
+        files.push(name.to_string());
+    }
+    Ok(files)
 }
 
 // ---------------------------------------------------------------- 3D (nz > 1)

@@ -132,8 +132,10 @@ pub mod prelude {
     pub use crate::qoi::{
         compartment_cv, dynamic_gassing_kla_fit, dynamic_gassing_window_default,
         mixing_time_from_cv, power_qois, scalar_cv, CompartmentCv, KlaDynamicFitOutcome,
-        KlaDynamicFitResult, KlaFitMethod, KlaFitWindow, MixingTimeResult, PowerQoiInput,
-        PowerQoiResult, QoiAccumulatorSnapshot, QoiCheckpointState, SkippedQoi,
+        KlaDynamicFitResult, KlaFitMethod, KlaFitWindow, MixingQoiSection, MixingTimeResult,
+        PowerQoiInput, PowerQoiResult, PowerQoiSection, QoiAccumulatorSnapshot, QoiBundle,
+        QoiCheckpointState, QoiInterval, QoiPercentiles, QoiProvenance, QoiScalar,
+        QoiValidationStatus, ShearQoiSection, SkippedQoi, ValidationTier,
     };
     pub use crate::reaction::{
         apply_oxygen_reaction_source, oxygen_uptake_rate, OurLedger, OurModel, ReactionError,
