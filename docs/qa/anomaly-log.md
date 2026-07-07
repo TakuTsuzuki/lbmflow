@@ -710,3 +710,36 @@ preserved. **5 core defects closed by the V&V loop**: P4-008 cumulant
 offset (C), P4-001 IBM sizing, P4-021 Zou-He×Guo mass leak, P4-022 SC
 force overwrite, P4-025 Bouzidi qd<0.5. Zero open S1/S2 core defects
 remain.
+
+### ANOM-P4-010 RESIDUAL FINDING (F4 rev 5 extended-settle, main after merge)
+cx/fix-p4-010 physical-implicit penalization sizing is a strict improvement
+(forbidden disc NaN delayed 96 → 698 steps, thin-blade transient stable
+much longer) BUT the thin-blade cross-referee at 30k-step extended settle
+reveals: penalization thin-blade **diverges to NaN between step 26k-28k**,
+while IBM stays stable at rel_change 1.4e-2 by step 3k. Measured
+trajectory (n=4, r_hub=4, r_blade=16, thickness=1.5, Ω=1.5e-4):
+- step 400: mean=-9.40e-2, rel_change=0.21
+- step 1000-1400: oscillates around -6e-2, rel_change ~5e-2 (transient)
+- step 6000: -6.19e-2 (this is what earlier tests hit)
+- step 29000: NaN (all subsequent)
+
+This IS the "even narrower than thin/porous" residual per the earlier
+ruling. Even at moderate blade thickness (1.5 lattice cells) the
+distributed-drag Darcy approximation accumulates enough numerical
+dissipation error over long horizons to eventually drive divergence.
+Verdict: penalization validity domain is thin/porous **AND short
+transient**; for long-time-integration thin-blade problems, route to
+IBM.
+
+The P4-010 SIZING FIX itself is validated (NaN→stable at moderate
+horizons, F5/F6 both pass); the residual is the LONG-TIME behavior.
+Documenting as ANOM-P4-027 (S3 characterization). The audit F4 stays
+documented-red until either (a) the acceptance criterion is revised to
+STATE the short-horizon window, or (b) a further core fix addresses the
+long-time drift. F5/F6 remain GREEN in the same file.
+
+### ANOM-P4-027 — penalization thin-blade long-horizon drift (S3 characterization)
+Same as above. Route: PHYSICS.md note ("validity domain: thin/porous
+structures AND horizons under ~O(20000) steps at moderate resolution")
++ recommend IBM for long-time thin-blade studies. No core action
+requested; this is a modeling limit.
