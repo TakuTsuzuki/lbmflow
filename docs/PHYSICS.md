@@ -1281,3 +1281,31 @@ forcing model is derived and accepted.
   sum `1.843144e-18`.
   The frozen gates are final/initial `<1e-8` for BGK and `<1e-3` for TRT,
   leakage `<1e-12`, and max growth `<2`.
+
+### 2026-07-07 T17-06 rev 2 weak stratification gate (`crates/lbm-core/tests/vr_str_06_wellbalanced_extended.rs`)
+- Form: W1 uses `rho(y) = rho_b + drho exp(-y/z0)` with `rho_b=1`,
+  `drho=0.02`, and `z0=32`. For this additive weak perturbation,
+  `d ln(rho_total)/dy = -drho exp(-y/z0)/(z0 rho_total)`, so a uniform
+  per-mass gravity cannot use the pure-exponential value `-cs^2/z0`; that
+  value balances only `rho_total proportional to exp(-y/z0)` and drove the
+  rev-1/rev-2 literal mismatch unstable. The test therefore uses the bottom
+  first-order weak value `g_y = -cs^2 drho / (z0 (rho_b + drho))` and asserts
+  the residual scale directly.
+- Source: resolved isothermal hydrostatic relation
+  `cs^2 d rho/dy = rho g_y`, expanded for `drho/rho_b << 1`.
+- Validity domain: weak additive stratification only (`drho/rho_b = 0.02`);
+  it is a Boussinesq-analog guard, not the high-density-ratio W-VOF target.
+  W2 keeps Shan-Chen active with a compact interface and a reduced per-mass
+  gravity `g_y=-5e-7`; the requested `-1e-6` measured 7.49 cells of drift over
+  10k steps in this fixture, above the 5-cell rev-2 guard.
+- Validation: `cargo test -p lbm-core --release --test
+  vr_str_06_wellbalanced_extended -- --nocapture` passed on 2026-07-07. W1
+  measured `max|u|=6.496709e-6`, density relaxation `1.282204e-2`, mass drift
+  `5.041495e-15`, initial ratio `1.016456`, weak residual `1.748236e-4`, and
+  scale height `1632`. W2 measured `drift=3.795079` cells,
+  `bulk_umax=3.996100e-3`, `rho_l=1.815885`, `rho_v=0.130924`, liquid/vapor
+  relative deviations `3.819666e-2` / `9.651996e-2`, and mass drift
+  `4.506629e-12`.
+- Replaces / interacts with: replaces the rev-1 inconsistent large-ratio
+  additive profile and the literal `-cs^2/z0` rev-2 trial, while preserving
+  the existing Guo/per-mass gravity composition path.
