@@ -49,7 +49,7 @@ pub mod prelude {
     pub use crate::backend::{Backend, CellRange, CpuScalar, HostMoments, PARALLEL_MIN_CELLS};
     pub use crate::backend_simd::CpuSimd;
     pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
-    pub use crate::fields::{LocalGeom, SoaFields};
+    pub use crate::fields::{DistributionKind, LocalGeom, ScalarDistribution, SoaFields};
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
@@ -61,8 +61,8 @@ pub mod prelude {
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{
-        build_wall_rims, partition, CheckpointError, Diverged, GlobalSpec, Solver, SpecError,
-        WallSpec,
+        build_wall_rims, partition, CheckpointError, Diverged, GlobalSpec, Solver,
+        SolverFeatureError, SpecError, WallSpec,
     };
     pub use crate::subdomain::Subdomain;
     pub use crate::wall_model::{WallCellMetric, WallMetricSource};

@@ -7,7 +7,7 @@
 //! decomposition.
 
 use crate::backend::{Backend, HostMoments};
-use crate::fields::SoaFields;
+use crate::fields::{DistributionKind, SoaFields};
 use crate::halo::{exchange_g_generic, ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice, D3Q19};
@@ -169,6 +169,25 @@ pub enum UnsupportedReason {
     EvidenceGateFailed { missing: Vec<String> },
     DemoOnly { rationale: String },
 }
+
+/// Structured runtime feature rejection from solver-level optional model APIs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolverFeatureError {
+    pub distribution: DistributionKind,
+    pub reason: UnsupportedReason,
+}
+
+impl std::fmt::Display for SolverFeatureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?} distribution is unsupported: {:?}",
+            self.distribution, self.reason
+        )
+    }
+}
+
+impl std::error::Error for SolverFeatureError {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpecError {
@@ -1725,10 +1744,25 @@ where
         false
     }
 
+    fn auxiliary_distributions_enabled(&self) -> bool {
+        self.host_parts
+            .iter()
+            .any(|fields| fields.g.is_some() || !fields.scalars.is_empty())
+    }
+
+    fn step_auxiliary_distributions_noop(&mut self) {
+        // BCFD-010 allocates and routes auxiliary distribution storage.
+        // Actual scalar ADE and coupled phase-field stepping land in later
+        // tickets; keeping this hook explicit prevents silent CPU fallback.
+    }
+
     /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
     /// open faces → moments).
     pub fn step(&mut self) {
         self.sync_masks_if_dirty();
+        if self.auxiliary_distributions_enabled() {
+            self.step_auxiliary_distributions_noop();
+        }
         let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
         if self.gravity.is_some() && !backend_gravity {
             self.run_staged_step();
@@ -1760,6 +1794,12 @@ where
 
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
+        if self.auxiliary_distributions_enabled() {
+            for _ in 0..steps {
+                self.step();
+            }
+            return;
+        }
         let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
         if self.gravity.is_some() && !backend_gravity {
             for _ in 0..steps {
@@ -2156,6 +2196,135 @@ where
         if refresh {
             self.refresh_moments_after_force_change();
         }
+    }
+
+    /// Allocate the optional phase-field distribution storage.
+    ///
+    /// CPU backends allocate `g`, `gtmp`, and compact `phi` buffers. Backends
+    /// without phase kernels reject with a structured unsupported reason.
+    pub fn enable_phase_distribution(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+    ) -> Result<(), SolverFeatureError> {
+        self.backend
+            .distribution_support(DistributionKind::Phase)
+            .map_err(|reason| SolverFeatureError {
+                distribution: DistributionKind::Phase,
+                reason,
+            })?;
+        params.validate().map_err(|err| SolverFeatureError {
+            distribution: DistributionKind::Phase,
+            reason: UnsupportedReason::OutOfValidityRange {
+                detail: err.message,
+            },
+        })?;
+        self.stage_out_all();
+        for fields in &mut self.host_parts {
+            fields.enable_phase_distribution(params, L::Q);
+        }
+        self.host_dirty = true;
+        self.stage_in_if_dirty();
+        Ok(())
+    }
+
+    /// Allocate a named scalar distribution storage slot.
+    pub fn enable_scalar_distribution(
+        &mut self,
+        name: &str,
+        diffusivity: f64,
+    ) -> Result<(), SolverFeatureError> {
+        self.backend
+            .distribution_support(DistributionKind::Scalar)
+            .map_err(|reason| SolverFeatureError {
+                distribution: DistributionKind::Scalar,
+                reason,
+            })?;
+        if name.is_empty() || !diffusivity.is_finite() || !(diffusivity > 0.0) {
+            return Err(SolverFeatureError {
+                distribution: DistributionKind::Scalar,
+                reason: UnsupportedReason::OutOfValidityRange {
+                    detail: format!(
+                        "scalar name must be non-empty and diffusivity must be finite > 0 (name={name:?}, diffusivity={diffusivity})"
+                    ),
+                },
+            });
+        }
+        self.stage_out_all();
+        for fields in &mut self.host_parts {
+            fields.enable_scalar_distribution(name, diffusivity, L::Q);
+        }
+        self.host_dirty = true;
+        self.stage_in_if_dirty();
+        Ok(())
+    }
+
+    /// Named scalar concentration in compact global cell order.
+    pub fn gather_scalar_concentration(&mut self, name: &str) -> Option<Vec<T>> {
+        self.stage_out_all();
+        let mut out = vec![T::zero(); self.dims[0] * self.dims[1] * self.dims[2]];
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let scalar = fields
+                .scalar_index(name)
+                .and_then(|idx| fields.scalars.get(idx))?;
+            let g = fields.geom;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        out[gi] = scalar.concentration[g.cidx(x, y, z)];
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Set a named scalar concentration from compact global cell order.
+    pub fn set_scalar_concentration(
+        &mut self,
+        name: &str,
+        values: &[T],
+    ) -> Result<(), SolverFeatureError> {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        if values.len() != n {
+            return Err(SolverFeatureError {
+                distribution: DistributionKind::Scalar,
+                reason: UnsupportedReason::OutOfValidityRange {
+                    detail: format!(
+                        "scalar concentration length {} does not match cell count {n}",
+                        values.len()
+                    ),
+                },
+            });
+        }
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let idx = fields
+                .scalar_index(name)
+                .ok_or_else(|| SolverFeatureError {
+                    distribution: DistributionKind::Scalar,
+                    reason: UnsupportedReason::MissingDependency {
+                        depends_on: format!("scalar distribution {name}"),
+                    },
+                })?;
+            let scalar = &mut fields.scalars[idx];
+            let g = fields.geom;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        scalar.concentration[g.cidx(x, y, z)] = values[gi];
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        self.stage_in_if_dirty();
+        Ok(())
     }
 
     /// Add a rotating rigid-body direct-forcing IBM source to the current
@@ -4231,10 +4400,126 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::CpuScalar;
+    use crate::backend::{Backend, CellRange, CpuScalar, HostMoments};
+    use crate::fields::DistributionKind;
     use crate::halo::{InProcess, LocalPeriodic};
-    use crate::lattice::D2Q9;
+    use crate::lattice::{D2Q9, D3Q19};
+    use crate::params::Reduction;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Clone, Copy, Debug)]
+    struct RejectAuxBackend(CpuScalar);
+
+    impl Default for RejectAuxBackend {
+        fn default() -> Self {
+            Self(CpuScalar::default())
+        }
+    }
+
+    impl<L: Lattice, T: Real> Backend<L, T> for RejectAuxBackend {
+        type Fields = SoaFields<T>;
+
+        fn alloc(&self, sub: &Subdomain) -> Self::Fields {
+            <CpuScalar as Backend<L, T>>::alloc(&self.0, sub)
+        }
+
+        fn stage_in(&self, sub: &Subdomain, fields: &mut Self::Fields, host: &SoaFields<T>) {
+            <CpuScalar as Backend<L, T>>::stage_in(&self.0, sub, fields, host);
+        }
+
+        fn stage_out(&self, sub: &Subdomain, fields: &Self::Fields, host: &mut SoaFields<T>) {
+            <CpuScalar as Backend<L, T>>::stage_out(&self.0, sub, fields, host);
+        }
+
+        fn supports_gravity_body_force(&self) -> bool {
+            true
+        }
+
+        fn distribution_support(&self, kind: DistributionKind) -> Result<(), UnsupportedReason> {
+            match kind {
+                DistributionKind::Hydro => Ok(()),
+                DistributionKind::Phase | DistributionKind::Scalar => {
+                    Err(UnsupportedReason::NotImplemented)
+                }
+            }
+        }
+
+        fn exchange_f<HE: HaloExchange<T>>(
+            &mut self,
+            exchange: &HE,
+            subs: &[Subdomain],
+            fields: &mut [Self::Fields],
+        ) {
+            <CpuScalar as Backend<L, T>>::exchange_f(&mut self.0, exchange, subs, fields);
+        }
+
+        fn collide(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>) {
+            <CpuScalar as Backend<L, T>>::collide(&mut self.0, sub, fields, p);
+        }
+
+        fn stream(
+            &mut self,
+            sub: &Subdomain,
+            fields: &mut Self::Fields,
+            p: &StepParams<T>,
+            range: CellRange,
+        ) {
+            <CpuScalar as Backend<L, T>>::stream(&mut self.0, sub, fields, p, range);
+        }
+
+        fn swap(&mut self, fields: &mut Self::Fields) {
+            <CpuScalar as Backend<L, T>>::swap(&mut self.0, fields);
+        }
+
+        fn apply_bouzidi(&mut self, sub: &Subdomain, fields: &mut Self::Fields, p: &StepParams<T>) {
+            <CpuScalar as Backend<L, T>>::apply_bouzidi(&mut self.0, sub, fields, p);
+        }
+
+        fn apply_open_faces(
+            &mut self,
+            sub: &Subdomain,
+            fields: &mut Self::Fields,
+            p: &StepParams<T>,
+        ) {
+            <CpuScalar as Backend<L, T>>::apply_open_faces(&mut self.0, sub, fields, p);
+        }
+
+        fn apply_volume_sources(
+            &mut self,
+            sub: &Subdomain,
+            fields: &mut Self::Fields,
+            p: &StepParams<T>,
+        ) {
+            <CpuScalar as Backend<L, T>>::apply_volume_sources(&mut self.0, sub, fields, p);
+        }
+
+        fn update_moments(
+            &mut self,
+            sub: &Subdomain,
+            fields: &mut Self::Fields,
+            p: &StepParams<T>,
+        ) {
+            <CpuScalar as Backend<L, T>>::update_moments(&mut self.0, sub, fields, p);
+        }
+
+        fn reduce(
+            &self,
+            sub: &Subdomain,
+            fields: &Self::Fields,
+            p: &StepParams<T>,
+            kind: Reduction,
+        ) -> f64 {
+            <CpuScalar as Backend<L, T>>::reduce(&self.0, sub, fields, p, kind)
+        }
+
+        fn read_moments(&self, fields: &Self::Fields, out: &mut HostMoments<T>) {
+            <CpuScalar as Backend<L, T>>::read_moments(&self.0, fields, out);
+        }
+
+        fn read_probed_force(&self, fields: &Self::Fields) -> [T; 3] {
+            <CpuScalar as Backend<L, T>>::read_probed_force(&self.0, fields)
+        }
+    }
 
     fn tmp_ckpt(name: &str) -> std::path::PathBuf {
         let n = SystemTime::now()
@@ -4281,6 +4566,132 @@ mod tests {
                 assert_eq!(bits(x), bits(y), "{name}[{i}] differs");
             }
         }
+    }
+
+    fn aux_spec() -> GlobalSpec<f64> {
+        GlobalSpec {
+            dims: [8, 7, 6],
+            nu: 0.08,
+            periodic: [true, true, true],
+            force: [1.0e-6, -2.0e-6, 3.0e-7],
+            ..Default::default()
+        }
+    }
+
+    fn phase_params() -> crate::phase_field::PhaseFieldParams<f64> {
+        crate::phase_field::PhaseFieldParams {
+            interface_width: 4.0,
+            mobility: 0.1,
+        }
+    }
+
+    #[test]
+    fn hydro_only_path_is_bit_identical() {
+        let spec = aux_spec();
+        let mut baseline: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let mut candidate: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let init = |x: usize, y: usize, z: usize| {
+            let sx = (x as f64 * 0.17).sin();
+            let cy = (y as f64 * 0.11).cos();
+            let sz = (z as f64 * 0.13).sin();
+            (1.0 + 1.0e-4 * sx * cy, [0.01 * sx, -0.008 * cy, 0.006 * sz])
+        };
+        baseline.init_with(init);
+        candidate.init_with(init);
+        baseline.run(10);
+        candidate.run(10);
+        assert_solver_bits_eq(&baseline, &candidate);
+    }
+
+    #[test]
+    fn enable_phase_distribution_allocates_g() {
+        let spec = aux_spec();
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.enable_phase_distribution(phase_params()).unwrap();
+        let fields = solver.fields(0);
+        let expected_populations = D3Q19::Q * fields.geom.n_padded();
+        assert_eq!(fields.g.as_ref().unwrap().len(), expected_populations);
+        assert_eq!(fields.gtmp.as_ref().unwrap().len(), expected_populations);
+        assert_eq!(fields.phi.as_ref().unwrap().len(), fields.geom.n_core());
+    }
+
+    #[test]
+    fn enable_scalar_distribution_allocates_h_named() {
+        let spec = aux_spec();
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.enable_scalar_distribution("oxygen", 0.01).unwrap();
+        solver.enable_scalar_distribution("glucose", 0.02).unwrap();
+        let n = spec.dims[0] * spec.dims[1] * spec.dims[2];
+        let oxygen: Vec<_> = (0..n).map(|i| i as f64).collect();
+        let glucose: Vec<_> = (0..n).map(|i| 10_000.0 - i as f64).collect();
+        solver.set_scalar_concentration("oxygen", &oxygen).unwrap();
+        solver
+            .set_scalar_concentration("glucose", &glucose)
+            .unwrap();
+        assert_eq!(
+            solver.gather_scalar_concentration("oxygen").unwrap(),
+            oxygen
+        );
+        assert_eq!(
+            solver.gather_scalar_concentration("glucose").unwrap(),
+            glucose
+        );
+        let fields = solver.fields(0);
+        let oxygen_idx = fields.scalar_index("oxygen").unwrap();
+        let glucose_idx = fields.scalar_index("glucose").unwrap();
+        assert_ne!(oxygen_idx, glucose_idx);
+        assert_eq!(
+            fields.scalars[oxygen_idx].h.len(),
+            D3Q19::Q * fields.geom.n_padded()
+        );
+        assert_eq!(fields.scalars[oxygen_idx].concentration, oxygen);
+        assert_eq!(fields.scalars[glucose_idx].concentration, glucose);
+    }
+
+    #[test]
+    fn gpu_backend_rejects_phase_distribution_structured() {
+        let spec = aux_spec();
+        let mut solver: Solver<D3Q19, f64, RejectAuxBackend, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            RejectAuxBackend::default(),
+            LocalPeriodic,
+        );
+        let err = solver
+            .enable_phase_distribution(phase_params())
+            .unwrap_err();
+        assert_eq!(err.distribution, DistributionKind::Phase);
+        assert_eq!(err.reason, UnsupportedReason::NotImplemented);
     }
 
     fn solid_box(dims: [usize; 3]) -> Vec<bool> {
@@ -4681,7 +5092,7 @@ mod tests {
     // A-4: GlobalSpec::validate
     // ----------------------------------------------------------------------
 
-    use crate::lattice::{D3Q19, D3Q27};
+    use crate::lattice::D3Q27;
     use crate::params::FaceBC;
 
     /// Full solid rims for a walled non-periodic D3Q19 box (so a "closed

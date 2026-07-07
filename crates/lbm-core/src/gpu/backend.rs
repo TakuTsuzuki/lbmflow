@@ -41,10 +41,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::backend::{write_host_moments, Backend, CellRange, HostMoments};
-use crate::fields::SoaFields;
+use crate::fields::{DistributionKind, SoaFields};
 use crate::halo::HaloExchange;
 use crate::lattice::{Face, Lattice};
 use crate::params::{CollisionKind, FaceBC, Reduction, StepParams};
+use crate::solver::UnsupportedReason;
 use crate::subdomain::Subdomain;
 
 use super::wgsl;
@@ -1903,6 +1904,15 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
 
     fn supports_gravity_body_force(&self) -> bool {
         true
+    }
+
+    fn distribution_support(&self, kind: DistributionKind) -> Result<(), UnsupportedReason> {
+        match kind {
+            DistributionKind::Hydro => Ok(()),
+            DistributionKind::Phase | DistributionKind::Scalar => {
+                Err(UnsupportedReason::NotImplemented)
+            }
+        }
     }
 
     fn alloc(&self, sub: &Subdomain) -> GpuFields {

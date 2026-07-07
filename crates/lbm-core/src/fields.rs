@@ -23,6 +23,47 @@
 
 use crate::real::Real;
 
+/// Distribution family stored by a backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DistributionKind {
+    /// Hydrodynamic LBM populations (`f` / `ftmp`).
+    Hydro,
+    /// Conservative phase-field populations (`g` / `gtmp`) and `phi`.
+    Phase,
+    /// Named scalar populations (`h[k]` / `htmp[k]`) and concentration `C[k]`.
+    Scalar,
+}
+
+/// Named scalar distribution storage.
+#[derive(Clone, Debug)]
+pub struct ScalarDistribution<T: Real> {
+    /// Stable scalar identifier from the scenario or caller.
+    pub name: String,
+    /// Scalar diffusivity in lattice units.
+    pub diffusivity: f64,
+    /// Scalar distribution populations, q-major padded planes.
+    pub h: Vec<T>,
+    /// Ping-pong partner of `h`.
+    pub htmp: Vec<T>,
+    /// Scalar concentration `C = sum_i h_i`, compact core layout.
+    pub concentration: Vec<T>,
+}
+
+impl<T: Real> ScalarDistribution<T> {
+    /// Allocate a zero-valued scalar distribution.
+    pub fn new(name: impl Into<String>, diffusivity: f64, q: usize, geom: LocalGeom) -> Self {
+        let np = geom.n_padded();
+        let nc = geom.n_core();
+        Self {
+            name: name.into(),
+            diffusivity,
+            h: vec![T::zero(); q * np],
+            htmp: vec![T::zero(); q * np],
+            concentration: vec![T::zero(); nc],
+        }
+    }
+}
+
 /// Geometry of one local box: core extents plus halo width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalGeom {
@@ -184,6 +225,10 @@ pub struct SoaFields<T: Real> {
     pub gtmp: Option<Vec<T>>,
     /// Phase field `phi = sum_i g_i`, compact core layout.
     pub phi: Option<Vec<T>>,
+    /// Phase-field transport parameters for allocated `g`.
+    pub phase_params: Option<crate::phase_field::PhaseFieldParams<T>>,
+    /// Named scalar distribution sets.
+    pub scalars: Vec<ScalarDistribution<T>>,
     /// Density, compact core. `1` on quiescent build; moments skip solids.
     pub rho: Vec<T>,
     /// x-velocity (physical: includes the Guo half-force term), compact core.
@@ -231,6 +276,8 @@ impl<T: Real> SoaFields<T> {
             g: None,
             gtmp: None,
             phi: None,
+            phase_params: None,
+            scalars: Vec::new(),
             rho: vec![T::one(); nc],
             ux: vec![T::zero(); nc],
             uy: vec![T::zero(); nc],
@@ -257,6 +304,34 @@ impl<T: Real> SoaFields<T> {
     #[inline]
     pub fn swap_f(&mut self) {
         std::mem::swap(&mut self.f, &mut self.ftmp);
+    }
+
+    /// Allocate the optional phase distribution if absent.
+    pub fn enable_phase_distribution(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        q: usize,
+    ) {
+        let np = self.geom.n_padded();
+        let nc = self.geom.n_core();
+        self.g.get_or_insert_with(|| vec![T::zero(); q * np]);
+        self.gtmp.get_or_insert_with(|| vec![T::zero(); q * np]);
+        self.phi.get_or_insert_with(|| vec![T::zero(); nc]);
+        self.phase_params = Some(params);
+    }
+
+    /// Allocate a named scalar distribution if absent.
+    pub fn enable_scalar_distribution(&mut self, name: &str, diffusivity: f64, q: usize) {
+        if self.scalars.iter().any(|scalar| scalar.name == name) {
+            return;
+        }
+        self.scalars
+            .push(ScalarDistribution::new(name, diffusivity, q, self.geom));
+    }
+
+    /// Index of a named scalar distribution.
+    pub fn scalar_index(&self, name: &str) -> Option<usize> {
+        self.scalars.iter().position(|scalar| scalar.name == name)
     }
 
     /// Plane `q` of the current populations.

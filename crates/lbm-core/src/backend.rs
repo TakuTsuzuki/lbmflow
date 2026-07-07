@@ -19,7 +19,7 @@
 
 #[cfg(feature = "gpu")]
 use crate::fields::LocalGeom;
-use crate::fields::SoaFields;
+use crate::fields::{DistributionKind, SoaFields};
 use crate::halo::HaloExchange;
 use crate::kernels::{
     collide_row, collide_row_central_moment, convective_face_selected, moments_row,
@@ -28,6 +28,7 @@ use crate::kernels::{
 use crate::lattice::{Face, Lattice};
 use crate::params::{FaceBC, KParams, Reduction, SourceKind, StepParams};
 use crate::real::Real;
+use crate::solver::UnsupportedReason;
 use crate::subdomain::Subdomain;
 
 #[cfg(feature = "parallel")]
@@ -188,6 +189,13 @@ pub trait Backend<L: Lattice, T: Real> {
     /// force fields.
     fn supports_gravity_body_force(&self) -> bool {
         false
+    }
+
+    /// Whether this backend can store and step the requested distribution
+    /// family. CPU backends accept every family at the storage layer; GPU
+    /// rejects phase/scalar explicitly until kernels exist.
+    fn distribution_support(&self, _kind: DistributionKind) -> Result<(), UnsupportedReason> {
+        Ok(())
     }
 
     /// Exchange post-collision population halos for backend-owned fields.
