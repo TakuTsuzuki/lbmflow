@@ -229,6 +229,8 @@ pub struct SoaFields<T: Real> {
     pub phase_params: Option<crate::phase_field::PhaseFieldParams<T>>,
     /// Named scalar distribution sets.
     pub scalars: Vec<ScalarDistribution<T>>,
+    /// Optional material-property fields, compact core layout.
+    pub material: Option<crate::materials::MaterialFields>,
     /// Density, compact core. `1` on quiescent build; moments skip solids.
     pub rho: Vec<T>,
     /// x-velocity (physical: includes the Guo half-force term), compact core.
@@ -278,6 +280,7 @@ impl<T: Real> SoaFields<T> {
             phi: None,
             phase_params: None,
             scalars: Vec::new(),
+            material: None,
             rho: vec![T::one(); nc],
             ux: vec![T::zero(); nc],
             uy: vec![T::zero(); nc],

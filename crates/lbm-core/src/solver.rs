@@ -12,8 +12,8 @@ use crate::halo::{exchange_g_generic, ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice, D3Q19};
 use crate::params::{
-    CollisionKind, FaceBC, FacePatch, KParams, Reduction, SourceKind, SourceRegion, StepParams,
-    VolumeSource, MAX_SPEED,
+    CollisionKind, FaceBC, FacePatch, KParams, MaterialModel, Reduction, SourceKind, SourceRegion,
+    StepParams, VolumeSource, MAX_SPEED,
 };
 use crate::real::Real;
 use crate::rotating_ibm::{
@@ -1336,6 +1336,7 @@ where
     device_ahead: bool,
     psi_planes: Vec<Vec<T>>,
     gravity: Option<[T; 3]>,
+    material_model: MaterialModel,
     /// Split streaming into interior + boundary-shell passes (the overlap
     /// seam for asynchronous exchanges). Off by default: the single full
     /// pass reproduces V1's probe summation order bit-for-bit.
@@ -1529,6 +1530,7 @@ where
             device_ahead: false,
             psi_planes: Vec::new(),
             gravity: None,
+            material_model: MaterialModel::SinglePhase,
             two_pass: false,
             _lattice: std::marker::PhantomData,
         };
@@ -1750,10 +1752,42 @@ where
             .any(|fields| fields.g.is_some() || !fields.scalars.is_empty())
     }
 
+    fn material_fields_enabled(&self) -> bool {
+        !matches!(self.material_model, MaterialModel::SinglePhase)
+    }
+
     fn step_auxiliary_distributions_noop(&mut self) {
         // BCFD-010 allocates and routes auxiliary distribution storage.
         // Actual scalar ADE and coupled phase-field stepping land in later
         // tickets; keeping this hook explicit prevents silent CPU fallback.
+    }
+
+    fn update_material_fields(&mut self) {
+        let model = self.material_model.clone();
+        match model {
+            MaterialModel::SinglePhase => {}
+            MaterialModel::PhaseFieldMixture(params) => {
+                self.stage_out_all();
+                for fields in &mut self.host_parts {
+                    let Some(phi) = fields.phi.as_ref() else {
+                        continue;
+                    };
+                    let material = fields.material.get_or_insert_with(|| {
+                        crate::materials::MaterialFields::new(fields.geom.n_core())
+                    });
+                    material.update_phase_field_mixture(phi, &params);
+                }
+                self.host_dirty = true;
+            }
+            MaterialModel::ActiveScalarFeedback => {
+                for fields in &mut self.host_parts {
+                    fields.material.get_or_insert_with(|| {
+                        crate::materials::MaterialFields::new(fields.geom.n_core())
+                    });
+                }
+                self.host_dirty = true;
+            }
+        }
     }
 
     /// Advance one time step (V1 order: collide → stream → Bouzidi → swap →
@@ -1763,6 +1797,7 @@ where
         if self.auxiliary_distributions_enabled() {
             self.step_auxiliary_distributions_noop();
         }
+        self.update_material_fields();
         let backend_gravity = self.gravity.is_some() && self.backend.supports_gravity_body_force();
         if self.gravity.is_some() && !backend_gravity {
             self.run_staged_step();
@@ -1794,7 +1829,7 @@ where
 
     /// Advance `steps` time steps.
     pub fn run(&mut self, steps: usize) {
-        if self.auxiliary_distributions_enabled() {
+        if self.auxiliary_distributions_enabled() || self.material_fields_enabled() {
             for _ in 0..steps {
                 self.step();
             }
@@ -2325,6 +2360,47 @@ where
         self.host_dirty = true;
         self.stage_in_if_dirty();
         Ok(())
+    }
+
+    /// Set the physical material-property model.
+    pub fn set_material_model(&mut self, model: MaterialModel) -> Result<(), SolverFeatureError> {
+        if matches!(model, MaterialModel::PhaseFieldMixture(_))
+            && !self.host_parts.iter().all(|fields| fields.phi.is_some())
+        {
+            return Err(SolverFeatureError {
+                distribution: DistributionKind::Phase,
+                reason: UnsupportedReason::MissingDependency {
+                    depends_on: "phase distribution phi".to_string(),
+                },
+            });
+        }
+        self.stage_out_all();
+        if model.allocates_material_fields() {
+            for fields in &mut self.host_parts {
+                fields.material.get_or_insert_with(|| {
+                    crate::materials::MaterialFields::new(fields.geom.n_core())
+                });
+            }
+        } else {
+            for fields in &mut self.host_parts {
+                fields.material = None;
+            }
+        }
+        self.material_model = model;
+        self.update_material_fields();
+        self.host_dirty = true;
+        self.stage_in_if_dirty();
+        Ok(())
+    }
+
+    /// Current material model.
+    pub fn material_model(&self) -> &MaterialModel {
+        &self.material_model
+    }
+
+    /// Host-staged material fields for one part, if allocated.
+    pub fn material_fields(&self, part: usize) -> Option<&crate::materials::MaterialFields> {
+        self.host_parts[part].material.as_ref()
     }
 
     /// Add a rotating rigid-body direct-forcing IBM source to the current
@@ -4692,6 +4768,45 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.distribution, DistributionKind::Phase);
         assert_eq!(err.reason, UnsupportedReason::NotImplemented);
+    }
+
+    #[test]
+    fn hydro_only_path_still_bit_identical_after_bcfd_011() {
+        let spec = aux_spec();
+        let mut baseline: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let mut candidate: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        candidate
+            .set_material_model(MaterialModel::SinglePhase)
+            .unwrap();
+        let init = |x: usize, y: usize, z: usize| {
+            let sx = (x as f64 * 0.07).sin();
+            let cy = (y as f64 * 0.19).cos();
+            let sz = (z as f64 * 0.23).sin();
+            (
+                1.0 + 8.0e-5 * sx * cy,
+                [0.006 * sx, -0.004 * cy, 0.005 * sz],
+            )
+        };
+        baseline.init_with(init);
+        candidate.init_with(init);
+        baseline.run(10);
+        candidate.run(10);
+        assert!(candidate.material_fields(0).is_none());
+        assert_solver_bits_eq(&baseline, &candidate);
     }
 
     fn solid_box(dims: [usize; 3]) -> Vec<bool> {

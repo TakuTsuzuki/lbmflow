@@ -35,6 +35,140 @@ pub enum CollisionKind {
     },
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterialParamError {
+    pub parameter: &'static str,
+    pub value: f64,
+    pub message: String,
+}
+
+impl std::fmt::Display for MaterialParamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid material parameter {} = {}: {}",
+            self.parameter, self.value, self.message
+        )
+    }
+}
+
+impl std::error::Error for MaterialParamError {}
+
+/// Dynamic material-property model.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MaterialModel {
+    /// Uniform single-phase material; no mixture arrays are allocated.
+    SinglePhase,
+    /// Phase-fraction mixture from `phi`, independent of lattice density.
+    PhaseFieldMixture(PhaseFieldMixtureParams),
+    /// Placeholder allocation mode for later active-scalar feedback coupling.
+    ActiveScalarFeedback,
+}
+
+/// Viscosity interpolation rule for phase-field mixtures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViscosityInterpolation {
+    /// `1 / ((1 - phi) / mu_g + phi / mu_l)`.
+    Harmonic,
+    /// `mu_g + phi * (mu_l - mu_g)`.
+    Linear,
+}
+
+/// Phase-field material-mixture parameters in physical units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhaseFieldMixtureParams {
+    pub rho_gas: f64,
+    pub rho_liquid: f64,
+    pub mu_gas: f64,
+    pub mu_liquid: f64,
+    pub sigma: f64,
+    pub viscosity_interpolation: ViscosityInterpolation,
+}
+
+impl MaterialModel {
+    pub fn phase_field_mixture(
+        rho_gas: f64,
+        rho_liquid: f64,
+        mu_gas: f64,
+        mu_liquid: f64,
+        sigma: f64,
+    ) -> Result<Self, MaterialParamError> {
+        Self::phase_field_mixture_with_viscosity(
+            rho_gas,
+            rho_liquid,
+            mu_gas,
+            mu_liquid,
+            sigma,
+            ViscosityInterpolation::Harmonic,
+        )
+    }
+
+    pub fn phase_field_mixture_linear_viscosity(
+        rho_gas: f64,
+        rho_liquid: f64,
+        mu_gas: f64,
+        mu_liquid: f64,
+        sigma: f64,
+    ) -> Result<Self, MaterialParamError> {
+        Self::phase_field_mixture_with_viscosity(
+            rho_gas,
+            rho_liquid,
+            mu_gas,
+            mu_liquid,
+            sigma,
+            ViscosityInterpolation::Linear,
+        )
+    }
+
+    pub fn phase_field_mixture_with_viscosity(
+        rho_gas: f64,
+        rho_liquid: f64,
+        mu_gas: f64,
+        mu_liquid: f64,
+        sigma: f64,
+        viscosity_interpolation: ViscosityInterpolation,
+    ) -> Result<Self, MaterialParamError> {
+        validate_positive("rho_gas", rho_gas)?;
+        validate_positive("rho_liquid", rho_liquid)?;
+        validate_positive("mu_gas", mu_gas)?;
+        validate_positive("mu_liquid", mu_liquid)?;
+        if !sigma.is_finite() || sigma < 0.0 {
+            return Err(MaterialParamError {
+                parameter: "sigma",
+                value: sigma,
+                message: "must be finite and non-negative".to_string(),
+            });
+        }
+        Ok(Self::PhaseFieldMixture(PhaseFieldMixtureParams {
+            rho_gas,
+            rho_liquid,
+            mu_gas,
+            mu_liquid,
+            sigma,
+            viscosity_interpolation,
+        }))
+    }
+
+    pub fn allocates_material_fields(&self) -> bool {
+        matches!(
+            self,
+            MaterialModel::PhaseFieldMixture(_) | MaterialModel::ActiveScalarFeedback
+        )
+    }
+}
+
+fn validate_positive(parameter: &'static str, value: f64) -> Result<(), MaterialParamError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(())
+    } else {
+        Err(MaterialParamError {
+            parameter,
+            value,
+            message: "must be finite and > 0".to_string(),
+        })
+    }
+}
+
 impl Default for CollisionKind {
     fn default() -> Self {
         CollisionKind::Trt {

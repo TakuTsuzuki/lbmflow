@@ -35,6 +35,7 @@ pub mod halo;
 mod kernels;
 pub mod lattice;
 pub mod les;
+pub mod materials;
 pub mod params;
 pub mod particles;
 pub mod phase_field;
@@ -53,9 +54,11 @@ pub mod prelude {
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
+    pub use crate::materials::MaterialFields;
     pub use crate::params::{
-        CollisionKind, FaceBC, FacePatch, Reduction, SourceKind, SourceRegion, StepParams,
-        VolumeSource,
+        CollisionKind, FaceBC, FacePatch, MaterialModel, MaterialParamError,
+        PhaseFieldMixtureParams, Reduction, SourceKind, SourceRegion, StepParams,
+        ViscosityInterpolation, VolumeSource,
     };
     pub use crate::phase_field::{PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams};
     pub use crate::real::Real;
