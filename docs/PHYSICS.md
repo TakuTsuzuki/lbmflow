@@ -717,3 +717,45 @@ turbulence-model calibration knob. Any validation claim made with clipping
 active must disclose that clipping was active and report the corresponding
 `clipped_fraction` and `max_nu_t_before_clipping` diagnostics from
 `WaleLesDiagnostics`.
+
+### 2026-07-07 wall-metrics observable for y+ / u_tau (`crates/lbm-core/src/wall_model.rs`, `Solver::gather_wall_metrics`)
+- Form: read-only wall-adjacent diagnostics report `y_w`, tangential speed
+  `u_parallel`, `u_tau`, `y+ = y_w u_tau / nu`, and `tau_w / rho = u_tau^2`
+  in global compact cell order. Half-way rim walls use `y_w = 0.5 dx`;
+  Bouzidi records use `y_w = qd |c_q|`. The turbulent branch solves
+  `u_parallel / u_tau = ln(y_w u_tau / nu) / kappa + B` by Newton iteration
+  with `kappa = 0.41`, `B = 5.2`; if the resulting `y+ < 11.6`, the observable
+  reports the viscous branch `u_tau = sqrt(nu u_parallel / y_w)`.
+- Source: half-way wall placement is the existing LBM wall convention in this
+  codebase; Bouzidi `qd` is the geometric wall-link distance from
+  Bouzidi-Firdaouss-Lallemand (2001). The log-law constants and branch switch
+  are the standard smooth-wall equilibrium law used by the Malaspinas and
+  Sagaut LBM wall-model class, frozen in
+  `docs/proposals/LES_WALL_TREATMENT_SPEC.md` for W1/W2.
+- Validity domain: W1 is instrumentation only. The log-law diagnostic is
+  meaningful for attached smooth-wall equilibrium layers, with the future wall
+  model's intended log-region domain `30 <= y+ <= 300`; sub-buffer cells are
+  surfaced by the laminar branch and their reported `y+`, not hidden.
+- Validation: `crates/lbm-core/tests/wall_metrics.rs` checks the laminar
+  Poiseuille wall-shear band from the first-node one-sided discretization,
+  quiescent `u_tau = 0`, no metrics in a fully periodic box, and Bouzidi
+  distance-controlled y+ scaling for fixed `u_tau`. Focused gate:
+  `cargo test -p lbm-core --test wall_metrics --release` passed on
+  2026-07-07.
+- Replaces / interacts with: this adds no closure and does not call
+  `set_omega_field`; W2 may consume the observable, but W1 has zero effect on
+  computed density, velocity, populations, or collision rates.
+
+### 2026-07-07 behavior review — wall-metrics W1 code/test order
+Pattern: no flow field pattern was generated or modified; the order adds a
+read-only diagnostic over existing wall geometry and velocity moments.
+Mechanism: reported wall metrics follow directly from geometric wall distance,
+tangential velocity projection, and the specified wall-law/viscous formulas.
+Resolved vs closure: half-way/Bouzidi wall distance is resolved geometry;
+`kappa`, `B`, and the `y+ = 11.6` switch are diagnostic wall-law closure
+constants, not active simulation terms in W1.
+Artifacts checked: no clamps, outlets, seams, or wall-population writes are
+introduced; no field visualization artifact is expected for this code+test
+diagnostic-only order.
+Verdict: PHYSICAL for diagnostics; no computed-field behavior claim is made.
+Routing: none.

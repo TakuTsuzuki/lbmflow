@@ -40,6 +40,7 @@ pub mod real;
 pub mod rotating_ibm;
 pub mod solver;
 pub mod subdomain;
+pub mod wall_model;
 
 /// Convenient glob import for the V2 API.
 pub mod prelude {
@@ -61,6 +62,7 @@ pub mod prelude {
         WallSpec,
     };
     pub use crate::subdomain::Subdomain;
+    pub use crate::wall_model::{WallCellMetric, WallMetricSource};
 
     #[cfg(feature = "gpu")]
     #[allow(deprecated)]
