@@ -31,7 +31,7 @@ remain rejected.**
 | ID | Sev | Verdict | Disposition |
 |----|-----|---------|-------------|
 | F-001 | P0→rejected | (a), reversed | Docs were the stale party, not the code. Fixed VALIDATION.md + ARCHITECTURE_V2.md (`cx/ext-review-docs`). D3Q27 outflow/convective are supported on CPU and tested. |
-| F-002 | P0→open item | (b) | Central-moment `-0.16\|u\|²` velocity correction. **E1 ablation was already run** (`cx/e1-ablation`): its viscosity footprint matches a Chapman–Enskog perturbation of the modifier within ~26% at two viscosities → a real Galilean-class effect, not decorative. But coefficient `0.16` is empirically calibrated and **fails the Galilean-invariance holdout** (`cumulant_holdout.rs` frame-spread). Recorded on `main` as a **derive-or-remove open item** (PHYSICS.md ANOM-P4-008 + E1 record; LIMITATIONS.md collision row; README scope note). Reviewer's instinct correct; the "verdict B / PHYSICAL" framing understated that `0.16` still lacks a first-principles derivation. |
+| F-002 | P0→resolved (retain) | (b) | Central-moment `-0.16\|u\|²` velocity correction. A concurrent session adjudicated this fully on `main` (PHYSICS.md 2026-07-07 falsification record + `docs/proposals/CUMULANT_GALILEAN_FIX.md`): **removing the term was tested and made the advected-TGV3D frame spread 2.5× worse** (1.05e-2 vs 4.20e-3), falsifying the removal hypothesis — so it compensates a real \|u\|²-scaling part of the D3Q19 defect and is retained. Standing verdict: **retained with a narrowed claim** — the residual anisotropic part is uncorrected and Galilean invariance at finite frame velocity is NOT established on D3Q19 (holdout stays `#[ignore = FINDING]`). This review's contribution: a `LIMITATIONS.md` collision row + README scope note surfacing that verdict to the trust boundary; the reviewer's underlying concern (coefficient not first-principles-derived) is real and remains the open question under adjudication in the fix proposal. No new PHYSICS.md verdict was added here — the concurrent record owns it. |
 | F-003 | P0 | (a/c) | README overclaims fixed (`cx/ext-review-docs`): "physically rigorous" reframed as enforced policy with inventoried open items; WALE "by construction" → operator design intent, DNS/wall-treatment as validation-queue; "bit-reproducible" scoped to the covered matrix with the T13 two-pass probe blind spot named. |
 | F-004 | P1 | (a) confirmed | Native moving-wall `wall_u` bypassed the low-Mach guard. **Fixed** (`cx/ext-review-boundary`): `Solver::try_new` now validates `wall_u` (finite + speed ≤ MAX_SPEED, NaN-safe, reusing `SpecError::VelocityTooHigh`/`NonFiniteParameter` — no new variant, no clamp). Regression test in `boundary_input_validation.rs`. |
 | F-005 | P1 | (a) confirmed | `init_with` seeded raw (ρ,u) unvalidated. **Fixed** (`cx/ext-review-boundary`): fail-loud panic on ρ≤0/non-finite/\|u\|>MAX_SPEED with offending coordinates; `# Panics` documented. Regression test included. |
@@ -56,8 +56,10 @@ remain rejected.**
 
 ## Fixed in this session (landed on clean, main-based branches)
 
-- `cx/ext-review-docs` — F-001, F-002 (record), F-003, F-014, F-018, F-022,
-  F-016 (README caveat). Docs only; verified against code + `d3q27_open_bc` 6/6.
+- `cx/ext-review-docs` — F-001, F-003, F-014, F-018, F-022, F-016 (README
+  caveat), and the F-002 trust-boundary surfacing (LIMITATIONS row + README
+  note; PHYSICS.md verdict left to the concurrent record). Docs only; verified
+  against code + `d3q27_open_bc` 6/6.
 - `cx/ext-review-boundary` — F-004, F-005. `solver.rs` guards +
   `boundary_input_validation.rs`. Gates run this session:
   `boundary_input_validation` 5/5, `backend_simd_equiv` 21/21 (no regression),

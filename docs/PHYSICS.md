@@ -561,17 +561,9 @@ tight" chases physically impossible numbers.
   `omega_eff = omega_shear * (1 + 0.0025 - 0.16 |u|^2)`, clamped to `<= 2`.
   The `+0.0025` term was removed from CPU scalar/SIMD and generated GPU WGSL
   paths. The remaining velocity term is explicitly ablatable via
-  `CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION`; normal builds keep
-  it active so the Galilean-defect acceptance stays covered. **E1 verdict (run
-  2026-07-07, see the "E1 ablation A/B" record below):** the term's viscosity
-  footprint is a real Galilean-class effect matching a Chapman–Enskog
-  perturbation of the modifier within ~26% at two viscosities — it is not
-  decorative. It is NOT thereby validated: the coefficient `0.16` is still
-  empirically calibrated and the `cumulant_holdout.rs` frame-spread finding
-  (below) shows it does not establish Galilean-invariant viscous decay on the
-  holdout. Net status: **tracked open item, derive-or-remove** — the coefficient
-  lacks a first-principles derivation, so it does not yet meet the prime
-  directive and must not be presented as a validated closure.
+  `CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION` and remains
+  pending E1 verdict; normal builds keep it active so the Galilean-defect
+  acceptance stays covered.
 - Source: the removed offset was empirical calibration, not a first-principles
   closure. The decisive audit in
   `crates/lbm-core/tests/accuracy_audit_cumulant.rs` separates
@@ -633,9 +625,7 @@ tight" chases physically impossible numbers.
   relative error `9.381837223597193e-3`.
 - Validity domain: no D3Q19 lattice-offset closure is live. The remaining
   `-0.16 |u|^2` central-moment velocity term is not validated as a viscosity
-  correction; E1 was run 2026-07-07 (verdict recorded at the head of this
-  entry: real footprint, but empirically-calibrated coefficient failing the
-  Galilean-invariance holdout → derive-or-remove open item). It
+  correction; E1 remains SPEC-GAP until rerun with the ablation flag. It
   still has a measured Galilean-defect effect in the current acceptance:
   D3Q19 BGK `2.570488585e-3` vs CentralMoment `9.996091795e-4`, D3Q27 BGK
   `2.533062587e-3` vs CentralMoment `1.161446988e-3`.
@@ -643,22 +633,6 @@ tight" chases physically impossible numbers.
   viscosity-offset calibration from the central-moment collision. It does
   not replace resolved LBM viscosity (`tau = 3 nu + 0.5`) and should not be
   reused as a generic LES, wall, or stability limiter coefficient.
-- **E1 ablation A/B record (run 2026-07-07):** A/B fit of the
-  effective-viscosity defect slope `c(nu) = d(nu_eff/nu - 1)/d(u0^2)` on the
-  classic D3Q19 CentralMoment TGV3D at `N=32`, `nu in {0.02, 0.10}`,
-  `u0 in {0.02, 0.04, 0.08}` (same decay-rate / linear-fit machinery as
-  `accuracy_audit_cumulant.rs`; scratch test deleted after measurement).
-  Chapman–Enskog perturbation of the modifier gives the predicted footprint
-  `delta_c(nu) = 0.16 * W * 2/(2 - omega)` with the TGV mean `W = <|u|^2>/u0^2 = 1/4`
-  and `omega = 1/(3 nu + 0.5)`. Measured (ON − OFF) vs predicted:
-  `nu=0.02` → `0.2743` vs `0.3733` (26.5%); `nu=0.10` → `0.0802` vs `0.1067`
-  (24.9%); fits `r2 > 0.99998`. Verdict: the term produces a **real**
-  Galilean-class viscosity footprint (not decorative), but its magnitude `0.16`
-  was fitted to TGV3D decay, not derived, and the `cumulant_holdout.rs`
-  frame-spread above exceeds its `Ma_frame^2 (k dx)^2` band — so `0.16` remains
-  a **derive-or-remove open item**, not a validated closure. (Fuller A/B raw
-  output was captured on branch `cx/e1-ablation`; this is the retained summary
-  of record.)
 
 ### 2026-07-07 behavior review — cumulant holdout integral runs
 Pattern: all reported TGV3D runs had positive decay rates and monotonically
