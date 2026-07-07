@@ -896,6 +896,22 @@ Routing: none.
   and `::val_mphard_i3_rayleigh_taylor_cutoff_light_sign_canary` are ignored
   with explicit demo-tier reasons.
 
+### 2026-07-08 Shan-Chen psi density-domain guard (`compat::multiphase::Psi::eval`)
+- Form: `debug_assert!(rho > 0.0)` before evaluating the Shan-Chen
+  pseudopotential.
+- Source: this is a domain guard, not a physics closure. Shan-Chen SCMP/MCMP
+  in [MODEL_RISK_MATRIX.md](MODEL_RISK_MATRIX.md) section 3 is Demo only and
+  limited by density-ratio and spurious-current failures; non-positive
+  density is outside that model domain. The exponential psi form divides by
+  `rho`, so the failure must be explicit in debug builds rather than hidden
+  behind a density floor.
+- Validity domain: positive finite density fields. The guard does not alter
+  release numerics and does not make Shan-Chen production gas-liquid.
+- Validation: `accuracy_audit_sc_rho_positivity::g3_multiphase_source_has_explicit_density_floor_or_guard`
+  detects the explicit domain guard. No `.max`/`.clamp` floor is used because
+  silently replacing transported density would violate the no-hidden-clamp
+  discipline.
+
 ---
 
 ## 3. Prohibited patterns

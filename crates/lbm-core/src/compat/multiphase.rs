@@ -59,6 +59,7 @@ pub enum Psi {
 impl Psi {
     #[inline]
     fn eval(&self, rho: f64) -> f64 {
+        debug_assert!(rho > 0.0, "Shan-Chen psi requires positive rho, got {rho:e}");
         match *self {
             Psi::Classic => 1.0 - (-rho).exp(),
             Psi::Exponential { psi0, rho0 } => psi0 * (-rho0 / rho).exp(),
