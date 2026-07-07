@@ -2229,24 +2229,41 @@ where
         }
         let scale = max_target.max(1.0);
 
-        for iter in 0..cfg.max_iterations {
-            diag = IbmDiagnostics {
-                iterations: iter + 1,
-                ..IbmDiagnostics::default()
-            };
-            let mut slip_sq_weighted = 0.0;
-            let mut weight_sum = 0.0;
-
-            for marker in body.markers() {
+        let marker_stencils: Vec<_> = body
+            .markers()
+            .iter()
+            .map(|marker| {
                 let stencil = marker_stencil(marker.position, self.dims, L::D, cfg.kernel_radius);
                 assert!(
                     !stencil.is_empty(),
                     "IBM marker stencil is outside the domain"
                 );
+                stencil
+            })
+            .collect();
+        let mut cell_kernel_sum = vec![0.0f64; n];
+        for stencil in &marker_stencils {
+            for sp in stencil {
+                let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
+                if solid[gi] {
+                    continue;
+                }
+                cell_kernel_sum[gi] += sp.w;
+            }
+        }
+
+        for iter in 0..cfg.max_iterations {
+            let mut marker_impulses = vec![[0.0f64; 3]; body.markers().len()];
+            for (mi, (marker, stencil)) in body
+                .markers()
+                .iter()
+                .zip(marker_stencils.iter())
+                .enumerate()
+            {
                 let target = body.target_velocity(marker.position);
                 let mut um = [0.0f64; 3];
                 let mut mobility = 0.0f64;
-                for sp in &stencil {
+                for sp in stencil {
                     let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
                     if solid[gi] {
                         continue;
@@ -2255,42 +2272,66 @@ where
                     um[0] += sp.w * (u_now[gi][0] + du[gi][0]);
                     um[1] += sp.w * (u_now[gi][1] + du[gi][1]);
                     um[2] += sp.w * (u_now[gi][2] + du[gi][2]);
-                    mobility += marker.weight * sp.w * sp.w / rc.max(1.0e-30);
+                    mobility += sp.w * cell_kernel_sum[gi] / rc.max(1.0e-30);
                 }
                 if mobility == 0.0 {
                     continue;
                 }
                 let slip = [target[0] - um[0], target[1] - um[1], target[2] - um[2]];
-                let slip_mag = norm(slip, L::D);
-                diag.slip_max = diag.slip_max.max(slip_mag);
-                slip_sq_weighted += marker.weight * slip_mag * slip_mag;
-                weight_sum += marker.weight;
 
-                // Chosen so interpolation of the Guo half-force velocity
-                // increment, sum W * F_cell/(2 rho), equals this sweep's slip.
-                let f_marker = [
-                    cfg.relaxation * 2.0 * slip[0] / mobility,
-                    cfg.relaxation * 2.0 * slip[1] / mobility,
-                    cfg.relaxation * 2.0 * slip[2] / mobility,
+                // Direct-forcing IBM is the marker-space linear solve M f = s,
+                // where s = U_marker - I[u] and
+                // M_jk = sum_cells W_j(cell) W_k(cell) / rho(cell) for marker
+                // impulse unknowns q_k spread as q_k W_k. Before the post-R2-C
+                // force-field impulse fix this code targeted the Guo half-force
+                // predictor, sum W F/(2 rho), and therefore used 2*s/M_jj. The
+                // actual post-step momentum impulse of a Guo force field is
+                // F/rho, so an isolated marker is exactly corrected by s/M_jj.
+                //
+                // Dense markers have positive off-diagonal overlap. Using only
+                // M_jj then lets a collective mode receive roughly the sum of
+                // neighbouring marker corrections. The denominator used here is
+                // the row sum G_j = sum_k M_jk, computed as
+                // sum_cells W_j(cell) * sum_k W_k(cell) / rho(cell). Gershgorin
+                // gives every eigenvalue of G^-1 M in [0, 1] because M is a
+                // symmetric positive regularized-delta Gram matrix and G is its
+                // positive row-sum diagonal. Richardson sweeps with
+                // relaxation=1 therefore have spectral radius <= 1 for the
+                // residual operator I - G^-1 M, with the unit mobility mode
+                // corrected in one sweep and the remaining represented modes
+                // damped. This is the Uhlmann/Wang multi-direct-forcing overlap
+                // correction; for one marker G_j=M_jj, so the full-step
+                // correction remains exact.
+                marker_impulses[mi] = [
+                    cfg.relaxation * slip[0] / mobility,
+                    cfg.relaxation * slip[1] / mobility,
+                    cfg.relaxation * slip[2] / mobility,
                 ];
+            }
+            for ((marker, stencil), marker_impulse) in body
+                .markers()
+                .iter()
+                .zip(marker_stencils.iter())
+                .zip(marker_impulses.iter())
+            {
                 let mut represented_marker_force = [0.0f64; 3];
-                for sp in &stencil {
+                for sp in stencil {
                     let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
                     if solid[gi] {
                         continue;
                     }
                     let cell_force = [
-                        f_marker[0] * marker.weight * sp.w,
-                        f_marker[1] * marker.weight * sp.w,
-                        f_marker[2] * marker.weight * sp.w,
+                        marker_impulse[0] * sp.w,
+                        marker_impulse[1] * sp.w,
+                        marker_impulse[2] * sp.w,
                     ];
                     add3(&mut spread[gi], cell_force);
                     add3(&mut diag.fluid_force, cell_force);
                     add3(&mut represented_marker_force, cell_force);
-                    let inv_2rho = 0.5 / rho[gi].as_f64().max(1.0e-30);
-                    du[gi][0] += cell_force[0] * inv_2rho;
-                    du[gi][1] += cell_force[1] * inv_2rho;
-                    du[gi][2] += cell_force[2] * inv_2rho;
+                    let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
+                    du[gi][0] += cell_force[0] * inv_rho;
+                    du[gi][1] += cell_force[1] * inv_rho;
+                    du[gi][2] += cell_force[2] * inv_rho;
                 }
                 add3(&mut diag.marker_force, represented_marker_force);
                 let r = [
@@ -2304,6 +2345,33 @@ where
                 diag.torque[2] -= tq_fluid[2];
             }
 
+            diag.iterations = iter + 1;
+            diag.slip_max = 0.0;
+            let mut slip_sq_weighted = 0.0;
+            let mut weight_sum = 0.0;
+            for (marker, stencil) in body.markers().iter().zip(marker_stencils.iter()) {
+                let target = body.target_velocity(marker.position);
+                let mut um = [0.0f64; 3];
+                let mut active_weight = false;
+                for sp in stencil {
+                    let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
+                    if solid[gi] {
+                        continue;
+                    }
+                    active_weight = true;
+                    um[0] += sp.w * (u_now[gi][0] + du[gi][0]);
+                    um[1] += sp.w * (u_now[gi][1] + du[gi][1]);
+                    um[2] += sp.w * (u_now[gi][2] + du[gi][2]);
+                }
+                if !active_weight {
+                    continue;
+                }
+                let slip = [target[0] - um[0], target[1] - um[1], target[2] - um[2]];
+                let slip_mag = norm(slip, L::D);
+                diag.slip_max = diag.slip_max.max(slip_mag);
+                slip_sq_weighted += marker.weight * slip_mag * slip_mag;
+                weight_sum += marker.weight;
+            }
             diag.slip_rms = if weight_sum > 0.0 {
                 (slip_sq_weighted / weight_sum).sqrt()
             } else {
@@ -2316,7 +2384,7 @@ where
                 diag.fluid_force[1] - diag.marker_force[1],
                 diag.fluid_force[2] - diag.marker_force[2],
             ];
-            diag.momentum_error_rel = norm(err, L::D) / norm(diag.marker_force, L::D).max(1.0e-30);
+            diag.momentum_error_rel = norm(err, L::D) / norm(diag.marker_force, L::D).max(1.0e-12);
             if diag.slip_max_rel <= cfg.slip_tolerance {
                 break;
             }

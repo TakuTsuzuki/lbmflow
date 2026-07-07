@@ -11,19 +11,26 @@ context in commits 82946d3 / cd3999f / 20d0e10).
 
 ---
 
-## OPEN — core-engine fix pending
+## RESOLVED — fixed and regression-pinned
 
 ### ANOM-P4-001 — time-stepped direct-forcing IBM diverges in default config
 - Severity: **S1**.
-- Gate: `cx/audit-ibm` B1–B8 (currently RED / NaN).
-- Config: 80×80 periodic D2Q9 TRT Λ=3/16 nu=1/6, IBM circle r_i=10 Ω=1.5e-4
-  (Re_r=0.09), relaxation=1.0 (module DEFAULT). NaN at n_markers∈{63,160}.
-- Root cause (derived): marker force targets the Guo half-force velocity
-  (Σ W·F/(2ρ) = slip), but the full step realizes F/ρ — 2× overshoot per apply;
-  overlapping kernels (ds<h) amplify collectively. Same family as P4-010.
-- Positive control: at stable point (relax=0.25, n=160) T ratio 1.075 —
-  spatial discretization is right; the coupling loop is broken.
-- Disposition: core-engine routing.
+- Status: **RESOLVED 2026-07-07**.
+- Fix: marker force sizing now targets the realized full Guo force-field
+  impulse `F/rho` instead of the half-force diagnostic increment, and dense
+  marker overlap uses the row-sum mobility of the interpolation-spreading Gram
+  operator instead of the self-mobility `M_jj` alone.
+- Gate: `cargo test -p lbm-core --release --test accuracy_audit_ibm -- --nocapture`
+  passed with default `relaxation=1.0`; `rotating_ibm.rs` quantitative bands
+  were tightened or marked superseded by the audit. Measured highlights:
+  B1 torque ratio `1.06598`, B2 spread `1.641e-3`, B5 kernel/relaxation
+  torques mutually within 5%, B6 torque antisymmetry `1.041e-16`, B8
+  Taylor-Couette `L2_rel=4.522e-2`.
+- Follow-up boundary: ANOM-P4-010 remains open. Volume penalization has no
+  marker interpolation-spreading Gram operator and still needs its own derived
+  implicit/relaxation treatment.
+
+## OPEN — core-engine fix pending
 
 ### ANOM-P4-008 — cumulant D3Q19 "+0.0025 viscosity offset" is a resolution-point calibration (verdict C)
 - Severity: **S2** leaning S0 (silent tau-dependent bias at every N except

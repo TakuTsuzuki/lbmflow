@@ -1039,3 +1039,71 @@ orientation convention. Width-vs-time CSV:
 `/tmp/lbmflow_wvof_o1_adversarial/counter_term_sharpening.pgm`.
 Verdict: PHYSICAL for W-VOF O1 prescribed-velocity, matched-density transport.
 Routing: none.
+
+---
+
+### 2026-07-07 direct-forcing IBM full-step impulse and overlap mobility (`crates/lbm-core/src/solver.rs:apply_rotating_ibm`)
+- Form: each IBM sweep solves the marker-space correction
+  `M q = U_marker - I[u]`, with marker impulse unknowns `q_k` spread as
+  `q_k W_k(x)` and mobility
+  `M_jk = sum_x W_j(x) W_k(x) / rho(x)`. The implemented Richardson sweep
+  uses the row-sum preconditioner
+  `G_j = sum_k M_jk = sum_x W_j(x) sum_k W_k(x) / rho(x)` and applies
+  `q_j += relaxation * slip_j / G_j`; the cell predictor and force field both
+  use the realized full Guo impulse `delta u = F / rho`.
+- Source: resolved Guo forcing contract after the R2-C force-field impulse
+  fix. The old IBM sizing targeted the half-force diagnostic increment
+  `sum_x W F/(2 rho) = slip`, which made the realized post-step impulse twice
+  the requested slip. For a single marker, `G_j = M_jj`, so the correction is
+  the exact full-step direct-forcing impulse. For overlapping markers,
+  `M` is the symmetric positive regularized-delta Gram matrix used in
+  Uhlmann/Wang multi-direct-forcing analyses; `G^-1 M` has eigenvalues in
+  `[0, 1]` under the row-sum bound, so relaxation `1.0` is non-amplifying for
+  the represented marker modes instead of exciting the dense-marker collective
+  gain.
+- Validity domain: marker-based rotating IBM with finite positive density,
+  kernel radius 1 or 2, and audited circular marker spacings `ds/h` in
+  `[0.39, 1.0]`. The row-sum preconditioner treats marker-overlap stability;
+  it is not a volume-penalization cure. Compat rotor penalization applies a
+  per-cell correction directly in every solid cell with no interpolation-
+  spreading Gram operator, so the coherent `chi=1` disc can still realize the
+  explicit reflection `u -> 2 U_target - u` and remains ANOM-P4-010 until it
+  gets its own implicit or derived relaxation treatment.
+- Validation: `crates/lbm-core/tests/accuracy_audit_ibm.rs` default audit
+  passed. Measured B1 torque ratio `1.06598` (relative error `6.598e-2`);
+  B2 sub-cell torque spread `1.641e-3`; B3 near-edge conservation diagnostic
+  `2.313e-5` on a near-zero net force; B4 slip refinement `5.802e-5 ->
+  1.112e-5`; B5 kernel/relaxation torques `3.685e-2`, `3.738e-2`,
+  `3.703e-2`; B6 `Omega -> -Omega` torque antisymmetry `1.041e-16` and
+  mapped field difference `9.015e-17`; B8 Taylor-Couette profile
+  `L2_rel=4.522e-2`, `Linf/U_i=3.542e-2`. `rotating_ibm.rs` now pins the
+  corrected unit profiles with Taylor-Couette `L2_rel=2.887e-2`,
+  `Linf/U_i=2.778e-2`, and torque within 10% of the annular-Couette value;
+  the one-cell-off-wall Couette case is marked as smoke-only and superseded by
+  the audit for quantitative IBM accuracy.
+- Replaces / interacts with: replaces the old `2 * slip / M_jj` half-force
+  sizing and immediate marker-order Gauss-Seidel update. Diagnostics now
+  accumulate all sweep impulses and report slip after the applied sweep; net
+  force conservation uses a `1e-12` relative-scale floor so a nearly zero net
+  force is not reported as an arbitrary huge relative error.
+
+### 2026-07-07 behavior review — ANOM-P4-001 IBM audit
+Pattern: the corrected rotating IBM runs remain finite at the default
+`relaxation=1.0`; torque is linear/stable, `Omega -> -Omega` produces the
+mirrored velocity field to round-off, and the Taylor-Couette profile has the
+expected annular monotone swirl between the rotating IBM circle and the outer
+stationary wall.
+Mechanism: Guo forcing supplies the full-step marker impulse, while the
+row-sum marker mobility damps the collective overlap mode that previously
+doubled and amplified the applied slip.
+Resolved vs closure: the Guo impulse, TRT collision, and half-way outer wall
+are resolved engine behavior; the IBM regularized-delta marker coupling is a
+documented direct-forcing discretization with the validity domain above.
+Artifacts checked: no clamps, ramps, or case-identity branches were added.
+The B8 audit no longer places a stationary Eulerian solid core inside the IBM
+kernel support, avoiding a separate half-way wall artifact in the profile
+gate. No visual artifact was generated in this coding session; the PM/V&V
+viewer pass should use the B8 velocity field if spatial inspection is needed.
+Verdict: PHYSICAL within the marker-IBM validity domain; ANOM-P4-010 remains
+separate for volume penalization.
+Routing: none for ANOM-P4-001; ANOM-P4-010 stays routed separately.
