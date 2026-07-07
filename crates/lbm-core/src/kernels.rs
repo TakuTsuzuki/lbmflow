@@ -23,9 +23,10 @@
 
 use crate::collision::{Collision, ScalarArith, TrtGuo};
 use crate::fields::LocalGeom;
-use crate::lattice::{Face, Lattice, Q_MAX};
+use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27, Q_MAX};
 use crate::params::{KParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION};
 use crate::real::Real;
+use std::sync::OnceLock;
 
 /// Unsafely shareable mutable view for row-parallel kernels.
 ///
@@ -191,28 +192,48 @@ fn pow_upto2(x: f64, e: u8) -> f64 {
     }
 }
 
-pub(crate) fn central_phi<L: Lattice>(q: usize, exp: [u8; 3], u: [f64; 3]) -> f64 {
-    let c = L::C[q];
-    let mut v = pow_upto2(c[0] as f64 - u[0], exp[0]);
-    v *= pow_upto2(c[1] as f64 - u[1], exp[1]);
-    if L::D == 3 {
-        v *= pow_upto2(c[2] as f64 - u[2], exp[2]);
-    }
+#[inline]
+fn raw_phi(c: [i8; 3], exp: [u8; 3]) -> f64 {
+    let mut v = pow_upto2(c[0] as f64, exp[0]);
+    v *= pow_upto2(c[1] as f64, exp[1]);
+    v *= pow_upto2(c[2] as f64, exp[2]);
     v
 }
 
-pub(crate) fn solve_moment_system<L: Lattice>(
-    basis: &[[u8; 3]; Q_MAX],
-    u: [f64; 3],
-    rhs: &[f64; Q_MAX],
-) -> [f64; Q_MAX] {
+#[inline]
+fn binom_upto2(n: u8, k: u8) -> f64 {
+    match (n, k) {
+        (_, 0) => 1.0,
+        (1, 1) => 1.0,
+        (2, 1) => 2.0,
+        (2, 2) => 1.0,
+        _ => unreachable!("central basis only uses powers 0..=2"),
+    }
+}
+
+pub(crate) struct MomentTransform {
+    pub(crate) basis: [[u8; 3]; Q_MAX],
+    pub(crate) exp_index: [[[usize; 3]; 3]; 3],
+    pub(crate) raw_from_pop: [[f64; Q_MAX]; Q_MAX],
+    pub(crate) pop_from_raw: [[f64; Q_MAX]; Q_MAX],
+}
+
+struct MomentTransformSet {
+    d2q9: MomentTransform,
+    d3q19: MomentTransform,
+    d3q27: MomentTransform,
+}
+
+fn invert_raw_moment_matrix<L: Lattice>(
+    raw_from_pop: &[[f64; Q_MAX]; Q_MAX],
+) -> [[f64; Q_MAX]; Q_MAX] {
     let n = L::Q;
-    let mut a = [[0.0f64; Q_MAX + 1]; Q_MAX];
-    for m in 0..n {
-        for q in 0..n {
-            a[m][q] = central_phi::<L>(q, basis[m], u);
+    let mut a = [[0.0f64; Q_MAX * 2]; Q_MAX];
+    for row in 0..n {
+        for col in 0..n {
+            a[row][col] = raw_from_pop[row][col];
         }
-        a[m][n] = rhs[m];
+        a[row][n + row] = 1.0;
     }
     for col in 0..n {
         let mut pivot = col;
@@ -223,14 +244,14 @@ pub(crate) fn solve_moment_system<L: Lattice>(
         }
         assert!(
             a[pivot][col].abs() > 1.0e-14,
-            "singular central-moment basis for lattice Q{}",
+            "singular raw-moment basis for lattice Q{}",
             L::Q
         );
         if pivot != col {
             a.swap(pivot, col);
         }
         let inv = 1.0 / a[col][col];
-        for j in col..=n {
+        for j in col..2 * n {
             a[col][j] *= inv;
         }
         for row in 0..n {
@@ -241,14 +262,131 @@ pub(crate) fn solve_moment_system<L: Lattice>(
             if factor == 0.0 {
                 continue;
             }
-            for j in col..=n {
+            for j in col..2 * n {
                 a[row][j] -= factor * a[col][j];
             }
         }
     }
+    let mut out = [[0.0f64; Q_MAX]; Q_MAX];
+    for row in 0..n {
+        for col in 0..n {
+            out[row][col] = a[row][n + col];
+        }
+    }
+    out
+}
+
+fn build_moment_transform<L: Lattice>() -> MomentTransform {
+    let basis = central_basis::<L>();
+    let mut exp_index = [[[usize::MAX; 3]; 3]; 3];
+    let mut raw_from_pop = [[0.0f64; Q_MAX]; Q_MAX];
+    for m in 0..L::Q {
+        let e = basis[m];
+        exp_index[e[0] as usize][e[1] as usize][e[2] as usize] = m;
+        for q in 0..L::Q {
+            raw_from_pop[m][q] = raw_phi(L::C[q], e);
+        }
+    }
+    let pop_from_raw = invert_raw_moment_matrix::<L>(&raw_from_pop);
+    MomentTransform {
+        basis,
+        exp_index,
+        raw_from_pop,
+        pop_from_raw,
+    }
+}
+
+fn moment_transforms() -> &'static MomentTransformSet {
+    static TRANSFORMS: OnceLock<MomentTransformSet> = OnceLock::new();
+    TRANSFORMS.get_or_init(|| MomentTransformSet {
+        d2q9: build_moment_transform::<D2Q9>(),
+        d3q19: build_moment_transform::<D3Q19>(),
+        d3q27: build_moment_transform::<D3Q27>(),
+    })
+}
+
+pub(crate) fn central_moment_transform<L: Lattice>() -> &'static MomentTransform {
+    let transforms = moment_transforms();
+    match (L::D, L::Q) {
+        (2, 9) => &transforms.d2q9,
+        (3, 19) => &transforms.d3q19,
+        (3, 27) => &transforms.d3q27,
+        _ => unreachable!("unsupported central-moment lattice D{}Q{}", L::D, L::Q),
+    }
+}
+
+pub(crate) fn populations_to_central_moments<L: Lattice>(
+    transform: &MomentTransform,
+    u: [f64; 3],
+    populations: &[f64; Q_MAX],
+) -> [f64; Q_MAX] {
+    let mut raw = [0.0f64; Q_MAX];
+    for m in 0..L::Q {
+        for (q, &population) in populations.iter().enumerate().take(L::Q) {
+            raw[m] += transform.raw_from_pop[m][q] * population;
+        }
+    }
+    raw_to_central_moments::<L>(transform, u, &raw)
+}
+
+#[inline]
+fn shifted_moments<L: Lattice>(
+    transform: &MomentTransform,
+    u: [f64; 3],
+    input: &[f64; Q_MAX],
+    raw_to_central: bool,
+) -> [f64; Q_MAX] {
     let mut out = [0.0f64; Q_MAX];
-    for i in 0..n {
-        out[i] = a[i][n];
+    for m in 0..L::Q {
+        let e = transform.basis[m];
+        let mut acc = 0.0;
+        for kx in 0..=e[0] {
+            for ky in 0..=e[1] {
+                for kz in 0..=e[2] {
+                    let idx = transform.exp_index[kx as usize][ky as usize][kz as usize];
+                    debug_assert_ne!(idx, usize::MAX);
+                    let mut coef =
+                        binom_upto2(e[0], kx) * binom_upto2(e[1], ky) * binom_upto2(e[2], kz);
+                    let sx = if raw_to_central { -u[0] } else { u[0] };
+                    let sy = if raw_to_central { -u[1] } else { u[1] };
+                    let sz = if raw_to_central { -u[2] } else { u[2] };
+                    coef *= pow_upto2(sx, e[0] - kx);
+                    coef *= pow_upto2(sy, e[1] - ky);
+                    coef *= pow_upto2(sz, e[2] - kz);
+                    acc += coef * input[idx];
+                }
+            }
+        }
+        out[m] = acc;
+    }
+    out
+}
+
+pub(crate) fn raw_to_central_moments<L: Lattice>(
+    transform: &MomentTransform,
+    u: [f64; 3],
+    raw: &[f64; Q_MAX],
+) -> [f64; Q_MAX] {
+    shifted_moments::<L>(transform, u, raw, true)
+}
+
+pub(crate) fn central_to_raw_moments<L: Lattice>(
+    transform: &MomentTransform,
+    u: [f64; 3],
+    central: &[f64; Q_MAX],
+) -> [f64; Q_MAX] {
+    shifted_moments::<L>(transform, u, central, false)
+}
+
+pub(crate) fn raw_moments_to_populations<L: Lattice>(
+    transform: &MomentTransform,
+    raw: &[f64; Q_MAX],
+) -> [f64; Q_MAX] {
+    let mut out = [0.0f64; Q_MAX];
+    for (q, out_q) in out.iter_mut().enumerate().take(L::Q) {
+        for (m, &raw_m) in raw.iter().enumerate().take(L::Q) {
+            *out_q += transform.pop_from_raw[q][m] * raw_m;
+        }
     }
     out
 }
@@ -278,7 +416,8 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
     omega: Option<&[T]>,
     p: &KParams<T>,
 ) {
-    let basis = central_basis::<L>();
+    let transform = central_moment_transform::<L>();
+    let basis = &transform.basis;
     for x in 0..rho.len() {
         if solid[x] {
             continue;
@@ -335,17 +474,9 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
             feq_phys[q] = L::W[q] * r * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq);
         }
 
-        let mut mom = [0.0f64; Q_MAX];
-        let mut src_mom = [0.0f64; Q_MAX];
-        let mut eq = [0.0f64; Q_MAX];
-        for m in 0..L::Q {
-            for q in 0..L::Q {
-                let phi = central_phi::<L>(q, basis[m], u);
-                mom[m] += phi * phys[q];
-                eq[m] += phi * feq_phys[q];
-                src_mom[m] += phi * src[q];
-            }
-        }
+        let mom = populations_to_central_moments::<L>(transform, u, &phys);
+        let eq = populations_to_central_moments::<L>(transform, u, &feq_phys);
+        let src_mom = populations_to_central_moments::<L>(transform, u, &src);
 
         let os_base = omega.map_or(p.omega_shear.as_f64(), |v| v[x].as_f64());
         let velocity_correction = if CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
@@ -392,7 +523,8 @@ pub(crate) unsafe fn collide_row_central_moment<L: Lattice, T: Real>(
             post[idx] =
                 eq[idx] + (1.0 - os) * dev_neq + 0.5 * bulk_src + (1.0 - 0.5 * os) * dev_src;
         }
-        let out_phys = solve_moment_system::<L>(&basis, u, &post);
+        let raw_post = central_to_raw_moments::<L>(transform, u, &post);
+        let out_phys = raw_moments_to_populations::<L>(transform, &raw_post);
         for q in 0..L::Q {
             // SAFETY: row-disjoint dispatch (see RawSlice contract).
             unsafe { f.set(q * np + i, T::r(out_phys[q] - L::W[q])) };

@@ -233,6 +233,16 @@ relaxation rate 0. The second-order deviatoric moments use the configured
 `omega_shear`, including the per-cell WALE/LES omega field when present. The
 second-order trace (bulk) relaxes at rate 1.0.
 
+On 2026-07-07 the central-moment transform was factored algebraically without
+changing the operator. The previous implementation built the shifted
+central-moment matrix `M(u)` and inverted it per cell. The live CPU and GPU
+paths now compute fixed raw moments `R f`, apply the binomial raw-to-central
+shift by `u`, keep the same relaxation/source schedule, inverse-shift
+central-to-raw moments, and multiply by the fixed `R^-1` matrix for the
+lattice. This is the identity
+`(c - u)^e = sum_{k <= e} binom(e, k) c^k (-u)^(e-k)` and its inverse; it
+adds no model term, limiter, calibration constant, or changed validity domain.
+
 The original stage-2 implementation also relaxed all third/higher central
 moments directly to continuous Maxwellian central moments. That was wrong for
 the implemented operator: the solver initializes and equilibrates with the
