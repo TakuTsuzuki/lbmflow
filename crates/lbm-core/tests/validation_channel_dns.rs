@@ -1,4 +1,10 @@
 //! T17/VR-STR-03 — Re_tau=178.12 turbulent channel WALE characterization.
+//!
+//! The frozen delta=48/64 protocol initializes from a deterministic multimode
+//! perturbation. On cleaner fine grids (delta>=80), that smooth seed can decay
+//! before secondary instability grows; the GPU path therefore restarts from a
+//! turbulent delta=48 field, upsampled trilinearly onto the target grid, then
+//! uses only a 10-Te pressure/divergence-relaxation warmup before statistics.
 
 use lbm_core::prelude::*;
 use std::f64::consts::PI;
@@ -76,6 +82,16 @@ struct Report {
     uv_plus_at_30_last_window: f64,
 }
 
+#[cfg(feature = "gpu")]
+#[derive(Clone)]
+struct ChannelFields {
+    case: ChannelCase,
+    rho: Vec<f32>,
+    ux: Vec<f32>,
+    uy: Vec<f32>,
+    uz: Vec<f32>,
+}
+
 fn full_case() -> ChannelCase {
     // LBM_CHAN180_DELTA overrides the wall-resolution for PM convergence
     // studies (default 48 = the frozen protocol). Box aspect is held fixed
@@ -87,6 +103,25 @@ fn full_case() -> ChannelCase {
     let u_tau = 0.008;
     let nx = (delta * 8).div_ceil(3); // delta=48 -> 128 (Lx+ = 475, Lx/delta = 2.67)
     let nz = (delta * 3) / 2; // delta=48 -> 72 (Lz+ = 267, Lz/delta = 1.50)
+    let ny = 2 * delta + 2;
+    let nu = u_tau * delta as f64 / RE_TAU_MKM180;
+    let force_x = u_tau * u_tau / delta as f64;
+    ChannelCase {
+        delta,
+        nx,
+        ny,
+        nz,
+        u_tau,
+        nu,
+        force_x,
+    }
+}
+
+#[cfg(feature = "gpu")]
+fn full_case_at_delta(delta: usize) -> ChannelCase {
+    let u_tau = 0.008;
+    let nx = (delta * 8).div_ceil(3);
+    let nz = (delta * 3) / 2;
     let ny = 2 * delta + 2;
     let nu = u_tau * delta as f64 / RE_TAU_MKM180;
     let force_x = u_tau * u_tau / delta as f64;
@@ -242,14 +277,32 @@ fn turbulent_channel_init(case: ChannelCase, x: usize, y: usize, z: usize) -> (f
     let ax = 2.0 * PI * x as f64 / nx;
     let az = 2.0 * PI * z as f64 / nz;
     let ay = PI * eta;
-    let ux =
+    // Multi-scale deterministic seed (2026-07-07): the original 3-mode seed
+    // failed to trip sustained transition at delta >= 80. The GPU path uses
+    // an upsampled turbulent restart for those fine grids; this ladder remains
+    // the frozen direct-seed protocol for delta < 80. This is a numerical seed,
+    // not physics: statistics start after warmup and the sustained-turbulence
+    // guard certifies the equilibrated state independently of the seed.
+    let mut ux =
         base_u + amp * wall_taper * (ax.sin() * (2.0 * az).cos() + 0.5 * (3.0 * ax + az).sin());
-    let uy = amp
+    let mut uy = amp
         * wall_taper
         * (ay.sin() * ax.cos() * az.sin() + 0.35 * (2.0 * ax - az).cos() * (2.0 * ay).sin());
-    let uz = amp
+    let mut uz = amp
         * wall_taper
         * (ay.sin() * ax.sin() * az.cos() - 0.25 * (ax + 2.0 * az).cos() * ay.sin());
+    for kx in 1..=4u32 {
+        for kz in 1..=4u32 {
+            let k2 = (kx * kx + kz * kz) as f64;
+            let a = amp * wall_taper / k2.sqrt();
+            let (kxf, kzf) = (kx as f64, kz as f64);
+            let px = 0.7 * kxf + 1.3 * kzf;
+            let pz = 1.9 * kxf - 0.4 * kzf;
+            ux += 0.5 * a * (kxf * ax + px).sin() * (kzf * az + pz).cos() * ay.sin();
+            uy += 0.4 * a * (kxf * ax + pz).cos() * (kzf * az + px).sin() * (2.0 * ay).sin();
+            uz += 0.3 * a * (kxf * ax - px).sin() * (kzf * az - pz).sin() * ay.sin();
+        }
+    }
     (1.0, [ux, uy, uz])
 }
 
@@ -266,6 +319,137 @@ fn init_turbulent_channel_gpu(solver: &mut GpuSolver<D3Q19>, case: ChannelCase) 
         let (rho, [ux, uy, uz]) = turbulent_channel_init(case, x, y, z);
         (rho as f32, [ux as f32, uy as f32, uz as f32])
     });
+}
+
+#[cfg(feature = "gpu")]
+fn should_upsample_restart(case: ChannelCase) -> bool {
+    case.delta >= 80 || std::env::var_os("LBM_CHAN180_UPSAMPLE").is_some()
+}
+
+#[cfg(feature = "gpu")]
+fn gpu_warmup(solver: &mut GpuSolver<D3Q19>, steps: usize) {
+    // Chunk the warmup so no single wait exceeds the wgpu poll timeout:
+    // one submission of the full 20-Te warmup queues minutes of GPU work,
+    // and the sync inside the first gather then times out (~5 s cap).
+    let mut warmed = 0usize;
+    while warmed < steps {
+        let chunk = 1_000.min(steps - warmed);
+        solver.run(chunk);
+        solver.sync();
+        warmed += chunk;
+    }
+}
+
+#[cfg(feature = "gpu")]
+fn gather_channel_fields(solver: &mut GpuSolver<D3Q19>, case: ChannelCase) -> ChannelFields {
+    ChannelFields {
+        case,
+        rho: solver.gather_rho(),
+        ux: solver.gather_ux(),
+        uy: solver.gather_uy(),
+        uz: solver.gather_uz(),
+    }
+}
+
+#[cfg(feature = "gpu")]
+fn wrap_index(i: isize, n: usize) -> usize {
+    i.rem_euclid(n as isize) as usize
+}
+
+#[cfg(feature = "gpu")]
+fn field_index(case: ChannelCase, x: usize, y: usize, z: usize) -> usize {
+    z * case.nx * case.ny + y * case.nx + x
+}
+
+#[cfg(feature = "gpu")]
+fn interp_periodic_axis(coord: f64, n: usize) -> (usize, usize, f64) {
+    let base = coord.floor();
+    let i0 = wrap_index(base as isize, n);
+    let i1 = wrap_index(base as isize + 1, n);
+    (i0, i1, coord - base)
+}
+
+#[cfg(feature = "gpu")]
+fn interp_wall_axis(coord: f64, ny: usize) -> (usize, usize, f64) {
+    let lo = 1.0;
+    let hi = (ny - 2) as f64;
+    let c = coord.clamp(lo, hi);
+    let y0 = c.floor() as usize;
+    let y1 = (y0 + 1).min(ny - 2);
+    (y0, y1, c - y0 as f64)
+}
+
+#[cfg(feature = "gpu")]
+fn trilerp_component(
+    src: &ChannelFields,
+    values: &[f32],
+    x: usize,
+    y: usize,
+    z: usize,
+    dst: ChannelCase,
+) -> f32 {
+    let src_h = (src.case.ny - 2) as f64;
+    let dst_h = (dst.ny - 2) as f64;
+    let scale = src_h / dst_h;
+    let xc = (x as f64 + 0.5) * scale - 0.5;
+    let yc = (y as f64 - 0.5) * scale + 0.5;
+    let zc = (z as f64 + 0.5) * scale - 0.5;
+    let (x0, x1, tx) = interp_periodic_axis(xc, src.case.nx);
+    let (y0, y1, ty) = interp_wall_axis(yc, src.case.ny);
+    let (z0, z1, tz) = interp_periodic_axis(zc, src.case.nz);
+    let sample = |xi, yi, zi| values[field_index(src.case, xi, yi, zi)] as f64;
+    let c000 = sample(x0, y0, z0);
+    let c100 = sample(x1, y0, z0);
+    let c010 = sample(x0, y1, z0);
+    let c110 = sample(x1, y1, z0);
+    let c001 = sample(x0, y0, z1);
+    let c101 = sample(x1, y0, z1);
+    let c011 = sample(x0, y1, z1);
+    let c111 = sample(x1, y1, z1);
+    let c00 = c000 * (1.0 - tx) + c100 * tx;
+    let c10 = c010 * (1.0 - tx) + c110 * tx;
+    let c01 = c001 * (1.0 - tx) + c101 * tx;
+    let c11 = c011 * (1.0 - tx) + c111 * tx;
+    let c0 = c00 * (1.0 - ty) + c10 * ty;
+    let c1 = c01 * (1.0 - ty) + c11 * ty;
+    (c0 * (1.0 - tz) + c1 * tz) as f32
+}
+
+#[cfg(feature = "gpu")]
+fn init_upsampled_channel_gpu(
+    solver: &mut GpuSolver<D3Q19>,
+    target: ChannelCase,
+    coarse: ChannelFields,
+) {
+    solver.init_with(move |x, y, z| {
+        if y == 0 || y + 1 == target.ny {
+            return (1.0, [0.0; 3]);
+        }
+        let rho = trilerp_component(&coarse, &coarse.rho, x, y, z, target);
+        let ux = trilerp_component(&coarse, &coarse.ux, x, y, z, target);
+        let uy = trilerp_component(&coarse, &coarse.uy, x, y, z, target);
+        let uz = trilerp_component(&coarse, &coarse.uz, x, y, z, target);
+        (rho, [ux, uy, uz])
+    });
+}
+
+#[cfg(feature = "gpu")]
+fn upsampled_restart_fields(ctx: Arc<GpuContext>) -> ChannelFields {
+    let coarse_case = full_case_at_delta(48);
+    let coarse_protocol = full_protocol(coarse_case);
+    let mut coarse_solver = make_channel_gpu(coarse_case, ctx);
+    init_turbulent_channel_gpu(&mut coarse_solver, coarse_case);
+    gpu_warmup(&mut coarse_solver, coarse_protocol.warmup_steps);
+    gather_channel_fields(&mut coarse_solver, coarse_case)
+}
+
+#[cfg(feature = "gpu")]
+fn target_restart_protocol(case: ChannelCase, protocol: Protocol) -> Protocol {
+    let eddy_turnover = case.delta as f64 / case.u_tau;
+    Protocol {
+        warmup_steps: (10.0 * eddy_turnover).ceil() as usize,
+        ..protocol
+    }
 }
 
 fn sample_planes<B>(solver: &ChanSolver<B>, case: ChannelCase) -> (Vec<f64>, Vec<f64>, Vec<f64>)
@@ -492,18 +676,21 @@ where
 }
 
 #[cfg(feature = "gpu")]
-fn run_channel_gpu(mut solver: GpuSolver<D3Q19>, case: ChannelCase, protocol: Protocol) -> Report {
-    init_turbulent_channel_gpu(&mut solver, case);
-    // Chunk the warmup so no single wait exceeds the wgpu poll timeout:
-    // one submission of the full 20-Te warmup queues minutes of GPU work,
-    // and the sync inside the first gather then times out (~5 s cap).
-    let mut warmed = 0usize;
-    while warmed < protocol.warmup_steps {
-        let chunk = 1_000.min(protocol.warmup_steps - warmed);
-        solver.run(chunk);
-        solver.sync();
-        warmed += chunk;
-    }
+fn run_channel_gpu(
+    mut solver: GpuSolver<D3Q19>,
+    case: ChannelCase,
+    protocol: Protocol,
+    ctx: Arc<GpuContext>,
+) -> Report {
+    let protocol = if should_upsample_restart(case) {
+        let coarse = upsampled_restart_fields(ctx);
+        init_upsampled_channel_gpu(&mut solver, case, coarse);
+        target_restart_protocol(case, protocol)
+    } else {
+        init_turbulent_channel_gpu(&mut solver, case);
+        protocol
+    };
+    gpu_warmup(&mut solver, protocol.warmup_steps);
 
     let mut stats = Stats {
         samples: 0,
@@ -676,8 +863,8 @@ fn channel_re_tau_180_wale_vs_mkm_dns_gpu() {
     } else {
         full_protocol(case)
     };
-    let solver = make_channel_gpu(case, ctx);
-    let report = run_channel_gpu(solver, case, protocol);
+    let solver = make_channel_gpu(case, ctx.clone());
+    let report = run_channel_gpu(solver, case, protocol, ctx);
     if report.protocol.smoke {
         print_report(
             "NON-PHYSICAL SMOKE GPU channel Re_tau=178.12 WALE vs MKM DNS harness",

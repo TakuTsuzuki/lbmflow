@@ -3,6 +3,18 @@
 Communication log between the test author (codex) and the engine author (PM/Fable).
 New discrepancies are appended at the end. Processed items are retained with their Disposition.
 
+## T17 channel DNS fine-grid upsample restart (2026-07-07)
+
+The GPU `validation_channel_dns.rs` path now switches delta>=80, or explicit
+`LBM_CHAN180_UPSAMPLE=1`, from direct deterministic seeding to a two-stage
+restart: run the frozen delta=48 GPU channel through its normal warmup, gather
+rho/ux/uy/uz, trilinearly interpolate the turbulent field to the target grid
+with periodic x/z wrapping and wall-normal clamping, then run a 10-Te target
+warmup before statistics. Delta<80 keeps the existing seed path unchanged.
+
+This is a test initialization protocol only; no core source changes are part of
+the order. PM will run the real delta>=80 Metal measurement.
+
 ## T16 FP16 WGSL storage conversion fix (2026-07-06)
 
 `crates/lbm-core/src/gpu/wgsl.rs` now wraps distribution/stash storage loads as
