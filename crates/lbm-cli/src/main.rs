@@ -11,6 +11,7 @@ mod output;
 mod render;
 mod report;
 mod runner;
+mod scaleup;
 mod schema;
 mod sweep;
 mod validate;
@@ -132,6 +133,14 @@ enum BioprocessAction {
         /// Sweep JSON file
         sweep: PathBuf,
         /// Output directory for case folders and sweep_summary.json
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Evaluate a scale-up operating window from a sweep summary
+    Scaleup {
+        /// Scale-up request JSON file
+        request: PathBuf,
+        /// Output directory for scaleup_window.json
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -313,6 +322,10 @@ fn main() -> Result<()> {
             }
             BioprocessAction::Sweep { sweep, out } => {
                 let path = sweep::run(&sweep, out)?;
+                println!("{}", path.display());
+            }
+            BioprocessAction::Scaleup { request, out } => {
+                let path = scaleup::run(&request, out)?;
                 println!("{}", path.display());
             }
         },

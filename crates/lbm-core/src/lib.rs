@@ -57,6 +57,7 @@ pub mod reaction;
 pub mod real;
 pub mod rotating_ibm;
 pub mod scalar;
+pub mod scaleup;
 pub mod solver;
 pub mod stress;
 pub mod subdomain;
@@ -148,6 +149,10 @@ pub mod prelude {
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::scalar::scalar_equilibrium;
+    pub use crate::scaleup::{
+        evaluate_operating_window, ConstraintConflict, ConstraintSet, ConstraintTightness,
+        OperatingPoint, ScaleUpEvaluation, ScaleUpMode, ScaleUpQois,
+    };
     pub use crate::solver::{
         build_wall_rims, partition, CheckpointError, Diverged, GlobalSpec, Solver,
         SolverFeatureError, SpecError, WallSpec,
