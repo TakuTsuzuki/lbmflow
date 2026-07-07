@@ -329,6 +329,67 @@ pub(crate) fn exchange_f_generic<L: Lattice, T: Real>(
     }
 }
 
+/// Generic post-collide exchange for the optional phase-field `g` set.
+///
+/// O1 uses this only on CPU-local decompositions. It mirrors
+/// [`exchange_f_generic`] but addresses `SoaFields::g` instead of `f`.
+pub(crate) fn exchange_g_generic<L: Lattice, T: Real>(
+    subs: &[Subdomain],
+    parts: &mut [SoaFields<T>],
+) {
+    let d = subs[0].geom.d;
+    let mut buf: Vec<T> = Vec::new();
+    for axis in 0..d {
+        for side in 0..2 {
+            let recv_face = Face::ALL[2 * axis + side];
+            for di in 0..parts.len() {
+                let Some(si) = subs[di].neighbors[recv_face.index()] else {
+                    continue;
+                };
+                check_tangent_match(axis, &subs[di].geom, &subs[si].geom);
+                pack_g_layer::<L, T>(&parts[si], recv_face, &mut buf);
+                unpack_g_layer::<L, T>(&mut parts[di], recv_face, &buf);
+            }
+        }
+    }
+}
+
+fn pack_g_layer<L: Lattice, T: Real>(fields: &SoaFields<T>, recv_face: Face, buf: &mut Vec<T>) {
+    let dirs = L::unknowns(recv_face);
+    let np = fields.plane_len();
+    let g = fields
+        .g
+        .as_ref()
+        .expect("phase-field g must be materialised on every part");
+    buf.clear();
+    buf.reserve(layer_cell_count(&fields.geom, recv_face) * dirs.len());
+    for_each_layer_index(&fields.geom, recv_face, recv_face.axis(), false, |cell| {
+        for &q in dirs {
+            buf.push(g[q * np + cell]);
+        }
+    });
+}
+
+fn unpack_g_layer<L: Lattice, T: Real>(fields: &mut SoaFields<T>, recv_face: Face, buf: &[T]) {
+    let dirs = L::unknowns(recv_face);
+    debug_assert_eq!(
+        buf.len(),
+        layer_cell_count(&fields.geom, recv_face) * dirs.len()
+    );
+    let np = fields.plane_len();
+    let g = fields
+        .g
+        .as_mut()
+        .expect("phase-field g must be materialised on every part");
+    let mut k = 0;
+    for_each_layer_index(&fields.geom, recv_face, recv_face.axis(), true, |cell| {
+        for &q in dirs {
+            g[q * np + cell] = buf[k];
+            k += 1;
+        }
+    });
+}
+
 /// Generic mask exchange (`solid`, `wall_u`, `probe`).
 pub(crate) fn exchange_masks_generic<T: Real>(subs: &[Subdomain], parts: &mut [SoaFields<T>]) {
     let d = subs[0].geom.d;

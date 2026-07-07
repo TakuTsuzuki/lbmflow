@@ -717,3 +717,64 @@ turbulence-model calibration knob. Any validation claim made with clipping
 active must disclose that clipping was active and report the corresponding
 `clipped_fraction` and `max_nu_t_before_clipping` diagnostics from
 `WaleLesDiagnostics`.
+
+---
+
+### 2026-07-07 W-VOF O1 conservative Allen-Cahn phase-field transport (`crates/lbm-core/src/phase_field.rs`)
+- Form: D3Q19 phase-field distribution `g_i` in ordinary q-major padded SoA
+  form, `phi = sum_i g_i`, prescribed-velocity equilibrium
+  `g_i^eq = phi w_i [1 + 3 c_i.u + 4.5(c_i.u)^2 - 1.5 u.u]`,
+  `tau_phi = 3M + 0.5`, and collision-stream transport recovering
+  `d_t phi + div(phi u) = div(M[grad(phi) - (4/W)phi(1-phi)n])`.
+  The shared interface-flux helper is
+  `J_phi = -M[grad(phi) - (4/W)phi(1-phi)n]`, with D3Q19 isotropic stencils
+  `grad(phi) = 3 sum_{i>0} w_i c_i phi(x+c_i)` and
+  `lap(phi) = 6 sum_{i>0} w_i [phi(x+c_i)-phi(x)]`.
+  O1 implements transport only: no density feedback, viscosity feedback,
+  surface-tension force, gravity edit, wetting boundary, sparger inlet, or
+  hydrodynamic momentum `J_rho` coupling is active.
+- Source: Chiu and Lin 2011 conservative Allen-Cahn counter-term, adopted via
+  the Fakhari, Mitchell, Leonardi and Bolster 2017 velocity-based LBE form
+  frozen in `docs/proposals/WVOF_IMPL_SPEC.md`. The source first moment is
+  mobility-scaled so the relaxation-provided diffusive flux and the
+  counter-flux share the same `M`, as required by the governing equation.
+  This resolves the spec Eq. (4)/(6) prefactor ambiguity by enforcing Eq. (1)
+  rather than introducing an extra fitted coefficient.
+- Validity domain: O1 enforces `W in [4,5]`, `M in (0,1/6]`
+  (`tau_phi in (0.5,1.0]`). Validation runs here used `W=4`, `M=0.04`,
+  `Ma_lattice=|u|=0.055` for diagonal advection, periodic D3Q19 domains,
+  and prescribed velocity only. Resolved droplet test uses `d/W=4`, the
+  W-VOF lower bound; smaller bubbles remain a point-bubble follow-up, not O1.
+- Validation: `crates/lbm-core/tests/wvof_o1_phase_field.rs`:
+  `flat_interface_at_rest_holds_tanh_profile` passed the stated
+  second-order `W=4` profile band (`L2_rel < 0.08`);
+  `diagonal_periodic_droplet_advection_conserves_mass_and_profile` measured
+  mass drift `1.9475e-14` over 1000 steps (band `<0.1%/1000 steps`),
+  returned-profile `L2_rel = 1.2477e-1` (band `<0.14`), and interface width
+  `7.193` (band `[0.5W,2W] = [2,8]`). `g_none_keeps_existing_hydrodynamic_path_bit_identical`
+  proved the disabled path leaves D3Q19 hydrodynamic fields and all `f`
+  planes bit-identical. Artifact:
+  `target/wvof_o1/droplet_profile_before_after.csv`.
+- Replaces / interacts with: adds the reserved optional `g`, `gtmp`, and
+  compact `phi` fields to `SoaFields`; all are `None` by default. Existing
+  hydrodynamic `f` pass order remains unchanged. Future O2 surface tension,
+  density/viscosity feedback, gravity composition, and `J_rho` momentum
+  correction must consume this same `J_phi` path.
+
+### 2026-07-07 behavior review — W-VOF O1 advected droplet
+Pattern: a diffuse spherical `phi=1` droplet translated diagonally by one
+period in a fully periodic D3Q19 box under uniform prescribed velocity and
+returned to its initial profile within the stated O1 profile band.
+Mechanism: periodic pull-streaming advects the `g` distribution while the
+conservative Allen-Cahn counter-flux balances relaxation diffusion at the
+interface.
+Resolved vs closure: the pattern comes from the resolved D3Q19 LBE transport
+plus the literature-backed conservative Allen-Cahn counter-term; no
+hydrodynamic coupling, surface-tension force, density feedback, or limiter was
+active.
+Artifacts checked: no position or `phi` clamp is present; periodic seams are
+handled through the same ordered halo-layer exchange as `f`; exported line
+profile before/after is `target/wvof_o1/droplet_profile_before_after.csv`.
+Verdict: PHYSICAL for the O1 prescribed-velocity, matched-density transport
+scope.
+Routing: none.

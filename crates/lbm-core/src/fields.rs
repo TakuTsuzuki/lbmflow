@@ -176,6 +176,14 @@ pub struct SoaFields<T: Real> {
     /// swapped. Unknown slots skipped by streaming retain this buffer's prior
     /// content — the ConvectiveOutflow BC depends on that (V1 mechanics).
     pub ftmp: Vec<T>,
+    /// Conservative Allen-Cahn phase-field distribution set, q-major padded
+    /// D3Q19 planes in ordinary (non-deviation) form. `None` means single
+    /// phase; the hydrodynamic path must remain bit-identical in that state.
+    pub g: Option<Vec<T>>,
+    /// Ping-pong partner of `g`.
+    pub gtmp: Option<Vec<T>>,
+    /// Phase field `phi = sum_i g_i`, compact core layout.
+    pub phi: Option<Vec<T>>,
     /// Density, compact core. `1` on quiescent build; moments skip solids.
     pub rho: Vec<T>,
     /// x-velocity (physical: includes the Guo half-force term), compact core.
@@ -220,6 +228,9 @@ impl<T: Real> SoaFields<T> {
             q,
             f: vec![T::zero(); q * np],
             ftmp: vec![T::zero(); q * np],
+            g: None,
+            gtmp: None,
+            phi: None,
             rho: vec![T::one(); nc],
             ux: vec![T::zero(); nc],
             uy: vec![T::zero(); nc],
