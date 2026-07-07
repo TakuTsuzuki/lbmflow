@@ -667,3 +667,31 @@ the SC contact-line as a validated closure with 1.42× enhancement factor,
 
 Radar #1 CLOSED, ANOM-P4-023 CLOSED as characterization. PHYSICS.md entry
 draft prepared in worktree; will land with next mp-hard rev.
+
+### ANOM-P4-026 — trilinear sampler HARD-CLAMPS positions at wall boundaries (T27 pin, radar row 27)
+Direct measurement (cx/vv-driftitems T27): sample_grid at y=32.5 (half a
+cell inside the top MovingWall with U=0.05) returns u_x = 0.0246 instead
+of the linear Couette extrapolation 0.05 (or the wall-adjacent last-fluid
+value ~0.048). Deviation 50.8% relative. Verdict: the sampler clamps
+positions to the last INTERIOR fluid cell, returning the linear
+INTERIOR-only interpolation. Consequence: particles that CROSS INTO the
+moving-wall diffuse boundary layer are "frozen" to the last fluid cell's
+velocity rather than seeing the linear-shear extrapolation to the wall
+speed. For SETTLING problems (Axis 9.4 closed basin, still fluid) this is
+harmless. For flows WITH walls (channel + particles, sedimentation with
+crossflow), the last O(1 cell) near the wall systematically
+under-transports particles. S3 characterization; documented as a
+known-limitation pin — physical picture in the assertion message.
+
+### T28-T31 (drift items) — 3/4 confirmed sane
+- T28 gravity + uniform force ADDITIVE composition: measured
+  uniform=3.84e-5, gravity=-1.44e-5, both=2.40e-5. Sum matches within
+  1e-12 rel. P4-022 additive fix confirmed at test level.
+- T29 silent omega_shear min(2.0) clamp: pre-ceiling ω = 1.98 (per-cell
+  path forced 2.003) — clamp does NOT fire in current envelope. Test
+  asserts NO NaN only; the silent-clamp-fired case would need omega ≥ 2
+  which requires ν → 0 territory outside the documented stability
+  envelope. Documented as observed behavior, no anomaly.
+- T31 per-cell omega asymmetry via WALE + Couette mirror: L2 mirror
+  deviation 3.19e-16 (=round-off). WALE per-cell omega is symmetric under
+  x-mirror. Latent-defect hypothesis A28 REFUTED.
