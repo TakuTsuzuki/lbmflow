@@ -100,16 +100,19 @@ fn g2_couette_dissipation_is_uniform_and_matches_analytic_gradient() {
         metrics.mean_measured,
         metrics.mean_reference
     );
+    // The remaining Couette error is the steady-state residual of the native
+    // strain reconstruction at the 1e-11 fixture tolerance; keep only modest
+    // headroom because measured*20 would loosen the old band.
     assert!(
-        metrics.linf_rel <= 2.0e-4,
-        "G2 Couette epsilon L_inf_rel={:.3e} > 2.0e-4, mean_rel={:.3e}, max_abs={:.3e}",
+        metrics.linf_rel <= 1.5e-4,
+        "G2 Couette epsilon L_inf_rel={:.3e} > 1.5e-4, mean_rel={:.3e}, max_abs={:.3e}",
         metrics.linf_rel,
         metrics.mean_rel,
         metrics.max_abs_error
     );
     assert!(
-        metrics.mean_rel <= 1.0e-4,
-        "G2 Couette epsilon mean_rel={:.3e} > 1.0e-4, L_inf_rel={:.3e}, measured={:.12e}, ref={:.12e}",
+        metrics.mean_rel <= 7.0e-5,
+        "G2 Couette epsilon mean_rel={:.3e} > 7.0e-5, L_inf_rel={:.3e}, measured={:.12e}, ref={:.12e}",
         metrics.mean_rel,
         metrics.linf_rel,
         metrics.mean_measured,
@@ -145,15 +148,17 @@ fn g2_forced_poiseuille_dissipation_profile_and_volume_mean_match_analytic() {
         metrics.mean_reference
     );
     assert!(
-        metrics.linf_rel <= 1.0e-6,
-        "G2 Poiseuille epsilon profile L_inf_rel={:.3e} > 1.0e-6, mean_rel={:.3e}, max_abs={:.3e}",
+        metrics.linf_rel <= 3.7e-7,
+        "G2 Poiseuille epsilon profile L_inf_rel={:.3e} > 3.7e-7, mean_rel={:.3e}, max_abs={:.3e}",
         metrics.linf_rel,
         metrics.mean_rel,
         metrics.max_abs_error
     );
+    // The reference is the continuous volume mean while the test samples cell
+    // midpoints; the exact midpoint-quadrature offset is 1/H^2 = 9.766e-4.
     assert!(
-        metrics.mean_rel <= 1.1e-3,
-        "G2 Poiseuille epsilon volume mean_rel={:.3e} > 1.1e-3, L_inf_rel={:.3e}, measured={:.12e}, integral_ref={:.12e}",
+        metrics.mean_rel <= 1.0e-3,
+        "G2 Poiseuille epsilon volume mean_rel={:.3e} > 1.0e-3, L_inf_rel={:.3e}, measured={:.12e}, integral_ref={:.12e}",
         metrics.mean_rel,
         metrics.linf_rel,
         metrics.mean_measured,

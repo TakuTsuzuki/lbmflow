@@ -105,9 +105,12 @@ fn uniform_force_adds_exact_momentum() {
         let gained = p1[axis] - p0[axis];
         let expect = steps as f64 * nf * force[axis];
         let rel = ((gained - expect) / expect).abs();
+        println!(
+            "smoke uniform-force momentum axis {axis}: rel={rel:.3e}, gained={gained:.12e}, expected={expect:.12e}"
+        );
         assert!(
-            rel < 1e-10,
-            "axis {axis}: gained {gained}, expected {expect} (rel = {rel:e})"
+            rel <= 7.0e-13,
+            "axis {axis}: gained {gained}, expected {expect} (rel = {rel:e}, band = 7.0e-13)"
         );
     }
 }
