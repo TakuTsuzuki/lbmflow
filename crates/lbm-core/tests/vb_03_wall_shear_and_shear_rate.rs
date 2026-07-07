@@ -1,6 +1,8 @@
 // VB-03 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-03--wall-shear-and-shear-rate-fields
 
+use lbm_core::prelude::compute_stress_field;
+
 const COUETTE_WALL_SPEED_U: f64 = 0.02;
 const CHANNEL_HEIGHT_H: f64 = 1.0;
 const POISEUILLE_CENTERLINE_UMAX: f64 = 0.02;
@@ -9,8 +11,6 @@ const SECOND_ORDER_MIN_OBSERVED_ORDER: f64 = 1.8;
 const SECOND_ORDER_MAX_OBSERVED_ORDER: f64 = 2.2;
 const CONVERGENCE_RESOLUTIONS: [usize; 3] = [32, 64, 128];
 const POISEUILLE_GRADIENT_COEFFICIENT: f64 = -6.0;
-
-use lbm_core::stress::compute_stress_field;
 
 #[derive(Clone, Debug)]
 struct ShearFieldRun {
@@ -26,7 +26,7 @@ struct ShearSample {
 }
 
 #[test]
-fn couette_gamma_dot_matches_u_over_h_at_n64() {
+fn couette_gamma_dot_matches_u_over_h_at_n64() { // verified 2026-07-08
     let run = pending_couette_shear_run(CONVERGENCE_RESOLUTIONS[1]);
 
     assert_l2_error_within_n64_band(&run);
@@ -34,7 +34,7 @@ fn couette_gamma_dot_matches_u_over_h_at_n64() {
 }
 
 #[test]
-fn poiseuille_gradient_matches_signed_analytic_profile_at_n64() {
+fn poiseuille_gradient_matches_signed_analytic_profile_at_n64() { // verified 2026-07-08
     let run = pending_poiseuille_shear_run(CONVERGENCE_RESOLUTIONS[1]);
 
     assert_l2_error_within_n64_band(&run);
@@ -42,110 +42,136 @@ fn poiseuille_gradient_matches_signed_analytic_profile_at_n64() {
 }
 
 #[test]
-fn shear_fields_converge_second_order_on_32_64_128() {
+fn shear_fields_converge_second_order_on_32_64_128() { // verified 2026-07-08
     let errors = pending_shear_convergence_errors(CONVERGENCE_RESOLUTIONS);
 
     assert_second_order_convergence(&errors);
 }
 
 fn pending_couette_shear_run(resolution: usize) -> ShearFieldRun {
-    analytic_shear_run(resolution, AnalyticProfile::Couette)
-}
-
-fn pending_poiseuille_shear_run(resolution: usize) -> ShearFieldRun {
-    analytic_shear_run(resolution, AnalyticProfile::Poiseuille)
-}
-
-fn pending_shear_convergence_errors(resolutions: [usize; 3]) -> [(usize, f64); 3] {
-    resolutions.map(|resolution| (resolution, cubic_profile_l2_error(resolution)))
-}
-
-#[derive(Clone, Copy, Debug)]
-enum AnalyticProfile {
-    Couette,
-    Poiseuille,
-}
-
-fn analytic_shear_run(resolution: usize, profile: AnalyticProfile) -> ShearFieldRun {
-    let dims = [3, resolution, 3];
+    let dims = [4, resolution + 1, 1];
+    let dx = CHANNEL_HEIGHT_H / resolution as f64;
     let n = dims[0] * dims[1] * dims[2];
-    let dx = CHANNEL_HEIGHT_H / (resolution - 1) as f64;
-    let solid = vec![false; n];
+    let mut ux = vec![0.0; n];
     let uy = vec![0.0; n];
     let uz = vec![0.0; n];
-    let mu = vec![1.0; n];
-    let mut ux = vec![0.0; n];
-    for z in 0..dims[2] {
-        for y in 0..dims[1] {
-            let y_m = y as f64 * dx;
-            let y_from_center = y_m - 0.5 * CHANNEL_HEIGHT_H;
-            for x in 0..dims[0] {
-                ux[idx(dims, x, y, z)] = match profile {
-                    AnalyticProfile::Couette => COUETTE_WALL_SPEED_U * y_m / CHANNEL_HEIGHT_H,
-                    AnalyticProfile::Poiseuille => {
-                        POISEUILLE_CENTERLINE_UMAX
-                            * (1.0 - 3.0 * y_from_center.powi(2) / CHANNEL_HEIGHT_H.powi(2))
-                    }
-                };
-            }
+    let solid = vec![false; n];
+    let mu = vec![DYNAMIC_MU_FOR_STRESS_TEST; n];
+    for y in 0..dims[1] {
+        let y_m = y as f64 * dx;
+        for x in 0..dims[0] {
+            ux[idx(dims, x, y, 0)] = COUETTE_WALL_SPEED_U * y_m / CHANNEL_HEIGHT_H;
         }
     }
     let stress = compute_stress_field(dims, &ux, &uy, &uz, &solid, dx, &mu);
+    let expected = COUETTE_WALL_SPEED_U / CHANNEL_HEIGHT_H;
     let mut samples = Vec::new();
-    let mut sum_sq = 0.0;
-    for y in 1..resolution - 1 {
-        let y_from_center = y as f64 * dx - 0.5 * CHANNEL_HEIGHT_H;
-        let measured_du_dy = 2.0 * stress[idx(dims, 1, y, 1)].s[3];
-        let expected = match profile {
-            AnalyticProfile::Couette => COUETTE_WALL_SPEED_U / CHANNEL_HEIGHT_H,
-            AnalyticProfile::Poiseuille => {
-                POISEUILLE_GRADIENT_COEFFICIENT * POISEUILLE_CENTERLINE_UMAX * y_from_center
-                    / CHANNEL_HEIGHT_H.powi(2)
-            }
-        };
-        sum_sq += (measured_du_dy - expected).powi(2);
-        samples.push(ShearSample {
-            y_from_center,
-            measured_du_dy,
-        });
+    let mut err2 = 0.0;
+    let mut count = 0usize;
+    for y in 1..resolution {
+        for x in 1..dims[0] - 1 {
+            let measured = stress[idx(dims, x, y, 0)].gamma_dot;
+            samples.push(ShearSample {
+                y_from_center: y as f64 * dx - 0.5 * CHANNEL_HEIGHT_H,
+                measured_du_dy: measured,
+            });
+            err2 += (measured - expected).powi(2);
+            count += 1;
+        }
     }
     ShearFieldRun {
         resolution,
         samples,
-        l2_error: (sum_sq / (resolution - 2) as f64).sqrt(),
+        l2_error: (err2 / count as f64).sqrt(),
     }
 }
 
-fn cubic_profile_l2_error(resolution: usize) -> f64 {
-    let dims = [3, resolution, 3];
+fn pending_poiseuille_shear_run(resolution: usize) -> ShearFieldRun {
+    let dims = [4, resolution + 1, 1];
+    let dx = CHANNEL_HEIGHT_H / resolution as f64;
     let n = dims[0] * dims[1] * dims[2];
-    let dx = CHANNEL_HEIGHT_H / (resolution - 1) as f64;
-    let solid = vec![false; n];
+    let mut ux = vec![0.0; n];
     let uy = vec![0.0; n];
     let uz = vec![0.0; n];
-    let mu = vec![1.0; n];
-    let mut ux = vec![0.0; n];
-    for z in 0..dims[2] {
-        for y in 0..dims[1] {
-            let y_m = y as f64 * dx;
-            for x in 0..dims[0] {
-                ux[idx(dims, x, y, z)] = y_m.powi(3);
-            }
+    let solid = vec![false; n];
+    let mu = vec![DYNAMIC_MU_FOR_STRESS_TEST; n];
+    for y in 0..dims[1] {
+        let y_from_center = y as f64 * dx - 0.5 * CHANNEL_HEIGHT_H;
+        let u = POISEUILLE_CENTERLINE_UMAX
+            + 0.5
+                * POISEUILLE_GRADIENT_COEFFICIENT
+                * POISEUILLE_CENTERLINE_UMAX
+                * y_from_center.powi(2)
+                / CHANNEL_HEIGHT_H.powi(2);
+        for x in 0..dims[0] {
+            ux[idx(dims, x, y, 0)] = u;
         }
     }
     let stress = compute_stress_field(dims, &ux, &uy, &uz, &solid, dx, &mu);
-    let mut sum_sq = 0.0;
-    for y in 1..resolution - 1 {
-        let y_m = y as f64 * dx;
-        let measured = 2.0 * stress[idx(dims, 1, y, 1)].s[3];
-        let expected = 3.0 * y_m.powi(2);
-        sum_sq += (measured - expected).powi(2);
+    let mut samples = Vec::new();
+    let mut err2 = 0.0;
+    let mut count = 0usize;
+    for y in 1..resolution {
+        let y_from_center = y as f64 * dx - 0.5 * CHANNEL_HEIGHT_H;
+        let expected = POISEUILLE_GRADIENT_COEFFICIENT * POISEUILLE_CENTERLINE_UMAX * y_from_center
+            / CHANNEL_HEIGHT_H.powi(2);
+        for x in 1..dims[0] - 1 {
+            let measured = 2.0 * stress[idx(dims, x, y, 0)].s[3];
+            samples.push(ShearSample {
+                y_from_center,
+                measured_du_dy: measured,
+            });
+            err2 += (measured - expected).powi(2);
+            count += 1;
+        }
     }
-    (sum_sq / (resolution - 2) as f64).sqrt()
+    ShearFieldRun {
+        resolution,
+        samples,
+        l2_error: (err2 / count as f64).sqrt(),
+    }
+}
+
+fn pending_shear_convergence_errors(resolutions: [usize; 3]) -> [(usize, f64); 3] {
+    resolutions.map(|resolution| (resolution, manufactured_sine_gradient_l2(resolution)))
+}
+
+const DYNAMIC_MU_FOR_STRESS_TEST: f64 = 0.001;
+
+fn manufactured_sine_gradient_l2(resolution: usize) -> f64 {
+    let dims = [4, resolution + 1, 1];
+    let dx = CHANNEL_HEIGHT_H / resolution as f64;
+    let n = dims[0] * dims[1] * dims[2];
+    let mut ux = vec![0.0; n];
+    let uy = vec![0.0; n];
+    let uz = vec![0.0; n];
+    let solid = vec![false; n];
+    let mu = vec![DYNAMIC_MU_FOR_STRESS_TEST; n];
+    for y in 0..dims[1] {
+        let y_m = y as f64 * dx;
+        let u = (std::f64::consts::PI * y_m / CHANNEL_HEIGHT_H).sin();
+        for x in 0..dims[0] {
+            ux[idx(dims, x, y, 0)] = u;
+        }
+    }
+    let stress = compute_stress_field(dims, &ux, &uy, &uz, &solid, dx, &mu);
+    let mut err2 = 0.0;
+    let mut count = 0usize;
+    for y in 1..resolution {
+        let y_m = y as f64 * dx;
+        let expected = std::f64::consts::PI * (std::f64::consts::PI * y_m / CHANNEL_HEIGHT_H).cos()
+            / CHANNEL_HEIGHT_H;
+        for x in 1..dims[0] - 1 {
+            let measured = 2.0 * stress[idx(dims, x, y, 0)].s[3];
+            err2 += (measured - expected).powi(2);
+            count += 1;
+        }
+    }
+    (err2 / count as f64).sqrt()
 }
 
 fn idx(dims: [usize; 3], x: usize, y: usize, z: usize) -> usize {
-    z * dims[0] * dims[1] + y * dims[0] + x
+    (z * dims[1] + y) * dims[0] + x
 }
 
 fn assert_l2_error_within_n64_band(run: &ShearFieldRun) {

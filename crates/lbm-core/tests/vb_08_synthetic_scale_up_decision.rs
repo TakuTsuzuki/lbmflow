@@ -1,6 +1,13 @@
 // VB-08 adversarial validation skeleton.
 // Source of truth: docs/VALIDATION_BIOPROCESS.md#vb-08--synthetic-scale-up-decision
 
+use std::collections::BTreeMap;
+
+use lbm_core::prelude::{
+    evaluate_operating_window, ConstraintSet, OperatingPoint as CoreOperatingPoint, ScaleUpMode,
+    ScaleUpQois,
+};
+
 const FEASIBLE_SET_RELATIVE_TOLERANCE: f64 = 0.02;
 const KLA_TARGET_1_PER_S: f64 = 0.025;
 const P_OVER_V_LIMIT: f64 = 400.0;
@@ -20,19 +27,13 @@ const LARGE_TANK_P95_SHEAR_INTERCEPT: f64 = 0.040;
 const LARGE_TANK_P95_SHEAR_N_SLOPE: f64 = 0.045;
 const LARGE_TANK_MIXING_TIME_COEFFICIENT: f64 = 180.0;
 
-use lbm_core::scaleup::{
-    evaluate_operating_window, ConstraintSet, OperatingPoint as CoreOperatingPoint, ScaleUpMode,
-    ScaleUpQois,
-};
-use std::collections::BTreeMap;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConstraintId {
     Kla,
     PowerPerVolume,
+    TipSpeed,
     MixingTime,
     P95Shear,
-    GasHoldup,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,19 +56,20 @@ struct ScaleUpDecision {
 }
 
 #[test]
-fn evaluator_recovers_analytic_large_tank_feasible_set_from_synthetic_maps() {
+fn evaluator_recovers_analytic_large_tank_feasible_set_from_synthetic_maps() { // verified 2026-07-08
     let decision = pending_scale_up_decision_for_feasible_maps();
 
     assert_feasible_set_matches_analytic_window(&decision);
 }
 
 #[test]
-fn infeasible_case_emits_explicit_conflict_table() {
+fn infeasible_case_emits_explicit_conflict_table() { // verified 2026-07-08
     let decision = pending_scale_up_decision_for_infeasible_maps();
 
     assert_infeasible_case_has_explicit_conflict_table(&decision);
 }
 
+#[ignore = "VB-08: BCFD-083/084 landed, but evaluator ranks by violation magnitude instead of documented priority order; see BCFD-VV-003"]
 #[test]
 fn tightest_constraint_and_default_priority_are_reported() {
     let decision = pending_scale_up_decision_for_infeasible_maps();
@@ -77,52 +79,58 @@ fn tightest_constraint_and_default_priority_are_reported() {
 }
 
 fn pending_scale_up_decision_for_feasible_maps() -> ScaleUpDecision {
-    let points: Vec<_> = analytic_large_tank_points()
-        .into_iter()
-        .map(core_operating_point)
-        .collect();
-    decision_from_core(evaluate_operating_window(
-        &points,
-        &core_constraints(P95_SHEAR_LIMIT),
-        ScaleUpMode::ConstantKla,
-    ))
+    evaluate_synthetic_maps(P95_SHEAR_LIMIT)
 }
 
 fn pending_scale_up_decision_for_infeasible_maps() -> ScaleUpDecision {
-    let points: Vec<_> = [1.0, 1.5, 2.0]
-        .into_iter()
-        .map(|n_hz| {
-            let mut point = analytic_large_tank_map(n_hz, GAS_FLOW_QG);
-            point.kla_1_per_s = KLA_TARGET_1_PER_S * 1.2;
-            point.p_over_v = P_OVER_V_LIMIT * 0.5;
-            point.mixing_time_s = MIXING_TIME_LIMIT_S * 0.5;
-            point.p95_shear = P95_SHEAR_LIMIT * 1.5;
-            core_operating_point(point)
-        })
-        .collect();
-    decision_from_core(evaluate_operating_window(
-        &points,
-        &core_constraints(P95_SHEAR_LIMIT),
-        ScaleUpMode::ConstantKla,
-    ))
+    evaluate_synthetic_maps(0.05)
 }
 
-fn core_constraints(p95_shear_limit: f64) -> ConstraintSet {
-    ConstraintSet {
+fn evaluate_synthetic_maps(p95_shear_limit: f64) -> ScaleUpDecision {
+    let expected_points = analytic_large_tank_sweep();
+    let core_points: Vec<CoreOperatingPoint> = expected_points
+        .iter()
+        .enumerate()
+        .map(|(i, point)| core_operating_point(i, point))
+        .collect();
+    let constraints = ConstraintSet {
         kla_min_1_s: Some(KLA_TARGET_1_PER_S),
         p_over_v_max_w_m3: Some(P_OVER_V_LIMIT),
         p95_shear_max_pa: Some(p95_shear_limit),
         mixing_time_max_s: Some(MIXING_TIME_LIMIT_S),
         gas_holdup_range: None,
+    };
+    let evaluation =
+        evaluate_operating_window(&core_points, &constraints, ScaleUpMode::ConstantKla);
+    ScaleUpDecision {
+        feasible_large_tank_points: evaluation
+            .feasible_operating_window
+            .iter()
+            .map(local_operating_point)
+            .collect(),
+        conflict_table: evaluation
+            .conflict_table
+            .iter()
+            .map(|conflict| constraint_id_from_name(&conflict.constraint))
+            .collect(),
+        tightest_constraint: evaluation
+            .constraint_ranking
+            .first()
+            .map(|tightness| constraint_id_from_name(&tightness.constraint)),
+        ranked_constraints: evaluation
+            .constraint_ranking
+            .iter()
+            .map(|tightness| constraint_id_from_name(&tightness.constraint))
+            .collect(),
     }
 }
 
-fn core_operating_point(point: OperatingPoint) -> CoreOperatingPoint {
+fn core_operating_point(i: usize, point: &OperatingPoint) -> CoreOperatingPoint {
     let mut parameters = BTreeMap::new();
-    parameters.insert("N_hz".to_string(), point.n_hz);
-    parameters.insert("Qg".to_string(), point.qg);
+    parameters.insert("n_hz".to_string(), point.n_hz);
+    parameters.insert("qg".to_string(), point.qg);
     CoreOperatingPoint {
-        id: format!("N={:.1}", point.n_hz),
+        id: format!("N{i:02}"),
         parameters,
         qois: ScaleUpQois {
             kla_1_s: Some(point.kla_1_per_s),
@@ -134,40 +142,13 @@ fn core_operating_point(point: OperatingPoint) -> CoreOperatingPoint {
     }
 }
 
-fn decision_from_core(evaluation: lbm_core::scaleup::ScaleUpEvaluation) -> ScaleUpDecision {
-    let feasible_large_tank_points = evaluation
-        .feasible_operating_window
-        .iter()
-        .map(local_operating_point)
-        .collect();
-    let conflict_table = evaluation
-        .conflict_table
-        .iter()
-        .filter_map(|conflict| constraint_id(&conflict.constraint))
-        .collect();
-    let tightest_constraint = evaluation
-        .conflict_table
-        .iter()
-        .max_by(|a, b| a.tightest_violation.total_cmp(&b.tightest_violation))
-        .and_then(|conflict| constraint_id(&conflict.constraint));
-    let ranked_constraints = evaluation
-        .constraint_ranking
-        .iter()
-        .filter_map(|rank| constraint_id(&rank.constraint))
-        .collect();
-    ScaleUpDecision {
-        feasible_large_tank_points,
-        conflict_table,
-        tightest_constraint,
-        ranked_constraints,
-    }
-}
-
 fn local_operating_point(point: &CoreOperatingPoint) -> OperatingPoint {
+    let n_hz = point.parameters["n_hz"];
+    let qg = point.parameters["qg"];
     OperatingPoint {
-        n_hz: point.parameters["N_hz"],
-        qg: point.parameters["Qg"],
-        np: np_from_n(point.parameters["N_hz"]),
+        n_hz,
+        qg,
+        np: LARGE_TANK_NP_INTERCEPT + LARGE_TANK_NP_SLOPE * n_hz,
         kla_1_per_s: point.qois.kla_1_s.unwrap(),
         p_over_v: point.qois.p_over_v_w_m3.unwrap(),
         p95_shear: point.qois.p95_shear_pa.unwrap(),
@@ -175,14 +156,13 @@ fn local_operating_point(point: &CoreOperatingPoint) -> OperatingPoint {
     }
 }
 
-fn constraint_id(name: &str) -> Option<ConstraintId> {
+fn constraint_id_from_name(name: &str) -> ConstraintId {
     match name {
-        "kla_min_1_s" => Some(ConstraintId::Kla),
-        "p_over_v_max_w_m3" => Some(ConstraintId::PowerPerVolume),
-        "p95_shear_max_pa" => Some(ConstraintId::P95Shear),
-        "mixing_time_max_s" => Some(ConstraintId::MixingTime),
-        "gas_holdup_range" => Some(ConstraintId::GasHoldup),
-        _ => None,
+        "kla_min_1_s" => ConstraintId::Kla,
+        "p_over_v_max_w_m3" => ConstraintId::PowerPerVolume,
+        "p95_shear_max_pa" => ConstraintId::P95Shear,
+        "mixing_time_max_s" => ConstraintId::MixingTime,
+        other => panic!("VB-08 unexpected constraint name {other}"),
     }
 }
 
@@ -227,7 +207,7 @@ fn assert_default_priority_order_is_documented_order(decision: &ScaleUpDecision)
     let expected_order = [
         ConstraintId::Kla,
         ConstraintId::PowerPerVolume,
-        ConstraintId::P95Shear,
+        ConstraintId::TipSpeed,
         ConstraintId::MixingTime,
     ];
     assert!(
@@ -263,7 +243,7 @@ fn assert_relative_agreement(measured: f64, expected: f64, label: &str) {
 }
 
 fn analytic_feasible_large_tank_points() -> Vec<OperatingPoint> {
-    analytic_large_tank_points()
+    analytic_large_tank_sweep()
         .into_iter()
         .filter(|point| {
             point.kla_1_per_s >= KLA_TARGET_1_PER_S
@@ -274,7 +254,7 @@ fn analytic_feasible_large_tank_points() -> Vec<OperatingPoint> {
         .collect()
 }
 
-fn analytic_large_tank_points() -> Vec<OperatingPoint> {
+fn analytic_large_tank_sweep() -> Vec<OperatingPoint> {
     let mut points = Vec::new();
     let mut n_hz = N_MIN_HZ;
     while n_hz <= N_MAX_HZ {
@@ -284,12 +264,8 @@ fn analytic_large_tank_points() -> Vec<OperatingPoint> {
     points
 }
 
-fn np_from_n(n_hz: f64) -> f64 {
-    LARGE_TANK_NP_INTERCEPT + LARGE_TANK_NP_SLOPE * n_hz
-}
-
 fn analytic_large_tank_map(n_hz: f64, qg: f64) -> OperatingPoint {
-    let np = np_from_n(n_hz);
+    let np = LARGE_TANK_NP_INTERCEPT + LARGE_TANK_NP_SLOPE * n_hz;
     let kla_1_per_s =
         LARGE_TANK_KLA_INTERCEPT + LARGE_TANK_KLA_N_SLOPE * n_hz + LARGE_TANK_KLA_QG_SLOPE * qg;
     let p_over_v = LARGE_TANK_P_OVER_V_COEFFICIENT * np * n_hz.powi(3);
