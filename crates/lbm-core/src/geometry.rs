@@ -1214,3 +1214,26 @@ mod tests {
         ));
     }
 }
+
+// Geometry metadata used by bioprocess-specific boundary models (BCFD-044).
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallContactAngle {
+    pub cell: [usize; 3],
+    pub theta_deg: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ContactAngleMap {
+    pub walls: Vec<WallContactAngle>,
+}
+
+impl ContactAngleMap {
+    pub fn set(&mut self, cell: [usize; 3], theta_deg: f64) {
+        if let Some(entry) = self.walls.iter_mut().find(|entry| entry.cell == cell) {
+            entry.theta_deg = theta_deg;
+        } else {
+            self.walls.push(WallContactAngle { cell, theta_deg });
+        }
+    }
+}

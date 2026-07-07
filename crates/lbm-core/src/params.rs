@@ -2,6 +2,7 @@
 
 use crate::lattice::{Lattice, Q_MAX};
 use crate::real::Real;
+pub use crate::surface_tension::SurfaceTensionParams;
 
 /// Maximum prescribed speed (lattice units) a configuration may request
 /// before validation rejects it — the low-Mach limit shared by the V2
@@ -132,6 +133,14 @@ impl MaterialModel {
         validate_positive("rho_liquid", rho_liquid)?;
         validate_positive("mu_gas", mu_gas)?;
         validate_positive("mu_liquid", mu_liquid)?;
+        let ratio = density_ratio(rho_gas, rho_liquid);
+        if ratio > 1000.0 {
+            return Err(MaterialParamError {
+                parameter: "rho_liquid/rho_gas",
+                value: ratio,
+                message: "DENSITY_RATIO_BEYOND_ENGINEERING_TIER".to_string(),
+            });
+        }
         if !sigma.is_finite() || sigma < 0.0 {
             return Err(MaterialParamError {
                 parameter: "sigma",
@@ -155,6 +164,17 @@ impl MaterialModel {
             MaterialModel::PhaseFieldMixture(_) | MaterialModel::ActiveScalarFeedback
         )
     }
+}
+
+pub fn density_ratio_warning(rho_gas: f64, rho_liquid: f64) -> Option<&'static str> {
+    let ratio = density_ratio(rho_gas, rho_liquid);
+    (ratio > 100.0).then_some("HIGH_DENSITY_RATIO_EXPERIMENTAL")
+}
+
+fn density_ratio(rho_gas: f64, rho_liquid: f64) -> f64 {
+    let hi = rho_gas.max(rho_liquid);
+    let lo = rho_gas.min(rho_liquid);
+    hi / lo
 }
 
 fn validate_positive(parameter: &'static str, value: f64) -> Result<(), MaterialParamError> {

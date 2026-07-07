@@ -101,7 +101,7 @@ fn artifact_path() -> PathBuf {
 fn phase_field_params_enforce_frozen_validity_domain() {
     assert!(params().validate().is_ok());
     assert!(PhaseFieldParams {
-        interface_width: 3.9,
+        interface_width: 2.9,
         mobility: 0.04,
         clipping_policy: ClippingPolicy::Off,
     }

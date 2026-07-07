@@ -1399,3 +1399,160 @@ in docs/qa/anomaly-log.md (same file's dry run previously produced the
 ANOM-DRY-001 x-axis reversal — quadratic-fit plumbing in audit tests is
 now a twice-confirmed P3 rake; re-derive fit outputs before blaming the
 engine).
+
+---
+
+### 2026-07-08 conservative Allen-Cahn phase-field transport (`crates/lbm-core/src/phase_field.rs`)
+
+- Decision: resolved gas-liquid phase tracking uses the conservative
+  Allen-Cahn transport form
+  `∂φ/∂t + ∇·(φu + J_phi) = 0`,
+  `J_phi = -M [∇φ - (4/W)φ(1-φ)n]`, with
+  `n = ∇φ / (|∇φ| + 1e-12)`.
+- Derivation / reference: this is the conservative Allen-Cahn flux form used
+  for bounded diffuse-interface volume-fraction transport; the
+  `4φ(1-φ)/W` sharpening term is the derivative scale of the tanh interface
+  profile with diffuse width `W`.
+- Validity domain: diffuse-interface phase fractions in `[0,1]`, interface
+  width `W/dx >= 3`, scenario-provided mobility `0 < M <= 1/6` for the
+  explicit D3Q19 update, and low-Mach LBM velocity fields. It is not a
+  production Shan-Chen path and carries Engineering/Experimental status until
+  VB-04 and BCFD-048 validation are completed.
+- Numerical parameters: `interface_width` and `mobility` are user/scenario
+  inputs; default helper values `W=4 lu`, `M=0.1 lu^2/step` exist only for
+  tests and explicit API construction. The upper mobility bound is the
+  explicit-lattice stability envelope preserved from W-VOF O1, not a
+  case-fitted constant. Optional clipping is an explicit policy and reports
+  `clipped_fraction`; it is not silent transport removal.
+- Validation guard: `uniform_phi_remains_uniform_no_advection`,
+  `rejects_invalid_interface_width`, `rejects_invalid_mobility`, and VB-04
+  static/advected droplet tests.
+
+### 2026-07-08 phase-field boundedness and mass-drift guards (`crates/lbm-core/src/divergence.rs`)
+
+- Decision: guarded phase runs stop on NaN phase values, `max|φ| > 1.5`, or
+  more than 1% total-phi drift per 100 guarded steps relative to the initial
+  total phase inventory.
+- Derivation / reference: these are numerical validity guards, not physics
+  closures. The 1%/100-step threshold is a stop-rule sentinel for explicit
+  finite-volume phase transport; it prevents reporting QOIs after transport
+  loss is already larger than the intended VB-04 0.1% long-window acceptance.
+- Validity domain: diagnostics for explicit phase-field runs with a nonzero
+  initial phase inventory. They do not alter the solution.
+- Numerical parameters: no hidden clamps; `PhiOutOfBounds`, `Nan`, and
+  `MassDriftExcessive` are structured errors. Manifest output records the
+  final `PhaseDiag` snapshot when available.
+- Validation guard: `nan_guard_stops_run`,
+  `mass_drift_guard_stops_run_when_source_leaks`, and
+  `clipping_diagnostics_reported_after_forcing_out_of_bounds`.
+
+### 2026-07-08 density/viscosity interpolation and `J_rho` consistency (`crates/lbm-core/src/materials.rs`, `crates/lbm-core/src/solver.rs`)
+
+- Decision: mixture properties are updated from the transported phase field
+  using `ρ(φ)=ρ_g+φ(ρ_l-ρ_g)` and harmonic viscosity by default; linear
+  viscosity remains an explicit opt-in. The density-diffusion flux is
+  computed once per phase step as `J_rho = (ρ_l - ρ_g) J_phi` and the same
+  stored slice is exposed to continuity diagnostics and momentum correction
+  consumers.
+- Derivation / reference: `J_rho` follows directly from differentiating the
+  affine density interpolation with respect to `φ`, so any transport flux in
+  `φ` produces `(ρ_l-ρ_g)` times the same flux in density.
+- Validity domain: phase-field mixture model only. Density ratios above 100
+  emit `HIGH_DENSITY_RATIO_EXPERIMENTAL`; ratios above 1000 are rejected as
+  beyond the current engineering tier.
+- Numerical parameters: all densities and viscosities are scenario inputs.
+  No density-ratio constants tune a validation case; they are capability
+  tier boundaries.
+- Validation guard: `rho_mu_interpolation_endpoints_still_match`,
+  `j_rho_equality_across_consumers`,
+  `static_stratification_no_flow_smoke`, and
+  `rejects_density_ratio_over_1000_engineering`.
+
+### 2026-07-08 constant-sigma chemical-potential surface tension (`crates/lbm-core/src/surface_tension.rs`)
+
+- Decision: surface tension force uses the standard phase-field
+  chemical-potential form `F_st = μ_phi ∇φ`, with
+  `μ_phi = 2βφ(1-φ)(1-2φ) - κ∇²φ`.
+- Derivation / reference: this is the classical Cahn-Hilliard double-well
+  free-energy chemical potential. For the tanh-interface convention used by
+  the conservative Allen-Cahn transport, the code uses `β = 12σ/W` and
+  `κ = 3σW/2`, giving a constant-σ interface energy scale from
+  scenario-provided `σ` and `W`.
+- Validity domain: constant surface tension, resolved diffuse interface,
+  phase-field mixture mode. Single-phase mode returns zero force. Variable
+  surfactant or Marangoni physics is out of scope.
+- Numerical parameters: `σ`, `W`, `dx`, and `dt` are user/scenario or solver
+  inputs. The capillary diagnostic reports
+  `dt_cap = sqrt(min(ρ) dx^3 / σ)` and warns when `dt > 0.5 dt_cap`; it does
+  not modify the time step.
+- Validation guard: `static_droplet_laplace_pressure_trend_matches_2σ_over_R_within_20pct`,
+  `zero_sigma_gives_zero_surface_force`,
+  `planar_interface_has_near_zero_curvature_force`,
+  `capillary_dt_diagnostic_warns_when_dt_exceeds_half`, and
+  `single_phase_mode_surface_tension_disabled`.
+
+### 2026-07-08 static contact-angle wall metadata (`crates/lbm-core/src/wetting.rs`, `crates/lbm-core/src/geometry.rs`)
+
+- Decision: static wettability metadata is represented per wall cell and
+  uses the Ding-Spelt style boundary relation
+  `∂φ/∂n|wall = -|∇φ|_parallel cot(θ_c)`.
+- Derivation / reference: the relation imposes the prescribed static angle
+  between the diffuse interface normal and the wall normal. For `θ_c=90°`,
+  `cot(θ_c)=0`, so the wall-normal phase gradient vanishes.
+- Validity domain: static contact angles only, with `0° < θ_c < 180°`, and
+  phase field enabled. Dynamic contact-angle laws are explicitly rejected as
+  not implemented.
+- Numerical parameters: `θ_c` is scenario/user input. The spherical-cap
+  initializer is an initialization helper, not a closure.
+- Validation guard: `neutral_90_degrees_case_stays_symmetric`,
+  `wall_no_flux_mass_conservation_with_contact_angle`,
+  `hydrophobic_droplet_beads_up`, `hydrophilic_droplet_spreads`, and
+  `rejects_contact_angle_without_phase_field`.
+
+### 2026-07-08 top free-surface and degassing placeholder (`crates/lbm-core/src/free_surface.rs`)
+
+- Decision: top-face modes are explicit: `ClosedLid` preserves existing
+  behavior, `FreeSurface { engineering: true }` requires phase field, and
+  `DegassingOutlet { engineering: true }` is a placeholder that lets cells
+  with `φ < θ` contribute gas outflow ledger mass while resetting the top
+  cell to liquid retention.
+- Derivation / reference: the degassing path is not a validated physical
+  outlet closure. It is a structured engineering placeholder for ledger
+  accounting and is rejected for Evidence tier.
+- Validity domain: phase-field mixture runs only; disabled in single-phase
+  mode. It must not be used for evidence-grade gas-liquid claims.
+- Numerical parameters: `gas_threshold` is scenario/user input. Ledger fields
+  are `gas_outflow_kg` and `liquid_retention_delta_kg`; they are diagnostics,
+  not hidden source terms.
+- Validation guard: `closed_lid_preserves_mass`,
+  `free_surface_requires_phase_field`,
+  `degassing_placeholder_records_gas_outflow`,
+  `evidence_tier_rejects_degassing`, and
+  `free_surface_and_degassing_disabled_in_single_phase`.
+
+### 2026-07-08 behavior review — BCFD-040..045 phase-field implementation
+
+Pattern: helper-level phase transport preserves uniform fields with no
+advection; the static-droplet curvature smoke gives the expected `2/R`
+Laplace pressure trend within 20% for radii 8, 12, and 16; the stored
+`J_rho` slice is shared by continuity and momentum consumers; contact-angle
+signs distinguish hydrophilic and hydrophobic wall gradients; degassing ledger
+mass is monotone non-decreasing in the placeholder mode.
+Mechanism: resolved phase transport uses conservative Allen-Cahn fluxes;
+material coupling derives directly from affine density interpolation; surface
+tension uses the Cahn-Hilliard chemical potential; wettability imposes a
+static geometric wall-gradient condition.
+Resolved vs closure: Allen-Cahn transport, density interpolation, and
+constant-σ surface tension are resolved diffuse-interface model terms.
+Degassing is explicitly a placeholder and is evidence-blocked.
+Artifacts checked: static-droplet phase slice
+`target/bcfd_043/static_droplet_laplace_phi_r16.pgm` from
+`static_droplet_laplace_pressure_trend_matches_2sigma_over_r_within_20pct`.
+The full VB-04 pressure-jump harness
+(`crates/lbm-core/tests/vb_04_phase_field_droplet_laplace.rs`) remains ignored
+by design pending real BCFD-048 droplet validation.
+Verdict: implementation-level behavior is PHYSICALLY PLAUSIBLE within the
+documented Engineering/Experimental domain; evidence-grade droplet Laplace
+claims remain unverified and gated by VB-04/BCFD-048.
+Routing: PM/V&V should keep VB-04 ignored or evidence-blocked until the real
+static-droplet pressure measurement harness and visual artifact export land.

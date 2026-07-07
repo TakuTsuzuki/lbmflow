@@ -116,6 +116,19 @@ mod tests {
     }
 
     #[test]
+    fn rho_mu_interpolation_endpoints_still_match() {
+        let params =
+            match MaterialModel::phase_field_mixture(1.2, 998.0, 1.8e-5, 1.0e-3, 0.072).unwrap() {
+                MaterialModel::PhaseFieldMixture(params) => params,
+                _ => unreachable!(),
+            };
+        let mut fields = MaterialFields::new(2);
+        fields.update_phase_field_mixture(&[0.0f64, 1.0], &params);
+        assert_eq!(fields.rho_phys(), &[1.2, 998.0]);
+        assert_eq!(fields.mu_phys(), &[1.8e-5, 1.0e-3]);
+    }
+
+    #[test]
     fn harmonic_viscosity_matches_endpoints() {
         assert_eq!(harmonic_viscosity(0.0, 1.8e-5, 1.0e-3), 1.8e-5);
         assert_eq!(harmonic_viscosity(1.0, 1.8e-5, 1.0e-3), 1.0e-3);
@@ -131,5 +144,15 @@ mod tests {
     fn negative_density_or_viscosity_rejected() {
         assert!(MaterialModel::phase_field_mixture(-1.0, 998.0, 1.8e-5, 1.0e-3, 0.072).is_err());
         assert!(MaterialModel::phase_field_mixture(1.2, 998.0, -1.8e-5, 1.0e-3, 0.072).is_err());
+    }
+
+    #[test]
+    fn rejects_density_ratio_over_1000_engineering() {
+        let err =
+            MaterialModel::phase_field_mixture(1.0, 1000.1, 1.0e-5, 1.0e-3, 0.01).unwrap_err();
+        assert_eq!(err.parameter, "rho_liquid/rho_gas");
+        assert!(err
+            .message
+            .contains("DENSITY_RATIO_BEYOND_ENGINEERING_TIER"));
     }
 }

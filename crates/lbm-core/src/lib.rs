@@ -30,6 +30,7 @@ pub mod compat;
 pub mod dist;
 pub mod divergence;
 pub mod fields;
+pub mod free_surface;
 pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu;
@@ -45,9 +46,11 @@ pub mod real;
 pub mod rotating_ibm;
 pub mod solver;
 pub mod subdomain;
+pub mod surface_tension;
 #[cfg(feature = "geometry-import")]
 pub mod voxel_import;
 pub mod wall_model;
+pub mod wetting;
 
 /// Convenient glob import for the V2 API.
 pub mod prelude {
@@ -56,11 +59,12 @@ pub mod prelude {
     pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
     pub use crate::divergence::{DivergenceError, PhaseDiag};
     pub use crate::fields::{DistributionKind, LocalGeom, ScalarDistribution, SoaFields};
+    pub use crate::free_surface::{DegassingLedger, FreeSurfaceError, TopBoundaryMode};
     pub use crate::geometry::{
-        build_stirred_tank_geometry, generate_impeller_marker_set, BaffleTemplate, GeometryError,
-        GridSpec, ImpellerKind as GeometryImpellerKind, ImpellerMarkerSet, ImpellerTemplate,
-        PipeAxis, SpargerTemplate, StirredTankGeometry, TankBottom, TankSpec,
-        SPARGER_ORIFICE_MIN_CELLS, STIRRED_TANK_MIN_CELLS,
+        build_stirred_tank_geometry, generate_impeller_marker_set, BaffleTemplate, ContactAngleMap,
+        GeometryError, GridSpec, ImpellerKind as GeometryImpellerKind, ImpellerMarkerSet,
+        ImpellerTemplate, PipeAxis, SpargerTemplate, StirredTankGeometry, TankBottom, TankSpec,
+        WallContactAngle, SPARGER_ORIFICE_MIN_CELLS, STIRRED_TANK_MIN_CELLS,
     };
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
@@ -81,7 +85,11 @@ pub mod prelude {
         SolverFeatureError, SpecError, WallSpec,
     };
     pub use crate::subdomain::Subdomain;
+    pub use crate::surface_tension::{
+        SurfaceTensionDiagnostics, SurfaceTensionError, SurfaceTensionParams,
+    };
     pub use crate::wall_model::{WallCellMetric, WallMetricSource};
+    pub use crate::wetting::{ContactAngleParams, WettingError};
 
     #[cfg(feature = "gpu")]
     #[allow(deprecated)]

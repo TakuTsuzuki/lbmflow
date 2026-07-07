@@ -236,6 +236,48 @@ fn rejects_2d_lattice_for_bioprocess_scenario() {
 }
 
 #[test]
+fn rejects_dynamic_contact_angle_as_not_implemented() {
+    let mut scenario = base_scenario();
+    scenario["physics"] = json!([{
+        "kind": "resolved_phase_field",
+        "interface_width_m": 0.002,
+        "mobility_m2_per_s": 1.0e-8,
+        "contact_angle_deg": 90.0,
+        "dynamic_contact_angle": { "model": "hoffman_voinov" }
+    }]);
+
+    let err = parse_value(scenario).expect_err("dynamic contact angle should reject");
+    assert_eq!(err.reason, UnsupportedReason::NotImplemented);
+}
+
+#[test]
+fn evidence_tier_rejects_degassing() {
+    let mut scenario = base_scenario();
+    scenario["credibility_tier"] = json!("evidence");
+    scenario["qoi"]["calibration_dataset_id"] = json!("calib-a");
+    scenario["qoi"]["holdout_dataset_id"] = json!("holdout-b");
+    scenario["physics"] = json!([{
+        "kind": "resolved_phase_field",
+        "interface_width_m": 0.002,
+        "mobility_m2_per_s": 1.0e-8,
+        "contact_angle_deg": null,
+        "top_boundary": {
+            "kind": "degassing_outlet",
+            "engineering": true,
+            "gas_threshold": 0.5
+        }
+    }]);
+
+    let err = parse_value(scenario).expect_err("degassing placeholder should reject evidence tier");
+    assert_eq!(
+        err.reason,
+        UnsupportedReason::EvidenceGateFailed {
+            missing: vec!["degassing_outlet_validation".to_string()]
+        }
+    );
+}
+
+#[test]
 fn legacy_scenario_still_parses() {
     let (_, _, preset) = lbm_scenario::presets()
         .into_iter()

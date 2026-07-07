@@ -81,6 +81,23 @@ impl BioprocessScenario {
 
         self.validate_reactor_geometry()?;
 
+        if self.physics.has_dynamic_contact_angle() {
+            return Err(BioprocessScenarioError::unsupported(
+                "dynamic contact angle is not implemented",
+                UnsupportedReason::NotImplemented,
+            ));
+        }
+
+        if self.credibility_tier == CredibilityTier::Evidence && self.physics.has_degassing_outlet()
+        {
+            return Err(BioprocessScenarioError::unsupported(
+                "evidence tier rejects degassing outlet placeholder",
+                UnsupportedReason::EvidenceGateFailed {
+                    missing: vec!["degassing_outlet_validation".to_string()],
+                },
+            ));
+        }
+
         Ok(())
     }
 
@@ -814,6 +831,16 @@ impl PhysicsSpec {
             )
         })
     }
+
+    fn has_dynamic_contact_angle(&self) -> bool {
+        self.models
+            .iter()
+            .any(PhysicsModel::has_dynamic_contact_angle)
+    }
+
+    fn has_degassing_outlet(&self) -> bool {
+        self.models.iter().any(PhysicsModel::has_degassing_outlet)
+    }
 }
 
 impl<'de> Deserialize<'de> for PhysicsSpec {
@@ -846,6 +873,8 @@ pub enum PhysicsModel {
         mobility_m2_per_s: f64,
         clipping_policy: Option<PhaseClippingPolicy>,
         contact_angle_deg: Option<f64>,
+        dynamic_contact_angle: Option<DynamicContactAngleSpec>,
+        top_boundary: Option<TopBoundarySpec>,
     },
     PointBubble {
         max_bubble_count: u32,
@@ -879,6 +908,53 @@ pub struct ResolvedPhaseFieldInner {
     pub mobility_m2_per_s: f64,
     pub clipping_policy: Option<PhaseClippingPolicy>,
     pub contact_angle_deg: Option<f64>,
+    pub dynamic_contact_angle: Option<DynamicContactAngleSpec>,
+    pub top_boundary: Option<TopBoundarySpec>,
+}
+
+impl PhysicsModel {
+    fn has_dynamic_contact_angle(&self) -> bool {
+        match self {
+            PhysicsModel::ResolvedPhaseField {
+                dynamic_contact_angle,
+                ..
+            } => dynamic_contact_angle.is_some(),
+            PhysicsModel::Hybrid { phase_field, .. } => phase_field.dynamic_contact_angle.is_some(),
+            _ => false,
+        }
+    }
+
+    fn has_degassing_outlet(&self) -> bool {
+        match self {
+            PhysicsModel::ResolvedPhaseField { top_boundary, .. } => {
+                matches!(top_boundary, Some(TopBoundarySpec::DegassingOutlet { .. }))
+            }
+            PhysicsModel::Hybrid { phase_field, .. } => matches!(
+                phase_field.top_boundary.as_ref(),
+                Some(TopBoundarySpec::DegassingOutlet { .. })
+            ),
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct DynamicContactAngleSpec {
+    pub model: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TopBoundarySpec {
+    ClosedLid,
+    FreeSurface {
+        engineering: bool,
+    },
+    DegassingOutlet {
+        engineering: bool,
+        gas_threshold: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

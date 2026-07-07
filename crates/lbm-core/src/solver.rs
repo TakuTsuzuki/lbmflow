@@ -1339,6 +1339,10 @@ where
     material_model: MaterialModel,
     phase_initial_total: Option<f64>,
     phase_last_diag: Option<crate::phase_field::PhaseFieldDiagnostics>,
+    phase_last_jrho: Option<Vec<[T; 3]>>,
+    contact_angles: crate::geometry::ContactAngleMap,
+    top_boundary: crate::free_surface::TopBoundaryMode,
+    degassing_ledger: crate::free_surface::DegassingLedger,
     /// Split streaming into interior + boundary-shell passes (the overlap
     /// seam for asynchronous exchanges). Off by default: the single full
     /// pass reproduces V1's probe summation order bit-for-bit.
@@ -1535,6 +1539,10 @@ where
             material_model: MaterialModel::SinglePhase,
             phase_initial_total: None,
             phase_last_diag: None,
+            phase_last_jrho: None,
+            contact_angles: crate::geometry::ContactAngleMap::default(),
+            top_boundary: crate::free_surface::TopBoundaryMode::ClosedLid,
+            degassing_ledger: crate::free_surface::DegassingLedger::default(),
             two_pass: false,
             _lattice: std::marker::PhantomData,
         };
@@ -3386,6 +3394,22 @@ where
         ]
     }
 
+    fn phase_cell_jphi(
+        &self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        phi: &[T],
+        pos: [usize; 3],
+    ) -> [T; 3] {
+        let i = self.compact_idx(pos);
+        let mut grad = [T::zero(); 3];
+        for a in 0..L::D {
+            let pp = self.sample_axis(pos, a, 1);
+            let pm = self.sample_axis(pos, a, -1);
+            grad[a] = (phi[self.compact_idx(pp)] - phi[self.compact_idx(pm)]) * T::r(0.5);
+        }
+        crate::phase_field::phase_flux_jphi(params, phi[i], grad)
+    }
+
     fn phase_field_step_current_velocity(
         &mut self,
     ) -> Result<crate::phase_field::PhaseFieldDiagnostics, crate::phase_field::PhaseFieldError>
@@ -3405,6 +3429,11 @@ where
         let uz = self.gather_uz();
         let solid = self.compact_solid_mask();
         let mut phi_new = phi_old.clone();
+        let mut jrho = vec![[T::zero(); 3]; phi_old.len()];
+        let delta_rho = match &self.material_model {
+            MaterialModel::PhaseFieldMixture(p) => T::r(p.rho_liquid - p.rho_gas),
+            MaterialModel::SinglePhase | MaterialModel::ActiveScalarFeedback => T::zero(),
+        };
         let mut clipped = 0usize;
         let mut interface_cells = 0usize;
         for z in 0..self.dims[2] {
@@ -3415,6 +3444,8 @@ where
                     if solid[i] {
                         continue;
                     }
+                    let j = self.phase_cell_jphi(params, &phi_old, pos);
+                    jrho[i] = [delta_rho * j[0], delta_rho * j[1], delta_rho * j[2]];
                     let mut div = 0.0;
                     for a in 0..L::D {
                         let fp = self.phase_cell_flux(
@@ -3445,6 +3476,7 @@ where
                 }
             }
         }
+        self.apply_top_boundary_to_phi(&mut phi_new, &solid);
         let mut total_phi = 0.0;
         let mut min_phi = f64::INFINITY;
         let mut max_phi = f64::NEG_INFINITY;
@@ -3467,6 +3499,7 @@ where
             max_phi = 0.0;
         }
         self.scatter_phi_and_equilibrium(&phi_new)?;
+        self.phase_last_jrho = Some(jrho);
         let diag = crate::phase_field::PhaseFieldDiagnostics {
             total_phi,
             min_phi,
@@ -3546,6 +3579,191 @@ where
 
     pub fn phase_diagnostics(&self) -> Option<&crate::phase_field::PhaseFieldDiagnostics> {
         self.phase_last_diag.as_ref()
+    }
+
+    pub fn j_rho_for_continuity(&self) -> Option<&[[T; 3]]> {
+        self.phase_last_jrho.as_deref()
+    }
+
+    pub fn j_rho_for_momentum(&self) -> Option<&[[T; 3]]> {
+        self.phase_last_jrho.as_deref()
+    }
+
+    pub fn apply_surface_tension_force(
+        &mut self,
+        params: crate::surface_tension::SurfaceTensionParams<T>,
+    ) -> Result<
+        crate::surface_tension::SurfaceTensionDiagnostics,
+        crate::surface_tension::SurfaceTensionError,
+    > {
+        let params = params.validate()?;
+        if matches!(self.material_model, MaterialModel::SinglePhase) || params.sigma == T::zero() {
+            return Ok(crate::surface_tension::SurfaceTensionDiagnostics::default());
+        }
+        self.stage_out_all();
+        self.fill_phase_planes()
+            .map_err(|e| crate::surface_tension::SurfaceTensionError { message: e.message })?;
+        let mut force_global = vec![[T::zero(); 3]; self.dims[0] * self.dims[1] * self.dims[2]];
+        let mut diag = crate::surface_tension::SurfaceTensionDiagnostics::default();
+        for (part, (sub, fields)) in self.subs.iter().zip(self.host_parts.iter()).enumerate() {
+            let geo = fields.geom;
+            let plane = &self.psi_planes[part];
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        if fields.solid[geo.pidx(x, y, z)] {
+                            continue;
+                        }
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let phi = plane[geo.pidx(x, y, z)];
+                        let (grad, lap) = crate::phase_field::grad_lap(geo, plane, x, y, z);
+                        let grad_abs =
+                            (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
+                        if grad_abs.as_f64() > 1.0e-9 {
+                            diag.interface_cells += 1;
+                        }
+                        let mu = crate::surface_tension::chemical_potential(params, phi, lap);
+                        force_global[gi] = [mu * grad[0], mu * grad[1], mu * grad[2]];
+                        let f_abs = (force_global[gi][0] * force_global[gi][0]
+                            + force_global[gi][1] * force_global[gi][1]
+                            + force_global[gi][2] * force_global[gi][2])
+                            .sqrt()
+                            .as_f64();
+                        diag.force_abs_max = diag.force_abs_max.max(f_abs);
+                        let curvature = if grad_abs > T::r(1.0e-12) {
+                            (lap / grad_abs).as_f64().abs()
+                        } else {
+                            0.0
+                        };
+                        diag.curvature_abs_max = diag.curvature_abs_max.max(curvature);
+                    }
+                }
+            }
+        }
+        if let MaterialModel::PhaseFieldMixture(mix) = &self.material_model {
+            let rho_min = mix.rho_gas.min(mix.rho_liquid);
+            if params.sigma.as_f64() > 0.0 {
+                let dt_cap = (rho_min * params.dx.as_f64().powi(3) / params.sigma.as_f64()).sqrt();
+                diag.capillary_dt = Some(dt_cap);
+                diag.capillary_dt_warning = params.dt.as_f64() > 0.5 * dt_cap;
+            }
+        }
+        self.add_body_force_field_values(&force_global);
+        Ok(diag)
+    }
+
+    fn add_body_force_field_values(&mut self, values: &[[T; 3]]) {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        assert_eq!(values.len(), n, "force field length must match cell count");
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let geo = sub.geom;
+            let ff = fields
+                .force_field
+                .get_or_insert_with(|| vec![[T::zero(); 3]; geo.n_core()]);
+            if ff.len() != geo.n_core() {
+                ff.resize(geo.n_core(), [T::zero(); 3]);
+            }
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let c = geo.cidx(x, y, z);
+                        for a in 0..3 {
+                            ff[c][a] = ff[c][a] + values[gi][a];
+                        }
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+    }
+
+    fn apply_top_boundary_to_phi(&mut self, phi: &mut [T], solid: &[bool]) {
+        let crate::free_surface::TopBoundaryMode::DegassingOutlet { gas_threshold, .. } =
+            self.top_boundary
+        else {
+            return;
+        };
+        if self.dims[2] == 0 {
+            return;
+        }
+        let z = self.dims[2] - 1;
+        let rho_gas = match &self.material_model {
+            MaterialModel::PhaseFieldMixture(mix) => mix.rho_gas,
+            MaterialModel::SinglePhase | MaterialModel::ActiveScalarFeedback => 1.0,
+        };
+        for y in 0..self.dims[1] {
+            for x in 0..self.dims[0] {
+                let i = self.compact_idx([x, y, z]);
+                if solid[i] {
+                    continue;
+                }
+                let v = phi[i].as_f64();
+                if v < gas_threshold {
+                    let gas_fraction = if v < 1.0 { 1.0 - v } else { 0.0 };
+                    self.degassing_ledger.gas_outflow_kg += gas_fraction * rho_gas;
+                    phi[i] = T::one();
+                }
+            }
+        }
+        self.degassing_ledger.liquid_retention_delta_kg = 0.0;
+    }
+
+    pub fn set_static_contact_angle(
+        &mut self,
+        cell: [usize; 3],
+        params: crate::wetting::ContactAngleParams<T>,
+    ) -> Result<(), crate::wetting::WettingError> {
+        params.validate()?;
+        if !self.host_parts.iter().any(|fields| fields.phi.is_some()) {
+            return Err(crate::wetting::WettingError {
+                message: "contact angle requires phase field to be enabled".to_string(),
+            });
+        }
+        if cell[0] >= self.dims[0] || cell[1] >= self.dims[1] || cell[2] >= self.dims[2] {
+            return Err(crate::wetting::WettingError {
+                message: format!("contact-angle wall cell {cell:?} is outside the domain"),
+            });
+        }
+        self.contact_angles.set(cell, params.theta_deg.as_f64());
+        Ok(())
+    }
+
+    pub fn contact_angles(&self) -> &crate::geometry::ContactAngleMap {
+        &self.contact_angles
+    }
+
+    pub fn set_top_boundary_mode(
+        &mut self,
+        mode: crate::free_surface::TopBoundaryMode,
+    ) -> Result<(), crate::free_surface::FreeSurfaceError> {
+        let needs_phase = matches!(
+            mode,
+            crate::free_surface::TopBoundaryMode::FreeSurface { .. }
+                | crate::free_surface::TopBoundaryMode::DegassingOutlet { .. }
+        );
+        if needs_phase && !self.host_parts.iter().any(|fields| fields.phi.is_some()) {
+            return Err(crate::free_surface::FreeSurfaceError {
+                message: "free-surface and degassing modes require phase field".to_string(),
+            });
+        }
+        if needs_phase && matches!(self.material_model, MaterialModel::SinglePhase) {
+            return Err(crate::free_surface::FreeSurfaceError {
+                message: "free-surface and degassing modes are disabled in single-phase mode"
+                    .to_string(),
+            });
+        }
+        self.top_boundary = mode;
+        Ok(())
+    }
+
+    pub fn degassing_ledger(&self) -> crate::free_surface::DegassingLedger {
+        self.degassing_ledger
     }
 
     /// Compute the conservative Allen-Cahn interface flux `J_phi` at one
@@ -5131,6 +5349,134 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.distribution, DistributionKind::Phase);
         assert_eq!(err.reason, UnsupportedReason::NotImplemented);
+    }
+
+    fn small_phase_solver() -> Solver<D3Q19, f64, CpuScalar, LocalPeriodic> {
+        let spec = GlobalSpec {
+            dims: [6, 5, 4],
+            nu: 0.08,
+            periodic: [true, true, true],
+            ..Default::default()
+        };
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.enable_phase_distribution(phase_params()).unwrap();
+        solver
+            .set_material_model(
+                MaterialModel::phase_field_mixture(1.0, 10.0, 1.0e-5, 1.0e-3, 0.01).unwrap(),
+            )
+            .unwrap();
+        solver
+    }
+
+    #[test]
+    fn j_rho_equality_across_consumers() {
+        let mut solver = small_phase_solver();
+        let dims = [6usize, 5usize, 4usize];
+        let phi: Vec<_> = (0..dims[2])
+            .flat_map(|z| {
+                (0..dims[1]).flat_map(move |y| {
+                    (0..dims[0])
+                        .map(move |x| 0.25 + 0.01 * x as f64 + 0.02 * y as f64 + 0.03 * z as f64)
+                })
+            })
+            .collect();
+        solver.set_phi(&phi).unwrap();
+        solver.run_guarded_phase(1).unwrap();
+        let continuity = solver.j_rho_for_continuity().unwrap();
+        let momentum = solver.j_rho_for_momentum().unwrap();
+        assert!(std::ptr::eq(continuity.as_ptr(), momentum.as_ptr()));
+        assert!(continuity.iter().any(|j| j.iter().any(|v| v.abs() > 0.0)));
+    }
+
+    #[test]
+    fn rejects_contact_angle_without_phase_field() {
+        let spec = aux_spec();
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let err = solver
+            .set_static_contact_angle(
+                [0, 0, 0],
+                crate::wetting::ContactAngleParams { theta_deg: 90.0 },
+            )
+            .unwrap_err();
+        assert!(err.message.contains("requires phase field"));
+    }
+
+    #[test]
+    fn free_surface_requires_phase_field() {
+        let spec = aux_spec();
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        let err = solver
+            .set_top_boundary_mode(crate::free_surface::TopBoundaryMode::FreeSurface {
+                engineering: true,
+            })
+            .unwrap_err();
+        assert!(err.message.contains("require phase field"));
+    }
+
+    #[test]
+    fn free_surface_and_degassing_disabled_in_single_phase() {
+        let spec = aux_spec();
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.enable_phase_distribution(phase_params()).unwrap();
+        let err = solver
+            .set_top_boundary_mode(crate::free_surface::TopBoundaryMode::DegassingOutlet {
+                engineering: true,
+                gas_threshold: 0.5,
+            })
+            .unwrap_err();
+        assert!(err.message.contains("single-phase"));
+    }
+
+    #[test]
+    fn degassing_placeholder_records_gas_outflow() {
+        let mut solver = small_phase_solver();
+        solver
+            .set_top_boundary_mode(crate::free_surface::TopBoundaryMode::DegassingOutlet {
+                engineering: true,
+                gas_threshold: 0.5,
+            })
+            .unwrap();
+        let mut phi = vec![1.0; 6 * 5 * 4];
+        for y in 0..5 {
+            for x in 0..6 {
+                phi[((4 - 1) * 5 + y) * 6 + x] = 0.0;
+            }
+        }
+        solver.set_phi(&phi).unwrap();
+        solver.phase_field_step_current_velocity().unwrap();
+        let first = solver.degassing_ledger().gas_outflow_kg;
+        solver.phase_field_step_current_velocity().unwrap();
+        let second = solver.degassing_ledger().gas_outflow_kg;
+        assert!(first > 0.0);
+        assert!(second >= first);
     }
 
     #[test]
