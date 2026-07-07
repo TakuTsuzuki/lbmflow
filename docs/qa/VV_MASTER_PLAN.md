@@ -118,11 +118,17 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   landed D2Q9 GPU-direct TGV (order 1.883) + pressure-channel sentinels;
   remaining: D3Q19 direct, GPU Ghia cavity, GPU conservation — GATE (R2-D3)
   for the full matrix.
+- 6.4 T13-MPI runtime harness — **GATE (off-sandbox MPI execution)**:
+  runner landed 2026-07-07 as `scripts/qa/mpi_runtime_check.sh`; guide:
+  `docs/qa/mpi-runtime-guide.md`. Status stays BENCH-PENDING until the PM or a
+  real cluster produces `t13-mpi.log` with rank counts {1, 2, 4, 8} passing.
 
 ## Axis 7 — Static & structural verification
 
-- 7.1 **W1** Ban-list grep sweep — case-identity branches, transported-
-  quantity clamps, bare calibrated literals; recurring CI-able check.
+- 7.1 **DONE 2026-07-07** Ban-list grep sweep — `scripts/qa/banlist_check.sh`
+  scans case-identity branches, transported-quantity clamps, bare calibrated
+  literals, and silent physical defaults with a reviewed whitelist baseline;
+  guide: `docs/qa/banlist-check-guide.md`.
 - 7.2 Numeric-literal provenance scan — **DONE** (structural-sweep):
   no new undocumented physics constants; P2 comment order queued.
 - 7.3 **W3** Unsafe/precision audit — SIMD unsafe UB; f32↔f64 cast audit;
@@ -133,7 +139,11 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 ## Axis 8 — Interface/tooling V&V (product surface)
 
 - 8.1 **W2** Scenario schema round-trip + fuzz.
-- 8.2 **W3** WASM/GUI parity vs native.
+- 8.2 **W3** WASM/GUI parity vs native — harness landed 2026-07-07:
+  native exporter `wasm_native_parity_export`, comparator
+  `scripts/qa/wasm_parity_check.py`, workflow guide
+  `docs/qa/wasm-native-parity-guide.md`; operator WASM build/snapshot run
+  remains pending.
 - 8.3 **W3** CLI/MCP contract tests (presets/gallery/VTK/manifest schema).
 - 8.4 **W3** Units V&V extension — SI↔lattice across all constructors.
 

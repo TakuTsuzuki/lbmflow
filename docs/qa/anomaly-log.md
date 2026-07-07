@@ -558,18 +558,21 @@ axial mode at 1.5*Ta_c, the finding confirms the penalization filter
 class limit + provides the corrected acceptance route. Documented-red
 until then; gate = cx/vv-tayc heavy.
 
-### ANOM-P4-025 (formerly L1_7-001) — Bouzidi moving-wall qd<0.5 imposes σ·U_wall instead of U_wall
+### ANOM-P4-025 (formerly L1_7-001) — FIXED 2026-07-07 — Bouzidi moving-wall qd<0.5 imposed σ·U_wall instead of U_wall
 Native Bouzidi supports moving walls (wall_u[wall_ref] path); qd=0.5
 degenerates to half-way MW bitwise; qd≥0.5 Couette profile matches
 analytic within 2e-3. BUT qd<0.5 branch scales the wall speed by
 sigma = 2*qd ≈ 0.5 at qd=0.25 (measured ~0.5·U_wall vs expected 1.0·U_wall).
 This is the missing (sigma_i · 2·w_q · rho · c·u_wall / cs²) correction on
 the qd<0.5 second-point interpolation branch — see Bouzidi 2001 §4;
-symmetric qd>0.5 gets it right, qd<0.5 was skipped. Current-wrong-value
-pin: qd=0.25 imposes σ·U_wall; #[ignore]'d all-qd exact test flips green
-when the fix lands. S3 (bounded impact - most Bouzidi records fall on
-qd>=0.5 side for well-resolved obstacles). Route: core-engine, small
-one-file fix in bouzidi.rs qd<0.5 branch. Gate = cx/vv-bmw
+symmetric qd>0.5 gets it right, qd<0.5 was skipped.
+
+Fix: `bouzidi.rs::apply_bouzidi_impl` now applies the moving-wall source to
+both qd<0.5 interpolation points:
+`sigma*(f_q(x_f)+W) + (1-sigma)*(f_q(x_f-c_q)+W)`, with
+`W = 2 w_q rho (c_opp·u_wall)/cs²`. The current-wrong-value pin was
+retightened to the exact off-grid Couette line, and the all-qd sweep is
+unignored. Gate = cx/vv-bmw
 qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd.
 
 ### Wen-2014 GALILEAN-INVARIANT PROBE — COVERED (radar #16 closed, pitfall #10 upgraded)
@@ -667,3 +670,111 @@ the SC contact-line as a validated closure with 1.42× enhancement factor,
 
 Radar #1 CLOSED, ANOM-P4-023 CLOSED as characterization. PHYSICS.md entry
 draft prepared in worktree; will land with next mp-hard rev.
+
+### ANOM-P4-026 — trilinear sampler HARD-CLAMPS positions at wall boundaries (T27 pin, radar row 27)
+Direct measurement (cx/vv-driftitems T27): sample_grid at y=32.5 (half a
+cell inside the top MovingWall with U=0.05) returns u_x = 0.0246 instead
+of the linear Couette extrapolation 0.05 (or the wall-adjacent last-fluid
+value ~0.048). Deviation 50.8% relative. Verdict: the sampler clamps
+positions to the last INTERIOR fluid cell, returning the linear
+INTERIOR-only interpolation. Consequence: particles that CROSS INTO the
+moving-wall diffuse boundary layer are "frozen" to the last fluid cell's
+velocity rather than seeing the linear-shear extrapolation to the wall
+speed. For SETTLING problems (Axis 9.4 closed basin, still fluid) this is
+harmless. For flows WITH walls (channel + particles, sedimentation with
+crossflow), the last O(1 cell) near the wall systematically
+under-transports particles. S3 characterization; documented as a
+known-limitation pin — physical picture in the assertion message.
+
+### T28-T31 (drift items) — 3/4 confirmed sane
+- T28 gravity + uniform force ADDITIVE composition: measured
+  uniform=3.84e-5, gravity=-1.44e-5, both=2.40e-5. Sum matches within
+  1e-12 rel. P4-022 additive fix confirmed at test level.
+- T29 silent omega_shear min(2.0) clamp: pre-ceiling ω = 1.98 (per-cell
+  path forced 2.003) — clamp does NOT fire in current envelope. Test
+  asserts NO NaN only; the silent-clamp-fired case would need omega ≥ 2
+  which requires ν → 0 territory outside the documented stability
+  envelope. Documented as observed behavior, no anomaly.
+- T31 per-cell omega asymmetry via WALE + Couette mirror: L2 mirror
+  deviation 3.19e-16 (=round-off). WALE per-cell omega is symmetric under
+  x-mirror. Latent-defect hypothesis A28 REFUTED.
+
+### ANOM-P4-025 CLOSED (core merge bb7d26a; V&V verified 2026-07-07)
+Bouzidi moving-wall qd<0.5 second-point branch now carries the wall
+source on BOTH interpolation points: σ·(f_q(x_f)+W) + (1-σ)·(f_q(x_f-c_q)+W).
+Independent verification on main: qd=0.25 max_rel_dev=1.11e-15,
+qd=0.5=8.33e-16, qd=0.75=1.39e-15 vs band 2e-3 — exact to machine
+precision across the full qd sweep. cx/vv-bmw `qd_sweep_..._all_qd`
+un-ignored and retightened; qd=0.5 half-way MW bitwise degeneracy
+preserved. **5 core defects closed by the V&V loop**: P4-008 cumulant
+offset (C), P4-001 IBM sizing, P4-021 Zou-He×Guo mass leak, P4-022 SC
+force overwrite, P4-025 Bouzidi qd<0.5. Zero open S1/S2 core defects
+remain.
+
+### ANOM-P4-010 RESIDUAL FINDING (F4 rev 5 extended-settle, main after merge)
+cx/fix-p4-010 physical-implicit penalization sizing is a strict improvement
+(forbidden disc NaN delayed 96 → 698 steps, thin-blade transient stable
+much longer) BUT the thin-blade cross-referee at 30k-step extended settle
+reveals: penalization thin-blade **diverges to NaN between step 26k-28k**,
+while IBM stays stable at rel_change 1.4e-2 by step 3k. Measured
+trajectory (n=4, r_hub=4, r_blade=16, thickness=1.5, Ω=1.5e-4):
+- step 400: mean=-9.40e-2, rel_change=0.21
+- step 1000-1400: oscillates around -6e-2, rel_change ~5e-2 (transient)
+- step 6000: -6.19e-2 (this is what earlier tests hit)
+- step 29000: NaN (all subsequent)
+
+This IS the "even narrower than thin/porous" residual per the earlier
+ruling. Even at moderate blade thickness (1.5 lattice cells) the
+distributed-drag Darcy approximation accumulates enough numerical
+dissipation error over long horizons to eventually drive divergence.
+Verdict: penalization validity domain is thin/porous **AND short
+transient**; for long-time-integration thin-blade problems, route to
+IBM.
+
+The P4-010 SIZING FIX itself is validated (NaN→stable at moderate
+horizons, F5/F6 both pass); the residual is the LONG-TIME behavior.
+Documenting as ANOM-P4-027 (S3 characterization). The audit F4 stays
+documented-red until either (a) the acceptance criterion is revised to
+STATE the short-horizon window, or (b) a further core fix addresses the
+long-time drift. F5/F6 remain GREEN in the same file.
+
+### ANOM-P4-027 — penalization thin-blade long-horizon drift (S3 characterization)
+Same as above. Route: PHYSICS.md note ("validity domain: thin/porous
+structures AND horizons under ~O(20000) steps at moderate resolution")
++ recommend IBM for long-time thin-blade studies. No core action
+requested; this is a modeling limit.
+
+### ANOM-P4-028 — SC Psi::eval lacks explicit rho positivity guard (S3, code-to-spec A22 confirmed)
+Direct code inspection (compat/multiphase.rs:61-65): `Psi::Classic => 1.0 - (-rho).exp()` is safe for any rho (bounded output, no division); `Psi::Exponential => psi0 * (-rho0 / rho).exp()` DIVIDES BY rho and would blow up as rho → 0. NO explicit rho.max() / clamp / debug_assert!(rho > 0) guard exists before eval. Empirically dynamic dynamics keep rho well above 0.05 in the supported T11 regime (measured G1 min=0.112, G2 aggressive min=0.043 — both above 0.01 hard-positivity floor), so the guard-absence has NOT bitten in-envelope. But an aggressive-user config with Psi::Exponential + strong forcing could reach rho → 0 and NaN silently. Route: PHYSICS.md note + optional debug_assert in Psi::eval Exponential branch. S3 (bounded impact — Psi::Exponential is optional non-default; Psi::Classic is the T11-frozen default and is safe). No urgent action.
+
+### P4-010 loop FULLY CLOSED (core doc + our verification agree)
+Core landed ANOM-P4-027 doc on PHYSICS.md (main a375ba2):
+"penalization validity domain = thin/porous AND short-transient" + coherent-
+solid/long-horizon routing to IBM/Bouzidi + Angot-Bruneau-Fabrie 20-40%
+cross-model difference literature reference. No further core fix; concur
+this is a modeling regime, not a defect.
+
+**Final V&V state (both ledgers agree)**:
+- Zero open S1/S2 core defects.
+- Six core fixes cycled through the loop: P4-008 / P4-001 / P4-021 /
+  P4-022 / P4-025 / P4-010 (sizing accepted + P4-027 characterized).
+- All remaining items are characterizations: P4-023 (SC σ referee closed
+  via γ_sl direct measurement), P4-024 (Taylor-Couette wavy-vortex regime),
+  P4-016 (Boussinesq spec draft, mp-hard rev-5 owns implementation),
+  P4-018/019 (SC dynamic wetting family), P4-026 (particle sampler wall
+  clamp), P4-027 (penalization long-horizon drift), P4-028 (Psi::Exponential
+  positivity guard).
+
+**Meta note from core**: acknowledged the six-cycle V&V loop delivered
+real physics corrections (bent-physics offset removed, force-consistent
+closures, correct force sizing) that VALIDATION.md bands alone would not
+have caught. This IS the point of the adversarial-audit + meta-V&V
+architecture — the standard bands are self-consistency checks; the audit
+lanes are external-truth checks.
+
+### ME-4a smoke: D3Q27 central-moment ~85x slower than TRT (CpuSimd) — TRACKED
+Cross-session FYI (bench_stirred, main 3c9ebd6): D3Q27 CentralMoment
+collision ~85x slower than D3Q27 TRT on CpuSimd, likely non-vectorized
+moment-transform path. Not a physics defect (V&V loop clean); speed-leg
+optimization target, queued for quiet-window characterization. Cross-
+tracks against MF-α cumulant coverage radar. No V&V action needed.

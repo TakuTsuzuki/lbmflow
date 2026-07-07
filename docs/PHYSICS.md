@@ -78,7 +78,10 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
   swap `ρ` for `ρ(φ)` without touching collision or BC kernels (see §2
   "W-GRAV composition point").
 - **Bouzidi 2nd-order interpolated bounce-back** for curved walls
-  (`bouzidi.rs`), from Bouzidi-Firdaouss-Lallemand 2001.
+  (`bouzidi.rs`), from Bouzidi-Firdaouss-Lallemand 2001. Moving walls add
+  the Ladd momentum source at every interpolated reflected point; for the
+  qd < 1/2 two-fluid-node branch this means the first and second interpolation
+  points together contribute `2 w_q rho (c_opp·u_w)/cs²`.
 - **Rotating bodies** — two paths: volume penalization (`F = 2ρχ(u_target − u*)`,
   algebraic no-overshoot at χ=1 with a finite spin-up ramp) and marker-based
   direct-forcing IBM (Uhlmann sequence + Wang multi-direct-forcing
@@ -100,6 +103,28 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
 ---
 
 ## 2. Load-bearing decisions
+
+### 2026-07-07 Bouzidi qd<1/2 moving-wall second-point correction (`bouzidi.rs::apply_bouzidi_impl`)
+- Form: for `qd < 1/2` with a second fluid node,
+  `f_opp = sigma*(f_q(x_f)+W) + (1-sigma)*(f_q(x_f-c_q)+W)`,
+  where `sigma = 2 qd` and
+  `W = 2 w_q rho (c_opp·u_w)/cs² = 6 w_q rho (c_opp·u_w)` for D2Q9/D3Q19/D3Q27.
+- Source: Bouzidi-Firdaouss-Lallemand (2001) interpolated bounce-back with
+  the same moving-wall equilibrium shift as the existing half-way moving-wall
+  rule. The old implementation applied `W` only at the first interpolation
+  point, imposing `sigma*u_w` instead of `u_w`.
+- Validity domain: Bouzidi links with `0 < qd < 1`, local density from the
+  adjacent fluid cell, and wall speeds inside the existing `MAX_SPEED` limit.
+  The correction is active only for moving walls; static-wall behavior is
+  byte-identical because `W = 0`.
+- Validation:
+  `crates/lbm-core/tests/accuracy_audit_bouzidi_moving.rs::qd_sweep_moving_wall_couette_should_match_offgrid_linear_profile_all_qd`
+  checks `qd={0.25,0.5,0.75}` against the off-grid Couette line with
+  `max_rel_dev <= 2e-3`, and
+  `::qd_half_moving_wall_is_bitwise_half_way_moving_wall` preserves the
+  `qd=0.5` half-way moving-wall bitwise degeneracy.
+- Replaces / interacts with: fixes ANOM-P4-025 without changing collision,
+  static Bouzidi walls, or the half-way moving-wall branch.
 
 ### 2026-07-07 behavior review — `vv_sedim_2d` rev 2 attempt
 Pattern: with `d=6`, `|g|=1e-4`, and `30_000` steps, the run deposits all
@@ -823,6 +848,20 @@ Improving the mean-profile grade needs either finer near-wall resolution
 (delta >= 96, y+ <= 1.9 — GPU cost ~30 min, planned as a follow-up
 characterization) or a wall model (roadmap item, not implemented).
 
+Resolution ladder COMPLETE (2026-07-07, upsample-restart protocol for
+delta>=80): delta=96 (256x194x144, y+/cell = 1.9, stage-A delta=48
+equilibrium field upsampled trilinearly, 10 Te warmup, 30 Te statistics,
+EXIT:0): mean U+ L2rel = 0.0549, centerline U+ = 19.08 (DNS 18.30, +4.3%),
+total-stress balance L2rel 0.0674, -<u'v'>+ (y+~30, last 10 Te) = 0.740
+(DNS ~0.75), peak 0.803. The ladder 0.233 (y+3.7) -> 0.155 (y+2.8) ->
+0.055 (y+1.9) converges cleanly to the DNS profile: at near-wall-resolved
+spacing the WALE channel reproduces MKM within ~5% mean-profile error with
+DNS-grade Reynolds shear stress. Behavior review: all three equilibrium
+diagnostics (stress linearity, sustained -u'v'+, achieved Re_tau) hold at
+every rung; no closure or boundary artifact remains visible at delta=96.
+The frozen delta=48 routine gate stands (coarse-grade band 0.30); the
+ladder is the accuracy statement.
+
 Resolution trend (delta=64, 171x130x96, y+/cell = 2.8, 50 Te warmup,
 equilibrated — measured 2026-07-07, 1341 s GPU): mean U+ L2rel 0.1549
 (from 0.2328), centerline U+ 20.58 (from 22.02; DNS 18.30), total-stress
@@ -837,6 +876,20 @@ sign only to the viscous term — the Reynolds term needs the same fold
 warmup produced a non-equilibrated stats window (peak -<u'v'>+ 0.975 above
 the equilibrium ceiling, stress residual 34%) — equilibration is delta-
 dependent; 50 Te equilibrates it (measurements above).
+
+Fine-grid restart note (2026-07-07): PM-measured delta=80/96 GPU runs stayed
+laminar from t=0 under both the original 3-mode seed and the deterministic
+1/|k| multiscale ladder, then accelerated under the constant body force until
+the Mach ceiling was exceeded. This is a transition-tripping failure on clean
+fine grids, not a new turbulence model. The GPU validation path now uses the
+standard channel-DNS remedy for delta>=80: equilibrate the frozen delta=48
+case first, gather rho/u, trilinearly interpolate the turbulent field onto the
+target grid with periodic x/z wrapping and one-sided wall-normal interpolation,
+then run a short 10-Te relaxation warmup before collecting statistics.
+Velocity is carried over unscaled because u_tau is held fixed by construction;
+wall-rim velocities remain zero. The sustained-turbulence guard and the
+force-balance/mean-profile bands remain the seed-independence checks for the
+statistics window.
 
 ---
 
@@ -1254,3 +1307,35 @@ forcing model is derived and accepted.
   sum `1.843144e-18`.
   The frozen gates are final/initial `<1e-8` for BGK and `<1e-3` for TRT,
   leakage `<1e-12`, and max growth `<2`.
+
+### 2026-07-07 — Volume-penalization validity domain (ANOM-P4-010 / P4-027, V&V-ruled)
+
+Volume penalization of a rotating body (`compat::rotor`, `F = ρ·(implicit
+sizing)·(u_target − u*)`; the half-force-pinning `2ρχ` form was replaced with
+the physical-implicit sizing whose one-cell recurrence has |gain| ≤ 1) has a
+bounded validity domain, established by the rescoped rotor audit (F1–F6) and
+V&V cross-referee against the direct-forcing IBM:
+
+- **Domain = thin/porous structures AND short transients.** Coherent solid
+  interiors are out of domain: the F6 witness shows a full disc grows
+  detectably (crosses |u|=0.3 at step ~698 with the fixed sizing, vs ~96 with
+  the old sizing) rather than holding rigid — distributed Darcy drag cannot
+  enforce a rigid interior. Route coherent solids to rotating IBM (validated,
+  slip ~9e-4) or Bouzidi.
+- **Horizon caveat (ANOM-P4-027, S3).** Even a thin blade accumulates
+  Darcy-drag dissipation error at long horizons: with the fixed sizing the
+  thin-blade case is stable through ~6k steps (torque −6.19e-2, matching IBM
+  −4.17e-2 to cross_rel 0.39) but diverges to NaN at ~26–28k steps at moderate
+  resolution (was NaN at ~6k with the old sizing — the sizing fix is a strict
+  improvement, not a cure). Validity window ≈ < 20k steps at this resolution;
+  route long-time thin-blade studies to rotating IBM (stable indefinitely).
+- The IBM–penalization cross-model torque difference (~0.39 at moderate
+  resolution / before true steady state) is within the O(20–40%) distributed-
+  drag-vs-sharp-interface range of the Angot–Bruneau–Fabrie penalization
+  literature; not a defect.
+
+Ruling (V&V concur 2026-07-07): the sizing fix landed as a strict improvement;
+the audit F1–F3 are re-scoped as domain-boundary witnesses (#[ignore]'d,
+runnable), F5/F6 green, F4 thin-blade referee documented-red pending an
+acceptance criterion that states the short-horizon window. All rotor-audit
+items are mf-interim-gated and do not affect default landing gates.

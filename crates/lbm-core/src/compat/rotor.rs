@@ -7,11 +7,21 @@
 //!
 //! With Guo forcing, the physical velocity is
 //! `u_phys = u_star + F_total / (2 rho)`, where `u_star` is the bare first
-//! moment velocity. This module computes
-//! `F = 2 rho chi (u_target - u_star)`. With no other forces,
-//! `u_phys = u_star + chi (u_target - u_star)` exactly after the force is
-//! applied: `chi = 1` pins the blade cells to solid-body rotation with no
-//! overshoot by construction, and `0 < chi < 1` gives a monotone convex blend.
+//! moment velocity (see `kernels::moments_row`). The Guo source still changes
+//! the bare momentum by the full represented force over one step, so
+//! `Delta u_star = F / rho`.
+//!
+//! This module therefore uses an implicit full-step direct-forcing solve, not
+//! half-force pinning. Let `delta = F/rho` and require the represented
+//! post-step physical velocity follow the implicit relaxation
+//! `u_phys_{n+1} = u_star_n + chi/(1 + chi) (u_target - u_star_n)`. Because
+//! `u_phys_{n+1} = u_star_n + 3 delta/2`, the force is
+//! `F = rho * 2 chi/(3(1 + chi)) * (u_target - u_star_n)`. For one isolated
+//! cell, `u_phys_{n+1} - u_target = (u_star_n - u_target)/(1 + chi)`.
+//! For `0 < chi <= 1`, the gain `1/(1 + chi)` lies in `[1/2, 1)`, so full
+//! strength remains non-oscillatory. At the fixed point `F = 0`, so the bare
+//! and physical velocities are both `u_target`.
+//!
 //! `Simulation::ux()` / `uy()` are not used for the feedback velocity because
 //! they already include the half-force correction from the force field present
 //! when moments were last updated; the implementation reads the bare first
@@ -22,10 +32,10 @@ use super::sim::Simulation;
 
 /// Force formula shared by 2D compat and future 3D callers.
 pub fn penalization_force<T: Real>(rho: T, chi: T, u_target: [T; 2], u_star: [T; 2]) -> [T; 2] {
-    let two = T::r(2.0);
+    let gain = T::r(2.0) * chi / (T::r(3.0) * (T::one() + chi));
     [
-        two * rho * chi * (u_target[0] - u_star[0]),
-        two * rho * chi * (u_target[1] - u_star[1]),
+        rho * gain * (u_target[0] - u_star[0]),
+        rho * gain * (u_target[1] - u_star[1]),
     ]
 }
 
@@ -277,24 +287,25 @@ mod tests {
     }
 
     #[test]
-    fn penalization_formula_has_no_overshoot() {
+    fn penalization_formula_has_no_full_step_overshoot() {
         let rho: f64 = 1.2;
         let u_star: [f64; 2] = [0.03, -0.02];
         let u_target: [f64; 2] = [0.08, 0.04];
         for chi in [0.25, 0.5, 1.0] {
             let f = penalization_force(rho, chi, u_target, u_star);
-            let u_phys = [
-                u_star[0] + f[0] / (2.0 * rho),
-                u_star[1] + f[1] / (2.0 * rho),
+            let u_phys_next = [
+                u_star[0] + 1.5 * f[0] / rho,
+                u_star[1] + 1.5 * f[1] / rho,
             ];
+            let implicit_gain = chi / (1.0 + chi);
             let expected = [
-                u_star[0] + chi * (u_target[0] - u_star[0]),
-                u_star[1] + chi * (u_target[1] - u_star[1]),
+                u_star[0] + implicit_gain * (u_target[0] - u_star[0]),
+                u_star[1] + implicit_gain * (u_target[1] - u_star[1]),
             ];
-            assert!((u_phys[0] - expected[0]).abs() < 1e-15);
-            assert!((u_phys[1] - expected[1]).abs() < 1e-15);
-            assert!((u_phys[0] - u_star[0]).abs() <= (u_target[0] - u_star[0]).abs());
-            assert!((u_phys[1] - u_star[1]).abs() <= (u_target[1] - u_star[1]).abs());
+            assert!((u_phys_next[0] - expected[0]).abs() < 1e-15);
+            assert!((u_phys_next[1] - expected[1]).abs() < 1e-15);
+            assert!((u_phys_next[0] - u_target[0]).abs() <= (u_star[0] - u_target[0]).abs());
+            assert!((u_phys_next[1] - u_target[1]).abs() <= (u_star[1] - u_target[1]).abs());
         }
     }
 
