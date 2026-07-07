@@ -66,7 +66,7 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 - 3.2 **W2** Code→spec back-translation — subagent derives "what equations
   does this code actually solve" per module; diff against PHYSICS.md.
 - 3.3 Claims-ledger cross-check — **DONE (by the parallel V&V campaign)**:
-  cx/vv-trace docs/VV_TRACEABILITY.md — 27 VALIDATED / 4 VERIFIED-ONLY /
+  cx/vv-trace docs/qa/VV_TRACEABILITY.md — 27 VALIDATED / 4 VERIFIED-ONLY /
   3 BENCH-PENDING / 8 SPEC-ONLY / 1 UNSAFE-CLAIM (T17-03 stress/LES/IBM,
   consistent with our ANOM-P4-001 routing). Merge via task #12.
 - 3.4 Review panel on fix designs — **GATE (P4-001/010 core landing)** —

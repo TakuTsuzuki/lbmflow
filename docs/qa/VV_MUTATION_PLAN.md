@@ -1,5 +1,7 @@
 # V&V Mutation Plan
 
+Lifecycle: living — mutation inventory and protocol, updated in place.
+
 Scope: suborder C only. The purpose is to test whether existing validation fails when specific physics invariants are broken. Mutations are temporary and must never be committed as engine code.
 
 ## Safe Temporary Protocol

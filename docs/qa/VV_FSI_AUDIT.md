@@ -1,5 +1,7 @@
 # V&V FSI Audit
 
+Lifecycle: snapshot (2026-07-06) — dated audit record, never edited.
+
 Date: 2026-07-06  
 Suborder: E. V&V-FSI  
 Scope: FSI / IBM / rotating-boundary / particle-coupling claims only. Fluid-only validation is not counted as FSI validation.

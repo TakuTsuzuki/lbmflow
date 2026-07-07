@@ -1,5 +1,7 @@
 # V&V Claim Status Guide
 
+Lifecycle: living — claim-status vocabulary, updated in place.
+
 This document defines the claim-status vocabulary used by the V&V traceability
 matrix, evidence report, and final campaign report. It is deliberately stricter
 than "tests passed": a claim is valid only to the scope covered by its evidence.

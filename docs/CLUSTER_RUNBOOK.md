@@ -1,5 +1,7 @@
 # ME-3 Cluster Campaign Runbook
 
+Lifecycle: living — operational runbook, updated in place.
+
 This runbook prepares the ME-3 cluster campaign without launching any cloud
 resources. It cross-references the campaign rationale in
 [CLUSTER_OPTIONS.md](CLUSTER_OPTIONS.md), the MPI implementation notes in

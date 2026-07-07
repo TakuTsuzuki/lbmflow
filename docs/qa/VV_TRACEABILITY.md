@@ -1,5 +1,7 @@
 # V&V Traceability Matrix
 
+Lifecycle: living — coverage matrix, updated in place as coverage changes (CSV companion: vv_traceability.csv).
+
 Generated for suborder B, V&V-TRACE, on 2026-07-06 from repository inspection only.
 
 This file is a coverage matrix, not a fresh test report. I did not run the physics
