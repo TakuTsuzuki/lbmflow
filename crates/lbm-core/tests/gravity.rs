@@ -391,7 +391,7 @@ fn phase_center_of_mass_y(sim: &Simulation<f64>, light: bool) -> f64 {
 }
 
 #[test]
-fn shan_chen_gravity_composes_with_force_overwrite_and_creates_buoyancy() {
+fn shan_chen_gravity_composes_with_additive_force_field_and_creates_buoyancy() {
     let (nx, ny) = (80, 80);
     let (cx, cy, r) = (nx / 2, ny / 2, 16.0f64);
     let inside = |x: usize, y: usize| {
@@ -426,6 +426,7 @@ fn shan_chen_gravity_composes_with_force_overwrite_and_creates_buoyancy() {
         let sc = ShanChen::new(-5.0);
         let y0 = phase_center_of_mass_y(&sim, rho_in < rho_out);
         for _ in 0..20_000 {
+            sim.force_field_mut().fill([0.0; 2]);
             sc.update_force(&mut sim);
             sim.step();
         }

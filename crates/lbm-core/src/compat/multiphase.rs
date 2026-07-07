@@ -29,6 +29,7 @@
 //! });
 //! let sc = ShanChen::new(-5.0);
 //! for _ in 0..100 {
+//!     sim.clear_force_field();
 //!     sc.update_force(&mut sim);
 //!     sim.step();
 //! }
@@ -74,6 +75,12 @@ impl Psi {
 /// conserved. Optional per-component gravity `F = rho_sigma(x) * g_sigma`
 /// enables buoyancy-driven flows (Rayleigh–Taylor).
 ///
+/// Force composition contract (ANOM-P4-022): this driver adds its
+/// cross-interaction, wall-affinity, and per-component gravity contribution
+/// into each simulation's existing per-cell force field. Callers that rebuild
+/// transient sources every step must clear the field once before composing the
+/// step's sources.
+///
 /// Usage (both sims must be stepped together):
 /// ```no_run
 /// use lbm_core::compat::prelude::*;
@@ -83,6 +90,8 @@ impl Psi {
 /// let mut b: Simulation<f64> = SimConfig::default().build().unwrap();
 /// let mc = MultiComponent::new(2.6).with_gravity([0.0, -5e-5], [0.0, 0.0]);
 /// for _ in 0..1000 {
+///     a.clear_force_field();
+///     b.clear_force_field();
 ///     mc.update_forces(&mut a, &mut b);
 ///     a.step();
 ///     b.step();
@@ -129,8 +138,10 @@ impl<T: Real> MultiComponent<T> {
         self
     }
 
-    /// Compute cross-interaction + gravity forces into both simulations'
-    /// force fields. Panics if the two grids differ; in debug builds also
+    /// Add cross-interaction + gravity forces into both simulations'
+    /// force fields. The caller owns per-step clearing/reset, matching the
+    /// additive rotor source contract. Panics if the two grids differ; in
+    /// debug builds also
     /// verifies that the solid geometry and the axis periodicities agree
     /// (the stencil below evaluates both components over component A's
     /// mask and wrap rules, so a divergence would silently misplace forces —
@@ -233,15 +244,15 @@ impl<T: Real> MultiComponent<T> {
                 ];
             }
         }
-        a.force_field_mut().copy_from_slice(&fa);
-        b.force_field_mut().copy_from_slice(&fb);
+        add_force_field(a.force_field_mut(), &fa);
+        add_force_field(b.force_field_mut(), &fb);
     }
 }
 
 /// Single-component Shan–Chen model driver.
 ///
-/// Owns no simulation state; call [`ShanChen::update_force`] before every
-/// [`Simulation::step`].
+/// Owns no simulation state; clear the caller-owned force field once per step,
+/// then call [`ShanChen::update_force`] before every [`Simulation::step`].
 #[derive(Clone, Debug)]
 pub struct ShanChen<T: Real> {
     /// Fluid–fluid interaction strength (negative = cohesion).
@@ -299,7 +310,13 @@ impl<T: Real> ShanChen<T> {
     }
 
     /// Compute the interaction + adhesion force from the current density
-    /// field and store it into the simulation's per-cell force field.
+    /// field and add it into the simulation's per-cell force field.
+    ///
+    /// Contract (ANOM-P4-022): this ADDS into the force field so Shan-Chen can
+    /// compose with rotor, gravity, or user-defined per-cell sources through
+    /// the single Guo source point. The caller must clear/reset the field once
+    /// per step before composing transient sources, or contributions will
+    /// accumulate.
     ///
     /// Out-of-domain neighbours on non-periodic edges contribute nothing
     /// (zero-gradient approximation); solid neighbours contribute to the
@@ -384,6 +401,13 @@ impl<T: Real> ShanChen<T> {
                 ];
             }
         }
-        sim.force_field_mut().copy_from_slice(&forces);
+        add_force_field(sim.force_field_mut(), &forces);
+    }
+}
+
+fn add_force_field<T: Real>(dst: &mut [[T; 2]], src: &[[T; 2]]) {
+    for (dst, src) in dst.iter_mut().zip(src.iter()) {
+        dst[0] = dst[0] + src[0];
+        dst[1] = dst[1] + src[1];
     }
 }

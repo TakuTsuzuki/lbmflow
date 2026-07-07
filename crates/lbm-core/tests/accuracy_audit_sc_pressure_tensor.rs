@@ -64,6 +64,7 @@ fn run_t11_droplet(r0: f64, steps: usize) -> DropletCase {
     });
     let sc = ShanChen::new(G);
     for _ in 0..steps {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }
@@ -92,6 +93,7 @@ fn run_t11_flat(steps: usize) -> Simulation<f64> {
     });
     let sc = ShanChen::new(G);
     for _ in 0..steps {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }
@@ -416,6 +418,7 @@ fn run_taylor_culick_h20() -> (f64, f64, f64, Vec<RimSample>) {
         if (1_000..=6_000).contains(&step) && step % 250 == 0 {
             samples.push(rim_sample(&sim, rho_mid));
         }
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }

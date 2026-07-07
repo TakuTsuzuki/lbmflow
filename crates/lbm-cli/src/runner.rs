@@ -409,13 +409,13 @@ fn run_t<T: Real>(
     let mut executed: usize = 0;
 
     'main: for step in 1..=total {
+        if mp.is_some() || rotor.is_some() {
+            sim.force_field_mut().fill([T::zero(); 2]);
+        }
         if let Some(mp) = &mp {
             mp.update_force(&mut sim);
         }
         if let Some(rt) = &mut rotor {
-            if mp.is_none() {
-                sim.clear_force_field();
-            }
             rt.update_force(&mut sim);
         }
         sim.step();

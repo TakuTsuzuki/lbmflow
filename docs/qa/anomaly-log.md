@@ -238,6 +238,31 @@ rho_min = −6.0) while T12's unstable orientation passes CI. Engine-finding
 candidate: MCMP + per-component gravity, stable stratification divergence.
 Routing package = the rev-3 test + printed trajectory (cx/mp-hard).
 
+2026-07-07 codex characterization after ANOM-P4-022 fix: Item 1 overwrite is
+not the P4-016 mechanism. `MultiComponent::update_forces` builds
+cross-repulsion and per-component gravity in the same local force array before
+adding it to each component's caller-owned field, so there is no prior gravity
+field for SC to clobber in the i3 path. Rerun command:
+`cargo test --release -p lbm-core --test validation_multiphase_hard val_mphard_i3_rayleigh_taylor_cutoff_light_sign_canary -- --nocapture`.
+Result remains red. Mode 3: `p_total_y=-1.44e2` by step 10,
+`-1.11e3` by step 100; max-speed locus moves wall-adjacent by step 350
+(`heavy:(85,9)`, `max|u|=4.51e-1`), then fails at step 400
+(`max|u|=4.013e3` at `heavy:(10,12)`, `rho_min=-6.009` at
+`heavy:(160,10)`). Mode 7 stays finite through step 400 but shows the same
+large negative bulk momentum and lower-wall high-speed locus by steps
+375-400 (`heavy:(1,9..10)`). Artifact density maps:
+`target/vv_rt_i3/rt_mode3_step400_heavy.pgm`,
+`target/vv_rt_i3/rt_mode3_step400_light.pgm`,
+`target/vv_rt_i3/rt_mode7_step400_heavy.pgm`,
+`target/vv_rt_i3/rt_mode7_step400_light.pgm`.
+Mechanism hypothesis: the hard i3 setup applies gravity to the heavy
+component only in a closed box, producing a large nonzero bulk body-force
+impulse. The resulting wall-mediated return flow, not the mid-height RT
+interface mode, reaches low-Mach-violating velocities and drives the
+wall-adjacent density failure. Fixing this requires a derived MCMP buoyancy
+forcing model or a spec change to the i3 body-force protocol; no ad-hoc
+mean-force subtraction was applied.
+
 ### ANOM-P4-008 RESOLVED (core merge 15adfdd; V&V gate verified 2026-07-07)
 Offset removed (CPU/SIMD/WGSL); Cumulant→CentralMoment rename; finite-N
 band re-frozen to uncorrected measurement; e2 h²-intercept canary flipped
@@ -311,17 +336,23 @@ net. Complements ANOM-P4-021 (interaction-matrix): the pair-only defect
 class is NOT reachable by single-mutation coverage — the two lanes are
 complementary and both are needed.
 
-### ANOM-P4-022 — Shan-Chen force-field OVERWRITE breaks additive composition — S2 (found by code-to-spec back-translation, lane 3.2)
+### ANOM-P4-022 — Shan-Chen force-field OVERWRITE breaks additive composition — RESOLVED 2026-07-07 (S2, found by code-to-spec back-translation, lane 3.2)
 `ShanChen::update_force` and `MultiComponent::update_forces`
 `copy_from_slice` into `force_field` (compat/multiphase.rs:387), silently
 discarding any prior rotor/gravity/user contribution — contradicts the
 W-GRAV additive composition-point invariant. Rotor + SC coexistence needs
 the caller to call SC FIRST then add rotor; the reverse order silently
 zeros the rotor force. This is invisible in the current lane-5.1 matrix
-(SC × rotor SKIPs by API-incompatibility). Fix candidate: change to
-add-into with a documented "SC contribution overwrites its own footprint"
-convention, or require callers to compose after SC in a single documented
-order.
+(SC × rotor SKIPs by API-incompatibility). Fix landed in this worktree:
+both SCMP and MCMP now add into the caller-owned per-cell force field, with
+the same "caller clears once per step" contract as rotor. Regression:
+`validation_multiphase.rs::t11_shan_chen_adds_to_existing_force_field_anom_p4_022`
+asserts cell-by-cell `gravity + SC` composition and rejects either
+contribution alone. Call-site audit: CLI scenario runner, WASM stepping,
+interaction matrix helper, T11/T11b/T12/T13/pressure-tensor/hard-multiphase
+tests now reset/zero-fill before composing transient SC/MCMP sources; MCMP's own
+per-component gravity was already built in the same local force array and was
+not a prior field overwritten by SC.
 
 ### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec)
 Zou-He closures at kernels.rs:754-773 (D2Q9), 941-954 (D3Q19), 828-867

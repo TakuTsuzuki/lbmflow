@@ -119,6 +119,18 @@ struct RtTracePoint {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct RtFieldDiag {
+    max_u_component: &'static str,
+    max_u_x: usize,
+    max_u_y: usize,
+    rho_min_component: &'static str,
+    rho_min_x: usize,
+    rho_min_y: usize,
+    p_heavy: [f64; 2],
+    p_light: [f64; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
 struct TaylorCulickStats {
     h: usize,
     measured_v: f64,
@@ -176,6 +188,7 @@ fn rel_err(actual: f64, expected: f64) -> f64 {
 }
 
 fn sc_step(sim: &mut Simulation<f64>, sc: &ShanChen<f64>) {
+    sim.force_field_mut().fill([0.0; 2]);
     sc.update_force(sim);
     sim.step();
 }
@@ -476,6 +489,35 @@ fn dump_jurin_pgm(sim: &Simulation<f64>, gap: usize, wall_rho: f64) -> String {
     path.display().to_string()
 }
 
+fn dump_rt_pgm(component: &Simulation<f64>, mode: usize, step: usize, label: &str) -> String {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dir.pop();
+    dir.pop();
+    dir.push("target/vv_rt_i3");
+    create_dir_all(&dir).expect("create target/vv_rt_i3");
+    let path = dir.join(format!("rt_mode{mode}_step{step}_{label}.pgm"));
+    let mut f = File::create(&path).expect("create RT density dump");
+    let nx = component.nx();
+    let ny = component.ny();
+    writeln!(f, "P2").unwrap();
+    writeln!(
+        f,
+        "# {label} density grayscale: black=trace white=component-rich"
+    )
+    .unwrap();
+    writeln!(f, "{nx} {ny}").unwrap();
+    writeln!(f, "255").unwrap();
+    for y in (0..ny).rev() {
+        for x in 0..nx {
+            let t = ((component.rho(x, y) - MC_TRACE) / (1.0 - MC_TRACE)).clamp(0.0, 1.0);
+            let gray = (255.0 * t).round() as u8;
+            write!(f, "{gray} ").unwrap();
+        }
+        writeln!(f).unwrap();
+    }
+    path.display().to_string()
+}
+
 fn measure_channel_theta_deg(sim: &Simulation<f64>, x_start: usize, x_end: usize) -> f64 {
     let rho_mid = 0.5 * (SC_RHO_L + SC_RHO_V);
     let mut profile = Vec::new();
@@ -708,6 +750,57 @@ fn density_extrema(component: &Simulation<f64>) -> (f64, f64) {
     (lo, hi)
 }
 
+fn rt_field_diag(heavy: &Simulation<f64>, light: &Simulation<f64>) -> RtFieldDiag {
+    let mut max_u = f64::NEG_INFINITY;
+    let mut max_u_component = "heavy";
+    let mut max_u_x = 0usize;
+    let mut max_u_y = 0usize;
+    for (name, component) in [("heavy", heavy), ("light", light)] {
+        for y in 1..component.ny() - 1 {
+            for x in 1..component.nx() - 1 {
+                let u = component.ux(x, y).hypot(component.uy(x, y));
+                if u > max_u {
+                    max_u = u;
+                    max_u_component = name;
+                    max_u_x = x;
+                    max_u_y = y;
+                }
+            }
+        }
+    }
+
+    let mut rho_min = f64::INFINITY;
+    let mut rho_min_component = "heavy";
+    let mut rho_min_x = 0usize;
+    let mut rho_min_y = 0usize;
+    for (name, component) in [("heavy", heavy), ("light", light)] {
+        for y in 0..component.ny() {
+            for x in 0..component.nx() {
+                let rho = component.rho(x, y);
+                if rho < rho_min {
+                    rho_min = rho;
+                    rho_min_component = name;
+                    rho_min_x = x;
+                    rho_min_y = y;
+                }
+            }
+        }
+    }
+
+    let p_heavy = heavy.total_momentum();
+    let p_light = light.total_momentum();
+    RtFieldDiag {
+        max_u_component,
+        max_u_x,
+        max_u_y,
+        rho_min_component,
+        rho_min_x,
+        rho_min_y,
+        p_heavy,
+        p_light,
+    }
+}
+
 fn fit_frequency(t: &[f64], signal: &[f64], omega0: f64) -> (f64, usize, f64) {
     let mean = signal.iter().sum::<f64>() / signal.len() as f64;
     let centered: Vec<f64> = signal.iter().map(|v| v - mean).collect();
@@ -836,6 +929,8 @@ fn run_standing_wave(mode: usize, steps: usize, sample_every: usize) -> WaveStat
     ]];
     for it in 1..=(steps / sample_every) {
         for _ in 0..sample_every {
+            heavy.force_field_mut().fill([0.0; 2]);
+            light.force_field_mut().fill([0.0; 2]);
             mc.update_forces(&mut heavy, &mut light);
             heavy.step();
             light.step();
@@ -1002,16 +1097,22 @@ fn run_rt_mode(nx: usize, mode: usize, g: f64, steps: usize, sample_every: usize
     let mut max_u_step_100 = f64::NAN;
     let mut max_u_step_1000 = f64::NAN;
     for step in 1..=steps {
+        heavy.force_field_mut().fill([0.0; 2]);
+        light.force_field_mut().fill([0.0; 2]);
         mc.update_forces(&mut heavy, &mut light);
         heavy.step();
         light.step();
-        if matches!(step, 10 | 100 | 1000) || step % sample_every == 0 {
+        if matches!(step, 10 | 100 | 1000)
+            || step % sample_every == 0
+            || (300..=400).contains(&step) && step % 25 == 0
+        {
             let amp = fourier_amp(&heavy, mode);
             let umax = max_speed(&heavy).max(max_speed(&light));
             let (hlo, hhi) = density_extrema(&heavy);
             let (llo, lhi) = density_extrema(&light);
             let rho_min = hlo.min(llo);
             let rho_max = hhi.max(lhi);
+            let diag = rt_field_diag(&heavy, &light);
             if step % sample_every == 0 {
                 trajectory.push(RtTracePoint {
                     step,
@@ -1037,9 +1138,34 @@ fn run_rt_mode(nx: usize, mode: usize, g: f64, steps: usize, sample_every: usize
                 _ => {}
             }
             println!(
-                "VAL MPHARD I3 diag: mode={} step={} amp={:.8} max_u={:.8e} rho_min={:.8e} rho_max={:.8e}",
-                mode, step, amp, umax, rho_min, rho_max
+                "VAL MPHARD I3 diag: mode={} step={} amp={:.8} max_u={:.8e} max_u_at={}:({},{}) rho_min={:.8e} rho_min_at={}:({},{}) rho_max={:.8e} p_heavy=[{:.8e},{:.8e}] p_light=[{:.8e},{:.8e}] p_total=[{:.8e},{:.8e}]",
+                mode,
+                step,
+                amp,
+                umax,
+                diag.max_u_component,
+                diag.max_u_x,
+                diag.max_u_y,
+                rho_min,
+                diag.rho_min_component,
+                diag.rho_min_x,
+                diag.rho_min_y,
+                rho_max,
+                diag.p_heavy[0],
+                diag.p_heavy[1],
+                diag.p_light[0],
+                diag.p_light[1],
+                diag.p_heavy[0] + diag.p_light[0],
+                diag.p_heavy[1] + diag.p_light[1],
             );
+            if step == 400 {
+                let heavy_path = dump_rt_pgm(&heavy, mode, step, "heavy");
+                let light_path = dump_rt_pgm(&light, mode, step, "light");
+                println!(
+                    "VAL MPHARD I3 artifact: mode={} step={} heavy_pgm={} light_pgm={}",
+                    mode, step, heavy_path, light_path
+                );
+            }
         }
         if step % sample_every == 0 {
             let amp = fourier_amp(&heavy, mode);
