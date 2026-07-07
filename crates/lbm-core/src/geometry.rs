@@ -8,6 +8,7 @@ use crate::solver::UnsupportedReason;
 use std::f64::consts::TAU;
 
 pub const STIRRED_TANK_MIN_CELLS: f64 = 32.0;
+pub const STIRRED_TANK_SCREENING_MIN_CELLS: f64 = 12.0;
 pub const SPARGER_ORIFICE_MIN_CELLS: f64 = 3.0;
 pub const RUSHTON_BLADE_THICKNESS_FRACTION: f64 = 0.04;
 pub const RUSHTON_DISC_DIAMETER_FRACTION: f64 = 0.65;
@@ -210,6 +211,24 @@ pub fn build_stirred_tank_geometry(
     impellers: &[ImpellerTemplate],
     spargers: &[SpargerTemplate],
 ) -> GeometryResult<StirredTankGeometry> {
+    build_stirred_tank_geometry_with_min_cells(
+        grid,
+        tank,
+        baffles,
+        impellers,
+        spargers,
+        STIRRED_TANK_MIN_CELLS,
+    )
+}
+
+pub fn build_stirred_tank_geometry_with_min_cells(
+    grid: GridSpec,
+    tank: TankSpec,
+    baffles: &[BaffleTemplate],
+    impellers: &[ImpellerTemplate],
+    spargers: &[SpargerTemplate],
+    min_cells: f64,
+) -> GeometryResult<StirredTankGeometry> {
     grid.validate()?;
     validate_tank(tank)?;
     if tank.bottom == TankBottom::Dished {
@@ -217,7 +236,7 @@ pub fn build_stirred_tank_geometry(
             "dished-bottom stirred tanks are not implemented for M0",
         ));
     }
-    validate_resolution(grid, tank, impellers)?;
+    validate_resolution(grid, tank, impellers, min_cells)?;
     validate_impellers_inside_liquid(tank, impellers)?;
     validate_baffles_inside_tank(tank, baffles)?;
     validate_spargers(tank, grid, spargers)?;
@@ -354,7 +373,14 @@ fn validate_resolution(
     grid: GridSpec,
     tank: TankSpec,
     impellers: &[ImpellerTemplate],
+    min_cells: f64,
 ) -> GeometryResult<()> {
+    if !(min_cells.is_finite() && min_cells > 0.0) {
+        return Err(GeometryError::out_of_validity_range(
+            "stirred-tank resolution floor must be finite and positive",
+            "min_cells must be finite and > 0",
+        ));
+    }
     let mut min_length = tank.vessel_diameter_m;
     for impeller in impellers {
         if let ImpellerTemplate::Parametric { diameter_m, .. } = impeller {
@@ -362,11 +388,11 @@ fn validate_resolution(
         }
     }
     let cells = min_length / grid.dx_m;
-    if cells < STIRRED_TANK_MIN_CELLS {
+    if cells < min_cells {
         return Err(GeometryError::out_of_validity_range(
             "stirred-tank geometry is under-resolved",
             format!(
-                "min(impeller diameter, vessel diameter) / dx must be >= {STIRRED_TANK_MIN_CELLS}, got {cells:.3}"
+                "min(impeller diameter, vessel diameter) / dx must be >= {min_cells}, got {cells:.3}"
             ),
         ));
     }
@@ -1032,6 +1058,20 @@ mod tests {
             err.reason,
             UnsupportedReason::OutOfValidityRange { .. }
         ));
+    }
+
+    #[test]
+    fn screening_resolution_floor_allows_under_resolved_demo_geometry() {
+        let geom = build_stirred_tank_geometry_with_min_cells(
+            grid(48),
+            tank(),
+            &[],
+            &[rushton(1.0 / 3.0)],
+            &[],
+            STIRRED_TANK_SCREENING_MIN_CELLS,
+        )
+        .unwrap();
+        assert!(geom.fluid_count() > 0);
     }
 
     #[test]

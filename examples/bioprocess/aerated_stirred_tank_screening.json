@@ -1,0 +1,143 @@
+{
+  "version": "bioprocess-1.0",
+  "name": "aerated-stirred-tank-screening",
+  "credibility_tier": "screening",
+  "reactor": {
+    "kind": "stirred_tank",
+    "vessel_diameter_m": 0.1366,
+    "liquid_height_m": 0.1366,
+    "working_volume_m3": 0.002,
+    "bottom": "flat",
+    "impellers": [
+      {
+        "kind": "rushton",
+        "diameter_m": 0.0455,
+        "clearance_from_bottom_m": 0.0455,
+        "rotational_speed_rpm": 250.0,
+        "blade_count": 6
+      }
+    ],
+    "baffles": [
+      {
+        "count": 4,
+        "width_m": 0.0137,
+        "thickness_m": 0.0028,
+        "wall_attached": true
+      }
+    ],
+    "spargers": [
+      {
+        "kind": "ring",
+        "center_z_m": 0.025,
+        "outer_radius_m": 0.030,
+        "orifice_count": 12,
+        "orifice_diameter_m": 0.012,
+        "gas_volumetric_flow_m3_per_s": 1.67e-6,
+        "vvm": 0.05,
+        "inlet_phase": "gas"
+      }
+    ]
+  },
+  "fluids": {
+    "liquid_density_kg_m3": 1000.0,
+    "liquid_viscosity_pa_s": 0.001,
+    "gas_density_kg_m3": 1.2,
+    "gas_viscosity_pa_s": 1.8e-5,
+    "surface_tension_n_m": 0.072,
+    "oxygen_diffusivity_m2_per_s": 2.0e-9,
+    "henry_constant": 1.3e-5
+  },
+  "operation": {
+    "duration_s": 30.0,
+    "gas_inlet_temp_c": 25.0,
+    "initial_condition": { "kind": "quiescent" }
+  },
+  "physics": [
+    { "kind": "single_phase" },
+    {
+      "kind": "resolved_phase_field",
+      "interface_width_m": 0.009,
+      "mobility_m2_per_s": 1.0e-6,
+      "clipping_policy": { "kind": "off" },
+      "contact_angle_deg": 90.0,
+      "dynamic_contact_angle": null,
+      "top_boundary": { "kind": "closed_lid" }
+    },
+    {
+      "kind": "passive_scalar",
+      "diffusivity_m2_per_s": 1.0e-9,
+      "initial_pulse": {
+        "center_m": [0.0683, 0.0400, 0.0800],
+        "radius_m": 0.012,
+        "concentration": 1.0
+      }
+    },
+    {
+      "kind": "oxygen",
+      "partial_pressure_o2_pa": 21000.0,
+      "k_l_model": {
+        "kind": "constant",
+        "value_m_per_s": 1.0e-4
+      },
+      "our_model": { "kind": "none" }
+    },
+    {
+      "kind": "cell_tracer",
+      "count": 100,
+      "seed": 20260708,
+      "record_shear": true,
+      "record_oxygen": true,
+      "damage_model": {
+        "kind": "threshold",
+        "threshold_pa": 50.0,
+        "exponent": 1.0
+      }
+    }
+  ],
+  "cells": {
+    "count": 100,
+    "seed": 20260708,
+    "record_shear": true,
+    "record_oxygen": true,
+    "damage_model": {
+      "kind": "threshold",
+      "threshold_pa": 50.0,
+      "exponent": 1.0
+    }
+  },
+  "qoi": {
+    "power": {},
+    "mixing": {},
+    "gas_holdup": {},
+    "bubble_size": null,
+    "kla": {
+      "k_l_model": {
+        "kind": "constant",
+        "value_m_per_s": 1.0e-4
+      },
+      "fitting_window_start_s": 0.0,
+      "fitting_window_end_s": 0.052
+    },
+    "shear_exposure": {},
+    "oxygen_exposure": {},
+    "calibration_dataset_id": null,
+    "holdout_dataset_id": null
+  },
+  "run": {
+    "steps": 400,
+    "dt_s": 0.00013,
+    "grid_nx": 48,
+    "grid_ny": 48,
+    "grid_nz": 48,
+    "backend": "cpu",
+    "precision": "f64",
+    "lattice": "d3q19"
+  },
+  "outputs": {
+    "manifest_path": "target/e2e_demo/aerated/manifest.json",
+    "fields_every_n_steps": 200,
+    "probes_every_n_steps": 10,
+    "emit_qoi_json": true,
+    "emit_qoi_csv": true
+  }
+}

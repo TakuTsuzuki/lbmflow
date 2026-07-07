@@ -1,0 +1,107 @@
+{
+  "version": "bioprocess-1.0",
+  "name": "stirred-tank-screening-single-phase",
+  "credibility_tier": "screening",
+  "reactor": {
+    "kind": "stirred_tank",
+    "vessel_diameter_m": 0.1366,
+    "liquid_height_m": 0.1366,
+    "working_volume_m3": 0.002,
+    "bottom": "flat",
+    "impellers": [
+      {
+        "kind": "rushton",
+        "diameter_m": 0.0455,
+        "clearance_from_bottom_m": 0.0455,
+        "rotational_speed_rpm": 250.0,
+        "blade_count": 6
+      }
+    ],
+    "baffles": [
+      {
+        "count": 4,
+        "width_m": 0.0137,
+        "thickness_m": 0.0028,
+        "wall_attached": true
+      }
+    ],
+    "spargers": []
+  },
+  "fluids": {
+    "liquid_density_kg_m3": 1000.0,
+    "liquid_viscosity_pa_s": 0.001,
+    "gas_density_kg_m3": null,
+    "gas_viscosity_pa_s": null,
+    "surface_tension_n_m": 0.072,
+    "oxygen_diffusivity_m2_per_s": null,
+    "henry_constant": null
+  },
+  "operation": {
+    "duration_s": 30.0,
+    "gas_inlet_temp_c": null,
+    "initial_condition": { "kind": "quiescent" }
+  },
+  "physics": [
+    { "kind": "single_phase" },
+    {
+      "kind": "passive_scalar",
+      "diffusivity_m2_per_s": 1.0e-9,
+      "initial_pulse": {
+        "center_m": [0.0683, 0.0400, 0.0800],
+        "radius_m": 0.012,
+        "concentration": 1.0
+      }
+    },
+    {
+      "kind": "cell_tracer",
+      "count": 100,
+      "seed": 20260708,
+      "record_shear": true,
+      "record_oxygen": false,
+      "damage_model": {
+        "kind": "threshold",
+        "threshold_pa": 50.0,
+        "exponent": 1.0
+      }
+    }
+  ],
+  "cells": {
+    "count": 100,
+    "seed": 20260708,
+    "record_shear": true,
+    "record_oxygen": false,
+    "damage_model": {
+      "kind": "threshold",
+      "threshold_pa": 50.0,
+      "exponent": 1.0
+    }
+  },
+  "qoi": {
+    "power": {},
+    "mixing": {},
+    "gas_holdup": null,
+    "bubble_size": null,
+    "kla": null,
+    "shear_exposure": {},
+    "oxygen_exposure": null,
+    "calibration_dataset_id": null,
+    "holdout_dataset_id": null
+  },
+  "run": {
+    "steps": 400,
+    "dt_s": 0.00026,
+    "grid_nx": 48,
+    "grid_ny": 48,
+    "grid_nz": 48,
+    "backend": "cpu",
+    "precision": "f64",
+    "lattice": "d3q19"
+  },
+  "outputs": {
+    "manifest_path": "target/e2e_demo/single_phase/manifest.json",
+    "fields_every_n_steps": 200,
+    "probes_every_n_steps": 10,
+    "emit_qoi_json": true,
+    "emit_qoi_csv": true
+  }
+}

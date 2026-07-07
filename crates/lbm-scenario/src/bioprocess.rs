@@ -145,7 +145,11 @@ impl BioprocessScenario {
     ) -> Result<core_geometry::StirredTankGeometry, BioprocessScenarioError> {
         let unit_report = self.unit_report_with_diagnostics()?;
         self.reactor
-            .build_geometry(&self.run, unit_report.lattice.dx_m)
+            .build_geometry(
+                self.credibility_tier,
+                &self.run,
+                unit_report.lattice.dx_m,
+            )
     }
 
     pub fn import_stl_geometry(
@@ -351,6 +355,7 @@ impl ReactorSpec {
 
     fn build_geometry(
         &self,
+        tier: CredibilityTier,
         run: &RunSpec,
         dx_m: f64,
     ) -> Result<core_geometry::StirredTankGeometry, BioprocessScenarioError> {
@@ -363,7 +368,7 @@ impl ReactorSpec {
                 baffles,
                 spargers,
                 ..
-            } => core_geometry::build_stirred_tank_geometry(
+            } => core_geometry::build_stirred_tank_geometry_with_min_cells(
                 grid_spec(run, dx_m),
                 core_geometry::TankSpec {
                     vessel_diameter_m: *vessel_diameter_m,
@@ -373,6 +378,7 @@ impl ReactorSpec {
                 &baffles.iter().map(Into::into).collect::<Vec<_>>(),
                 &impellers.iter().map(Into::into).collect::<Vec<_>>(),
                 &spargers.iter().map(Into::into).collect::<Vec<_>>(),
+                stirred_tank_resolution_floor(tier),
             )
             .map_err(BioprocessScenarioError::from_geometry),
         }
@@ -392,7 +398,7 @@ impl ReactorSpec {
                 ..
             } => {
                 let Some(import) = stl_import else {
-                    return self.build_geometry(run, dx_m);
+                    return self.build_geometry(tier, run, dx_m);
                 };
                 #[cfg(not(feature = "geometry-import"))]
                 {
@@ -439,6 +445,15 @@ impl ReactorSpec {
                     })
                 }
             }
+        }
+    }
+}
+
+fn stirred_tank_resolution_floor(tier: CredibilityTier) -> f64 {
+    match tier {
+        CredibilityTier::Screening => core_geometry::STIRRED_TANK_SCREENING_MIN_CELLS,
+        CredibilityTier::Engineering | CredibilityTier::Evidence => {
+            core_geometry::STIRRED_TANK_MIN_CELLS
         }
     }
 }
@@ -1449,6 +1464,37 @@ mod tests {
             baffles: vec![],
             spargers,
         }
+    }
+
+    fn d_over_t_one_third_tank() -> ReactorSpec {
+        ReactorSpec::StirredTank {
+            vessel_diameter_m: 1.0,
+            liquid_height_m: 1.0,
+            working_volume_m3: 0.78539816339,
+            bottom: TankBottomSpec::Flat,
+            stl_import: None,
+            impellers: vec![ImpellerSpec::Rushton {
+                diameter_m: 1.0 / 3.0,
+                clearance_from_bottom_m: 0.35,
+                rotational_speed_rpm: 120.0,
+                blade_count: 6,
+            }],
+            baffles: vec![],
+            spargers: vec![],
+        }
+    }
+
+    #[test]
+    fn screening_tier_allows_under_resolved_demo_tank_geometry() {
+        let mut scenario = base_scenario(d_over_t_one_third_tank());
+        scenario.run.grid_nx = 48;
+        scenario.run.grid_ny = 48;
+        scenario.run.grid_nz = 48;
+        scenario.build_geometry().unwrap();
+
+        scenario.credibility_tier = CredibilityTier::Engineering;
+        let err = scenario.build_geometry().unwrap_err();
+        assert!(err.message.contains("under-resolved"));
     }
 
     #[cfg(not(feature = "geometry-import"))]
