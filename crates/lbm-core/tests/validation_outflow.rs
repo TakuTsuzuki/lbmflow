@@ -254,3 +254,207 @@ fn t9b_convective_outflow_long_run_pressure_ratio_is_frozen() {
         case.steps
     );
 }
+
+#[derive(Clone, Copy, Debug)]
+struct ReflectionMeasurement {
+    raw_r: f64,
+    emitted_amp: f64,
+    transmitted_amp: f64,
+    reflected_amp: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReflectionCurvePoint {
+    u_conv: f64,
+    r: f64,
+    raw_r: f64,
+    transmitted_amp: f64,
+}
+
+const REFLECTION_NX: usize = 128;
+const REFLECTION_NY: usize = 32;
+const REFLECTION_TAU: f64 = 0.8;
+const REFLECTION_NU: f64 = (REFLECTION_TAU - 0.5) / 3.0;
+const REFLECTION_PULSE_X: f64 = 40.0;
+const REFLECTION_PULSE_WIDTH: f64 = 8.0;
+const REFLECTION_ETA: f64 = 0.01;
+const REFLECTION_WARMUP_STEPS: usize = 500;
+const REFLECTION_SAMPLE_STEPS: usize = 420;
+
+fn build_reflection_channel(right: EdgeBC<f64>) -> Simulation<f64> {
+    let mut sim: Simulation<f64> = SimConfig {
+        nx: REFLECTION_NX,
+        ny: REFLECTION_NY,
+        nu: REFLECTION_NU,
+        collision: Collision::Trt { magic: 3.0 / 16.0 },
+        edges: Edges {
+            left: EdgeBC::VelocityInlet { u: [0.0, 0.0] },
+            right,
+            bottom: EdgeBC::BounceBack,
+            top: EdgeBC::BounceBack,
+        },
+        ..Default::default()
+    }
+    .build()
+    .unwrap();
+    sim.set_inlet_profile(Edge::Left, |_| [0.0, 0.0]);
+    sim.init_with(|_, _| (1.0, 0.0, 0.0));
+    sim
+}
+
+fn reflection_pulse_mode(x: usize, center: f64) -> f64 {
+    let dx = (x as f64 - center) / REFLECTION_PULSE_WIDTH;
+    (-dx * dx).exp()
+}
+
+fn inject_right_going_density_pulse(sim: &mut Simulation<f64>) {
+    // Linear acoustic eigenmode for a right-going small-amplitude packet:
+    // p' = cs^2 rho', and the 1-D characteristic relation is u' = p'/(rho0 cs)
+    // = cs rho' for rho0=1. This avoids launching an equal left-going packet
+    // that would reflect from the inlet before the outlet-reflection window.
+    let cs = CS2.sqrt();
+    sim.init_with(|x, y| {
+        if y == 0 || y == REFLECTION_NY - 1 {
+            (1.0, 0.0, 0.0)
+        } else {
+            let delta_rho = REFLECTION_ETA * reflection_pulse_mode(x, REFLECTION_PULSE_X);
+            (1.0 + delta_rho, cs * delta_rho, 0.0)
+        }
+    });
+}
+
+fn projected_density_amplitude(sim: &Simulation<f64>, center: f64, x0: usize, x1: usize) -> f64 {
+    let mut count = 0.0;
+    let mut rho_sum = 0.0;
+    let mut mode_sum = 0.0;
+    for x in x0..=x1 {
+        let mode = reflection_pulse_mode(x, center);
+        for y in 1..=(sim.ny() - 2) {
+            rho_sum += sim.rho(x, y) - 1.0;
+            mode_sum += mode;
+            count += 1.0;
+        }
+    }
+    let rho_mean = rho_sum / count;
+    let mode_mean = mode_sum / count;
+
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for x in x0..=x1 {
+        let mode = reflection_pulse_mode(x, center) - mode_mean;
+        for y in 1..=(sim.ny() - 2) {
+            let rho = sim.rho(x, y) - 1.0 - rho_mean;
+            num += rho * mode;
+            den += mode * mode;
+        }
+    }
+    num / den
+}
+
+fn measure_reflection(right: EdgeBC<f64>, label: &str) -> ReflectionMeasurement {
+    let mut sim = build_reflection_channel(right);
+    sim.run(REFLECTION_WARMUP_STEPS);
+    inject_right_going_density_pulse(&mut sim);
+
+    let emitted_amp = projected_density_amplitude(&sim, REFLECTION_PULSE_X, 12, 68).abs();
+    let cs = CS2.sqrt();
+    let outlet_probe_x = 112.0;
+    let t_transmit = ((outlet_probe_x - REFLECTION_PULSE_X) / cs).round() as usize;
+    let t_return = (2.0 * ((REFLECTION_NX - 1) as f64 - REFLECTION_PULSE_X) / cs).round() as usize;
+    let mut transmitted_amp = 0.0_f64;
+    let mut reflected_amp = 0.0_f64;
+
+    for step in 1..=REFLECTION_SAMPLE_STEPS {
+        sim.step();
+        assert_finite(&sim, label);
+        let transmitted = projected_density_amplitude(&sim, outlet_probe_x, 84, 126).abs();
+        if step.abs_diff(t_transmit) <= 60 {
+            transmitted_amp = transmitted_amp.max(transmitted);
+        }
+        let reflected = projected_density_amplitude(&sim, REFLECTION_PULSE_X, 12, 68).abs();
+        if step.abs_diff(t_return) <= 70 {
+            reflected_amp = reflected_amp.max(reflected);
+        }
+    }
+
+    ReflectionMeasurement {
+        raw_r: reflected_amp / emitted_amp,
+        emitted_amp,
+        transmitted_amp,
+        reflected_amp,
+    }
+}
+
+#[test]
+#[ignore = "lane 1.7 adversarial probe: current ConvectiveOutflow reflects near hard-wall in this rest-channel pulse setup"]
+fn t9b_convective_outflow_reflection_coefficient_curve_has_better_than_outflow_regime() {
+    // Boundary reflection coefficient derivation:
+    // a right-going linear acoustic pulse has delta u = cs * delta rho. The
+    // outlet reflection is the returning packet amplitude divided by the
+    // emitted packet amplitude. Because this finite-viscosity packet damps
+    // during the round trip, we divide each raw ratio by the same-channel hard
+    // wall raw ratio; a hard wall has physical R=1, so this calibration removes
+    // propagation damping without using implementation internals.
+    let hard_wall = measure_reflection(EdgeBC::BounceBack, "T9b reflection hard wall");
+    let outflow = measure_reflection(EdgeBC::Outflow, "T9b reflection Outflow");
+    let baseline_r = outflow.raw_r / hard_wall.raw_r;
+    let u_convs = [0.05, 0.1, 0.2, 0.3, 0.5, 1.0];
+    let mut curve = Vec::new();
+
+    for u_conv in u_convs {
+        let measured = measure_reflection(
+            EdgeBC::ConvectiveOutflow { u_conv },
+            "T9b reflection ConvectiveOutflow",
+        );
+        curve.push(ReflectionCurvePoint {
+            u_conv,
+            r: measured.raw_r / hard_wall.raw_r,
+            raw_r: measured.raw_r,
+            transmitted_amp: measured.transmitted_amp,
+        });
+    }
+
+    let min_point = curve
+        .iter()
+        .min_by(|a, b| a.r.total_cmp(&b.r))
+        .copied()
+        .unwrap();
+    println!(
+        "T9b reflection curve: hard_wall_raw_R={:.8e}, emitted_amp={:.8e}, transmitted_amp={:.8e}, reflected_amp={:.8e}",
+        hard_wall.raw_r, hard_wall.emitted_amp, hard_wall.transmitted_amp, hard_wall.reflected_amp
+    );
+    println!(
+        "T9b reflection baseline Outflow: baseline_R={:.8e}, raw_R={:.8e}, transmitted_amp={:.8e}",
+        baseline_r, outflow.raw_r, outflow.transmitted_amp
+    );
+    for point in &curve {
+        println!(
+            "T9b reflection ConvectiveOutflow: u_conv={:.2}, R={:.8e}, raw_R={:.8e}, transmitted_amp={:.8e}",
+            point.u_conv, point.r, point.raw_r, point.transmitted_amp
+        );
+    }
+    println!(
+        "T9b reflection summary: baseline_R={:.8e}, min_R={:.8e}, u_conv_at_min={:.2}",
+        baseline_r, min_point.r, min_point.u_conv
+    );
+
+    assert!(
+        min_point.r < baseline_r,
+        "T9b reflection curve has no better-than-zero-gradient regime: min_R={:.8e} at u_conv={:.2}, baseline_R={:.8e}",
+        min_point.r,
+        min_point.u_conv,
+        baseline_r
+    );
+    assert!(
+        curve[0].r >= curve[1].r && curve[1].r >= curve[2].r,
+        "T9b reflection low-u branch does not approach hard-wall R=1 monotonically as u_conv -> 0: R(0.05)={:.8e}, R(0.10)={:.8e}, R(0.20)={:.8e}",
+        curve[0].r,
+        curve[1].r,
+        curve[2].r
+    );
+    assert!(
+        curve[0].r > 0.5,
+        "T9b reflection smallest u_conv is not in the high-reflection approach-to-wall regime: R(0.05)={:.8e}",
+        curve[0].r
+    );
+}
