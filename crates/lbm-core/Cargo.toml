@@ -31,6 +31,7 @@ gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:futures-intrusive"]
 # default: requires a native MPI installation (see scripts/test_mpi.sh).
 mpi = ["dep:mpi"]
 mf-interim = []
+geometry-import = []
 
 [[example]]
 name = "bench_gpu"

@@ -26,3 +26,4 @@ anyhow = "1"
 [features]
 gpu = ["lbm-core/gpu", "lbm-scenario/gpu"]
 mpi = ["lbm-core/mpi"]
+geometry-import = ["lbm-core/geometry-import", "lbm-scenario/geometry-import"]

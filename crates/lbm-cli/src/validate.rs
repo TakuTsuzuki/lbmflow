@@ -59,6 +59,23 @@ fn validate_bioprocess(text: &str, json_output: bool) -> Result<i32> {
             return Ok(1);
         }
     };
+    if scenario.has_stl_import() {
+        if let Err(err) = crate::runner::prepare_bioprocess_geometry(&scenario) {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "ok": false,
+                        "error": err.to_string(),
+                        "unit_report": report
+                    }))?
+                );
+            } else {
+                eprintln!("geometry preparation failed: {err}");
+            }
+            return Ok(1);
+        }
+    }
     let ok = report.feasibility.rejections.is_empty();
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);

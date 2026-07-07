@@ -63,6 +63,17 @@ pub fn run(sc: &Scenario, out_dir: &Path) -> Result<Manifest> {
     run_with_options(sc, out_dir, &RunOptions::default())
 }
 
+pub fn prepare_bioprocess_geometry(
+    sc: &lbm_scenario::BioprocessScenario,
+) -> Result<lbm_core::geometry::StirredTankGeometry> {
+    sc.import_stl_geometry().map_err(|err| {
+        anyhow::anyhow!(
+            "{}",
+            serde_json::to_string(&err).unwrap_or_else(|_| err.to_string())
+        )
+    })
+}
+
 pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> Result<Manifest> {
     fs::create_dir_all(out_dir)
         .with_context(|| format!("cannot create output directory: {}", out_dir.display()))?;

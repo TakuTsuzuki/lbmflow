@@ -393,11 +393,13 @@ fn sparger_diameters(spargers: &[SpargerSpec]) -> Vec<f64> {
                 orifice_diameter_m, ..
             } => Some(*orifice_diameter_m),
             SpargerSpec::Pipe {
-                orifice_diameter_m, ..
-            } => Some(*orifice_diameter_m),
+                orifice_diameter_m,
+                diameter_m,
+                ..
+            } => Some(orifice_diameter_m.unwrap_or(*diameter_m)),
             SpargerSpec::PointOrifices {
                 orifice_diameter_m, ..
-            } => Some(*orifice_diameter_m),
+            } => *orifice_diameter_m,
         })
         .collect()
 }

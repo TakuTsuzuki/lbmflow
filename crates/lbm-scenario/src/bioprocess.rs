@@ -110,6 +110,10 @@ impl BioprocessScenario {
         )
     }
 
+    pub fn has_stl_import(&self) -> bool {
+        self.reactor.has_stl_import()
+    }
+
     fn validate_reactor_geometry(&self) -> Result<(), BioprocessScenarioError> {
         self.reactor.validate_geometry(&self.run)
     }
@@ -236,6 +240,12 @@ impl ReactorSpec {
             ReactorSpec::StirredTank { spargers, .. } => spargers
                 .iter()
                 .find(|sparger| !sparger.inlet_phase().is_gas()),
+        }
+    }
+
+    fn has_stl_import(&self) -> bool {
+        match self {
+            ReactorSpec::StirredTank { stl_import, .. } => stl_import.is_some(),
         }
     }
 
@@ -497,9 +507,12 @@ pub enum SpargerSpec {
         center_z_m: f64,
         length_m: f64,
         diameter_m: f64,
-        axis: PipeAxisSpec,
-        orifice_count: u32,
-        orifice_diameter_m: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axis: Option<PipeAxisSpec>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orifice_count: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orifice_diameter_m: Option<f64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         raw_phi_boundary_fields: Vec<String>,
         gas_volumetric_flow_m3_per_s: Option<f64>,
@@ -509,7 +522,8 @@ pub enum SpargerSpec {
     PointOrifices {
         center_z_m: f64,
         positions: Vec<[f64; 3]>,
-        orifice_diameter_m: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orifice_diameter_m: Option<f64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         raw_phi_boundary_fields: Vec<String>,
         gas_volumetric_flow_m3_per_s: Option<f64>,
@@ -655,9 +669,9 @@ impl From<&SpargerSpec> for core_geometry::SpargerTemplate {
                 center_z_m: *center_z_m,
                 length_m: *length_m,
                 diameter_m: *diameter_m,
-                axis: (*axis).into(),
-                orifice_count: *orifice_count,
-                orifice_diameter_m: *orifice_diameter_m,
+                axis: axis.unwrap_or(PipeAxisSpec::X).into(),
+                orifice_count: orifice_count.unwrap_or(1),
+                orifice_diameter_m: orifice_diameter_m.unwrap_or(*diameter_m),
                 gas_volumetric_flow_m3_per_s: *gas_volumetric_flow_m3_per_s,
                 inlet_phase_gas: inlet_phase.is_gas(),
             },
@@ -671,7 +685,7 @@ impl From<&SpargerSpec> for core_geometry::SpargerTemplate {
             } => core_geometry::SpargerTemplate::PointOrifices {
                 center_z_m: *center_z_m,
                 positions_m: positions.clone(),
-                orifice_diameter_m: *orifice_diameter_m,
+                orifice_diameter_m: orifice_diameter_m.unwrap_or(0.0),
                 gas_volumetric_flow_m3_per_s: *gas_volumetric_flow_m3_per_s,
                 inlet_phase_gas: inlet_phase.is_gas(),
             },
