@@ -393,3 +393,16 @@ Convective is designed for MEAN-FLOW use (u_conv ≈ local flow speed).
 Rev 2 dispatches with the correct setup (uniform-inlet channel + u_conv
 centered on u_in). Rev-1 test lands #[ignore]'d with the rationale
 recorded in-code.
+
+### Axis 9.4 rev 2: STOP-RULE self-triage (main 69d4ef2 addendum)
+Rev-2 raised d=6 and g=1e-4: v_stokes=1.2e-3, deposition_fraction=1.0 —
+BUT mean_deposition_x = 500 (out-of-domain) because particles advect past
+the pressure outlet with the crossflow and keep sampling the clamped
+boundary state until they hit the floor. Verdict per behavior-validity
+review: ARTIFACT of an open-outlet + particle-domain-clamp interaction,
+not a physics defect. Rev-3 dispatches with PM option (c): CLOSED BASIN
+(all-BB, no crossflow, top-line seed, quiescent settling — the canonical
+Stokes settling geometry). Cross-tests: physics is unchanged; this is
+the third experiment-design pass on a single Axis-9.4 lane and each
+revision is producing a stronger physics anchor. Filed in PHYSICS.md
+(rev 2 dirty tree) — will fold into the rev-3 commit.
