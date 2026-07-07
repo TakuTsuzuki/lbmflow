@@ -6,11 +6,13 @@
 
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
-use lbm_core::solver::UnsupportedReason;
+pub use lbm_core::solver::UnsupportedReason;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub mod bioprocess;
 mod units;
+pub use bioprocess::{BioprocessScenario, BioprocessScenarioError};
 pub use units::{
     report as unit_report, resolve, ConversionFactors, DimensionlessNumbers, FlowParams,
     LatticeUnits, UnitConstructor, UnitDiagnostic, UnitInputsEcho, UnitReport, UnitSuggestion,

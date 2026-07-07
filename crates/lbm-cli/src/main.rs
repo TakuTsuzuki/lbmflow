@@ -8,6 +8,7 @@ mod gallery;
 mod mcp;
 mod render;
 mod runner;
+mod schema;
 mod verify;
 
 use anyhow::{Context, Result};
@@ -80,7 +81,11 @@ enum Command {
         out: Option<PathBuf>,
     },
     /// Print the scenario JSON format reference (for agent self-discovery)
-    Schema,
+    Schema {
+        /// Emit the BioprocessScenario schema instead of the legacy Scenario reference
+        #[arg(long)]
+        bioprocess: bool,
+    },
     /// Serve as an MCP server on stdio (AI agent integration)
     Mcp,
 }
@@ -244,8 +249,12 @@ fn main() -> Result<()> {
             warn_legacy_scenario_dispatch();
             gallery::run(&out_root)?;
         }
-        Command::Schema => {
-            println!("{}", SCHEMA_DOC);
+        Command::Schema { bioprocess } => {
+            if bioprocess {
+                println!("{}", schema::bioprocess_schema_json());
+            } else {
+                println!("{}", SCHEMA_DOC);
+            }
         }
         Command::Mcp => {
             mcp::serve()?;
