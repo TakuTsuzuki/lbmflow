@@ -61,19 +61,6 @@ fn b1_outer_wall_solid(nx: usize, ny: usize, center: [f64; 2], r_o: f64) -> Vec<
     solid
 }
 
-fn annulus_solid(nx: usize, ny: usize, center: [f64; 2], r_i: f64, r_o: f64) -> Vec<bool> {
-    let mut solid = vec![false; nx * ny];
-    for y in 0..ny {
-        for x in 0..nx {
-            let dx = x as f64 - center[0];
-            let dy = y as f64 - center[1];
-            let r = (dx * dx + dy * dy).sqrt();
-            solid[y * nx + x] = r < r_i - 1.5 || r > r_o + 0.5;
-        }
-    }
-    solid
-}
-
 fn run_torque_to_steady(
     nx: usize,
     ny: usize,
@@ -571,7 +558,11 @@ fn b8_converged_taylor_couette_profile_accuracy() {
     let r_o = 30.0;
     let omega = OMEGA_MID;
     let body = RotatingBody::circle_2d(center, r_i, omega, 160);
-    let solid = annulus_solid(nx, ny, center, r_i, r_o);
+    // IBM supplies the rotating inner boundary. Adding a stationary Eulerian
+    // solid core inside the marker radius creates a separate half-way
+    // bounce-back wall inside the IBM kernel support and contaminates this
+    // profile probe with a narrow stationary-wall gap artifact.
+    let solid = b1_outer_wall_solid(nx, ny, center, r_o);
     let mut solver = solver_from_solid(nx, ny, NU, solid);
     let mut last = IbmDiagnostics::default();
     for _ in 0..1500 {
