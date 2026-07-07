@@ -933,3 +933,58 @@ Routing: none.
   BOTH measured spreads (with-term 4.20e-3, without-term 1.05e-2 at
   u_frame <= 0.1, N=32, nu=0.02, u0=0.012) before its correction claim is
   trusted.
+
+### 2026-07-07 W-VOF O1 counter-term interface-maintenance fix (`crates/lbm-core/src/phase_field.rs`, `Solver::phase_field_step_prescribed_velocity`)
+- Form: the D3Q19 conservative Allen-Cahn source remains the Fakhari
+  velocity-form counter-term
+  `S_i = w_i (c_i . [(4/W) phi(1-phi)n]) / cs^2`, but the discrete collision
+  update now applies it as `(M/tau_phi) S_i = omega_phi M S_i`. Since the
+  recovered source flux carries the BGK factor `tau_phi`, this gives the
+  governing counter-flux `M(4/W) phi(1-phi)n` and balances the relaxation
+  diffusion `M grad(phi)` at the tanh profile. The D3Q19 gradient is still
+  `grad(phi) = 3 sum_i w_i c_i phi(x+c_i)`; its edge sums are evaluated in a
+  permutation-invariant order so coordinate rotations do not seed round-off
+  differences into the nonlinear normal.
+- Source: Chiu and Lin 2011 conservative Allen-Cahn equation as discretized by
+  Fakhari, Mitchell, Leonardi and Bolster 2017, PRE 96, 053301; equations and
+  validity domain frozen in `docs/proposals/WVOF_IMPL_SPEC.md` section 1. The
+  prior implementation multiplied `S_i` by `M` directly, leaving the recovered
+  counter-flux short by `1/tau_phi` and causing relaxation diffusion to broaden
+  the interface.
+- Validity domain: unchanged W-VOF O1 domain, `W in [4,5]`,
+  `M in (0,1/6]`, D3Q19 prescribed-velocity transport with no density,
+  surface-tension, wetting, or hydrodynamic momentum coupling.
+- Validation: `cargo test --release -p lbm-core --test wvof_o1_adversarial
+  -- --nocapture` passed all six tests after un-ignoring the four FINDING
+  gates. Measured gate values: width transit `u=0.02` final width
+  `4.116276031`, phi drift `5.35e-13`; width transit `u=0.08` final width
+  `4.103498626`, phi drift `2.00e-13`; two-droplet one-period
+  `L2rel=1.311946682e-2`, phi drift `2.38e-13`; rotation metamorphic
+  `Linf=8.881784197e-16`; counter-term sign anchor width
+  `5.000000000 -> 4.089462844`; mobility edges `M=1e-4` width
+  `4.177072435`, `M=1/6` width `4.105201912`.
+- Replaces / interacts with: replaces the O1 phase-field source coefficient
+  only. The public flux helper `J_phi = -M[grad(phi) -
+  (4/W)phi(1-phi)n]` is unchanged; `g=None` hydrodynamic behavior remains
+  bit-identical.
+
+### 2026-07-07 behavior review — W-VOF O1 counter-term sign anchor
+Pattern: a deliberately diffused `W=5` spherical interface at zero flow
+monotonically sharpened toward the configured `W=4` profile, with the fitted
+width decreasing from `5.000000000` to `4.089462844` over 500 phase-field
+steps and total `phi` conserved at round-off in the adversarial suite.
+Mechanism: with `u=0`, the conservative Allen-Cahn relaxation diffusion
+`M grad(phi)` is opposed by the recovered counter-flux
+`M(4/W)phi(1-phi)n`; because the initial interface is wider than the target,
+the anti-diffusive term dominates until the tanh balance is approached.
+Resolved vs closure: the pattern comes from the literature-backed CAC
+counter-term and D3Q19 isotropic stencil; no limiter, position clamp, tuned
+constant, surface-tension closure, density feedback, or hydrodynamic coupling
+was active.
+Artifacts checked: no boundary accumulation is present in the fully periodic
+box; the rotation gate confirms the source stencil follows the repo's
+orientation convention. Width-vs-time CSV:
+`target/wvof_o1/counter_term_width_vs_time.csv`; midplane PGM:
+`/tmp/lbmflow_wvof_o1_adversarial/counter_term_sharpening.pgm`.
+Verdict: PHYSICAL for W-VOF O1 prescribed-velocity, matched-density transport.
+Routing: none.

@@ -98,27 +98,74 @@ pub(crate) fn grad_lap<T: Real>(
     y: usize,
     z: usize,
 ) -> ([T; 3], T) {
-    let p0 = geom.pidx(x, y, z);
-    let phi0 = phi_plane[p0];
-    let inv_cs2 = T::r(3.0);
-    let two_inv_cs2 = T::r(6.0);
-    let mut grad = [T::zero(); 3];
-    let mut lap = T::zero();
-    for q in 1..D3Q19::Q {
-        let c = D3Q19::C[q];
-        let pj = geom.pidx_i(
-            x as isize + c[0] as isize,
-            y as isize + c[1] as isize,
-            z as isize + c[2] as isize,
-        );
-        let w = T::r(D3Q19::W[q]);
-        let phij = phi_plane[pj];
-        grad[0] = grad[0] + inv_cs2 * w * T::r(c[0] as f64) * phij;
-        grad[1] = grad[1] + inv_cs2 * w * T::r(c[1] as f64) * phij;
-        grad[2] = grad[2] + inv_cs2 * w * T::r(c[2] as f64) * phij;
-        lap = lap + two_inv_cs2 * w * (phij - phi0);
-    }
+    let at = |dx: isize, dy: isize, dz: isize| -> T {
+        phi_plane[geom.pidx_i(x as isize + dx, y as isize + dy, z as isize + dz)]
+    };
+    let phi0 = at(0, 0, 0);
+    let sixth = T::one() / T::r(6.0);
+    let twelfth = T::one() / T::r(12.0);
+    let third = T::one() / T::r(3.0);
+
+    let xp = at(1, 0, 0);
+    let xm = at(-1, 0, 0);
+    let yp = at(0, 1, 0);
+    let ym = at(0, -1, 0);
+    let zp = at(0, 0, 1);
+    let zm = at(0, 0, -1);
+    let xpyp = at(1, 1, 0);
+    let xmym = at(-1, -1, 0);
+    let xpzp = at(1, 0, 1);
+    let xmzm = at(-1, 0, -1);
+    let ypzp = at(0, 1, 1);
+    let ymzm = at(0, -1, -1);
+    let xpym = at(1, -1, 0);
+    let xmyp = at(-1, 1, 0);
+    let xpzm = at(1, 0, -1);
+    let xmzp = at(-1, 0, 1);
+    let ypzm = at(0, 1, -1);
+    let ymzp = at(0, -1, 1);
+
+    let grad = [
+        sixth * (xp - xm)
+            + twelfth
+                * (sum4_sorted([xpyp, xpym, xpzp, xpzm]) - sum4_sorted([xmyp, xmym, xmzp, xmzm])),
+        sixth * (yp - ym)
+            + twelfth
+                * (sum4_sorted([xpyp, xmyp, ypzp, ypzm]) - sum4_sorted([xpym, xmym, ymzp, ymzm])),
+        sixth * (zp - zm)
+            + twelfth
+                * (sum4_sorted([xpzp, xmzp, ypzp, ymzp]) - sum4_sorted([xpzm, xmzm, ypzm, ymzm])),
+    ];
+    let lap = third
+        * ((xp - phi0) + (xm - phi0) + (yp - phi0) + (ym - phi0) + (zp - phi0) + (zm - phi0))
+        + sixth
+            * ((xpyp - phi0)
+                + (xmym - phi0)
+                + (xpzp - phi0)
+                + (xmzm - phi0)
+                + (ypzp - phi0)
+                + (ymzm - phi0)
+                + (xpym - phi0)
+                + (xmyp - phi0)
+                + (xpzm - phi0)
+                + (xmzp - phi0)
+                + (ypzm - phi0)
+                + (ymzp - phi0));
     (grad, lap)
+}
+
+#[inline]
+fn sum4_sorted<T: Real>(mut values: [T; 4]) -> T {
+    for i in 1..values.len() {
+        let key = values[i];
+        let mut j = i;
+        while j > 0 && values[j - 1] > key {
+            values[j] = values[j - 1];
+            j -= 1;
+        }
+        values[j] = key;
+    }
+    (values[0] + values[1]) + (values[2] + values[3])
 }
 
 #[inline]
@@ -159,9 +206,46 @@ pub(crate) fn collide_source<T: Real>(
     q: usize,
 ) -> T {
     let sharpen = sharpening_vector(params, phi, grad);
-    let c = D3Q19::C[q];
-    let dot = T::r(c[0] as f64) * sharpen[0]
-        + T::r(c[1] as f64) * sharpen[1]
-        + T::r(c[2] as f64) * sharpen[2];
-    T::r(D3Q19::W[q]) * T::r(3.0) * dot
+    let sixth = T::one() / T::r(6.0);
+    let twelfth = T::one() / T::r(12.0);
+    match q {
+        0 => T::zero(),
+        1 => sixth * sharpen[0],
+        2 => -sixth * sharpen[0],
+        3 => sixth * sharpen[1],
+        4 => -sixth * sharpen[1],
+        5 => sixth * sharpen[2],
+        6 => -sixth * sharpen[2],
+        7 => twelfth * (sharpen[0] + sharpen[1]),
+        8 => -twelfth * (sharpen[0] + sharpen[1]),
+        9 => twelfth * (sharpen[0] + sharpen[2]),
+        10 => -twelfth * (sharpen[0] + sharpen[2]),
+        11 => twelfth * (sharpen[1] + sharpen[2]),
+        12 => -twelfth * (sharpen[1] + sharpen[2]),
+        13 => twelfth * (sharpen[0] - sharpen[1]),
+        14 => -twelfth * (sharpen[0] - sharpen[1]),
+        15 => twelfth * (sharpen[0] - sharpen[2]),
+        16 => -twelfth * (sharpen[0] - sharpen[2]),
+        17 => twelfth * (sharpen[1] - sharpen[2]),
+        18 => -twelfth * (sharpen[1] - sharpen[2]),
+        _ => unreachable!("D3Q19 source direction index out of range"),
+    }
+}
+
+#[inline]
+pub(crate) fn sum_populations<T: Real>(mut values: [T; 19]) -> T {
+    for i in 1..values.len() {
+        let key = values[i];
+        let mut j = i;
+        while j > 0 && values[j - 1] > key {
+            values[j] = values[j - 1];
+            j -= 1;
+        }
+        values[j] = key;
+    }
+    let mut sum = T::zero();
+    for v in values {
+        sum = sum + v;
+    }
+    sum
 }
