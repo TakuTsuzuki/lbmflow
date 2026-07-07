@@ -85,6 +85,12 @@ fn c2_preset_run_emits_valid_legacy_vtk() {
         run.stdout,
         run.stderr
     );
+    assert!(
+        run.stderr
+            .contains("legacy LBM demo preset; not bioprocess decision-grade"),
+        "legacy preset warning missing from stderr: {}",
+        run.stderr
+    );
     let reported_out = parse_out_dir(&run.stdout).expect("stdout should report out=<dir>");
     assert_eq!(
         PathBuf::from(reported_out),

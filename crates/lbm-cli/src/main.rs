@@ -142,6 +142,10 @@ fn run_and_report(
     Ok(())
 }
 
+fn warn_legacy_scenario_dispatch() {
+    eprintln!("legacy LBM demo preset; not bioprocess decision-grade");
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -161,6 +165,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let sc = load_scenario(&scenario)?;
+            warn_legacy_scenario_dispatch();
             run_and_report(
                 &sc,
                 out,
@@ -227,11 +232,13 @@ fn main() -> Result<()> {
                     .iter()
                     .find(|(n, _, _)| *n == name)
                     .ok_or_else(|| anyhow::anyhow!("no such preset '{name}'"))?;
+                warn_legacy_scenario_dispatch();
                 run_and_report(&found.2, out, false, runner::RunOptions::default())?;
             }
         },
         Command::Gallery { out } => {
             let out_root = out.unwrap_or_else(|| PathBuf::from("out").join("gallery"));
+            warn_legacy_scenario_dispatch();
             gallery::run(&out_root)?;
         }
         Command::Schema => {
