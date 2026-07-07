@@ -281,3 +281,46 @@ survivors ⇒ zero silent physics-kernel mutants in the current validation
 net. Complements ANOM-P4-021 (interaction-matrix): the pair-only defect
 class is NOT reachable by single-mutation coverage — the two lanes are
 complementary and both are needed.
+
+### ANOM-P4-022 — Shan-Chen force-field OVERWRITE breaks additive composition — S2 (found by code-to-spec back-translation, lane 3.2)
+`ShanChen::update_force` and `MultiComponent::update_forces`
+`copy_from_slice` into `force_field` (compat/multiphase.rs:387), silently
+discarding any prior rotor/gravity/user contribution — contradicts the
+W-GRAV additive composition-point invariant. Rotor + SC coexistence needs
+the caller to call SC FIRST then add rotor; the reverse order silently
+zeros the rotor force. This is invisible in the current lane-5.1 matrix
+(SC × rotor SKIPs by API-incompatibility). Fix candidate: change to
+add-into with a documented "SC contribution overwrites its own footprint"
+convention, or require callers to compose after SC in a single documented
+order.
+
+### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec)
+Zou-He closures at kernels.rs:754-773 (D2Q9), 941-954 (D3Q19), 828-867
+(D3Q27) reconstruct unknowns from raw populations and use caller-passed u
+verbatim — NO (1−ω/2)·Guo-source term at the face. Applied macroscopic
+velocity is therefore u_prescribed + F/(2ρ), and mass leaks as F·A_patch
+per step — matches ANOM-P4-021 measurement exactly. The two lanes now
+converge on the same fix locus. Core routing package includes the
+derivation.
+
+### Documentation drift found (lane 3.2 residuals, S3)
+- PHYSICS.md T11 σ entry does not acknowledge P4-014/017 mechanical-σ
+  three-way referee — one-paragraph update recommended.
+- Bouzidi "2nd-order" claim: three of four branches (qd≥1/2 and halo-edge
+  cases without a second fluid node) silently degrade to 1st order —
+  PHYSICS.md missing the validity clause.
+- CLAUDE.md pass-order invariant + ARCHITECTURE_V2.md §3.4 elide
+  apply_bouzidi / apply_volume_sources / swap; the real sequence is
+  collide → halo → stream(interior/shell) → bouzidi → swap → open-BCs →
+  volume-source → moments → end_step (backend.rs:258-320).
+
+### V&V methodology audit findings (lane 4.3, docs/qa/vv-methodology-audit.md)
+10 conforms / 10 gaps against ASME V&V 20 + Oberkampf-Roy. Top gaps (all
+S3 process, none S0 physics): (1) no headline result carries a stated
+U_num (Roache GCI never computed even though T8 is one step away —
+common/gci.rs helper is the cheapest fix); (2) no vocabulary crosswalk
+(U_num/U_input/U_D/U_val/δ_model vs our SPEC-GAP/STOP-RULE/frozen-band);
+(3) T11/T11b/T11c frozen bands are regression pins masquerading as
+validation gates (label VALIDATION_GATE vs REGRESSION_PIN + add one
+external Maxwell-rule holdout for T11). No hidden calibration hack
+survived the +0.0025 cleanup — process risk only.
