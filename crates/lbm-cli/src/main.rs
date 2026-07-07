@@ -16,7 +16,7 @@ mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lbm_scenario::Scenario;
+use lbm_scenario::{BioprocessScenario, Scenario};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -113,21 +113,39 @@ enum PresetAction {
     },
 }
 
-fn load_scenario(path: &str) -> Result<Scenario> {
+enum LoadedRunScenario {
+    Legacy(Scenario),
+    Bioprocess(BioprocessScenario),
+}
+
+fn load_run_scenario(path: &str) -> Result<LoadedRunScenario> {
     let text = if path == "-" {
         std::io::read_to_string(std::io::stdin())?
     } else {
         std::fs::read_to_string(path).with_context(|| format!("cannot read: {path}"))?
     };
-    let sc: Scenario = serde_json::from_str(&text).map_err(|e| {
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
         anyhow::anyhow!(serde_json::to_string_pretty(&serde_json::json!({
             "error": "invalid-scenario-json",
             "message": e.to_string(),
-            "hint": "see `lbm schema` for the format and `lbm presets show <name>` for examples"
+            "hint": "see `lbm schema` or `lbm schema --bioprocess`"
         }))
         .unwrap())
     })?;
-    Ok(sc)
+    if value.get("version").and_then(|v| v.as_str()) == Some("bioprocess-1.0") {
+        let sc = BioprocessScenario::from_json_str(&text).map_err(|e| {
+            anyhow::anyhow!(serde_json::to_string_pretty(&serde_json::json!({
+                "error": "invalid-bioprocess-scenario",
+                "message": e.message,
+                "reason": e.reason
+            }))
+            .unwrap())
+        })?;
+        Ok(LoadedRunScenario::Bioprocess(sc))
+    } else {
+        let sc: Scenario = serde_json::from_value(value)?;
+        Ok(LoadedRunScenario::Legacy(sc))
+    }
 }
 
 fn run_and_report(
@@ -181,21 +199,45 @@ fn main() -> Result<()> {
             restore,
             output_mode,
             json,
-        } => {
-            let sc = load_scenario(&scenario)?;
-            warn_legacy_scenario_dispatch();
-            run_and_report(
-                &sc,
-                out,
-                json,
-                runner::RunOptions {
-                    save_every,
-                    checkpoint_dir,
-                    restore,
-                    output_mode,
-                },
-            )?;
-        }
+        } => match load_run_scenario(&scenario)? {
+            LoadedRunScenario::Legacy(sc) => {
+                warn_legacy_scenario_dispatch();
+                run_and_report(
+                    &sc,
+                    out,
+                    json,
+                    runner::RunOptions {
+                        save_every,
+                        checkpoint_dir,
+                        restore,
+                        output_mode,
+                    },
+                )?;
+            }
+            LoadedRunScenario::Bioprocess(sc) => {
+                anyhow::ensure!(
+                    save_every.is_none() && checkpoint_dir.is_none() && restore.is_none(),
+                    "bioprocess runner checkpoint options are not implemented in BCFD-030"
+                );
+                let out_dir = out.unwrap_or_else(|| PathBuf::from("out").join(&sc.name));
+                let manifest = runner::run_bioprocess_single_phase(&sc, &out_dir)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&manifest)?);
+                } else {
+                    println!(
+                        "status={} steps={} wall={:.1}s mlups={:.0} out={}",
+                        manifest.status,
+                        manifest.steps_run,
+                        manifest.wall_seconds,
+                        manifest.mlups,
+                        out_dir.display()
+                    );
+                    for f in &manifest.files {
+                        println!("  {f}");
+                    }
+                }
+            }
+        },
         Command::Validate { scenario, json } => {
             let code = validate::run(&scenario, json)?;
             std::process::exit(code);

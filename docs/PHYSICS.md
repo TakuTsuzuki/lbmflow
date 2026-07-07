@@ -1771,3 +1771,107 @@ present in the zero-dimensional force-balance test. Scalar artifact:
 `crates/lbm-core/target/bcfd_071/rising_bubble_terminal_velocity.csv`.
 Verdict: CLOSURE-DRIVEN and physically plausible within the declared
 require the future VB group.
+### 2026-07-08 single-phase stirred-tank IBM runner unit conversion (`crates/lbm-cli/src/runner.rs::run_bioprocess_single_phase_t`)
+- Form: generated impeller marker positions are already in lattice cells, so
+  the runner converts angular velocity before IBM forcing as
+  `omega_lu = omega_SI * dt`. IBM marker force diagnostics are converted back
+  with `F_SI = F_lu * rho_phys * dx^4 / dt^2` and
+  `T_SI = T_lu * rho_phys * dx^5 / dt^2`; reported shaft torque uses
+  `Tq = -T_reaction` because the core IBM diagnostic records reaction torque
+  on the rotor.
+- Source: dimensional analysis of the existing Guo force-density path and the
+  PHYSICS.md rotor convention: marker target velocity is `omega x r` in
+  lattice cells per step, while QOI power uses SI `P = omega_SI * Tq_SI`.
+- Validity domain: single-phase CPU D3Q19/D3Q27 stirred-tank scenarios using
+  generated rigid impeller marker sets and the existing low-Mach feasibility
+  checks. This is a unit mapping, not a new force closure.
+- Validation: `crates/lbm-core/src/qoi.rs::tests::zero_torque_gives_zero_power_and_np`
+  and `::power_formula_and_sign_convention_are_explicit`; smoke run
+  `/private/tmp/lbmflow-bcfd-smoke.json` completed 5 steps and emitted
+  `/private/tmp/lbmflow-bcfd-smoke-out/qoi_power.json`.
+- Replaces / interacts with: connects BCFD-021 marker geometry to the
+  BCFD-030/031 runner without changing `rotating_ibm.rs` force spreading or
+  the legacy `Scenario` rotor path.
+
+### 2026-07-08 passive scalar ADE distribution (`crates/lbm-core/src/scalar.rs`, `Solver::step_scalar_distributions`)
+- Form: each named scalar uses ordinary populations `h_i` on the active
+  lattice with `h_i^eq = w_i C (1 + 3 c_i.u)`, `tau_C = 3D + 0.5`,
+  collide-stream BGK transport, and half-way bounce-back of outgoing scalar
+  populations at solid walls for no-flux boundaries. Scalar updates run after
+  the fluid step and before material-field refresh.
+- Source: standard passive-scalar lattice Boltzmann advection-diffusion
+  discretization recovering `d_t C + div(Cu) = div(D grad C)` at low Mach;
+  the wall treatment is the same half-way bounce-back no-flux construction as
+  the hydrodynamic wall convention.
+- Validity domain: CPU scalar distributions with finite positive lattice
+  diffusivity under the scenario unit feasibility layer. No reactive source,
+  inlet source, scalar feedback, or oxygen mass-transfer term is active in
+  this ticket.
+- Validation: `crates/lbm-core/src/scalar.rs::tests::*` checks scalar
+  equilibrium conservation and first moment;
+  `crates/lbm-core/src/solver.rs::tests::passive_scalar_uniform_field_remains_uniform`,
+  `::passive_scalar_closed_domain_mass_is_conserved`, and
+  `::passive_scalar_advects_with_uniform_flow_direction`.
+- Replaces / interacts with: replaces the BCFD-010 allocation-only scalar hook
+  with actual ADE evolution. Hydro-only runs stay on the existing path, pinned
+  by `solver.rs::tests::hydro_only_path_is_bit_identical`.
+
+### 2026-07-08 central-finite-difference stress and shear QOI (`crates/lbm-core/src/stress.rs`)
+- Form: velocity moments in SI units are differentiated with second-order
+  central finite differences on fluid neighbours; one-sided differences are
+  used only where a central pair is unavailable. The symmetric tensor is
+  `S_ij = 0.5(du_i/dx_j + du_j/dx_i)`,
+  `gamma_dot = sqrt(2 S:S)`, `tau_visc = mu_eff gamma_dot`,
+  and the reported von-Mises proxy is `sqrt(3) mu_eff gamma_dot`.
+  Percentile summaries report P50/P90/P95/P99/max plus
+  `fraction_above_threshold`.
+- Source: continuum strain-rate definition from the velocity-gradient tensor;
+  no population-based non-equilibrium stress closure is introduced for these
+  BCFD-032 QOIs.
+- Validity domain: resolved single-phase velocity fields on structured grids;
+  wall-adjacent values are diagnostics and inherit the one-sided finite
+  difference accuracy there. Validation-tier claims remain blocked until
+  VB-03 is green.
+- Validation: `crates/lbm-core/src/stress.rs::tests::couette_gamma_dot_matches_analytic_and_has_behavior_anchor`,
+  `::poiseuille_shear_profile_is_antisymmetric`, and
+  `::percentile_reducer_matches_synthetic_distribution`.
+- Replaces / interacts with: the existing non-equilibrium
+  `Solver::gather_shear_rate` remains available for legacy field output; the
+  bioprocess QOI path uses this central-gradient implementation.
+
+### 2026-07-08 wall-shear proxy diagnostics (`crates/lbm-core/src/stress.rs::wall_shear_proxy`)
+- Form: wall-adjacent fluid cells are detected from the solid mask. The proxy
+  estimates `tau_w = mu |u_parallel - u_wall,parallel| / y` with
+  `y = 0.5 dx` for half-way walls, and reports
+  `y+ = y sqrt(tau_w/rho) / nu`. Output is explicitly labelled `proxy`.
+- Source: one-sided tangential velocity-gradient estimate at a half-way
+  no-slip wall; this is a diagnostic proxy, not a validated wall model.
+- Validity domain: static generated tank/baffle walls and moving-wall masks
+  represented by the solid mask/wall velocity arrays. Curved-wall or LES
+  wall-model validation remains owned by VB-03 and later wall-model tickets.
+- Validation: `crates/lbm-core/src/stress.rs::tests::couette_wall_shear_proxy_matches_one_sided_analytic`
+  checks analytic Couette magnitude, moving-wall sign, and finite `y+`.
+- Replaces / interacts with: complements the existing read-only
+  `wall_model.rs` W1 observable; it does not write populations or relaxation
+  fields.
+
+### 2026-07-08 behavior review — BCFD-030 stirred-tank smoke
+Pattern: the 64^3 short stirred-tank run completed 5 steps with finite mass,
+non-zero velocity (`maxSpeed = 1.3934498326579309e-2` lu/step), torque/QOI
+files, scalar CV output, and velocity artifacts
+`/private/tmp/lbmflow-bcfd-smoke-out/velocity_speed_5.png` and
+`/private/tmp/lbmflow-bcfd-smoke-out/velocity_speed_5.vtk`.
+Mechanism: generated Rushton IBM markers impose tangential momentum through
+the Guo force path, while tank/baffle solid masks enforce half-way walls and
+the passive scalar evolves with the post-fluid velocity field.
+Resolved vs closure: hydrodynamics, half-way walls, Guo forcing, and scalar
+ADE are resolved numerical model terms recorded above; IBM is the existing
+rigid-marker direct-forcing model. No turbulence closure, scalar feedback,
+gas model, or wall model was active.
+Artifacts checked: wall/baffle masks are solid boundaries, not clamps; the
+run used no outlet or periodic seam artifact for the tank. Unit feasibility
+warned `TAU_NEAR_HALF` and `SCALAR_DIFFUSION_UNSTABLE`, so this is a smoke
+artifact only, not a validation-grade operating point.
+Verdict: PHYSICAL for runner plumbing and sign/trend smoke; validation-grade
+Np/mixing/shear claims remain blocked on VB-01/VB-02/VB-03.
+Routing: none.

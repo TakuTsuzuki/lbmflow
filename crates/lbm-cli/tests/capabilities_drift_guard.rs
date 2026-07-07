@@ -30,10 +30,15 @@ fn limitations_lists_every_registry_capability_label() {
     let limitations = lower(&read_repo_file("docs/LIMITATIONS.md"));
 
     for entry in registry.iter() {
+        let expected_status = match entry.id {
+            "single_phase_stirred_tank" | "rotating_ibm" | "passive_scalar" => {
+                CapabilityStatus::Experimental
+            }
+            _ => CapabilityStatus::Unsupported,
+        };
         assert_eq!(
-            entry.status,
-            CapabilityStatus::Unsupported,
-            "BCFD-002 registry entries should all be unsupported today: {}",
+            entry.status, expected_status,
+            "BCFD-002 registry status drift for {}",
             entry.id
         );
         let alias = limitation_alias(entry.id, entry.label);

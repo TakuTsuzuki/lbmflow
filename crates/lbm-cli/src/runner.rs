@@ -4,17 +4,25 @@
 pub use crate::manifest::Manifest;
 use crate::manifest::{
     active_models_for_legacy, capability_report, lattice_id, precision_id, scenario_hash,
-    BackendId, CollisionProvenance, Diagnostics, LatticeId, Provenance, MANIFEST_PATH,
+    ActiveModelTag, BackendId, CollisionProvenance, Diagnostics, LatticeId, Provenance,
+    QoiMethodDescriptor, QoiProvenance, MANIFEST_PATH,
 };
 use crate::output::{select_output_mode, OutputMode};
 use crate::render::{write_png_scaled, Colormap};
 use anyhow::{Context, Result};
+use lbm_core::backend::CpuScalar;
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::*;
-use lbm_core::prelude::Lattice;
+use lbm_core::halo::LocalPeriodic;
+use lbm_core::lattice::{D3Q19, D3Q27};
+use lbm_core::prelude::{GlobalSpec, Lattice};
+use lbm_core::solver::Solver as CoreSolver;
+use lbm_scenario::bioprocess::{PhysicsModel, PulseSpec};
 use lbm_scenario::{
-    FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, Sim3Handle, SimHandle, Solver3,
+    BioprocessScenario, FieldKind, OutputFormat, OutputSpec, ProbeSpec, Scenario, Sim3Handle,
+    SimHandle, Solver3,
 };
+use serde::Serialize;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -74,6 +82,72 @@ pub fn prepare_bioprocess_geometry(
             serde_json::to_string(&err).unwrap_or_else(|_| err.to_string())
         )
     })
+}
+
+pub fn run_bioprocess_single_phase(sc: &BioprocessScenario, out_dir: &Path) -> Result<Manifest> {
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("cannot create output directory: {}", out_dir.display()))?;
+    if sc.run.grid_nz <= 1 || sc.run.lattice == Some(lbm_scenario::bioprocess::LatticeSpec::D2q9) {
+        anyhow::bail!(
+            "{}",
+            serde_json::to_string_pretty(&lbm_scenario::BioprocessScenarioError {
+                message: "single-phase stirred-tank runner requires a 3D lattice".to_string(),
+                reason: lbm_scenario::UnsupportedReason::OutOfValidityRange {
+                    detail: "run.grid_nz must be > 1 and lattice must be D3Q19 or D3Q27"
+                        .to_string(),
+                },
+            })?
+        );
+    }
+    if !sc
+        .physics
+        .models
+        .iter()
+        .any(|m| matches!(m, PhysicsModel::SinglePhase))
+    {
+        anyhow::bail!("bioprocess runner currently supports physics.kind single_phase");
+    }
+    let unit_report = sc.compute_unit_report().map_err(|err| {
+        anyhow::anyhow!(
+            "{}",
+            serde_json::to_string_pretty(&err).unwrap_or_else(|_| err.to_string())
+        )
+    })?;
+    let geometry = prepare_bioprocess_geometry(sc)?;
+    match (
+        sc.run
+            .lattice
+            .unwrap_or(lbm_scenario::bioprocess::LatticeSpec::D3q19),
+        sc.run
+            .precision
+            .unwrap_or(lbm_scenario::bioprocess::Precision::F64),
+    ) {
+        (
+            lbm_scenario::bioprocess::LatticeSpec::D3q19,
+            lbm_scenario::bioprocess::Precision::F64,
+        ) => {
+            run_bioprocess_single_phase_t::<D3Q19, f64>(sc, unit_report, geometry, "D3Q19", out_dir)
+        }
+        (
+            lbm_scenario::bioprocess::LatticeSpec::D3q19,
+            lbm_scenario::bioprocess::Precision::F32,
+        ) => {
+            run_bioprocess_single_phase_t::<D3Q19, f32>(sc, unit_report, geometry, "D3Q19", out_dir)
+        }
+        (
+            lbm_scenario::bioprocess::LatticeSpec::D3q27,
+            lbm_scenario::bioprocess::Precision::F64,
+        ) => {
+            run_bioprocess_single_phase_t::<D3Q27, f64>(sc, unit_report, geometry, "D3Q27", out_dir)
+        }
+        (
+            lbm_scenario::bioprocess::LatticeSpec::D3q27,
+            lbm_scenario::bioprocess::Precision::F32,
+        ) => {
+            run_bioprocess_single_phase_t::<D3Q27, f32>(sc, unit_report, geometry, "D3Q27", out_dir)
+        }
+        (lbm_scenario::bioprocess::LatticeSpec::D2q9, _) => unreachable!("D2Q9 rejected above"),
+    }
 }
 
 pub fn run_with_options(sc: &Scenario, out_dir: &Path, options: &RunOptions) -> Result<Manifest> {
@@ -446,7 +520,7 @@ fn run_t<T: Real>(
                     }
                 })
             };
-            ps.step(sampler, None::<fn([f64; 3]) -> f64>);
+            ps.step(sampler, None::<fn([f64; 3]) -> f64>)?;
             if particles_every > 0 && step % particles_every == 0 {
                 files.push(write_particles(ps, step, out_dir)?);
             }
@@ -778,6 +852,886 @@ fn write_vtk(
         writeln!(file, "{}", line.join(" "))?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TorqueRecord {
+    step: u64,
+    torque_lu: f64,
+    torque_n_m: f64,
+    force_lu: [f64; 3],
+    force_n: [f64; 3],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct PowerQoiFile {
+    provenance: QoiFileProvenance,
+    torque_n_m: f64,
+    power_w: f64,
+    rotational_speed_hz: f64,
+    np: f64,
+    p_over_v_w_m3: f64,
+    nq: Option<f64>,
+    skipped: Vec<SkippedQoiFile>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct StressQoiFile {
+    provenance: QoiFileProvenance,
+    gamma_dot_1_s: stress_summary::SerdePercentiles,
+    viscous_stress_pa: stress_summary::SerdePercentiles,
+}
+
+mod stress_summary {
+    use lbm_core::stress::PercentileSummary;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub struct SerdePercentiles {
+        pub p50: f64,
+        pub p90: f64,
+        pub p95: f64,
+        pub p99: f64,
+        pub max: f64,
+        pub fraction_above_threshold: Option<f64>,
+    }
+
+    impl From<PercentileSummary> for SerdePercentiles {
+        fn from(value: PercentileSummary) -> Self {
+            Self {
+                p50: value.p50,
+                p90: value.p90,
+                p95: value.p95,
+                p99: value.p99,
+                max: value.max,
+                fraction_above_threshold: value.fraction_above_threshold,
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct MixingQoiFile {
+    provenance: QoiFileProvenance,
+    cv0: Option<f64>,
+    t95_s: Option<f64>,
+    t99_s: Option<f64>,
+    skipped: Option<SkippedQoiFile>,
+    compartments: Vec<CompartmentCvFile>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct CompartmentCvFile {
+    name: String,
+    cv: Option<f64>,
+    cell_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct SkippedQoiFile {
+    qoi: String,
+    reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct QoiFileProvenance {
+    units: String,
+    method: String,
+    time_window: String,
+    averaging_region: String,
+    source_fields: Vec<String>,
+    validation_tier: String,
+}
+
+fn run_bioprocess_single_phase_t<L, T>(
+    sc: &BioprocessScenario,
+    unit_report: lbm_scenario::UnitReport,
+    mut geometry: lbm_core::geometry::StirredTankGeometry,
+    lattice: &str,
+    out_dir: &Path,
+) -> Result<Manifest>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
+    let dims = [
+        sc.run.grid_nx as usize,
+        sc.run.grid_ny as usize,
+        sc.run.grid_nz as usize,
+    ];
+    let mut wall_u_t = Vec::with_capacity(geometry.wall_velocity.len());
+    for u in &geometry.wall_velocity {
+        wall_u_t.push([
+            T::r(u[0] * sc.run.dt_s),
+            T::r(u[1] * sc.run.dt_s),
+            T::r(u[2] * sc.run.dt_s),
+        ]);
+    }
+    scale_impellers_to_lattice_time(&mut geometry, sc.run.dt_s);
+    let solid = geometry.solid.clone();
+    let spec = GlobalSpec::<T> {
+        dims,
+        nu: unit_report.lattice.nu_lu,
+        collision: lbm_core::params::CollisionKind::Trt {
+            magic: lbm_core::params::CollisionKind::MAGIC_STD,
+        },
+        periodic: [false, false, false],
+        faces: [lbm_core::params::FaceBC::Closed; 6],
+        force: [T::zero(); 3],
+        sources: Vec::new(),
+        face_patches: Vec::new(),
+    };
+    let solid_t = solid.clone();
+    let mut solver: CoreSolver<L, T, CpuScalar, LocalPeriodic> = CoreSolver::try_new(
+        &spec,
+        &solid_t,
+        &wall_u_t,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    )
+    .map_err(|e| anyhow::anyhow!("invalid bioprocess solver spec: {e}"))?;
+
+    let scalar = primary_scalar(sc);
+    if let Some((name, diffusivity_lu, initial)) =
+        scalar_initial_condition(sc, &unit_report, &solid)?
+    {
+        solver
+            .enable_scalar_distribution(name, diffusivity_lu)
+            .map_err(|e| anyhow::anyhow!("cannot enable scalar distribution: {e}"))?;
+        let init_t: Vec<T> = initial.into_iter().map(T::r).collect();
+        solver
+            .set_scalar_concentration(name, &init_t)
+            .map_err(|e| anyhow::anyhow!("cannot initialize scalar distribution: {e}"))?;
+    }
+
+    let probe_every = sc.outputs.probes_every_n_steps.unwrap_or(1).max(1);
+    let field_every = sc
+        .outputs
+        .fields_every_n_steps
+        .unwrap_or(sc.run.steps)
+        .max(1);
+    let mut files = Vec::new();
+    let mut qoi_methods = Vec::new();
+    let mut active_models = vec![ActiveModelTag::SinglePhase, ActiveModelTag::RotatingIbm];
+    if sc
+        .physics
+        .models
+        .iter()
+        .any(|m| matches!(m, PhysicsModel::PassiveScalar { .. }))
+    {
+        active_models.push(ActiveModelTag::PassiveScalar);
+    }
+
+    let mut torque_csv = fs::File::create(out_dir.join("torque_force.csv"))?;
+    writeln!(
+        torque_csv,
+        "step,time_s,torque_lu,torque_n_m,fx_lu,fy_lu,fz_lu,fx_n,fy_n,fz_n"
+    )?;
+    writeln!(torque_csv, "# manifest_path={MANIFEST_PATH}")?;
+    files.push("torque_force.csv".to_string());
+
+    let mut scalar_cv_csv = if scalar.is_some() {
+        let mut f = fs::File::create(out_dir.join("scalar_cv.csv"))?;
+        writeln!(f, "step,time_s,cv")?;
+        writeln!(f, "# manifest_path={MANIFEST_PATH}")?;
+        files.push("scalar_cv.csv".to_string());
+        Some(f)
+    } else {
+        None
+    };
+
+    let mut torque_records = Vec::new();
+    let mut cv_series = Vec::new();
+    let t0 = Instant::now();
+    let mut status = "completed";
+    let mut executed = 0u64;
+    for step in 1..=sc.run.steps {
+        solver.clear_body_force_field();
+        let diagnostics = solver.apply_impeller_marker_sets(
+            &geometry.impellers,
+            lbm_core::rotating_ibm::DirectForcingConfig::default(),
+        );
+        solver.step();
+        executed = step;
+        if step % probe_every == 0 || step == sc.run.steps {
+            let rec = torque_record_from_ibm(&diagnostics, &unit_report, sc);
+            writeln!(
+                torque_csv,
+                "{},{},{},{},{},{},{},{},{},{}",
+                step,
+                step as f64 * sc.run.dt_s,
+                rec.torque_lu,
+                rec.torque_n_m,
+                rec.force_lu[0],
+                rec.force_lu[1],
+                rec.force_lu[2],
+                rec.force_n[0],
+                rec.force_n[1],
+                rec.force_n[2]
+            )?;
+            torque_records.push(TorqueRecord { step, ..rec });
+        }
+        if let (Some((name, _, _)), Some(csv)) = (scalar, scalar_cv_csv.as_mut()) {
+            if step % probe_every == 0 || step == sc.run.steps {
+                if let Some(c) = solver.gather_scalar_concentration(name) {
+                    let values: Vec<f64> = c.into_iter().map(|v| v.as_f64()).collect();
+                    let include: Vec<bool> = solid.iter().map(|&s| !s).collect();
+                    if let Some(cv) = lbm_core::qoi::scalar_cv(&values, &include) {
+                        let t = step as f64 * sc.run.dt_s;
+                        writeln!(csv, "{step},{t},{cv}")?;
+                        cv_series.push((t, cv));
+                    }
+                }
+            }
+        }
+        if step % field_every == 0 || step == sc.run.steps {
+            files.extend(write_bioprocess_velocity_artifacts(
+                &solver,
+                step as usize,
+                out_dir,
+            )?);
+        }
+        if step % 1000 == 0 && !solver.total_mass_f64().is_finite() {
+            status = "diverged";
+            break;
+        }
+    }
+    if !files.iter().any(|f| f.ends_with(".png")) {
+        files.extend(write_bioprocess_velocity_artifacts(
+            &solver,
+            executed as usize,
+            out_dir,
+        )?);
+    }
+
+    if sc.qoi.power.is_some() {
+        files.extend(write_power_qois(
+            sc,
+            &unit_report,
+            &torque_records,
+            out_dir,
+        )?);
+        qoi_methods.push(QoiMethodDescriptor {
+            qoi: "power".to_string(),
+            method: "IBM marker drive torque: P = omega*Tq, Np = P/(rho*N^3*D^5)".to_string(),
+            input_fields: vec!["ibm_marker_force".to_string()],
+            provenance: QoiProvenance::new(
+                vec!["ibm_marker_force".to_string()],
+                "last_half_of_run",
+                "SI",
+                "screening",
+            ),
+        });
+    }
+
+    files.extend(write_stress_and_wall_outputs(
+        &solver,
+        sc,
+        &unit_report,
+        &solid,
+        &geometry.wall_velocity,
+        out_dir,
+    )?);
+    qoi_methods.push(QoiMethodDescriptor {
+        qoi: "shear_rate".to_string(),
+        method: "central finite differences on velocity moments".to_string(),
+        input_fields: vec!["ux".to_string(), "uy".to_string(), "uz".to_string()],
+        provenance: QoiProvenance::new(
+            vec!["ux".to_string(), "uy".to_string(), "uz".to_string()],
+            "final_step",
+            "1/s and Pa",
+            "screening",
+        ),
+    });
+
+    if sc.qoi.mixing.is_some() {
+        files.extend(write_mixing_qois(
+            sc,
+            &mut solver,
+            &unit_report,
+            scalar,
+            &solid,
+            &cv_series,
+            out_dir,
+        )?);
+        qoi_methods.push(QoiMethodDescriptor {
+            qoi: "mixing_time".to_string(),
+            method: "scalar coefficient-of-variation threshold".to_string(),
+            input_fields: vec!["C:tracer".to_string()],
+            provenance: QoiProvenance::new(
+                vec!["C:tracer".to_string()],
+                "post_pulse_time_series",
+                "s",
+                "screening",
+            ),
+        });
+    }
+
+    let fields = gather_core3(&solver);
+    let max_speed = fields
+        .ux
+        .iter()
+        .zip(&fields.uy)
+        .zip(&fields.uz)
+        .map(|((a, b), c)| (a * a + b * b + c * c).sqrt())
+        .fold(0.0, f64::max);
+    let wall = t0.elapsed().as_secs_f64();
+    let manifest = Manifest {
+        scenario: sc.name.clone(),
+        scenario_hash: scenario_hash(sc)?,
+        manifest_path: MANIFEST_PATH.to_string(),
+        bioprocess_schema_version: Some(sc.version.clone()),
+        backend: BackendId::Cpu,
+        lattice: lattice_id(lattice),
+        precision: match std::mem::size_of::<T>() {
+            4 => crate::manifest::PrecisionId::F32,
+            _ => crate::manifest::PrecisionId::F64,
+        },
+        active_models,
+        qoi_methods,
+        unit_report: Some(unit_report.clone()),
+        capability_report: capability_report(),
+        status: status.to_string(),
+        steps_run: executed,
+        wall_seconds: wall,
+        mlups: (dims[0] * dims[1] * dims[2]) as f64 * executed as f64 / wall.max(1.0e-9) / 1.0e6,
+        mpi_ranks: Vec::new(),
+        diagnostics: Diagnostics {
+            total_mass: solver.total_mass_f64(),
+            max_speed,
+            tau: solver.tau(),
+            phase_field: None,
+        },
+        provenance: Provenance {
+            backend: lbm_scenario::BackendChoice::Cpu,
+            lattice: lattice.to_string(),
+            collision: CollisionProvenance {
+                kind: "trt".to_string(),
+                magic: Some(lbm_core::params::CollisionKind::MAGIC_STD),
+                omega_shear: None,
+            },
+            precision: match std::mem::size_of::<T>() {
+                4 => lbm_scenario::Precision::F32,
+                _ => lbm_scenario::Precision::F64,
+            },
+            storage: lbm_scenario::StorageSpec::F32,
+        },
+        warnings: Vec::new(),
+        units: None,
+        files,
+    };
+    fs::write(
+        out_dir.join(MANIFEST_PATH),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    Ok(manifest)
+}
+
+fn scale_impellers_to_lattice_time(
+    geometry: &mut lbm_core::geometry::StirredTankGeometry,
+    dt_s: f64,
+) {
+    for impeller in &mut geometry.impellers {
+        for a in 0..3 {
+            impeller.omega[a] *= dt_s;
+            for u in &mut impeller.wall_velocity {
+                u[a] *= dt_s;
+            }
+        }
+    }
+}
+
+fn primary_scalar(sc: &BioprocessScenario) -> Option<(&'static str, &PulseSpec, f64)> {
+    sc.physics.models.iter().find_map(|model| {
+        if let PhysicsModel::PassiveScalar {
+            diffusivity_m2_per_s,
+            initial_pulse: Some(pulse),
+        } = model
+        {
+            Some(("tracer", pulse, *diffusivity_m2_per_s))
+        } else {
+            None
+        }
+    })
+}
+
+fn scalar_initial_condition(
+    sc: &BioprocessScenario,
+    unit_report: &lbm_scenario::UnitReport,
+    solid: &[bool],
+) -> Result<Option<(&'static str, f64, Vec<f64>)>> {
+    let Some((name, pulse, diffusivity_m2_s)) = primary_scalar(sc) else {
+        if sc
+            .physics
+            .models
+            .iter()
+            .any(|m| matches!(m, PhysicsModel::PassiveScalar { .. }))
+        {
+            let n = (sc.run.grid_nx * sc.run.grid_ny * sc.run.grid_nz) as usize;
+            let mut values = vec![0.0; n];
+            for (v, &s) in values.iter_mut().zip(solid) {
+                if !s {
+                    *v = 1.0;
+                }
+            }
+            let d_lu = diffusivity_lu_from_model(sc, unit_report).ok_or_else(|| {
+                anyhow::anyhow!("passive scalar model is missing diffusivity_m2_s")
+            })?;
+            return Ok(Some(("tracer", d_lu, values)));
+        }
+        return Ok(None);
+    };
+    let dims = [
+        sc.run.grid_nx as usize,
+        sc.run.grid_ny as usize,
+        sc.run.grid_nz as usize,
+    ];
+    let mut values = vec![0.0; dims[0] * dims[1] * dims[2]];
+    let dx = unit_report.lattice.dx_m;
+    for z in 0..dims[2] {
+        for y in 0..dims[1] {
+            for x in 0..dims[0] {
+                let i = (z * dims[1] + y) * dims[0] + x;
+                if solid[i] {
+                    continue;
+                }
+                let p = [
+                    (x as f64 + 0.5) * dx,
+                    (y as f64 + 0.5) * dx,
+                    (z as f64 + 0.5) * dx,
+                ];
+                let r = ((p[0] - pulse.center_m[0]).powi(2)
+                    + (p[1] - pulse.center_m[1]).powi(2)
+                    + (p[2] - pulse.center_m[2]).powi(2))
+                .sqrt();
+                if r <= pulse.radius_m {
+                    values[i] = pulse.concentration;
+                }
+            }
+        }
+    }
+    Ok(Some((
+        name,
+        diffusivity_m2_s * unit_report.lattice.dt_s / unit_report.lattice.dx_m.powi(2),
+        values,
+    )))
+}
+
+fn diffusivity_lu_from_model(
+    sc: &BioprocessScenario,
+    unit_report: &lbm_scenario::UnitReport,
+) -> Option<f64> {
+    sc.physics.models.iter().find_map(|model| {
+        if let PhysicsModel::PassiveScalar {
+            diffusivity_m2_per_s,
+            ..
+        } = model
+        {
+            Some(diffusivity_m2_per_s * unit_report.lattice.dt_s / unit_report.lattice.dx_m.powi(2))
+        } else {
+            None
+        }
+    })
+}
+
+fn torque_record_from_ibm(
+    diagnostics: &[lbm_core::rotating_ibm::IbmDiagnostics],
+    unit_report: &lbm_scenario::UnitReport,
+    sc: &BioprocessScenario,
+) -> TorqueRecord {
+    let mut torque_lu = 0.0;
+    let mut force_lu = [0.0; 3];
+    for diag in diagnostics {
+        torque_lu += -diag.torque[2];
+        for (a, dst) in force_lu.iter_mut().enumerate() {
+            *dst += diag.fluid_force[a];
+        }
+    }
+    let rho = sc.fluids.liquid_density_kg_m3;
+    let dx = unit_report.lattice.dx_m;
+    let dt = unit_report.lattice.dt_s;
+    let force_scale = rho * dx.powi(4) / dt.powi(2);
+    let torque_scale = rho * dx.powi(5) / dt.powi(2);
+    TorqueRecord {
+        step: 0,
+        torque_lu,
+        torque_n_m: torque_lu * torque_scale,
+        force_lu,
+        force_n: [
+            force_lu[0] * force_scale,
+            force_lu[1] * force_scale,
+            force_lu[2] * force_scale,
+        ],
+    }
+}
+
+struct CoreFields3 {
+    ux: Vec<f64>,
+    uy: Vec<f64>,
+    uz: Vec<f64>,
+}
+
+fn gather_core3<L, T>(solver: &CoreSolver<L, T, CpuScalar, LocalPeriodic>) -> CoreFields3
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
+    CoreFields3 {
+        ux: solver.gather_ux().into_iter().map(|v| v.as_f64()).collect(),
+        uy: solver.gather_uy().into_iter().map(|v| v.as_f64()).collect(),
+        uz: solver.gather_uz().into_iter().map(|v| v.as_f64()).collect(),
+    }
+}
+
+fn write_bioprocess_velocity_artifacts<L, T>(
+    solver: &CoreSolver<L, T, CpuScalar, LocalPeriodic>,
+    step: usize,
+    out_dir: &Path,
+) -> Result<Vec<String>>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
+    let dims = solver.dims();
+    let [nx, ny, nz] = dims;
+    let fields = gather_core3(solver);
+    let speed: Vec<f64> = fields
+        .ux
+        .iter()
+        .zip(&fields.uy)
+        .zip(&fields.uz)
+        .map(|((a, b), c)| (a * a + b * b + c * c).sqrt())
+        .collect();
+    let vtk = format!("velocity_speed_{step}.vtk");
+    write_vtk(
+        &out_dir.join(&vtk),
+        "velocity_speed",
+        step,
+        dims,
+        &speed,
+        MANIFEST_PATH,
+    )?;
+    let zmid = nz / 2;
+    let png = format!("velocity_speed_{step}.png");
+    let solid: Vec<bool> = (0..ny)
+        .flat_map(|y| (0..nx).map(move |x| solver.is_solid(x, y, zmid)))
+        .collect();
+    write_png_scaled(
+        &out_dir.join(&png),
+        &speed[zmid * nx * ny..(zmid + 1) * nx * ny],
+        &solid,
+        nx,
+        ny,
+        Colormap::Viridis,
+        None,
+        1,
+        Some(MANIFEST_PATH),
+    )?;
+    Ok(vec![vtk, png])
+}
+
+fn reactor_power_inputs(sc: &BioprocessScenario) -> Result<(f64, f64, f64)> {
+    match &sc.reactor {
+        lbm_scenario::bioprocess::ReactorSpec::StirredTank {
+            working_volume_m3,
+            impellers,
+            ..
+        } => {
+            let impeller = impellers
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("power QOI requires at least one impeller"))?;
+            let diameter = impeller.diameter_m().ok_or_else(|| {
+                anyhow::anyhow!("power QOI requires parametric impeller diameter")
+            })?;
+            Ok((
+                *working_volume_m3,
+                diameter,
+                impeller.rotational_speed_rpm() * std::f64::consts::TAU / 60.0,
+            ))
+        }
+    }
+}
+
+fn write_power_qois(
+    sc: &BioprocessScenario,
+    unit_report: &lbm_scenario::UnitReport,
+    records: &[TorqueRecord],
+    out_dir: &Path,
+) -> Result<Vec<String>> {
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let start = sc.run.steps / 2;
+    let window: Vec<_> = records.iter().filter(|r| r.step >= start).collect();
+    let used = if window.is_empty() {
+        records.iter().collect::<Vec<_>>()
+    } else {
+        window
+    };
+    let torque = used.iter().map(|r| r.torque_n_m).sum::<f64>() / used.len() as f64;
+    let (volume, diameter, omega) = reactor_power_inputs(sc)?;
+    let power = lbm_core::qoi::power_qois(lbm_core::qoi::PowerQoiInput {
+        torque_n_m: torque,
+        omega_rad_s: omega,
+        rho_kg_m3: sc.fluids.liquid_density_kg_m3,
+        impeller_diameter_m: diameter,
+        working_volume_m3: volume,
+        discharge_flow_m3_s: None,
+    })
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let provenance = QoiFileProvenance {
+        units: "SI".to_string(),
+        method: "IBM marker shaft torque, P = omega*Tq".to_string(),
+        time_window: "last_half_of_run".to_string(),
+        averaging_region: "impeller_marker_set".to_string(),
+        source_fields: vec!["ibm_marker_force".to_string()],
+        validation_tier: "screening".to_string(),
+    };
+    let skipped = vec![SkippedQoiFile {
+        qoi: "nq".to_string(),
+        reason: "discharge surface is not defined in the M0 scenario schema".to_string(),
+    }];
+    let json = PowerQoiFile {
+        provenance,
+        torque_n_m: power.torque_n_m,
+        power_w: power.power_w,
+        rotational_speed_hz: power.rotational_speed_hz,
+        np: power.np,
+        p_over_v_w_m3: power.p_over_v_w_m3,
+        nq: power.nq,
+        skipped,
+    };
+    fs::write(
+        out_dir.join("qoi_power.json"),
+        serde_json::to_string_pretty(&json)?,
+    )?;
+    let mut csv = fs::File::create(out_dir.join("qoi_power.csv"))?;
+    writeln!(csv, "qoi,value,units,method,time_window")?;
+    writeln!(csv, "# manifest_path={MANIFEST_PATH}")?;
+    writeln!(
+        csv,
+        "torque,{},{},IBM marker shaft torque,last_half_of_run",
+        power.torque_n_m, "N*m"
+    )?;
+    writeln!(
+        csv,
+        "power,{},{},P=omega*Tq,last_half_of_run",
+        power.power_w, "W"
+    )?;
+    writeln!(
+        csv,
+        "np,{},dimensionless,Np=P/(rho*N^3*D^5),last_half_of_run",
+        power.np
+    )?;
+    writeln!(
+        csv,
+        "p_over_v,{},{},P/V,last_half_of_run",
+        power.p_over_v_w_m3, "W/m^3"
+    )?;
+    let _ = unit_report;
+    Ok(vec![
+        "qoi_power.json".to_string(),
+        "qoi_power.csv".to_string(),
+    ])
+}
+
+fn write_stress_and_wall_outputs<L, T>(
+    solver: &CoreSolver<L, T, CpuScalar, LocalPeriodic>,
+    sc: &BioprocessScenario,
+    unit_report: &lbm_scenario::UnitReport,
+    solid: &[bool],
+    wall_velocity_si: &[[f64; 3]],
+    out_dir: &Path,
+) -> Result<Vec<String>>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
+    let dims = solver.dims();
+    let n = dims[0] * dims[1] * dims[2];
+    let fields = gather_core3(solver);
+    let velocity_scale = unit_report.lattice.dx_m / unit_report.lattice.dt_s;
+    let ux_si: Vec<f64> = fields.ux.iter().map(|v| v * velocity_scale).collect();
+    let uy_si: Vec<f64> = fields.uy.iter().map(|v| v * velocity_scale).collect();
+    let uz_si: Vec<f64> = fields.uz.iter().map(|v| v * velocity_scale).collect();
+    let mu = vec![sc.fluids.liquid_viscosity_pa_s; n];
+    let stress = lbm_core::stress::compute_stress_field(
+        dims,
+        &ux_si,
+        &uy_si,
+        &uz_si,
+        solid,
+        unit_report.lattice.dx_m,
+        &mu,
+    );
+    let fluid_gamma: Vec<f64> = stress
+        .iter()
+        .zip(solid)
+        .filter_map(|(s, &is_solid)| (!is_solid).then_some(s.gamma_dot))
+        .collect();
+    let fluid_tau: Vec<f64> = stress
+        .iter()
+        .zip(solid)
+        .filter_map(|(s, &is_solid)| (!is_solid).then_some(s.viscous_stress_pa))
+        .collect();
+    let gamma = lbm_core::stress::percentile_summary(&fluid_gamma, Some(0.0))
+        .ok_or_else(|| anyhow::anyhow!("stress QOI has no fluid cells"))?;
+    let tau = lbm_core::stress::percentile_summary(&fluid_tau, Some(0.0))
+        .ok_or_else(|| anyhow::anyhow!("stress QOI has no fluid cells"))?;
+    let stress_json = StressQoiFile {
+        provenance: QoiFileProvenance {
+            units: "1/s for gamma_dot, Pa for viscous_stress".to_string(),
+            method: "central finite differences; fraction_above_threshold uses threshold 0 pending BCFD-080 threshold schema".to_string(),
+            time_window: "final_step".to_string(),
+            averaging_region: "tank_fluid_cells".to_string(),
+            source_fields: vec!["ux".to_string(), "uy".to_string(), "uz".to_string()],
+            validation_tier: "screening".to_string(),
+        },
+        gamma_dot_1_s: gamma.into(),
+        viscous_stress_pa: tau.into(),
+    };
+    fs::write(
+        out_dir.join("stress_summary.json"),
+        serde_json::to_string_pretty(&stress_json)?,
+    )?;
+
+    let wall = lbm_core::stress::wall_shear_proxy(
+        dims,
+        &ux_si,
+        &uy_si,
+        &uz_si,
+        solid,
+        wall_velocity_si,
+        unit_report.lattice.dx_m,
+        sc.fluids.liquid_density_kg_m3,
+        sc.fluids.liquid_viscosity_pa_s,
+    );
+    let mut csv = fs::File::create(out_dir.join("wall_shear.csv"))?;
+    writeln!(
+        csv,
+        "cell_index,tau_w_pa_proxy,y_plus,u_parallel_m_s,y_m,nx,ny,nz,label"
+    )?;
+    writeln!(csv, "# manifest_path={MANIFEST_PATH}")?;
+    for w in wall {
+        writeln!(
+            csv,
+            "{},{},{},{},{},{},{},{},proxy",
+            w.cell_index,
+            w.tau_w_pa,
+            w.y_plus.unwrap_or(f64::NAN),
+            w.u_parallel_m_s,
+            w.y_m,
+            w.normal[0],
+            w.normal[1],
+            w.normal[2]
+        )?;
+    }
+    Ok(vec![
+        "stress_summary.json".to_string(),
+        "wall_shear.csv".to_string(),
+    ])
+}
+
+fn write_mixing_qois<L, T>(
+    sc: &BioprocessScenario,
+    solver: &mut CoreSolver<L, T, CpuScalar, LocalPeriodic>,
+    unit_report: &lbm_scenario::UnitReport,
+    scalar: Option<(&'static str, &PulseSpec, f64)>,
+    solid: &[bool],
+    cv_series: &[(f64, f64)],
+    out_dir: &Path,
+) -> Result<Vec<String>>
+where
+    L: Lattice,
+    T: lbm_core::real::Real,
+{
+    let dims = [
+        sc.run.grid_nx as usize,
+        sc.run.grid_ny as usize,
+        sc.run.grid_nz as usize,
+    ];
+    let (result, skipped, compartments) = if let Some((name, _, _)) = scalar {
+        let final_scalar = solver
+            .gather_scalar_concentration(name)
+            .ok_or_else(|| anyhow::anyhow!("scalar distribution {name} missing"))?;
+        let values: Vec<f64> = final_scalar.into_iter().map(|v| v.as_f64()).collect();
+        let impeller_center_z = first_impeller_center_z_lu(sc, unit_report);
+        let compartments = lbm_core::qoi::compartment_cv(dims, &values, solid, impeller_center_z)
+            .into_iter()
+            .map(|c| CompartmentCvFile {
+                name: c.name,
+                cv: c.cv,
+                cell_count: c.cell_count,
+            })
+            .collect();
+        (
+            lbm_core::qoi::mixing_time_from_cv(cv_series),
+            None,
+            compartments,
+        )
+    } else {
+        (
+            None,
+            Some(SkippedQoiFile {
+                qoi: "mixing_time".to_string(),
+                reason: "scalar pulse is not configured".to_string(),
+            }),
+            Vec::new(),
+        )
+    };
+    let json = MixingQoiFile {
+        provenance: QoiFileProvenance {
+            units: "s".to_string(),
+            method: "CV(t)=std(C)/mean(C); t95/t99 use 0.05*CV0 and 0.01*CV0".to_string(),
+            time_window: "post_pulse_time_series".to_string(),
+            averaging_region: "tank_fluid_cells".to_string(),
+            source_fields: vec!["C:tracer".to_string()],
+            validation_tier: "screening".to_string(),
+        },
+        cv0: result.as_ref().map(|r| r.cv0),
+        t95_s: result.as_ref().and_then(|r| r.t95_s),
+        t99_s: result.as_ref().and_then(|r| r.t99_s),
+        skipped,
+        compartments,
+    };
+    fs::write(
+        out_dir.join("mixing_time.json"),
+        serde_json::to_string_pretty(&json)?,
+    )?;
+    Ok(vec!["mixing_time.json".to_string()])
+}
+
+fn first_impeller_center_z_lu(
+    sc: &BioprocessScenario,
+    unit_report: &lbm_scenario::UnitReport,
+) -> Option<f64> {
+    match &sc.reactor {
+        lbm_scenario::bioprocess::ReactorSpec::StirredTank { impellers, .. } => {
+            impellers.first().and_then(|impeller| match impeller {
+                lbm_scenario::bioprocess::ImpellerSpec::Rushton {
+                    clearance_from_bottom_m,
+                    ..
+                }
+                | lbm_scenario::bioprocess::ImpellerSpec::PitchedBlade {
+                    clearance_from_bottom_m,
+                    ..
+                }
+                | lbm_scenario::bioprocess::ImpellerSpec::Marine {
+                    clearance_from_bottom_m,
+                    ..
+                } => Some(*clearance_from_bottom_m / unit_report.lattice.dx_m),
+                lbm_scenario::bioprocess::ImpellerSpec::CustomMarkerSet { .. } => None,
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 3D (nz > 1)

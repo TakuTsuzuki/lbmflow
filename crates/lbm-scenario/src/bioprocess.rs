@@ -75,7 +75,10 @@ impl BioprocessScenario {
         if self.run.lattice == Some(LatticeSpec::D2q9) {
             return Err(BioprocessScenarioError::unsupported(
                 "bioprocess stirred-tank scenarios require a 3D lattice",
-                UnsupportedReason::NotImplemented,
+                UnsupportedReason::OutOfValidityRange {
+                    detail: "run.lattice=d2q9 is outside the 3D stirred-tank validity range"
+                        .to_string(),
+                },
             ));
         }
 

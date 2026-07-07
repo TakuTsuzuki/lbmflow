@@ -75,10 +75,10 @@ pub fn report(tier: VerifyTier) -> (Value, i32) {
 fn run_quick_checks() -> Result<u32, Value> {
     let registry = CapabilityRegistry::new();
     let ids = unsupported_capabilities();
-    if registry.iter().count() != 9 || ids.len() != 9 {
+    if registry.iter().count() != 9 || ids.len() != 6 {
         return Err(json!({
             "check": "capability_registry",
-            "message": "capability registry must contain 9 unsupported BCFD entries",
+            "message": "capability registry must contain 9 BCFD entries and 6 unsupported entries",
             "capabilities": ids,
         }));
     }
@@ -87,10 +87,12 @@ fn run_quick_checks() -> Result<u32, Value> {
         .into_iter()
         .find(|(name, _, _)| *name == "cavity")
         .map(|(_, _, scenario)| scenario)
-        .ok_or_else(|| json!({
-            "check": "legacy_cavity_preset",
-            "message": "cavity preset is missing"
-        }))?;
+        .ok_or_else(|| {
+            json!({
+                "check": "legacy_cavity_preset",
+                "message": "cavity preset is missing"
+            })
+        })?;
     if let Err(message) = lbm_scenario::build_check(&cavity) {
         return Err(json!({
             "check": "legacy_cavity_build_check",
@@ -144,7 +146,13 @@ struct FullResult {
 }
 
 fn run_full_cargo_test() -> FullResult {
-    let command = ["cargo", "test", "--workspace", "--release", "--no-fail-fast"];
+    let command = [
+        "cargo",
+        "test",
+        "--workspace",
+        "--release",
+        "--no-fail-fast",
+    ];
     let output = Command::new(command[0]).args(&command[1..]).output();
     match output {
         Ok(output) => {
@@ -245,7 +253,7 @@ mod tests {
                 .as_array()
                 .expect("unsupported_capabilities should be an array")
                 .len(),
-            9
+            6
         );
         assert_eq!(report["validation_tier"], "screening");
         assert!(report["build_features"]

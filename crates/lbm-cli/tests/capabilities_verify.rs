@@ -19,23 +19,23 @@ fn capabilities_json_is_machine_readable() {
         .as_array()
         .unwrap_or_else(|| panic!("capabilities must be an array: {value}"));
     let expected = [
-        "single_phase_stirred_tank",
-        "rotating_ibm",
-        "passive_scalar",
-        "phase_field_vof",
-        "oxygen_kla",
-        "point_bubbles",
-        "pbm",
-        "cell_exposure",
-        "evidence_tier_report",
+        ("single_phase_stirred_tank", "experimental"),
+        ("rotating_ibm", "experimental"),
+        ("passive_scalar", "experimental"),
+        ("phase_field_vof", "unsupported"),
+        ("oxygen_kla", "unsupported"),
+        ("point_bubbles", "unsupported"),
+        ("pbm", "unsupported"),
+        ("cell_exposure", "unsupported"),
+        ("evidence_tier_report", "unsupported"),
     ];
     assert_eq!(capabilities.len(), expected.len(), "{value}");
-    for id in expected {
+    for (id, status) in expected {
         let entry = capabilities
             .iter()
             .find(|entry| entry["id"] == id)
             .unwrap_or_else(|| panic!("missing capability id {id}: {value}"));
-        assert_eq!(entry["status"], "unsupported", "{entry}");
+        assert_eq!(entry["status"], status, "{entry}");
         assert!(entry["docs"]
             .as_str()
             .unwrap()
@@ -62,7 +62,10 @@ fn verify_quick_json_has_machine_readable_shape() {
     assert!(value["tests_run"].as_u64().unwrap() >= 1, "{value}");
     assert!(value["tests_skipped"].is_u64(), "{value}");
     assert_eq!(value["validation_tier"], "screening", "{value}");
-    assert!(value["git_sha"].is_string() || value["git_sha"].is_null(), "{value}");
+    assert!(
+        value["git_sha"].is_string() || value["git_sha"].is_null(),
+        "{value}"
+    );
     assert!(value["build_features"]
         .as_array()
         .unwrap()
@@ -70,7 +73,7 @@ fn verify_quick_json_has_machine_readable_shape() {
         .any(|feature| feature == "default"));
     assert_eq!(
         value["unsupported_capabilities"].as_array().unwrap().len(),
-        9,
+        6,
         "{value}"
     );
     assert!(value["failure"].is_null(), "{value}");

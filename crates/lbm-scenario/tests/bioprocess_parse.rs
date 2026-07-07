@@ -232,7 +232,12 @@ fn rejects_2d_lattice_for_bioprocess_scenario() {
     scenario["run"]["lattice"] = json!("d2q9");
 
     let err = parse_value(scenario).expect_err("2D bioprocess scenario should reject");
-    assert_eq!(err.reason, UnsupportedReason::NotImplemented);
+    assert_eq!(
+        err.reason,
+        UnsupportedReason::OutOfValidityRange {
+            detail: "run.lattice=d2q9 is outside the 3D stirred-tank validity range".to_string()
+        }
+    );
 }
 
 #[test]

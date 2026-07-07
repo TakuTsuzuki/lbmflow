@@ -8,7 +8,7 @@
 
 use crate::backend::{Backend, HostMoments};
 use crate::fields::{DistributionKind, SoaFields};
-use crate::halo::{exchange_g_generic, ExchangeScope, HaloExchange};
+use crate::halo::{exchange_g_generic, exchange_h_generic, ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
 use crate::lattice::{Face, Lattice, D3Q19};
 use crate::params::{
@@ -2083,6 +2083,106 @@ where
         }
     }
 
+    fn scalar_distributions_enabled(&self) -> bool {
+        self.host_parts
+            .iter()
+            .any(|fields| !fields.scalars.is_empty())
+    }
+
+    fn step_scalar_distributions(&mut self) {
+        let scalar_count = self
+            .host_parts
+            .iter()
+            .map(|fields| fields.scalars.len())
+            .max()
+            .unwrap_or(0);
+        if scalar_count == 0 {
+            return;
+        }
+        self.stage_out_all();
+        for scalar_index in 0..scalar_count {
+            for fields in &mut self.host_parts {
+                let geo = fields.geom;
+                let np = geo.n_padded();
+                let Some(scalar) = fields.scalars.get_mut(scalar_index) else {
+                    continue;
+                };
+                let omega = T::r(1.0 / (3.0 * scalar.diffusivity + 0.5));
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let pi = geo.pidx(x, y, z);
+                            if fields.solid[pi] {
+                                continue;
+                            }
+                            let c = geo.cidx(x, y, z);
+                            let concentration = scalar.concentration[c];
+                            let u = [fields.ux[c], fields.uy[c], fields.uz[c]];
+                            let heq = crate::scalar::scalar_equilibrium::<L, T>(concentration, u);
+                            for q in 0..L::Q {
+                                let k = q * np + pi;
+                                scalar.h[k] = scalar.h[k] - omega * (scalar.h[k] - heq[q]);
+                            }
+                        }
+                    }
+                }
+            }
+            exchange_h_generic::<L, T>(&self.subs, &mut self.host_parts, scalar_index);
+            for fields in &mut self.host_parts {
+                let geo = fields.geom;
+                let np = geo.n_padded();
+                let Some(scalar) = fields.scalars.get_mut(scalar_index) else {
+                    continue;
+                };
+                scalar.htmp.fill(T::zero());
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let pi = geo.pidx(x, y, z);
+                            if fields.solid[pi] {
+                                scalar.concentration[geo.cidx(x, y, z)] = T::zero();
+                                continue;
+                            }
+                            for q in 0..L::Q {
+                                let cdir = L::C[q];
+                                let src = geo.pidx_i(
+                                    x as isize - cdir[0] as isize,
+                                    y as isize - cdir[1] as isize,
+                                    z as isize - cdir[2] as isize,
+                                );
+                                let value = if fields.solid[src] {
+                                    scalar.h[L::OPP[q] * np + pi]
+                                } else {
+                                    scalar.h[q * np + src]
+                                };
+                                scalar.htmp[q * np + pi] = value;
+                            }
+                        }
+                    }
+                }
+                std::mem::swap(&mut scalar.h, &mut scalar.htmp);
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let pi = geo.pidx(x, y, z);
+                            let c = geo.cidx(x, y, z);
+                            if fields.solid[pi] {
+                                scalar.concentration[c] = T::zero();
+                                continue;
+                            }
+                            let mut sum = T::zero();
+                            for q in 0..L::Q {
+                                sum = sum + scalar.h[q * np + pi];
+                            }
+                            scalar.concentration[c] = sum;
+                        }
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+    }
+
     fn update_material_fields(&mut self) {
         let model = self.material_model.clone();
         match model {
@@ -2121,6 +2221,9 @@ where
             if self.auxiliary_distributions_enabled() {
                 self.step_auxiliary_distributions_noop();
             }
+            if self.scalar_distributions_enabled() {
+                self.step_scalar_distributions();
+            }
             self.update_material_fields();
             return;
         }
@@ -2148,6 +2251,9 @@ where
         }
         if self.auxiliary_distributions_enabled() {
             self.step_auxiliary_distributions_noop();
+        }
+        if self.scalar_distributions_enabled() {
+            self.step_scalar_distributions();
         }
         self.update_material_fields();
     }
@@ -2785,6 +2891,18 @@ where
                             * self.dims[0]
                             + (sub.origin[0] + x);
                         scalar.concentration[g.cidx(x, y, z)] = values[gi];
+                        let u = [
+                            fields.ux[g.cidx(x, y, z)],
+                            fields.uy[g.cidx(x, y, z)],
+                            fields.uz[g.cidx(x, y, z)],
+                        ];
+                        let heq = crate::scalar::scalar_equilibrium::<L, T>(values[gi], u);
+                        let pi = g.pidx(x, y, z);
+                        let np = g.n_padded();
+                        for q in 0..L::Q {
+                            scalar.h[q * np + pi] = heq[q];
+                            scalar.htmp[q * np + pi] = T::zero();
+                        }
                     }
                 }
             }
@@ -5734,6 +5852,135 @@ mod tests {
         );
         assert_eq!(fields.scalars[oxygen_idx].concentration, oxygen);
         assert_eq!(fields.scalars[glucose_idx].concentration, glucose);
+    }
+
+    #[test]
+    fn passive_scalar_uniform_field_remains_uniform() {
+        let spec = GlobalSpec {
+            force: [0.0; 3],
+            ..aux_spec()
+        };
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.enable_scalar_distribution("tracer", 0.02).unwrap();
+        let n = spec.dims[0] * spec.dims[1] * spec.dims[2];
+        solver
+            .set_scalar_concentration("tracer", &vec![2.0; n])
+            .unwrap();
+        solver.run(8);
+        let c = solver.gather_scalar_concentration("tracer").unwrap();
+        let max_err = c.iter().map(|v| (v - 2.0).abs()).fold(0.0, f64::max);
+        assert!(
+            max_err < 1.0e-12,
+            "uniform scalar must stay uniform; max_err={max_err:.3e}"
+        );
+    }
+
+    #[test]
+    fn passive_scalar_closed_domain_mass_is_conserved() {
+        let dims = [10, 10, 10];
+        let mut walls = WallSpec::<f64>::default();
+        walls.is_wall = [true; 6];
+        let (solid, wall_u) = build_wall_rims(3, dims, &walls);
+        let spec = GlobalSpec {
+            dims,
+            nu: 0.08,
+            periodic: [false, false, false],
+            force: [0.0; 3],
+            ..Default::default()
+        };
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &solid,
+            &wall_u,
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.enable_scalar_distribution("tracer", 0.02).unwrap();
+        let mut c0 = vec![0.0; dims[0] * dims[1] * dims[2]];
+        for z in 4..=5 {
+            for y in 4..=5 {
+                for x in 4..=5 {
+                    c0[(z * dims[1] + y) * dims[0] + x] = 1.0;
+                }
+            }
+        }
+        solver.set_scalar_concentration("tracer", &c0).unwrap();
+        let m0: f64 = c0.iter().sum();
+        solver.run(20);
+        let c1 = solver.gather_scalar_concentration("tracer").unwrap();
+        let m1: f64 = c1.iter().sum();
+        assert!(
+            (m1 - m0).abs() < 1.0e-10,
+            "closed scalar mass drift {:.3e}",
+            m1 - m0
+        );
+        assert!(
+            c1[(5 * dims[1] + 5) * dims[0] + 5] < 1.0,
+            "pulse should broaden under diffusion"
+        );
+    }
+
+    #[test]
+    fn passive_scalar_advects_with_uniform_flow_direction() {
+        let spec = GlobalSpec {
+            dims: [24, 8, 6],
+            nu: 0.08,
+            periodic: [true, true, true],
+            force: [0.0; 3],
+            ..Default::default()
+        };
+        let mut solver: Solver<D3Q19, f64, CpuScalar, LocalPeriodic> = Solver::new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        );
+        solver.init_with(|_, _, _| (1.0, [0.04, 0.0, 0.0]));
+        solver.enable_scalar_distribution("tracer", 0.01).unwrap();
+        let mut c0 = vec![0.0; spec.dims[0] * spec.dims[1] * spec.dims[2]];
+        for z in 0..spec.dims[2] {
+            for y in 0..spec.dims[1] {
+                for x in 4..=6 {
+                    c0[(z * spec.dims[1] + y) * spec.dims[0] + x] = 1.0;
+                }
+            }
+        }
+        solver.set_scalar_concentration("tracer", &c0).unwrap();
+        let before = scalar_centroid_x(spec.dims, &c0);
+        solver.run(10);
+        let after = scalar_centroid_x(
+            spec.dims,
+            &solver.gather_scalar_concentration("tracer").unwrap(),
+        );
+        assert!(
+            after > before,
+            "scalar centroid should advect in +x: {before} -> {after}"
+        );
+    }
+
+    fn scalar_centroid_x(dims: [usize; 3], c: &[f64]) -> f64 {
+        let mut mass = 0.0;
+        let mut moment = 0.0;
+        for z in 0..dims[2] {
+            for y in 0..dims[1] {
+                for x in 0..dims[0] {
+                    let v = c[(z * dims[1] + y) * dims[0] + x];
+                    mass += v;
+                    moment += (x as f64 + 0.5) * v;
+                }
+            }
+        }
+        moment / mass
     }
 
     #[test]

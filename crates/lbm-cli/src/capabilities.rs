@@ -42,22 +42,22 @@ impl CapabilityRegistry {
     pub fn new() -> Self {
         Self {
             capabilities: vec![
-                unsupported(
+                experimental(
                     "single_phase_stirred_tank",
                     "Single-phase stirred tank",
-                    "Runner path not yet implemented",
+                    "BCFD-030 runner path implemented; VB-01 not yet green",
                     "docs/PLAN.md#bcfd-030",
                 ),
-                unsupported(
+                experimental(
                     "rotating_ibm",
                     "Rotating IBM impeller",
-                    "Bioprocess scenario integration not yet implemented",
+                    "BCFD-030 integration implemented; stirred-tank validation pending",
                     "docs/PLAN.md#bcfd-021",
                 ),
-                unsupported(
+                experimental(
                     "passive_scalar",
                     "Passive scalar transport",
-                    "Scalar distribution allocation is not yet implemented",
+                    "BCFD-034 ADE path implemented; VB-02 not yet green",
                     "docs/PLAN.md#bcfd-034",
                 ),
                 unsupported(
@@ -140,6 +140,24 @@ fn unsupported(
         id,
         label,
         status: CapabilityStatus::Unsupported,
+        tier_ceiling: CapabilityTier::Screening,
+        reason: Some(UnsupportedReason::OutOfValidityRange {
+            detail: detail.to_string(),
+        }),
+        docs,
+    }
+}
+
+fn experimental(
+    id: &'static str,
+    label: &'static str,
+    detail: &'static str,
+    docs: &'static str,
+) -> CapabilityEntry {
+    CapabilityEntry {
+        id,
+        label,
+        status: CapabilityStatus::Experimental,
         tier_ceiling: CapabilityTier::Screening,
         reason: Some(UnsupportedReason::OutOfValidityRange {
             detail: detail.to_string(),

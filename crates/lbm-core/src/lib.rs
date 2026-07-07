@@ -51,7 +51,9 @@ pub mod phase_field;
 pub mod qoi;
 pub mod real;
 pub mod rotating_ibm;
+pub mod scalar;
 pub mod solver;
+pub mod stress;
 pub mod subdomain;
 pub mod surface_tension;
 #[cfg(feature = "geometry-import")]
@@ -106,12 +108,21 @@ pub mod prelude {
     pub use crate::phase_field::{
         ClippingPolicy, PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams,
     };
-    pub use crate::qoi::{QoiAccumulatorSnapshot, QoiCheckpointState};
+    pub use crate::qoi::{
+        compartment_cv, mixing_time_from_cv, power_qois, scalar_cv, CompartmentCv,
+        MixingTimeResult, PowerQoiInput, PowerQoiResult, QoiAccumulatorSnapshot,
+        QoiCheckpointState, SkippedQoi,
+    };
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
+    pub use crate::scalar::scalar_equilibrium;
     pub use crate::solver::{
         build_wall_rims, partition, CheckpointError, Diverged, GlobalSpec, Solver,
         SolverFeatureError, SpecError, WallSpec,
+    };
+    pub use crate::stress::{
+        compute_stress_field, percentile_summary, wall_shear_proxy, PercentileSummary, StressCell,
+        WallShearProxy,
     };
     pub use crate::subdomain::Subdomain;
     pub use crate::surface_tension::{
