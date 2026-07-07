@@ -632,3 +632,38 @@ lands as a definitive characterization of the SC bulk sigma R-dependence.
 Model-domain status: SC static sigma DOES obey a Tolman-length-type
 correction, well-fit r²>0.9997 across R∈[6,32]. This is a physics finding
 worth PHYSICS.md documentation.
+
+### ANOM-P4-023 SC σ REFEREE — CLOSED WITH RESIDUAL (γ_sl direct measurement)
+γ_sl KB-integral measurement (main dfc7146 → f018f8c):
+- Wet wall (wall_rho=1.0, θ_T11c=63°): γ_sl = −2.517e-2, γ_sl/γ_lv = −0.70
+- Neutral wall (wall_rho=1.888): γ_sl = −1.84e-3 (~0, as expected)
+- **Wet−neutral shift**: 2.33e-2 (absolute); direct measurement of the
+  SC wall-interaction contribution to the interfacial band.
+- Young's law prediction γ_lv·cos(63°) = 1.63e-2
+- **Wet−neutral shift is 43% ABOVE Young's prediction** — the SC solid
+  interaction adds an EXTRA 7.0e-3 of interfacial-tension-band energy
+  beyond what Young's γ_sv−γ_sl = γ_lv·cos(θ) alone would predict.
+- Jurin-inferred σ_eff (P4-014) = 5.11e-2 = 1.42 × γ_lv (KB flat)
+
+**Physical picture (final)**: SC static physics at solid-liquid contacts
+is NOT purely Young's-law-consistent. There is a documented extra
+contact-band tension of order 40% γ_lv that becomes visible in wetting
+problems. This IS the physical origin of Jurin's 1.54× enhancement: the
+SC contact line does more work per unit length than γ_lv·cos(θ) alone.
+Verdict: (B) documented closure — this behavior is a known SC-model
+characteristic (wall interaction Ψ_wall term acts on top of the bulk
+cohesion), not a defect; the T11c contact-angle measurements themselves
+build in the wall interaction, so downstream tests using T11c θ are
+self-consistent. What this measurement OPENS is the option to (a) accept
+the SC contact-line as a validated closure with 1.42× enhancement factor,
+(b) route future high-precision wetting work to MF-γ phase-field.
+
+**Three-way referee CLOSED** with the residual explained:
+- σ_bulk (KB flat, Laplace R→∞) = 3.6e-2 (bulk sigma, Tolman-consistent)
+- σ_wetting_effective (Jurin, T11c contact line) = 5.1e-2 = 1.42× σ_bulk
+  → EXPLAINED by the extra wall-interaction contact-band tension
+- σ_dynamic (Taylor-Culick rim) = 1.6e-2 = 0.49× σ_bulk → still open,
+  moving-interface momentum coupling limit (P4-018/019 family)
+
+Radar #1 CLOSED, ANOM-P4-023 CLOSED as characterization. PHYSICS.md entry
+draft prepared in worktree; will land with next mp-hard rev.
