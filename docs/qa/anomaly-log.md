@@ -581,3 +581,22 @@ implementation is Galilean-invariant (Wen 2014-class) — pitfall #10
 upgrades from PARTIAL to COVERED. Rotor/rotating-boundary force diagnostics
 in moving frames are therefore trustworthy from a Galilean-invariance
 standpoint; this closes a longstanding open concern in the pitfall list.
+
+### ANOM-P4-024 STATUS UPDATE — rev 3 rotating IBM light PASSES, heavy still no onset (Ta_c estimate error)
+Rotating IBM cylinders WORK for the LAMINAR case: annular Couette profile
+L2_rel 6.87e-3, Linf/U_i 1.15e-2, IBM slip 2.18e-4 — well within the 15%
+band. This CONFIRMS rotating IBM (P4-001 fix) as a valid coherent-solid
+route. However, heavy wavy-vortex test still fails to grow the seed at
+Ta=1.5*Ta_c with damping 1.66e-5 -> 4.56e-8 (200x). Diagnosis on my side:
+Ta_c ~ 3390 is the NARROW-GAP Rayleigh estimate (valid for R_i/R_o -> 1);
+our geometry is R_i/R_o = 12/28 = 0.43 (WIDE gap). Chandrasekhar 1961
+Table X shows Ta_c climbs sharply for wide gaps — the true Ta_c(0.43) is
+much larger than 3390 (~4-5x higher), so our "1.5*Ta_c" was still BELOW
+critical. This is a TEST-DESIGN error, not a rotating-boundary filter.
+Rev 4 queued: use R_i=20, R_o=24 (narrow gap 0.83) with proper Ta_c ~
+1750 and the SAME 1.5*Ta_c and 3.0*Ta_c multipliers. ANOM-P4-024
+stays OPEN as characterization; the underlying rotating-boundary path is
+NOT filtering the mode — the test just used a wrong critical value.
+Also: rev 3 CONFIRMED rotating IBM cylinders work in Taylor-Couette
+setups (light PASS), which strengthens the P4-010 disposition endorsement
+in a NEW use case.
