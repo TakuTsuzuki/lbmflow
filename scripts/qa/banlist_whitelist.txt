@@ -1,0 +1,135 @@
+# LBMFlow ban-list grep whitelist.
+#
+# Each non-comment line is a fixed source-line pattern. A banlist_check.sh match
+# is excluded when the printed `path:line:source` record contains the pattern.
+# Keep entries narrow; this file is a reviewed baseline, not a physics waiver.
+
+# Current baseline captured for lane 7.1 on 2026-07-07. These entries make the
+# script a regression guard: new ban-list-shaped lines fail until reviewed.
+crates/lbm-cli/examples/dispersed_seeding/particles.rs:        let u1 = self.unit().clamp(1.0e-12, 1.0);
+crates/lbm-cli/examples/dispersed_seeding/particles.rs:        .max(0.1);
+crates/lbm-cli/examples/dispersed_seeding/particles.rs:    let requested_steps = ((max_duration / dt).ceil() as usize).max(20);
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:    let mean = sum as f64 / n.max(1.0);
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:        / n.max(1.0);
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:    let max = bins.iter().copied().max().unwrap_or(0) as f64;
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:        bins.iter().filter(|&&c| c == 0).count() as f64 / bins.len().max(1) as f64;
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:            .clamp(0.0, (mx - 1) as f64) as usize;
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:            .clamp(0.0, (my - 1) as f64) as usize;
+crates/lbm-cli/examples/dispersed_seeding/readout.rs:    let mean = bins.iter().sum::<usize>() as f64 / bins.len().max(1) as f64;
+crates/lbm-cli/examples/dispersed_seeding/reservoir.rs:    let mut batch = Vec::with_capacity(n.min(eligible.len()));
+crates/lbm-cli/examples/dispersed_seeding/reservoir.rs:    let min = mean * (1.0 - 3.0 * cv).max(0.1);
+crates/lbm-cli/examples/dispersed_seeding/reservoir.rs:    let max = mean * (1.0 + 3.0 * cv).max(1.1);
+crates/lbm-cli/examples/dispersed_seeding/reservoir.rs:        let t = ((p.d_m - min) / (max - min)).clamp(0.0, 0.999_999);
+crates/lbm-cli/examples/dispersed_seeding/main.rs:                    u: [0.0, 0.0, -regime.u_jet_lattice.min(0.17)],
+crates/lbm-core/src/particles.rs:    let n_sub = max_abs(delta).ceil().max(1.0) as usize;
+crates/lbm-core/src/particles.rs:    let x = x.clamp(0.0, (n - 1) as f64);
+crates/lbm-core/src/particles.rs:    let hi = (lo + 1).min(n - 1);
+crates/lbm-core/src/particles.rs:    a[0].abs().max(a[1].abs()).max(a[2].abs())
+crates/lbm-core/src/backend_simd.rs:        if cursor < a.min(w1) {
+crates/lbm-core/src/backend_simd.rs:            body(cursor, a.min(w1));
+crates/lbm-core/src/backend_simd.rs:        cursor = cursor.max(b.min(w1));
+crates/lbm-core/src/backend_simd.rs:        let blen = (x1 - xb).min(BLOCK);
+crates/lbm-core/src/backend_simd.rs:        let os = (os_base * (1.0 + velocity_correction)).min(2.0);
+crates/lbm-core/src/backend_simd.rs:                if cursor < a.min(pnx) {
+crates/lbm-core/src/backend_simd.rs:                    let (c0p, c1p) = (cursor, a.min(pnx));
+crates/lbm-core/src/backend_simd.rs:        let cap = (yhi - ylo).min(STRIP_ROWS) + 2;
+crates/lbm-core/src/backend_simd.rs:            let y1 = (y0 + STRIP_ROWS.min(yhi - y0)).min(yhi);
+crates/lbm-core/src/backend_simd.rs:                let dlo = xlo.max(if cx == 1 && !ctx.halo[0] { 1 } else { 0 });
+crates/lbm-core/src/backend_simd.rs:                let dhi = xhi.min(if cx == -1 && !ctx.halo[1] { nx - 1 } else { nx });
+crates/lbm-core/src/backend_simd.rs:                    let d0 = (cursor as isize - 1 + cx).max(dlo as isize);
+crates/lbm-core/src/backend_simd.rs:                    let d1 = (a as isize - 1 + cx).min(dhi as isize);
+crates/lbm-core/src/backend_simd.rs:                for px in a.max(1 + xlo)..b.min(1 + xhi) {
+crates/lbm-core/src/backend_simd.rs:            threads.min(16).clamp(1, (n_range / 4).max(1))
+crates/lbm-core/src/backend_simd.rs:            threads.clamp(1, (n_range / 16).max(1))
+crates/lbm-core/src/backend_simd.rs:            let s1 = (blo + (band + 1) * band_size).min(bhi);
+crates/lbm-core/src/backend_simd.rs:            .max(max_delta(&scalar.gather_ux(), &simd.gather_ux()))
+crates/lbm-core/src/backend_simd.rs:            .max(max_delta(&scalar.gather_uy(), &simd.gather_uy()))
+crates/lbm-core/src/backend_simd.rs:            .max(max_delta(&scalar.gather_uz(), &simd.gather_uz()))
+crates/lbm-core/src/kernels.rs:        let os = (os_base * (1.0 + velocity_correction)).min(2.0);
+crates/lbm-core/src/dist.rs:            let balance = lx.max(ly).max(lz) / lx.min(ly).min(lz);
+crates/lbm-core/src/dist.rs:        let check_every = check_every.max(1);
+crates/lbm-core/src/backend.rs:        out_hi[i] = (hi[i] - o).min(n - 1);
+crates/lbm-core/src/solver.rs:                .max(1)
+crates/lbm-core/src/solver.rs:                .min(remaining);
+crates/lbm-core/src/solver.rs:        let check_every = check_every.max(1);
+crates/lbm-core/src/solver.rs:            let chunk = remaining.min(check_every);
+crates/lbm-core/src/solver.rs:                        let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
+crates/lbm-core/src/solver.rs:            max_target = max_target.max(norm(body.target_velocity(marker.position), L::D));
+crates/lbm-core/src/solver.rs:        let scale = max_target.max(1.0);
+crates/lbm-core/src/solver.rs:                    mobility += sp.w * cell_kernel_sum[gi] / rc.max(1.0e-30);
+crates/lbm-core/src/solver.rs:                    let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
+crates/lbm-core/src/solver.rs:                diag.slip_max = diag.slip_max.max(slip_mag);
+crates/lbm-core/src/solver.rs:            diag.momentum_error_rel = norm(err, L::D) / norm(diag.marker_force, L::D).max(1.0e-12);
+crates/lbm-core/src/rotating_ibm.rs:    (1.0 - r).max(0.0)
+crates/lbm-core/src/gpu/wgsl.rs:    n.max(1)
+crates/lbm-core/src/gpu/backend.rs:        return current.clamp(1, MAX_CHUNK);
+crates/lbm-core/src/gpu/backend.rs:    ((measured_steps as f64 * TARGET_MS / elapsed_ms).round() as usize).clamp(1, MAX_CHUNK)
+crates/lbm-core/src/gpu/backend.rs:        let max_ext = nx_u32.max(ny_u32).max(nz_u32);
+crates/lbm-core/src/gpu/backend.rs:        let max_groups = limits.max_compute_workgroups_per_dimension.min(65_535);
+crates/lbm-core/src/gpu/backend.rs:        let size = bytes.max(4);
+crates/lbm-core/src/gpu/backend.rs:        self.submit_chunk = chunk.clamp(1, 200);
+crates/lbm-core/src/gpu/backend.rs:            size: size.max(8),
+crates/lbm-core/src/gpu/backend.rs:                    size: ((fields.n * 4) as u64).max(8),
+crates/lbm-core/src/gpu/backend.rs:                (ext * 16).max(16),
+crates/lbm-core/src/gpu/backend.rs:        self.submit_chunk.max(1)
+crates/lbm-core/src/gpu/backend.rs:            .max(max_delta(&cpu.gather_ux(), &gpu.gather_ux()))
+crates/lbm-core/src/gpu/backend.rs:            .max(max_delta(&cpu.gather_uy(), &gpu.gather_uy()))
+crates/lbm-core/src/gpu/backend.rs:            .max(max_delta(&cpu.gather_uz(), &gpu.gather_uz()))
+crates/lbm-core/src/compat/rotor.rs:        let s = time.min(self.omega_ramp_steps);
+crates/lbm-core/src/compat/rotor.rs:                max_rel = max_rel.max(err);
+crates/lbm-core/src/bench_regression.rs:                    .max(0.0);
+crates/lbm-core/src/les.rs:            max_nu_t_before_clipping = max_nu_t_before_clipping.max(nut);
+crates/lbm-cli/examples/vv_sedim_2d.rs:        let bin = bin.clamp(0, HIST_BINS as isize - 1) as usize;
+crates/lbm-cli/examples/vv_sedim_2d.rs:    let max_count = hist.iter().copied().max().unwrap_or(0).max(1) as f64;
+crates/lbm-cli/examples/vv_sedim_2d.rs:        for y in 0..filled.min(h) {
+crates/lbm-cli/examples/vv_sedim_2d.rs:                lut(anchors, field[i] / vmax.max(1.0e-30))
+crates/lbm-cli/examples/vv_sedim_2d.rs:    let t = t.clamp(0.0, 1.0) * (anchors.len() - 1) as f64;
+crates/lbm-cli/examples/vv_sedim_2d.rs:    let i = (t as usize).min(anchors.len() - 2);
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let t = t.clamp(0.0, 1.0) * (anchors.len() - 1) as f64;
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let i = (t as usize).min(anchors.len() - 2);
+crates/lbm-cli/examples/stirred_tank_3d.rs:                lut(anchors, field[i] / vmax.max(1e-30))
+crates/lbm-cli/examples/stirred_tank_3d.rs:            shaft_r: (tip_r * 0.12).max(1.5), // lattice-resolution guard for the shaft
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let zb0 = (g.zc - g.blade_hh - 1.0).floor().max(1.0) as usize;
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let zb1 = (g.zc + g.blade_hh + 1.0).ceil().min(nz as f64 - 2.0) as usize;
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cx as i64 - bb).max(1) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cx as i64 + bb).min(nx as i64 - 2) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cy as i64 - bb).max(1) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cy as i64 + bb).min(ny as i64 - 2) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cx as i64 - sb).max(1) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cx as i64 + sb).min(nx as i64 - 2) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cy as i64 - sb).max(1) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        (g.cy as i64 + sb).min(ny as i64 - 2) as usize,
+crates/lbm-cli/examples/stirred_tank_3d.rs:        let ramp = (step as f64 / spin_up).min(1.0);
+crates/lbm-cli/examples/stirred_tank_3d.rs:            maxd = maxd.max(d);
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let vn = 60usize.min(nx);
+crates/lbm-cli/examples/stirred_tank_3d.rs:                smax = smax.max((ux[c] * ux[c] + uy[c] * uy[c] + uz[c] * uz[c]).sqrt());
+crates/lbm-cli/examples/stirred_tank_3d.rs:                shmax = shmax.max(shear[c]);
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:        let points = eject.points_xy_frac.as_ref().map_or(1, Vec::len).max(1);
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:        let max_si = u_jet_si.max(self.settling_velocity_m_s());
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:        let dt = dt_by_ma.min(dt_by_tau);
+crates/lbm-core/src/particles.rs:    Ok(1.0 + 0.15 * re.powf(0.687))
+crates/lbm-core/src/particles.rs:            let want = 1.0 + 0.15 * re.powf(0.687);
+crates/lbm-core/src/backend_simd.rs:            -0.16 * usq_full
+crates/lbm-core/src/kernels.rs:            -0.16 * usq
+crates/lbm-cli/examples/vv_slosh_2d.rs:const RHO_INIT_V: f64 = 0.15;
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:            0.16 * dx / max_si
+crates/lbm-core/src/compat/rotor.rs:            .omega(0.0025)
+crates/lbm-core/src/compat/rotor.rs:        let u_tip = 0.0025 * 16.0;
+crates/lbm-core/src/compat/rotor.rs:                let u_target = [-0.0025 * dy, 0.0025 * dx];
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let outdir = PathBuf::from(a.get(1).map(String::as_str).unwrap_or("stirred_tank_out"));
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let n: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(80);
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let steps: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(8000);
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let every: usize = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(40);
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let u_tip: f64 = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(0.08);
+crates/lbm-cli/examples/stirred_tank_3d.rs:    let nu: f64 = a.get(6).and_then(|s| s.parse().ok()).unwrap_or(0.02);
+crates/lbm-core/src/bench_regression.rs:                    .unwrap_or(default_threshold)
+crates/lbm-core/src/kernels.rs:        let g = p.gravity.unwrap_or([T::zero(); 3]);
+crates/lbm-core/src/gpu/backend.rs:        let gravity = p.gravity.unwrap_or([0.0; 3]);
+crates/lbm-core/src/solver.rs:            hash_u64(&mut h, nb.map(|v| v as u64 + 1).unwrap_or(0));
+crates/lbm-cli/examples/dispersed_seeding/particles.rs:    let h0 = eject.height_m.unwrap_or(input.target.height_m);
+crates/lbm-cli/examples/dispersed_seeding/particles.rs:        .unwrap_or(2.0)
+crates/lbm-cli/examples/dispersed_seeding/particles.rs:    let max_particle_steps = input.max_particle_steps.unwrap_or(50_000);
+crates/lbm-cli/examples/dispersed_seeding/main.rs:    let tray_dx = input.grid.tray_dx_m.unwrap_or(res_dx);
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:        let dx = self.grid.tray_dx_m.unwrap_or(self.grid.dx_m);
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:            .unwrap_or(0.0)
+crates/lbm-cli/examples/dispersed_seeding/protocol.rs:        self.op("agitate").and_then(|op| op.count).unwrap_or(0)

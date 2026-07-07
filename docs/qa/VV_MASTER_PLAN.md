@@ -125,8 +125,10 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
 
 ## Axis 7 — Static & structural verification
 
-- 7.1 **W1** Ban-list grep sweep — case-identity branches, transported-
-  quantity clamps, bare calibrated literals; recurring CI-able check.
+- 7.1 **DONE 2026-07-07** Ban-list grep sweep — `scripts/qa/banlist_check.sh`
+  scans case-identity branches, transported-quantity clamps, bare calibrated
+  literals, and silent physical defaults with a reviewed whitelist baseline;
+  guide: `docs/qa/banlist-check-guide.md`.
 - 7.2 Numeric-literal provenance scan — **DONE** (structural-sweep):
   no new undocumented physics constants; P2 comment order queued.
 - 7.3 **W3** Unsafe/precision audit — SIMD unsafe UB; f32↔f64 cast audit;
