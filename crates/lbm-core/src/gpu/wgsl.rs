@@ -109,6 +109,10 @@ pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 64] = [
     ("unk2", "u32"),
     ("unk3", "u32"),
     ("unk4", "u32"),
+    ("unk5", "u32"),
+    ("unk6", "u32"),
+    ("unk7", "u32"),
+    ("unk8", "u32"),
     ("unk_count", "u32"),
     ("p0", "f32"),
     ("p1", "f32"),
@@ -127,6 +131,10 @@ pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 64] = [
     ("cw2", "f32"),
     ("cw3", "f32"),
     ("cw4", "f32"),
+    ("cw5", "f32"),
+    ("cw6", "f32"),
+    ("cw7", "f32"),
+    ("cw8", "f32"),
     ("wsum", "f32"),
     ("cinv", "f32"),
     ("pad0", "u32"),
@@ -134,14 +142,6 @@ pub(crate) const BC_PARAMS_FIELDS: [(&str, &str); 64] = [
     ("pad2", "u32"),
     ("pad3", "u32"),
     ("pad4", "u32"),
-    ("pad5", "u32"),
-    ("pad6", "u32"),
-    ("pad7", "u32"),
-    ("pad8", "u32"),
-    ("pad9", "u32"),
-    ("pad10", "u32"),
-    ("pad11", "u32"),
-    ("pad12", "u32"),
 ];
 
 /// Stash slots per buffer: `sum_faces |unknowns(face)| * extent(face)`,
@@ -238,6 +238,28 @@ fn storage_store(storage: Storage, expr: &str) -> String {
     match storage {
         Storage::F32 => expr.to_string(),
         Storage::F16 => format!("f16({expr})"),
+    }
+}
+
+fn emit_lattice_lookup_functions<L: Lattice>(s: &mut String) {
+    s.push_str("fn opp_index(q: u32) -> u32 {\n");
+    for q in 0..L::Q {
+        let _ = writeln!(s, "    if (q == {q}u) {{ return {}u; }}", L::OPP[q]);
+    }
+    s.push_str("    return 0u;\n");
+    s.push_str("}\n\n");
+
+    for (name, axis) in [("dir_x", 0usize), ("dir_y", 1), ("dir_z", 2)] {
+        let _ = writeln!(s, "fn {name}(q: u32) -> f32 {{");
+        for q in 0..L::Q {
+            let _ = writeln!(
+                s,
+                "    if (q == {q}u) {{ return {}; }}",
+                lit(L::C[q][axis] as f32)
+            );
+        }
+        s.push_str("    return 0.0f;\n");
+        s.push_str("}\n\n");
     }
 }
 
@@ -808,6 +830,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "@group(0) @binding(15) var<storage, read_write> omega_out: array<f32>;\n";
     s += "@group(0) @binding(12) var<uniform> B: BcParams;\n";
     s += "@group(0) @binding(13) var<storage, read> profile: array<vec3<f32>>;\n\n";
+    emit_lattice_lookup_functions::<L>(&mut s);
     let _ = writeln!(s, "const FLAG_FF: u32 = {FLAG_FORCE_FIELD}u;");
     let _ = writeln!(s, "const FLAG_WALE: u32 = {FLAG_WALE}u;");
     let _ = writeln!(s, "const FLAG_GRAVITY: u32 = {FLAG_GRAVITY}u;");
@@ -1190,21 +1213,19 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
         "        var s0 = {} + ft1 + fmt1;",
         storage_load(storage, &format!("f_out[{rest}u * n + i]"))
     );
-    let _ = writeln!(
-        s,
-        "        var sneg = {} + {} + {};",
-        storage_load(storage, "f_out[B.o_n * n + i]"),
-        storage_load(storage, "f_out[B.o_p1 * n + i]"),
-        storage_load(storage, "f_out[B.o_m1 * n + i]")
-    );
+    s += "        var sneg = 0.0f;\n";
+    for k in 0..9 {
+        let _ = writeln!(
+            s,
+            "        if (B.unk_count > {k}u) {{ sneg = sneg + {}; }}",
+            storage_load(storage, &format!("f_out[opp_index(B.unk{k}) * n + i]"))
+        );
+    }
     s += "        if (B.unk_count == 5u) {\n";
     s += "            s0 = s0 + ft2 + fmt2 + fpp + fpm + fmp + fmm;\n";
-    let _ = writeln!(
-        s,
-        "            sneg = sneg + {} + {};",
-        storage_load(storage, "f_out[B.o_p2 * n + i]"),
-        storage_load(storage, "f_out[B.o_m2 * n + i]")
-    );
+    s += "        }\n";
+    s += "        if (B.unk_count == 9u) {\n";
+    s += "            s0 = s0 + ft2 + fmt2 + fpp + fpm + fmp + fmm;\n";
     s += "        }\n";
     s += "        let closure = s0 + 2.0f * sneg + 1.0f;\n";
     s += "        var r = 0.0f;\n";
@@ -1266,7 +1287,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
             )
         )
     );
-    s += "        } else {\n";
+    s += "        } else if (B.unk_count == 5u) {\n";
     s += "            let qt1 = ft1 - fmt1 + fpp + fpm - fmp - fmm;\n";
     s += "            let qt2 = ft2 - fmt2 + fpp - fpm + fmp - fmm;\n";
     s += "            let n1 = (1.0f / 3.0f) * r * ut1 - 0.5f * qt1;\n";
@@ -1326,6 +1347,40 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
             )
         )
     );
+    s += "        } else {\n";
+    s += "            let q0_t1 = ft1 - fmt1 + fpp + fpm - fmp - fmm;\n";
+    s += "            let q0_t2 = ft2 - fmt2 + fpp - fpm + fmp - fmm;\n";
+    s += "            var s2_t1 = 0.0f;\n";
+    s += "            var s2_t2 = 0.0f;\n";
+    for k in 0..9 {
+        let _ = writeln!(s, "            let ct1_{k} = dir_x(B.unk{k}) * B.t1x + dir_y(B.unk{k}) * B.t1y + dir_z(B.unk{k}) * B.t1z;");
+        let _ = writeln!(s, "            let ct2_{k} = dir_x(B.unk{k}) * B.t2x + dir_y(B.unk{k}) * B.t2y + dir_z(B.unk{k}) * B.t2z;");
+        let _ = writeln!(
+            s,
+            "            s2_t1 = s2_t1 + B.cw{k} * ct1_{k} * ct1_{k};"
+        );
+        let _ = writeln!(
+            s,
+            "            s2_t2 = s2_t2 + B.cw{k} * ct2_{k} * ct2_{k};"
+        );
+    }
+    s += "            let c_t1 = r * ut1 * (1.0f - 6.0f * s2_t1) - q0_t1;\n";
+    s += "            let c_t2 = r * ut2 * (1.0f - 6.0f * s2_t2) - q0_t2;\n";
+    for k in 0..9 {
+        let _ = writeln!(s, "            let cdotu_{k} = (dir_x(B.unk{k}) * B.nxr + dir_y(B.unk{k}) * B.nyr + dir_z(B.unk{k}) * B.nzr) * un + ct1_{k} * ut1 + ct2_{k} * ut2;");
+        let _ = writeln!(s, "            let delta_{k} = c_t1 * B.cw{k} * ct1_{k} / s2_t1 + c_t2 * B.cw{k} * ct2_{k} / s2_t2;");
+        let _ = writeln!(
+            s,
+            "            f_out[B.unk{k} * n + i] = {};",
+            storage_store(
+                storage,
+                &format!(
+                    "{} + 6.0f * B.cw{k} * r * cdotu_{k} + delta_{k}",
+                    storage_load(storage, &format!("f_out[opp_index(B.unk{k}) * n + i]"))
+                )
+            )
+        );
+    }
     s += "        }\n";
     s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
@@ -1336,39 +1391,22 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     s += "        return;\n";
     s += "    }\n";
     let _ = writeln!(s, "    if (B.kind == {BC_OUTFLOW}u) {{");
-    let _ = writeln!(
-        s,
-        "        f_out[B.unk0 * n + i] = {};",
-        storage_store(storage, &storage_load(storage, "f_out[B.unk0 * n + j]"))
-    );
-    let _ = writeln!(
-        s,
-        "        f_out[B.unk1 * n + i] = {};",
-        storage_store(storage, &storage_load(storage, "f_out[B.unk1 * n + j]"))
-    );
-    let _ = writeln!(
-        s,
-        "        f_out[B.unk2 * n + i] = {};",
-        storage_store(storage, &storage_load(storage, "f_out[B.unk2 * n + j]"))
-    );
-    s += "        if (B.unk_count == 5u) {\n";
-    let _ = writeln!(
-        s,
-        "            f_out[B.unk3 * n + i] = {};",
-        storage_store(storage, &storage_load(storage, "f_out[B.unk3 * n + j]"))
-    );
-    let _ = writeln!(
-        s,
-        "            f_out[B.unk4 * n + i] = {};",
-        storage_store(storage, &storage_load(storage, "f_out[B.unk4 * n + j]"))
-    );
-    s += "        }\n";
+    for k in 0..9 {
+        let _ = writeln!(
+            s,
+            "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = {}; }}",
+            storage_store(
+                storage,
+                &storage_load(storage, &format!("f_out[B.unk{k} * n + j]"))
+            )
+        );
+    }
     s += "        fix_bc_moments(i, n);\n";
     s += "        return;\n";
     s += "    }\n";
     let _ = writeln!(s, "    if (B.kind == {BC_CONVECTIVE}u) {{");
     s += "        let lam = B.p0;\n";
-    for k in 0..5 {
+    for k in 0..9 {
         let _ = writeln!(
             s,
             "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = {}; }}",
@@ -1393,7 +1431,7 @@ pub(crate) fn generate_with_storage<L: Lattice>(storage: Storage) -> String {
     let _ = writeln!(s, "        let di = {};", di.join(" + "));
     let _ = writeln!(s, "        let dj = {};", dj.join(" + "));
     s += "        let corr = dj - di;\n";
-    for k in 0..5 {
+    for k in 0..9 {
         let _ = writeln!(
             s,
             "        if (B.unk_count > {k}u) {{ f_out[B.unk{k} * n + i] = {}; }}",
@@ -1513,6 +1551,10 @@ mod tests {
             "unk2",
             "unk3",
             "unk4",
+            "unk5",
+            "unk6",
+            "unk7",
+            "unk8",
             "unk_count",
             "p0",
             "p1",
@@ -1531,6 +1573,10 @@ mod tests {
             "cw2",
             "cw3",
             "cw4",
+            "cw5",
+            "cw6",
+            "cw7",
+            "cw8",
             "wsum",
             "cinv",
             "pad0",
@@ -1538,14 +1584,6 @@ mod tests {
             "pad2",
             "pad3",
             "pad4",
-            "pad5",
-            "pad6",
-            "pad7",
-            "pad8",
-            "pad9",
-            "pad10",
-            "pad11",
-            "pad12",
         ];
         let actual: Vec<&str> = BC_PARAMS_FIELDS.iter().map(|(name, _)| *name).collect();
         assert_eq!(actual, expected);
