@@ -1555,4 +1555,219 @@ Verdict: implementation-level behavior is PHYSICALLY PLAUSIBLE within the
 documented Engineering/Experimental domain; evidence-grade droplet Laplace
 claims remain unverified and gated by VB-04/BCFD-048.
 Routing: PM/V&V should keep VB-04 ignored or evidence-blocked until the real
-static-droplet pressure measurement harness and visual artifact export land.
+### 2026-07-08 point-bubble entity store and sparger injection (`crates/lbm-core/src/bubbles.rs`)
+- Form: point bubbles carry SI position, velocity, diameter, gas volume,
+  age, and deterministic id. Sparger injection uses the BCFD-022 orifice
+  center list and volumetric gas flow to emit one bubble every
+  `V_bubble / Q_gas`, cycling orifices deterministically and accumulating an
+  injected-gas volume ledger. Bubble volume is `V = pi d^3 / 6`.
+- Source: volume follows spherical geometry; deterministic injection is a
+  bookkeeping discretisation of the declared gas volumetric flow, not a
+  hydrodynamic force closure.
+- Validity domain: `diameter_m > 0`, `diameter_m <= tank_diameter_m / 10`,
+  finite positive `Q_gas`, finite orifice positions, and point-bubble
+  gas-holdup cells must remain `alpha_g <= 0.3`.
+- Validation: `crates/lbm-core/src/bubbles.rs` unit tests
+  `bubble_volume_from_diameter_matches_pi_d3_over_6`,
+  `deterministic_injection_matches_schedule_and_ledger`,
+  `invalid_diameter_is_rejected`, and
+  `high_alpha_guard_rejects_point_bubble_holdup`.
+- Replaces / interacts with: consumes BCFD-022 sparger geometry metadata; no
+  force is applied in BCFD-070.
+
+### 2026-07-08 point-bubble buoyancy closure (`crates/lbm-core/src/bubble_forces.rs:buoyancy_force`)
+- Form: `F_b = -rho_l V_b g`, where `g` is the downward acceleration vector
+  and the returned force is on the bubble.
+- Source: Archimedes buoyancy from displaced liquid weight.
+- Validity domain: finite positive liquid density and bubble volume,
+  `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and `0 <= kW <= 1e6`
+  through the shared point-bubble validity guard.
+- Validation: `bubble_forces::tests::force_closures_return_finite_values`
+  and the terminal-velocity force-balance test below.
+- Replaces / interacts with: augments resolved liquid momentum only through
+  the BCFD-072 equal-and-opposite reaction scatter.
+
+### 2026-07-08 point-bubble Schiller-Naumann drag (`crates/lbm-core/src/bubble_forces.rs:schiller_naumann_drag_force`)
+- Form: `F_d = 0.5 rho_l C_D A |u_l-u_b| (u_l-u_b)`,
+  `C_D = 24/Re (1 + 0.15 Re^0.687)`.
+- Source: Schiller and Naumann (1935) isolated spherical-particle drag
+  correction; standard range also summarized by Clift, Grace and Weber,
+  *Bubbles, Drops, and Particles* (1978).
+- Validity domain: finite positive `rho_l`, `nu_l`, and `d_b`; hard reject
+  for `Re_bubble > 800`; shared guards require `alpha_g <= 0.3` and
+  `0 <= kW <= 1e6`.
+- Validation:
+  `bubble_forces::tests::single_rising_bubble_terminal_velocity_matches_force_balance`
+  balances buoyancy against Schiller-Naumann drag within 5%;
+  `bubble_forces::tests::invalid_re_is_rejected` checks hard rejection.
+- Replaces / interacts with: mirrors the existing particle Schiller-Naumann
+  validity ceiling but operates on gas bubbles and returns a force.
+
+### 2026-07-08 point-bubble added-mass closure (`crates/lbm-core/src/bubble_forces.rs:added_mass_force`)
+- Form: `F_am = 0.5 rho_l V_b (D u_l / Dt - d u_b / dt)`.
+- Source: classical potential-flow added mass for a sphere; see Auton, Hunt
+  and Prud'homme (1988), "The force exerted on a body in inviscid unsteady
+  non-uniform rotational flow".
+- Validity domain: spherical sub-grid bubbles in moderate velocity-gradient
+  fields, finite positive `rho_l` and `V_b`; shared guards require
+  `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and `0 <= kW <= 1e6`.
+- Validation: `bubble_forces::tests::force_closures_return_finite_values`.
+- Replaces / interacts with: engineering force component for point bubbles;
+  no evidence-tier claim.
+
+### 2026-07-08 point-bubble lift placeholder (`crates/lbm-core/src/bubble_forces.rs:lift_placeholder_force`)
+- Form: `F_L = 0.5 rho_l V_b (u_l-u_b) x omega_l`, using constant
+  `C_L = 0.5`.
+- Source: Auton lift form for a small sphere in shear/rotation; the constant
+  coefficient is kept as an engineering placeholder per
+  MODEL_RISK_MATRIX.md section 3, not an evidence-tier model.
+- Validity domain: engineering placeholder only; shared guard enforces
+  `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and `0 <= kW <= 1e6`.
+- Validation: `bubble_forces::tests::force_closures_return_finite_values`
+  verifies finite output only.
+- Replaces / interacts with: optional point-bubble lateral force; reports
+  must not label it evidence-ready.
+
+### 2026-07-08 point-bubble wall-lubrication placeholder (`crates/lbm-core/src/bubble_forces.rs:wall_lubrication_placeholder_force`)
+- Form: Tomiyama-like near-wall repulsion gated to `wall_distance <= 2d`,
+  proportional to `rho_l V_b |u_l-u_b|^2 / wall_distance^2` along the wall
+  normal into liquid.
+- Source: Tomiyama et al. (1998) wall-force class for bubbles near walls;
+  this implementation is an engineering placeholder until a selected
+  coefficient form is validated.
+- Validity domain: finite positive wall distance and diameter; shared guard
+  enforces `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and
+  `0 <= kW <= 1e6`.
+- Validation: `bubble_forces::tests::force_closures_return_finite_values`
+  verifies finite in-domain output.
+- Replaces / interacts with: placeholder near-wall correction; evidence-tier
+  reports must reject it.
+
+### 2026-07-08 point-bubble turbulent-dispersion placeholder (`crates/lbm-core/src/bubble_forces.rs:turbulent_dispersion_placeholder_force`)
+- Form: Lopez-de-Bertodano class force proportional to
+  `-0.1 rho_l V_b k grad(alpha_g)`.
+- Source: Lopez de Bertodano (1992) turbulent dispersion force for dispersed
+  two-phase flow; the coefficient is retained only as the named placeholder
+  requested by BCFD-071.
+- Validity domain: finite non-negative turbulent kinetic energy; shared
+  guard enforces `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and
+  `0 <= kW <= 1e6`.
+- Validation: `bubble_forces::tests::force_closures_return_finite_values`
+  verifies finite in-domain output.
+- Replaces / interacts with: engineering placeholder only; not evidence-tier.
+
+### 2026-07-08 point-bubble RK4 substep integrator (`crates/lbm-core/src/bubble_forces.rs:rk4_substep`)
+- Form: classical fourth-order Runge-Kutta over `(position, velocity)` with
+  caller-supplied acceleration.
+- Source: standard RK4 time integration of the ODE `dx/dt = u_b`,
+  `du_b/dt = a(x,u)`.
+- Validity domain: finite non-negative substep `dt_s`; physical validity is
+  inherited from the active force closures supplied by the caller.
+- Validation: `bubble_forces::tests::rk4_substep_is_deterministic`.
+- Replaces / interacts with: deterministic point-bubble ODE substep; no
+  stochastic dispersion is introduced.
+
+### 2026-07-08 bubble-to-liquid momentum scatter (`crates/lbm-core/src/bubbles.rs:scatter_reaction_forces`, `Solver::set_bubble_reaction_force_field_values`)
+- Form: bubble force reactions are scattered to the eight neighbouring liquid
+  grid cells by trilinear regularised weights, applying
+  `F_liquid = -F_bubble` and checking
+  `sum F_bubble + sum F_liquid = 0` to round-off each call.
+- Source: Newton's third law plus the same regularised-kernel coupling style
+  used by Lagrangian point entities in the codebase.
+- Validity domain: compact grid with positive `dx_m`, finite bubble
+  positions, and point-bubble holdup `alpha_g <= 0.3`; exceeding the holdup
+  cap returns structured error `high_gas_holdup_needs_continuum_mode`.
+- Validation: `bubbles::tests::scatter_reaction_forces_balances_momentum`
+  and `bubbles::tests::high_alpha_guard_rejects_point_bubble_holdup`.
+- Replaces / interacts with: writes into the existing Guo body-force field
+  through the explicit solver wrapper; one-way mode remains available by not
+  calling the scatter/wrapper.
+
+### 2026-07-08 PBM disabled kernel (`crates/lbm-core/src/pbm.rs:DisabledKernel`)
+- Form: no source term; validates the local PBM state and preserves every
+  bin count exactly.
+- Source: explicit null model for controlled ablation and default PBM
+  configuration.
+- Validity domain: `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and
+  `0 <= kW <= 1e6`.
+- Validation: `pbm::tests::disabled_kernel_preserves_bins`.
+- Replaces / interacts with: default PBM kernel; no breakup/coalescence
+  physics is implied when selected.
+
+### 2026-07-08 PBM constant breakup kernel (`crates/lbm-core/src/pbm.rs:ConstantBreakup`)
+- Form: number-conservative bin shift from bin `i` to `i-1` at
+  `Delta n_i = rate * dt * n_i`.
+- Source: engineering placeholder source term for exercising PBM plumbing;
+  physical breakup kernels such as Luo-Svendsen are explicit future hooks.
+- Validity domain: finite non-negative `rate_1_s` and `dt_s`; shared PBM
+  guard enforces `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and
+  `0 <= kW <= 1e6`.
+- Validation: `pbm::tests::bin_total_number_is_conserved_by_placeholder_kernels`
+  and `pbm::tests::breakup_shifts_distribution_smaller`.
+- Replaces / interacts with: placeholder only; not evidence-tier and not a
+  calibrated breakup model.
+
+### 2026-07-08 PBM constant coalescence kernel (`crates/lbm-core/src/pbm.rs:ConstantCoalescence`)
+- Form: number-conservative bin shift from bin `i` to `i+1` at
+  `Delta n_i = rate * dt * n_i`.
+- Source: engineering placeholder source term for exercising PBM plumbing;
+  Prince-Blanch coalescence is an explicit future hook.
+- Validity domain: finite non-negative `rate_1_s` and `dt_s`; shared PBM
+  guard enforces `0 <= Re_bubble <= 800`, `alpha_g <= 0.3`, and
+  `0 <= kW <= 1e6`.
+- Validation: `pbm::tests::bin_total_number_is_conserved_by_placeholder_kernels`
+  and `pbm::tests::coalescence_shifts_distribution_larger`.
+- Replaces / interacts with: placeholder only; not evidence-tier and not a
+  calibrated coalescence model.
+
+### 2026-07-08 PBM interfacial area and kLa (`crates/lbm-core/src/{pbm,kla}.rs`)
+- Form: PBM computes `d32 = sum(n_i d_i^3) / sum(n_i d_i^2)` and
+  `a = sum(n_i pi d_i^2) / V_cell`; alpha/d32 mode computes
+  `a = 6 alpha_g / d32`; `kLa = kL a`.
+- Source: Sauter mean diameter and spherical interfacial-area identities;
+  kL model provenance is explicit (`constant`, `penetration_theory_placeholder`,
+  or `calibrated`).
+- Validity domain: non-empty PBM surface denominator, finite positive cell
+  volume and d32, `0 <= alpha_g <= 1`; evidence tier rejects any kL model
+  other than `Calibrated`.
+- Validation: `pbm::tests::d32_formula_matches_synthetic_distribution`,
+  `kla::tests::synthetic_d32_alpha_gives_expected_area`,
+  `kla::tests::equilibrium_concentration_gives_zero_transfer`,
+  `kla::tests::kla_units_and_volume_average_are_reported`, and
+  `kla::tests::evidence_tier_rejects_constant_kl`.
+- Replaces / interacts with: exposes pure computation only; oxygen scalar
+  consumption remains a future BCFD-050/051 integration path.
+
+### 2026-07-08 hybrid gas double-count policy (`crates/lbm-core/src/hybrid_gas.rs`)
+- Form: gas is tracked in resolved and point-bubble channels. A cell with
+  `|phi - 0.5| < 0.1` is treated as resolved-interface territory; point
+  bubbles inside those cells are ignored for total gas holdup and interfacial
+  area to prevent double-counting.
+- Source: bookkeeping conservation policy for hybrid resolved/sub-grid gas;
+  ignoring sub-grid bubbles inside resolved-interface cells preserves the
+  resolved phase-field channel as authoritative there.
+- Validity domain: finite `phi in [0,1]`, finite non-negative resolved area
+  density, positive `dx_m`; evidence tier rejects hybrid until VB-05 and
+  VB-06 are Engineering GREEN.
+- Validation:
+  `hybrid_gas::tests::synthetic_phi_and_bubbles_report_expected_totals`,
+  `hybrid_gas::tests::double_count_excludes_bubbles_in_resolved_interface_cell`,
+  and `hybrid_gas::tests::method_metadata_and_evidence_rejection_are_explicit`.
+- Replaces / interacts with: extends gas-holdup bookkeeping without changing
+  the phase-field solver.
+
+### 2026-07-08 behavior review — BCFD-071 terminal-velocity rising bubble
+Pattern: the synthetic 1 mm bubble terminal-speed calculation gives positive
+upward terminal velocity and a buoyancy/Schiller-Naumann drag balance within
+the 5% test band.
+Mechanism: terminal velocity is reached when displaced-liquid buoyancy is
+balanced by Reynolds-number-dependent Schiller-Naumann drag.
+Resolved vs closure: this is closure-driven, not resolved two-phase flow.
+Active closures are Archimedes buoyancy and Schiller-Naumann drag under
+`Re_bubble <= 800`; no lift, wall lubrication, turbulent dispersion, or
+momentum scatter is active in this test.
+Artifacts checked: no walls, outlets, clamps, or phase-interface seams are
+present in the zero-dimensional force-balance test. Scalar artifact:
+`crates/lbm-core/target/bcfd_071/rising_bubble_terminal_velocity.csv`.
+Verdict: CLOSURE-DRIVEN and physically plausible within the declared
+require the future VB group.

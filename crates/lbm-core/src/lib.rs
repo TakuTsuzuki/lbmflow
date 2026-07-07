@@ -24,6 +24,8 @@ pub mod backend;
 pub mod backend_simd;
 pub mod bench_regression;
 pub mod bouzidi;
+pub mod bubble_forces;
+pub mod bubbles;
 mod collision;
 pub mod compat;
 #[cfg(feature = "mpi")]
@@ -35,12 +37,15 @@ pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod halo;
+pub mod hybrid_gas;
 mod kernels;
+pub mod kla;
 pub mod lattice;
 pub mod les;
 pub mod materials;
 pub mod params;
 pub mod particles;
+pub mod pbm;
 pub mod phase_field;
 pub mod real;
 pub mod rotating_ibm;
@@ -57,6 +62,16 @@ pub mod prelude {
     pub use crate::backend::{Backend, CellRange, CpuScalar, HostMoments, PARALLEL_MIN_CELLS};
     pub use crate::backend_simd::CpuSimd;
     pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
+    pub use crate::bubble_forces::{
+        added_mass_force, bubble_reynolds, buoyancy_force, lift_placeholder_force, rk4_substep,
+        schiller_naumann_drag_force, turbulent_dispersion_placeholder_force,
+        wall_lubrication_placeholder_force, BubbleForceContext, ClosureValidity,
+        SCHILLER_NAUMANN_RE_MAX,
+    };
+    pub use crate::bubbles::{
+        bubble_volume_from_diameter, validate_bubble_diameter, Bubble, BubbleError, BubbleSet,
+        MomentumCouplingLedger, SpargerBubbleInjector, POINT_BUBBLE_ALPHA_G_MAX,
+    };
     pub use crate::divergence::{DivergenceError, PhaseDiag};
     pub use crate::fields::{DistributionKind, LocalGeom, ScalarDistribution, SoaFields};
     pub use crate::free_surface::{DegassingLedger, FreeSurfaceError, TopBoundaryMode};
@@ -67,6 +82,13 @@ pub mod prelude {
         WallContactAngle, SPARGER_ORIFICE_MIN_CELLS, STIRRED_TANK_MIN_CELLS,
     };
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
+    pub use crate::hybrid_gas::{
+        hybrid_gas_bookkeeping, reject_hybrid_evidence_tier, HybridGasReport,
+    };
+    pub use crate::kla::{
+        compute_kla_from_alpha_d32, compute_kla_from_pbm_bins, interfacial_area_from_alpha_d32,
+        oxygen_transfer_rate_mol_m3_s, KlModel, KlaProvenance, KlaReport,
+    };
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};
     pub use crate::materials::MaterialFields;
@@ -74,6 +96,10 @@ pub mod prelude {
         CollisionKind, FaceBC, FacePatch, MaterialModel, MaterialParamError,
         PhaseFieldMixtureParams, Reduction, SourceKind, SourceRegion, StepParams,
         ViscosityInterpolation, VolumeSource,
+    };
+    pub use crate::pbm::{
+        BreakupKernel, CoalescenceKernel, ConstantBreakup, ConstantCoalescence, DisabledKernel,
+        FutureKernelHook, PbmBins, PbmLocalState, PbmValidity, DEFAULT_PBM_BIN_COUNT,
     };
     pub use crate::phase_field::{
         ClippingPolicy, PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams,

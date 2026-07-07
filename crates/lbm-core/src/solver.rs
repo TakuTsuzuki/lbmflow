@@ -4006,6 +4006,18 @@ where
         }
     }
 
+    /// Install point-bubble liquid reaction forces as the solver body-force field.
+    ///
+    /// `values` uses compact global cell order, matching
+    /// [`crate::bubbles::MomentumCouplingLedger::liquid_reaction_force_n`].
+    pub fn set_bubble_reaction_force_field_values(&mut self, values: &[[f64; 3]]) {
+        let converted: Vec<[T; 3]> = values
+            .iter()
+            .map(|v| [T::r(v[0]), T::r(v[1]), T::r(v[2])])
+            .collect();
+        self.set_body_force_field_values(&converted);
+    }
+
     fn write_part_checkpoint(
         dir: &Path,
         rank: usize,
