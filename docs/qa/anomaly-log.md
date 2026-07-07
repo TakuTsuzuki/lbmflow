@@ -778,3 +778,15 @@ collision ~85x slower than D3Q27 TRT on CpuSimd, likely non-vectorized
 moment-transform path. Not a physics defect (V&V loop clean); speed-leg
 optimization target, queued for quiet-window characterization. Cross-
 tracks against MF-α cumulant coverage radar. No V&V action needed.
+
+### ME-4a smoke RESOLVED (core merge 76d47b8) — cascaded factorization
+Root cause: per-cell Gaussian back-solve `solve_moment_system` (O(Q³) =
+~19,683 ops/cell for D3Q27) inverting the moment transform. Core replaced
+with cascaded factorization: fixed integer raw-moment matrix + analytic
+binomial velocity shift, inverse analytic, no per-cell solve, across
+scalar/SIMD/GPU. O(Q³)→O(Q²). Independent V&V verification (main
+76d47b8): accuracy_audit_cumulant 3/8 green (5 ignored heavy), all light
+canaries pass; cumulant_acceptance 4/5 green. Bit-preservation held —
+existing bands untouched. Speed-leg smoke closed on the algorithmic
+grounds; MLUPS confirmation is a separate perf-window task. Not a physics
+change; no ledger entry beyond this note.
