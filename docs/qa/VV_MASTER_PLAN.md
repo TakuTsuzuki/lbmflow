@@ -95,8 +95,10 @@ Status: **RUN** running · **DONE** delivered (regression-pinned) ·
   (force-field overwrite/add rules) live here.
 - 5.2 **W2** Randomized property sweep — proptest-style legal configs;
   invariants = conservation, boundedness, determinism, mirror equivariance.
-- 5.3 **W2** Visual anomaly trawl — scripted matrix × params → PNG/VTK
-  → sim-anomaly-scan + qa-viewer; PM behavior-review flagged cases.
+- 5.3 **W2** Visual anomaly trawl — **HARNESS LANDED 2026-07-07**:
+  `scripts/qa/visual_trawl.py` scans existing PNG/VTK outputs and gallery
+  `vtk_field` files; guide: `docs/qa/visual-trawl-guide.md`. Operator matrix
+  run + qa-viewer behavior review remains the W2 campaign task.
 - 5.4 **W2** Long-horizon soak — 10⁶-step runs of cavity / channel+cylinder /
   SC droplet / post-fix penalized blade rotor; drift ledgers.
 - 5.5 **W3** Stability-envelope cartography — automated (tau, Ma, grid-Re)
