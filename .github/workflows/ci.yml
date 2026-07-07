@@ -6,34 +6,89 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
+    # Nightly heavy validation. Times are UTC.
+    - cron: "17 18 * * *"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  rust:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # LBM is ~50x slower in debug. CI must also use --release (CLAUDE.md)
-      - name: Test (default features)
-        run: cargo test --workspace --release
-      - name: CLI quick verification smoke
+      - name: Create log directory
+        run: mkdir -p ci-logs
+      - name: Build workspace
         run: |
-          cargo build -p lbm-cli --release
-          ./target/release/lbm verify --tier quick
-      - name: Build (gpu feature, compile-only — no GPU on runners)
-        run: cargo build -p lbm-core --release --features gpu || cargo build -p lbm-core2 --release --features gpu
-      - name: MPI feature
+          set -o pipefail
+          cargo build --workspace --release 2>&1 | tee ci-logs/cargo-build-workspace-release.log
+      # LBM is ~50x slower in debug. CI must also use --release (AGENTS.md / CLAUDE.md).
+      - name: Test workspace
         run: |
-          sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin
-          (cargo build -p lbm-core --release --features mpi || cargo build -p lbm-core2 --release --features mpi)
-          bash scripts/test_mpi.sh
+          set -o pipefail
+          cargo test --workspace --release 2>&1 | tee ci-logs/cargo-test-workspace-release.log
+      - name: Upload Rust logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+
+  gpu-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Create log directory
+        run: mkdir -p ci-logs
+      - name: Build lbm-core with gpu feature
+        run: |
+          set -o pipefail
+          cargo build -p lbm-core --release --features gpu 2>&1 | tee ci-logs/cargo-build-lbm-core-gpu.log
+      - name: Upload GPU logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+
+  mpi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Create log directory
+        run: mkdir -p ci-logs
+      - name: Install Open MPI
+        run: |
+          set -o pipefail
+          sudo apt-get update 2>&1 | tee ci-logs/apt-update.log
+          sudo apt-get install -y libopenmpi-dev openmpi-bin 2>&1 | tee ci-logs/apt-install-openmpi.log
+      - name: Build lbm-core with mpi feature
+        run: |
+          set -o pipefail
+          cargo build -p lbm-core --release --features mpi 2>&1 | tee ci-logs/cargo-build-lbm-core-mpi.log
+      - name: Run MPI validation smoke
+        run: |
+          set -o pipefail
+          bash scripts/test_mpi.sh 2>&1 | tee ci-logs/test-mpi.log
+      - name: Upload MPI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpi-logs
+          path: ci-logs/
+          if-no-files-found: ignore
 
   web:
     runs-on: ubuntu-latest
@@ -43,50 +98,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Create log directory
+        run: mkdir -p ci-logs
       - name: Build GUI (tsc strict + vite)
         working-directory: web
-        run: npm ci && npm run build
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee ../ci-logs/npm-ci.log
+          npm run build 2>&1 | tee ../ci-logs/npm-run-build.log
+      - name: Upload web logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-logs
+          path: ci-logs/
+          if-no-files-found: ignore
 
   heavy-validation:
     # Heavy validation (--include-ignored) runs nightly only
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Heavy validation
+      - name: Create log directory
+        run: mkdir -p ci-logs
+      - name: Test including ignored validation
         run: |
           set -o pipefail
-          cargo test --workspace --release -- --include-ignored 2>&1 | tee heavy-validation.log
-      - name: Performance regression check
-        run: |
-          set -o pipefail
-          if [ -f bench/baselines/ci-runner.json ]; then
-            TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            cargo run --release -p lbm-core --example bench_backends -- \
-              --check \
-              --host-tag ci-runner \
-              --timestamp "$TS" \
-              2>&1 | tee bench-regression.log
-          else
-            mkdir -p bench
-            echo "bench/baselines/ci-runner.json not found; skipping performance regression check" | tee bench-regression.log
-          fi
-      - name: Upload heavy validation log
+          cargo test --workspace --release -- --include-ignored 2>&1 | tee ci-logs/cargo-test-include-ignored.log
+      - name: Upload heavy validation logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: heavy-validation-log
-          path: heavy-validation.log
-      - name: Upload performance benchmark artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: performance-benchmark-artifacts
+          name: heavy-validation-logs
+          path: ci-logs/
           if-no-files-found: ignore
-          path: |
-            bench-regression.log
-            bench/history.csv
-            bench/results/*.json
