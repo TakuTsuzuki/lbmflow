@@ -9,6 +9,7 @@ mod manifest;
 mod mcp;
 mod output;
 mod render;
+mod report;
 mod runner;
 mod schema;
 mod validate;
@@ -97,6 +98,11 @@ enum Command {
     },
     /// Serve as an MCP server on stdio (AI agent integration)
     Mcp,
+    /// Bioprocess reporting and decision utilities
+    Bioprocess {
+        #[command(subcommand)]
+        action: BioprocessAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -110,6 +116,15 @@ enum PresetAction {
         name: String,
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BioprocessAction {
+    /// Generate report.md from a bioprocess run directory
+    Report {
+        /// Run directory containing qoi.json and manifest.json
+        run_dir: PathBuf,
     },
 }
 
@@ -282,6 +297,12 @@ fn main() -> Result<()> {
         Command::Mcp => {
             mcp::serve()?;
         }
+        Command::Bioprocess { action } => match action {
+            BioprocessAction::Report { run_dir } => {
+                let path = report::generate_report(&run_dir)?;
+                println!("{}", path.display());
+            }
+        },
     }
     Ok(())
 }
