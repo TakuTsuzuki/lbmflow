@@ -799,3 +799,22 @@ canaries pass; cumulant_acceptance 4/5 green. Bit-preservation held —
 existing bands untouched. Speed-leg smoke closed on the algorithmic
 grounds; MLUPS confirmation is a separate perf-window task. Not a physics
 change; no ledger entry beyond this note.
+
+### ANOM-DRY-002 — G5 Bouzidi tau-sweep root-selection bug (test-side, pre-existing red)
+- config: `accuracy_audit_bouzidi.rs::g5_bouzidi_effective_wall_position_vs_tau_heavy`
+  (heavy, `--include-ignored` only; red on main back to 6475502).
+- expected: effective lower wall y0 ≈ wall_lo = 0.3, tau-independent within
+  2% of h (source: TRT fixed-Λ parametrization property — steady state
+  depends on relaxation rates only through Λ = 3/16 here; band correctly
+  derived, NOT loosened).
+- observed: reported drift "100.022% of h". Fitted "y0" = 40.694…40.709 ≈
+  wall_hi = 40.7 — the quadratic-root branch `(-b - disc)/(2a)` picks the
+  LARGER root for the concave-down (a < 0) Poiseuille fit; the test compared
+  the upper-wall zero against wall_lo. True engine deviation: 0.009 lu
+  (0.022% of h) at the upper wall, ~60x inside band.
+- severity: S3 (test-side; no physics affected).
+- disposition: test-fix in-worktree — min-of-roots selection + in-file
+  ANOM-DRY-002 note + TRT-vs-BGK band derivation in the doc-comment;
+  PHYSICS.md 2026-07-07 triage entry. Pattern note: second quadratic-fit
+  plumbing error in this same file (ANOM-DRY-001 was the order-fit x-axis
+  reversal) — P1/P2 orders touching fit plumbing get a numeric self-check.

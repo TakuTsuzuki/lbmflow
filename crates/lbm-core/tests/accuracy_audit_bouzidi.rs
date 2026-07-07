@@ -317,6 +317,19 @@ fn g4_bouzidi_offgrid_couette_moving_wall_spec_gap() {
 /// fractional qd. Heavy sweep (5 tau values × steady-state runs). The
 /// functional form to assert is A3: the fitted parabola-zero position vs
 /// tau must be a horizontal line at wall_lo within band, NOT merely small.
+///
+/// Operator-dependence derivation (why tau-independence is the RIGHT band
+/// here): the channel uses TRT with FIXED magic Λ = 3/16. For TRT, steady-
+/// state solutions depend on the relaxation rates only through
+/// Λ = (τ⁺ - 1/2)(τ⁻ - 1/2) (Ginzburg's parametrization property), so
+/// sweeping tau at fixed Λ must leave the effective wall position invariant
+/// up to convergence/Ma² residuals. Under BGK this band would be MIS-DERIVED:
+/// linkwise interpolated bounce-back has a Λ-dependent slip, and BGK ties
+/// Λ = (τ - 1/2)²/4 to tau, so the effective wall genuinely moves with tau.
+/// Do not port this band to a BGK variant without re-deriving it.
+/// Measured 2026-07-07 (post ANOM-DRY-002 root fix): max drift 0.022% of h
+/// (y0 = 0.2911…0.3058 vs wall_lo = 0.30) across tau ∈ [0.55, 2.0] — the
+/// 2% band has ~90x headroom.
 #[test]
 #[ignore = "heavy ACC-AUDIT G5 tau sweep — 5 tau × ~6000 steps at ny=42"]
 fn g5_bouzidi_effective_wall_position_vs_tau_heavy() {
@@ -368,7 +381,14 @@ fn g5_bouzidi_effective_wall_position_vs_tau_heavy() {
         }
         let (a, b, c) = (sol[0], sol[1], sol[2]);
         let disc = (b * b - 4.0 * a * c).max(0.0).sqrt();
-        let y0 = (-b - disc) / (2.0 * a); // lower zero
+        // Roots of a·y² + b·y + c. The Poiseuille fit is concave-down
+        // (a < 0), so (-b - disc)/(2a) is the LARGER root — selecting it
+        // as "lower zero" was ANOM-DRY-002 (the test compared the upper
+        // wall zero ≈ wall_hi against wall_lo and reported a bogus drift
+        // of ~100% of h). Take the min of both roots explicitly.
+        let r_lo = (-b - disc) / (2.0 * a);
+        let r_hi = (-b + disc) / (2.0 * a);
+        let y0 = r_lo.min(r_hi); // lower zero, sign-of-a robust
         println!("ACC G5: tau={tau:.2}, effective y0={y0:.4} (nominal wall_lo={wall_lo:.2})");
         positions.push(y0);
     }

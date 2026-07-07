@@ -1373,3 +1373,29 @@ the audit F1–F3 are re-scoped as domain-boundary witnesses (#[ignore]'d,
 runnable), F5/F6 green, F4 thin-blade referee documented-red pending an
 acceptance criterion that states the short-horizon window. All rotor-audit
 items are mf-interim-gated and do not affect default landing gates.
+
+### 2026-07-07 triage — ANOM-DRY-002 G5 Bouzidi tau-sweep "wall drift" was a test-side root-selection bug (`crates/lbm-core/tests/accuracy_audit_bouzidi.rs`)
+The heavy audit test `g5_bouzidi_effective_wall_position_vs_tau_heavy`
+(pre-existing red back to 6475502) reported the Bouzidi effective wall
+drifting by "100.022% of h" where tau-independence is demanded. Triage per
+lbmflow-accuracy-audit P3 (derive before blaming the engine):
+- The quadratic-fit root formula `(-b - disc)/(2a)`, labeled "lower zero",
+  returns the LARGER root for a concave-down Poiseuille fit (a < 0). The
+  test compared the UPPER wall zero (fitted 40.694–40.709, nominal
+  wall_hi = 40.7) against wall_lo = 0.3, so dev ≈ h ≈ 100% by construction.
+- Operator check: the channel runs TRT with fixed magic Λ = 3/16. For TRT,
+  steady solutions depend on relaxation rates only through Λ, so
+  tau-independence IS the correct band for this operator — no loosening.
+  (Under BGK the band would be mis-derived: interpolated bounce-back slip
+  is Λ-dependent and BGK ties Λ to tau.) Derivation recorded in the test
+  doc-comment.
+- Engine behavior is healthy: effective wall within 0.009 lu (0.022% of h)
+  of nominal across tau ∈ [0.55, 2.0]; residual tau-variation of 0.015 lu
+  is consistent with incomplete transient decay at the smallest nu
+  (width²/nu ≈ 98k steps vs the 15k run), not a slip law.
+Disposition: S3 test-fix in-file (min-of-roots selection, sign-of-a
+robust); band 2% of h unchanged; no engine change. Logged as ANOM-DRY-002
+in docs/qa/anomaly-log.md (same file's dry run previously produced the
+ANOM-DRY-001 x-axis reversal — quadratic-fit plumbing in audit tests is
+now a twice-confirmed P3 rake; re-derive fit outputs before blaming the
+engine).
