@@ -1205,3 +1205,26 @@ zero-net-force formulation) and a validation update; no mean-force
 subtraction or tuning was applied in this order.
 Routing: PM/spec decision for ANOM-P4-016; core implementation only after the
 forcing model is derived and accepted.
+
+---
+
+### 2026-07-07 checkerboard ghost-mode decay envelope (`crates/lbm-core/tests/accuracy_audit_modes.rs`)
+- Decision: the `(pi, pi)` odd-even density-mode audit asserts monotone
+  non-increase of a three-sample absolute-amplitude envelope, not strict
+  adjacent-sample monotonicity of `|amp(pi,pi)|`.
+- Rationale: the checkerboard perturbation is a Brillouin-corner ghost mode.
+  It is strongly damped by the BGK/TRT collision spectrum, but the signed
+  coefficient can oscillate after the mode reaches round-off and for TRT near
+  `tau=0.5`. Adjacent absolute values may therefore have tiny rebounds even
+  though the physical envelope is decaying. The load-bearing physics anchor is
+  envelope damping plus no growth and no transfer into orthogonal staggered
+  modes.
+- Validation: `cargo test -p lbm-core --release --test accuracy_audit_modes -- --nocapture`
+  passed on 2026-07-07. Measured BGK `tau=0.6`: raw monotonicity `0.300`,
+  envelope monotonicity `1.000`, final/initial `1.942077e-12`,
+  max growth `1.000000`, max leakage sum `1.409463e-18`. Measured TRT
+  `tau=0.51`, `Lambda=3/16`: raw monotonicity `0.800`, envelope monotonicity
+  `1.000`, final/initial `2.941800e-5`, max growth `1.000000`, max leakage
+  sum `1.843144e-18`.
+  The frozen gates are final/initial `<1e-8` for BGK and `<1e-3` for TRT,
+  leakage `<1e-12`, and max growth `<2`.
