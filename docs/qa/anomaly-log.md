@@ -324,3 +324,48 @@ common/gci.rs helper is the cheapest fix); (2) no vocabulary crosswalk
 validation gates (label VALIDATION_GATE vs REGRESSION_PIN + add one
 external Maxwell-rule holdout for T11). No hidden calibration hack
 survived the +0.0025 cleanup — process risk only.
+
+## Pass 7 — 2026-07-07, SC pressure-tensor + band-retighten
+
+### ANOM-P4-023 — SC MECHANICAL σ is 6x below the Laplace σ (lane 1.7 flagship result)
+Direct pressure-tensor Kirkwood-Buff and Young-Laplace integrations
+FINALLY QUANTIFY the three-way referee (P4-014 Jurin, P4-017 TC, P4-018/019):
+- **P1 Young-Laplace σ**: 2.87e-2 at r=12 (rel error 13.5% vs T11), r=16
+  9.1%, r=20 6.1% — **converges to sigma_Laplace as R→∞** — the discrete
+  pressure-tensor IS the Laplace-consistent one. (Fails the ±10% band at
+  the smallest R by 3.5 pp — freeze as R-dependence characterization.)
+- **P2 SC pressure-tensor anisotropy**: 1.07% (well below the 15% band).
+- **P3 KB flat-interface**: sigma_KB = 3.64e-2, rel 9.5% vs Laplace (in band).
+- **P4 momentum-flux σ from Taylor-Culick rim**: **6.09e-3, rel 83% vs KB**.
+The SC pressure-tensor integrates to a Laplace-consistent σ on flat and
+curved interfaces (P1/P3 consistent within band), but the MOMENTUM
+delivered by a moving interface is 6x smaller (P4). Verdict candidate:
+**it is not σ that varies — it is the momentum coupling of the moving
+interface**. The Taylor-Culick rim deficit (P4-017 v/v_TC=0.49) is
+consistent with this — sqrt(0.49) is not 1/6, so the mapping is not
+trivial, but the direction matches: the moving interface transmits
+sub-nominal momentum. Related to P4-018 (near-wall shear artifact) and
+P4-019 (contact-line immobility) — same SC "static-vs-dynamic" limitation
+family. Rename Jurin 1.54× (P4-014) into this framework: static σ from a
+STATIC meniscus is 1.54× flat-wall theory, but the KB flat σ is
+Laplace-consistent, so P4-014's 1.54× may be the CURVATURE-dependent
+static σ, not a dynamic issue. Hypothesis for lane 1.7 rev 2: P4-023's
+r-dependent P1 (5.1e-3 shift over R∈{12,20}) IS the R-dependence that
+projects onto Jurin's meniscus geometry. Investigation: measure σ_YL(R)
+across a wider R range and cross-plot Jurin's h·w vs the theory using the
+R-dependent σ.
+- Documented-red gate: cx/sc-pressure-tensor.
+
+### Lane 2.2 band-retighten COMPLETED (cx/band-retighten 8374f9d, merged 62cdc4a)
+All 9 rows retightened using measured×20 (or physical-model caps with
+stated headroom). Full workspace gate green (EXIT:0). Prints every
+measured value in every retightened assert. Two-layer rule retrofit
+applied to D3Q19/D3Q27 lid smoke gates (added upper bounds + magnitude
+ratios). Zero tightened bands failed — the gates were purely vacuous.
+
+### Merge-queue completion (task #12)
+All 9 cx/vv-* branches merged into main (26137ae, 8d05b5a, 5b18a53,
+fcc1eea, 08cdaf1, 47b4e83, ecb247c, 2050e50, 62cdc4a). CI cron / traceability
+matrix / mutation runner / FSI safe-downgrade / multiphase anchors / GPU
+absolute physics D2Q9 / scenario hardening / visual plots / evidence
+templates all landed.
