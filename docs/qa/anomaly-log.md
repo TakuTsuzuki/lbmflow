@@ -698,3 +698,15 @@ known-limitation pin — physical picture in the assertion message.
 - T31 per-cell omega asymmetry via WALE + Couette mirror: L2 mirror
   deviation 3.19e-16 (=round-off). WALE per-cell omega is symmetric under
   x-mirror. Latent-defect hypothesis A28 REFUTED.
+
+### ANOM-P4-025 CLOSED (core merge bb7d26a; V&V verified 2026-07-07)
+Bouzidi moving-wall qd<0.5 second-point branch now carries the wall
+source on BOTH interpolation points: σ·(f_q(x_f)+W) + (1-σ)·(f_q(x_f-c_q)+W).
+Independent verification on main: qd=0.25 max_rel_dev=1.11e-15,
+qd=0.5=8.33e-16, qd=0.75=1.39e-15 vs band 2e-3 — exact to machine
+precision across the full qd sweep. cx/vv-bmw `qd_sweep_..._all_qd`
+un-ignored and retightened; qd=0.5 half-way MW bitwise degeneracy
+preserved. **5 core defects closed by the V&V loop**: P4-008 cumulant
+offset (C), P4-001 IBM sizing, P4-021 Zou-He×Guo mass leak, P4-022 SC
+force overwrite, P4-025 Bouzidi qd<0.5. Zero open S1/S2 core defects
+remain.
