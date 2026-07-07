@@ -743,3 +743,6 @@ Same as above. Route: PHYSICS.md note ("validity domain: thin/porous
 structures AND horizons under ~O(20000) steps at moderate resolution")
 + recommend IBM for long-time thin-blade studies. No core action
 requested; this is a modeling limit.
+
+### ANOM-P4-028 — SC Psi::eval lacks explicit rho positivity guard (S3, code-to-spec A22 confirmed)
+Direct code inspection (compat/multiphase.rs:61-65): `Psi::Classic => 1.0 - (-rho).exp()` is safe for any rho (bounded output, no division); `Psi::Exponential => psi0 * (-rho0 / rho).exp()` DIVIDES BY rho and would blow up as rho → 0. NO explicit rho.max() / clamp / debug_assert!(rho > 0) guard exists before eval. Empirically dynamic dynamics keep rho well above 0.05 in the supported T11 regime (measured G1 min=0.112, G2 aggressive min=0.043 — both above 0.01 hard-positivity floor), so the guard-absence has NOT bitten in-envelope. But an aggressive-user config with Psi::Exponential + strong forcing could reach rho → 0 and NaN silently. Route: PHYSICS.md note + optional debug_assert in Psi::eval Exponential branch. S3 (bounded impact — Psi::Exponential is optional non-default; Psi::Classic is the T11-frozen default and is safe). No urgent action.
