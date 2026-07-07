@@ -369,3 +369,15 @@ fcc1eea, 08cdaf1, 47b4e83, ecb247c, 2050e50, 62cdc4a). CI cron / traceability
 matrix / mutation runner / FSI safe-downgrade / multiphase anchors / GPU
 absolute physics D2Q9 / scenario hardening / visual plots / evidence
 templates all landed.
+
+### Axis 9.4 sedimentation experiment observation (main 23a876d)
+Harness LANDED and RUNS but its physics anchor was too loose: with the
+posted parameters (d=1.5, rho_p=2, nu=1/6, g=5e-5) v_stokes=3.75e-5 gives
+settling length 3.28e4 cells >> 128-cell basin, so 499/500 particles stay
+suspended after 10k steps and the "factor-of-3" anchor is trivially met.
+The visual (out/vv_sedim_2d/deposition_map.png) shows particles piled at
+the inlet column only — a valid honesty artifact, not a physics defect.
+Rev-2 needed: d=6+ (v_stokes scales as d²), longer run, or gravity ×10
+(state Reynolds-limit tradeoffs). Mass conservation exact (n_deposited +
+n_suspended = 500). Not filing an ANOM — this is an experiment-design
+issue on my side to be fixed in the next revision.
