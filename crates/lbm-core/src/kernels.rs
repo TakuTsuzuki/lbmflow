@@ -546,6 +546,28 @@ pub(crate) enum ZhKind<T: Real> {
     Pressure(T),
 }
 
+#[inline]
+fn force_independent_at<T: Real>(p: &KParams<T>, ff: Option<&[[T; 3]]>, idx: usize) -> [T; 3] {
+    match ff {
+        Some(field) => [
+            p.force[0] + field[idx][0],
+            p.force[1] + field[idx][1],
+            p.force[2] + field[idx][2],
+        ],
+        None => p.force,
+    }
+}
+
+#[inline]
+fn has_nonzero_force<T: Real>(f0: [T; 3], gravity: [T; 3]) -> bool {
+    f0[0] != T::zero()
+        || f0[1] != T::zero()
+        || f0[2] != T::zero()
+        || gravity[0] != T::zero()
+        || gravity[1] != T::zero()
+        || gravity[2] != T::zero()
+}
+
 /// Iterate the core cells of a face plane in canonical order: the two
 /// tangent axes ascending, lower axis innermost. For 2D faces this is V1's
 /// `side_cells` order (`y` ascending on X faces, `x` ascending on Y faces).
@@ -668,6 +690,26 @@ pub(crate) fn for_face_cells_selected(
 /// face-parallel weights cancel pairwise in `Q_t`), so the formulas apply
 /// to deviations unchanged.
 ///
+/// Guo forcing: `moments_row` defines physical velocity by
+/// `rho u = Σ_q c_q f_q + F/2`. A velocity face must therefore prescribe
+/// the raw boundary momentum `rho v = rho u_bc - F/2`, not `rho u_bc`.
+/// Equivalently, the standard NEBB closure is applied to the pre-force
+/// velocity `v = u_bc - F/(2 rho)`. For a composed force
+/// `F = F0 + rho g`, the D2Q9 velocity-face density follows from
+/// `rho (1 - u_n) + (F0_n + rho g_n)/2 = S0 + 2 S- + 1`:
+///
+/// ```text
+/// rho = (closure - F0_n/2) / (1 - u_n + g_n/2)
+/// v_n = u_n - (F0_n + rho g_n) / (2 rho)
+/// v_t = u_t - (F0_t + rho g_t) / (2 rho)
+/// ```
+///
+/// Pressure faces still prescribe `rho`; their raw normal velocity is solved
+/// by `v_n = 1 - closure/rho`, and zero physical tangential velocity gives
+/// `v_t = -F_t/(2 rho)`. If the composed force is exactly zero, the branch
+/// below uses the original formulas verbatim so all no-force Zou-He gates
+/// remain bit-identical.
+///
 /// Under a z-invariant field with `u_z = 0`, the D3Q19 reconstruction
 /// projects exactly onto the D2Q9 one (sum populations over `c_z`): the
 /// z-corrections vanish by z-reflection symmetry and the x/y formulas add up
@@ -677,6 +719,8 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
     np: usize,
     geom: &LocalGeom,
     solid: &[bool],
+    ff: Option<&[[T; 3]]>,
+    p: &KParams<T>,
     face: Face,
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
@@ -684,9 +728,11 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
 ) {
     if L::D == 3 {
         if L::unknowns(face).len() == 9 {
-            return zou_he_face_d3q27::<L, T>(f, np, geom, solid, face, kind, profile, selection);
+            return zou_he_face_d3q27::<L, T>(
+                f, np, geom, solid, ff, p, face, kind, profile, selection,
+            );
         }
-        return zou_he_face_3d::<L, T>(f, np, geom, solid, face, kind, profile, selection);
+        return zou_he_face_3d::<L, T>(f, np, geom, solid, ff, p, face, kind, profile, selection);
     }
     let n = face.n_in();
     let (nxi, nyi) = (n[0] as i32, n[1] as i32);
@@ -704,26 +750,62 @@ pub(crate) fn zou_he_face_selected<L: Lattice, T: Real>(
         if solid[i] {
             return;
         }
+        let cidx = geom.cidx(pos[0], pos[1], pos[2]);
+        let f0 = force_independent_at(p, ff, cidx);
+        let g = p.gravity.unwrap_or([T::zero(); 3]);
         let s0 = f[L::REST * np + i] + f[q_t * np + i] + f[q_mt * np + i];
         let sneg = f[L::OPP[q_n] * np + i] + f[L::OPP[q_d1] * np + i] + f[L::OPP[q_d2] * np + i];
         let closure = s0 + two * sneg + T::one();
-        let (r, un, ut) = match *kind {
+        if !has_nonzero_force(f0, g) {
+            let (r, un, ut) = match *kind {
+                ZhKind::Velocity(u) => {
+                    let u = profile.map_or(u, |p| p[coord]);
+                    let un = u[0] * nxr + u[1] * nyr;
+                    let ut = u[0] * txr + u[1] * tyr;
+                    (closure / (T::one() - un), un, ut)
+                }
+                ZhKind::Pressure(rho_bc) => {
+                    // From the closure rho (1 - u.n) = S0 + 2 S-.
+                    let un = T::one() - closure / rho_bc;
+                    (rho_bc, un, T::zero())
+                }
+            };
+            let tcorr = half * (r * ut - (f[q_t * np + i] - f[q_mt * np + i]));
+            f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c23 * r * un;
+            f[q_d1 * np + i] = f[L::OPP[q_d1] * np + i] + c16 * r * un + tcorr;
+            f[q_d2 * np + i] = f[L::OPP[q_d2] * np + i] + c16 * r * un - tcorr;
+            return;
+        }
+        let f0n = f0[0] * nxr + f0[1] * nyr;
+        let f0t = f0[0] * txr + f0[1] * tyr;
+        let gn = g[0] * nxr + g[1] * nyr;
+        let gt = g[0] * txr + g[1] * tyr;
+        let (r, vn, vt) = match *kind {
             ZhKind::Velocity(u) => {
                 let u = profile.map_or(u, |p| p[coord]);
-                let un = u[0] * nxr + u[1] * nyr;
-                let ut = u[0] * txr + u[1] * tyr;
-                (closure / (T::one() - un), un, ut)
+                let un_phys = u[0] * nxr + u[1] * nyr;
+                let ut_phys = u[0] * txr + u[1] * tyr;
+                let r = (closure - half * f0n) / (T::one() - un_phys + half * gn);
+                let inv_r = T::one() / r;
+                (
+                    r,
+                    un_phys - half * (f0n * inv_r + gn),
+                    ut_phys - half * (f0t * inv_r + gt),
+                )
             }
             ZhKind::Pressure(rho_bc) => {
-                // From the closure rho (1 - u.n) = S0 + 2 S-.
-                let un = T::one() - closure / rho_bc;
-                (rho_bc, un, T::zero())
+                let inv_r = T::one() / rho_bc;
+                (
+                    rho_bc,
+                    T::one() - closure * inv_r,
+                    -half * (f0t * inv_r + gt),
+                )
             }
         };
-        let tcorr = half * (r * ut - (f[q_t * np + i] - f[q_mt * np + i]));
-        f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c23 * r * un;
-        f[q_d1 * np + i] = f[L::OPP[q_d1] * np + i] + c16 * r * un + tcorr;
-        f[q_d2 * np + i] = f[L::OPP[q_d2] * np + i] + c16 * r * un - tcorr;
+        let tcorr = half * (r * vt - (f[q_t * np + i] - f[q_mt * np + i]));
+        f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c23 * r * vn;
+        f[q_d1 * np + i] = f[L::OPP[q_d1] * np + i] + c16 * r * vn + tcorr;
+        f[q_d2 * np + i] = f[L::OPP[q_d2] * np + i] + c16 * r * vn - tcorr;
     });
 }
 
@@ -744,6 +826,8 @@ fn zou_he_face_d3q27<L: Lattice, T: Real>(
     np: usize,
     geom: &LocalGeom,
     solid: &[bool],
+    ff: Option<&[[T; 3]]>,
+    p: &KParams<T>,
     face: Face,
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
@@ -777,6 +861,9 @@ fn zou_he_face_d3q27<L: Lattice, T: Real>(
         if solid[i] {
             return;
         }
+        let cidx = geom.cidx(pos[0], pos[1], pos[2]);
+        let f0 = force_independent_at(p, ff, cidx);
+        let g = p.gravity.unwrap_or([T::zero(); 3]);
 
         let mut s0 = T::zero();
         let mut sneg = T::zero();
@@ -796,24 +883,52 @@ fn zou_he_face_d3q27<L: Lattice, T: Real>(
         }
 
         let closure = s0 + two * sneg + one;
-        let (rho, un, ut1, ut2) = match *kind {
-            ZhKind::Velocity(u) => {
-                let u = profile.map_or(u, |p| p[coord]);
-                (closure / (one - u[a] * nsign), u[a] * nsign, u[t1], u[t2])
+        let (rho, vn, vt1, vt2) = if !has_nonzero_force(f0, g) {
+            match *kind {
+                ZhKind::Velocity(u) => {
+                    let u = profile.map_or(u, |p| p[coord]);
+                    (closure / (one - u[a] * nsign), u[a] * nsign, u[t1], u[t2])
+                }
+                ZhKind::Pressure(rho_bc) => {
+                    let un = one - closure / rho_bc;
+                    (rho_bc, un, T::zero(), T::zero())
+                }
             }
-            ZhKind::Pressure(rho_bc) => {
-                let un = one - closure / rho_bc;
-                (rho_bc, un, T::zero(), T::zero())
+        } else {
+            let f0n = f0[a] * nsign;
+            let gn = g[a] * nsign;
+            match *kind {
+                ZhKind::Velocity(u) => {
+                    let u = profile.map_or(u, |p| p[coord]);
+                    let un_phys = u[a] * nsign;
+                    let rho = (closure - T::r(0.5) * f0n) / (one - un_phys + T::r(0.5) * gn);
+                    let inv_r = one / rho;
+                    (
+                        rho,
+                        un_phys - T::r(0.5) * (f0n * inv_r + gn),
+                        u[t1] - T::r(0.5) * (f0[t1] * inv_r + g[t1]),
+                        u[t2] - T::r(0.5) * (f0[t2] * inv_r + g[t2]),
+                    )
+                }
+                ZhKind::Pressure(rho_bc) => {
+                    let inv_r = one / rho_bc;
+                    (
+                        rho_bc,
+                        one - closure * inv_r,
+                        -T::r(0.5) * (f0[t1] * inv_r + g[t1]),
+                        -T::r(0.5) * (f0[t2] * inv_r + g[t2]),
+                    )
+                }
             }
         };
 
-        let c_t1 = rho * ut1 * (one - six * s2_t1) - q0_t1;
-        let c_t2 = rho * ut2 * (one - six * s2_t2) - q0_t2;
+        let c_t1 = rho * vt1 * (one - six * s2_t1) - q0_t1;
+        let c_t2 = rho * vt2 * (one - six * s2_t2) - q0_t2;
         for &q in unknowns {
             let c = L::C[q];
-            let cdotu = T::r(c[a] as f64) * nsign * un
-                + T::r(c[t1] as f64) * ut1
-                + T::r(c[t2] as f64) * ut2;
+            let cdotu = T::r(c[a] as f64) * nsign * vn
+                + T::r(c[t1] as f64) * vt1
+                + T::r(c[t2] as f64) * vt2;
             let w = T::r(L::W[q]);
             let delta =
                 c_t1 * w * T::r(c[t1] as f64) / s2_t1 + c_t2 * w * T::r(c[t2] as f64) / s2_t2;
@@ -840,6 +955,8 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
     np: usize,
     geom: &LocalGeom,
     solid: &[bool],
+    ff: Option<&[[T; 3]]>,
+    p: &KParams<T>,
     face: Face,
     kind: &ZhKind<T>,
     profile: Option<&[[T; 3]]>,
@@ -891,6 +1008,9 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
         if solid[i] {
             return;
         }
+        let cidx = geom.cidx(pos[0], pos[1], pos[2]);
+        let f0 = force_independent_at(p, ff, cidx);
+        let g = p.gravity.unwrap_or([T::zero(); 3]);
         let s0 = f[L::REST * np + i]
             + f[q_t1 * np + i]
             + f[q_mt1 * np + i]
@@ -906,16 +1026,45 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
             + f[L::OPP[q_p2] * np + i]
             + f[L::OPP[q_m2] * np + i];
         let closure = s0 + two * sneg + T::one();
-        let (r, un, ut1, ut2) = match *kind {
-            ZhKind::Velocity(u) => {
-                let u = profile.map_or(u, |p| p[coord]);
-                let un = u[a] * nsign;
-                (closure / (T::one() - un), un, u[t1], u[t2])
+        let (r, vn, vt1, vt2) = if !has_nonzero_force(f0, g) {
+            match *kind {
+                ZhKind::Velocity(u) => {
+                    let u = profile.map_or(u, |p| p[coord]);
+                    let un = u[a] * nsign;
+                    (closure / (T::one() - un), un, u[t1], u[t2])
+                }
+                ZhKind::Pressure(rho_bc) => {
+                    // From the closure rho (1 - u·n) = S0 + 2 S⁻.
+                    let un = T::one() - closure / rho_bc;
+                    (rho_bc, un, T::zero(), T::zero())
+                }
             }
-            ZhKind::Pressure(rho_bc) => {
-                // From the closure rho (1 - u·n) = S0 + 2 S⁻.
-                let un = T::one() - closure / rho_bc;
-                (rho_bc, un, T::zero(), T::zero())
+        } else {
+            let half = T::r(0.5);
+            let f0n = f0[a] * nsign;
+            let gn = g[a] * nsign;
+            match *kind {
+                ZhKind::Velocity(u) => {
+                    let u = profile.map_or(u, |p| p[coord]);
+                    let un_phys = u[a] * nsign;
+                    let r = (closure - half * f0n) / (T::one() - un_phys + half * gn);
+                    let inv_r = T::one() / r;
+                    (
+                        r,
+                        un_phys - half * (f0n * inv_r + gn),
+                        u[t1] - half * (f0[t1] * inv_r + g[t1]),
+                        u[t2] - half * (f0[t2] * inv_r + g[t2]),
+                    )
+                }
+                ZhKind::Pressure(rho_bc) => {
+                    let inv_r = T::one() / rho_bc;
+                    (
+                        rho_bc,
+                        T::one() - closure * inv_r,
+                        -half * (f0[t1] * inv_r + g[t1]),
+                        -half * (f0[t2] * inv_r + g[t2]),
+                    )
+                }
             }
         };
         // Transverse fluxes of the face-parallel populations.
@@ -925,13 +1074,13 @@ fn zou_he_face_3d<L: Lattice, T: Real>(
         let qt2 = f[q_t2 * np + i] - f[q_mt2 * np + i] + f[q_pp * np + i] - f[q_pm * np + i]
             + f[q_mp * np + i]
             - f[q_mm * np + i];
-        let n1 = c13 * r * ut1 - half * qt1;
-        let n2 = c13 * r * ut2 - half * qt2;
-        f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c13 * r * un;
-        f[q_p1 * np + i] = f[L::OPP[q_p1] * np + i] + c16 * r * (un + ut1) + n1;
-        f[q_m1 * np + i] = f[L::OPP[q_m1] * np + i] + c16 * r * (un - ut1) - n1;
-        f[q_p2 * np + i] = f[L::OPP[q_p2] * np + i] + c16 * r * (un + ut2) + n2;
-        f[q_m2 * np + i] = f[L::OPP[q_m2] * np + i] + c16 * r * (un - ut2) - n2;
+        let n1 = c13 * r * vt1 - half * qt1;
+        let n2 = c13 * r * vt2 - half * qt2;
+        f[q_n * np + i] = f[L::OPP[q_n] * np + i] + c13 * r * vn;
+        f[q_p1 * np + i] = f[L::OPP[q_p1] * np + i] + c16 * r * (vn + vt1) + n1;
+        f[q_m1 * np + i] = f[L::OPP[q_m1] * np + i] + c16 * r * (vn - vt1) - n1;
+        f[q_p2 * np + i] = f[L::OPP[q_p2] * np + i] + c16 * r * (vn + vt2) + n2;
+        f[q_m2 * np + i] = f[L::OPP[q_m2] * np + i] + c16 * r * (vn - vt2) - n2;
     });
 }
 
@@ -1118,6 +1267,80 @@ mod tests {
             face_patches: Vec::new(),
         };
         KParams::new::<D3Q19>(&params)
+    }
+
+    #[test]
+    fn zou_he_d2q9_zero_force_matches_legacy_formula_bitwise() {
+        let geom = LocalGeom::new(2, [3, 4, 1], 0);
+        let np = geom.n_padded();
+        let face = Face::XNeg;
+        let n = face.n_in();
+        let (nxi, nyi) = (n[0] as i32, n[1] as i32);
+        let (tx, ty) = (-nyi, nxi);
+        let q_n = D2Q9::dir_index([nxi as i8, nyi as i8, 0]);
+        let q_d1 = D2Q9::dir_index([(nxi + tx) as i8, (nyi + ty) as i8, 0]);
+        let q_d2 = D2Q9::dir_index([(nxi - tx) as i8, (nyi - ty) as i8, 0]);
+        let q_t = D2Q9::dir_index([tx as i8, ty as i8, 0]);
+        let q_mt = D2Q9::dir_index([-tx as i8, -ty as i8, 0]);
+        let params = StepParams::<f64> {
+            collision: CollisionKind::Trt { magic: 3.0 / 16.0 },
+            omega_p: 1.25,
+            omega_m: 0.7,
+            force: [0.0; 3],
+            gravity: None,
+            faces: [FaceBC::Closed; 6],
+            sources: Vec::new(),
+            face_patches: Vec::new(),
+        };
+        let kp = KParams::new::<D2Q9>(&params);
+        let mut f = vec![0.0; D2Q9::Q * np];
+        for q in 0..D2Q9::Q {
+            for i in 0..np {
+                f[q * np + i] = 1.0e-4 * ((q + 1) as f64) + 1.0e-6 * ((i + 3) as f64);
+            }
+        }
+        let mut expected = f.clone();
+        let u = [0.031, -0.017, 0.0];
+        let nxr = nxi as f64;
+        let nyr = nyi as f64;
+        let txr = tx as f64;
+        let tyr = ty as f64;
+        for_face_cells(&geom, face, |_, pos| {
+            let i = geom.pidx(pos[0], pos[1], pos[2]);
+            let s0 =
+                expected[D2Q9::REST * np + i] + expected[q_t * np + i] + expected[q_mt * np + i];
+            let sneg = expected[D2Q9::OPP[q_n] * np + i]
+                + expected[D2Q9::OPP[q_d1] * np + i]
+                + expected[D2Q9::OPP[q_d2] * np + i];
+            let closure = s0 + 2.0 * sneg + 1.0;
+            let un = u[0] * nxr + u[1] * nyr;
+            let ut = u[0] * txr + u[1] * tyr;
+            let r = closure / (1.0 - un);
+            let tcorr = 0.5 * (r * ut - (expected[q_t * np + i] - expected[q_mt * np + i]));
+            expected[q_n * np + i] = expected[D2Q9::OPP[q_n] * np + i] + (2.0 / 3.0) * r * un;
+            expected[q_d1 * np + i] =
+                expected[D2Q9::OPP[q_d1] * np + i] + (1.0 / 6.0) * r * un + tcorr;
+            expected[q_d2 * np + i] =
+                expected[D2Q9::OPP[q_d2] * np + i] + (1.0 / 6.0) * r * un - tcorr;
+        });
+        let solid = vec![false; np];
+        zou_he_face_selected::<D2Q9, f64>(
+            &mut f,
+            np,
+            &geom,
+            &solid,
+            None,
+            &kp,
+            face,
+            &ZhKind::Velocity(u),
+            None,
+            FaceCellSelection::All,
+        );
+        assert_eq!(
+            f.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "zero-force D2Q9 Zou-He path must stay bit-identical to the legacy formula"
+        );
     }
 
     fn collide_cumulant_rest_fixed_point<L: Lattice>() {
