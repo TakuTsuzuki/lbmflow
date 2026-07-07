@@ -23,25 +23,29 @@ credibility tiers in
 
 Every row cites either a code location (source of truth) or a doc entry.
 
-## 1. Bioprocess capabilities (BCFD scope)
+## 1. Bioprocess capabilities (BCFD-002 registry snapshot)
 
-| Capability | Status (2026-07-07) | Reason | Evidence |
-|---|---|---|---|
-| Single-phase stirred tank | Unsupported | Runner path (BCFD-030) not yet implemented; only legacy demo presets exist. | `docs/PLAN.md` M0 |
-| Rotating IBM (impeller) | Engineering (technical) / Unsupported (bioprocess QOI) | IBM landed pre-pivot but not wired into `BioprocessScenario` yet. | `crates/lbm-core/src/rotating_ibm.rs` |
-| Passive scalar transport | Unsupported | Scalar distribution not yet allocated (BCFD-010, BCFD-034). | BCFD-010 |
-| Phase-field VOF (Allen-Cahn) | Unsupported | Not implemented; Shan-Chen is not a substitute (demo-only). | BCFD-040 |
-| Sparger gas injection | Unsupported | Depends on BCFD-022 + BCFD-046. | — |
-| Oxygen transport / kLa | Experimental | BCFD-050..053 hooks landed; VB-06 and calibrated kL evidence gate still block Engineering/Evidence claims. | `crates/lbm-core/src/oxygen.rs`, `crates/lbm-core/src/reaction.rs` |
-| Point bubbles / PBM | Unsupported | M3 work. | — |
-| Cell / microcarrier exposure | Unsupported | M2 work; BCFD-060..063. | — |
-| UQ / sweep runner | Unsupported | M2 work; BCFD-083. | — |
-| Scale-up operating window | Unsupported | M2 work; BCFD-084. | — |
-| Evidence-tier report | Unsupported | Gate not implemented; BCFD-091. | — |
+The table below is keyed by capability id and must match
+`crates/lbm-cli/src/capabilities.rs`. `crates/lbm-cli/tests/capabilities_drift_guard.rs`
+fails if a status or tier ceiling differs from the registry.
 
-Every row above becomes `Experimental` on ticket landing, then
-`Engineering` once its VB group passes, then `EvidenceReady` per QOI
-after BCFD-091.
+| Capability id | Capability | Status | Tier ceiling | Reason | Evidence / release note |
+|---|---|---|---|---|---|
+| `single_phase_stirred_tank` | Single-phase stirred tank | Experimental | Screening | BCFD-030 runner path implemented; VB-01 not yet green. | `docs/PLAN.md#bcfd-030`; closed 2026-07-08 via BCFD-030. |
+| `rotating_ibm` | Rotating IBM impeller | Experimental | Screening | BCFD-030 integration implemented; stirred-tank validation pending. | `docs/PLAN.md#bcfd-021`; closed 2026-07-08 via BCFD-021 / BCFD-030. |
+| `passive_scalar` | Passive scalar transport | Experimental | Screening | BCFD-034 ADE path implemented; VB-02 reducer tests are green, but registry promotion still waits on integrated product artefacts. | `docs/PLAN.md#bcfd-034`; closed 2026-07-08 via BCFD-034. |
+| `phase_field_vof` | Phase-field VOF | Unsupported | Screening | Conservative Allen-Cahn path is not yet implemented in the registry. | `docs/PLAN.md#bcfd-040`. |
+| `oxygen_kla` | Oxygen transport and kLa | Experimental | Screening | BCFD-050..053 oxygen scalar, Henry flux, kLa fit, and OUR hooks implemented; VB-06 synthetic reducer tests are green, but calibrated kL and holdout artefacts are absent. | `docs/PLAN.md#bcfd-050`; closed 2026-07-08 via BCFD-050..053. |
+| `point_bubbles` | Point bubbles | Unsupported | Screening | Point-bubble entity store is not yet implemented. | `docs/PLAN.md#bcfd-070`. |
+| `pbm` | Population balance model | Unsupported | Screening | PBM bins and kernels are not yet implemented. | `docs/PLAN.md#bcfd-073`. |
+| `cell_exposure` | Cell and microcarrier exposure | Unsupported | Screening | Cell tracer and exposure QOIs are not yet implemented in the registry. | `docs/PLAN.md#bcfd-060`. |
+| `evidence_tier_report` | Evidence-tier report | Unsupported | Evidence | Evidence gate is implemented, but required artefacts are absent: validation matrix pass, calibration/holdout separation, mesh/time-step sensitivity, QOI uncertainty interval, and limitation report. | `docs/PLAN.md#bcfd-091`. |
+
+Promotion rule: a capability is `Experimental` when its code path exists
+but lacks the full bioprocess validation package; `Engineering` requires
+registry promotion after the relevant VB group and numerical sensitivity
+records are green; `EvidenceReady` is per QOI and only after BCFD-091
+returns ready. As of 2026-07-08, no QOI is `EvidenceReady`.
 
 ## 2. Legacy LBM capabilities preserved (with demo warning)
 

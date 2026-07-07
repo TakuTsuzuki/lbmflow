@@ -1,10 +1,11 @@
 # LBMFlow
 
 **A bioprocess-specific CFD core.** Rust engine, scenario CLI, and a native
-MCP server so AI agents can drive it. Its purpose is to compute the QOIs
-that drive stirred-tank cell-culture and bioreactor process decisions:
-power number, mixing time, gas holdup, kLa, shear exposure, oxygen
-exposure, cell / microcarrier damage risk, and scale-up operating windows.
+MCP server so AI agents can drive it. Its QOI catalog targets the
+quantities that drive stirred-tank cell-culture and bioreactor process
+decisions: power number, mixing time, gas holdup, kLa, shear exposure,
+oxygen exposure, cell / microcarrier damage risk, and scale-up operating
+windows.
 
 Generic CFD parity is *not* a goal. See [docs/BIOPROCESS_PIVOT.md](docs/BIOPROCESS_PIVOT.md)
 for the pivot rationale and what has been retracted / preserved.
@@ -18,27 +19,34 @@ snapshot is `git tag v1-lbm-general-final`; its docs live under
 ## Product mission
 
 LBMFlow is the CFD side of a bioprocess design workflow, not a
-general-purpose simulator. Concretely:
+general-purpose simulator. The release-facing source of truth is the
+BCFD-002 capability registry exposed by `lbm capabilities --json`; unsupported
+combinations fail with structured errors instead of silently falling back.
 
-- **Impeller and vessel hydrodynamics** — Np, P/V, discharge Nq for
-  Rushton and pitched-blade in stirred tanks.
-- **Shear-rate and viscous-stress fields** with percentile distributions
-  (P50 / P90 / P95 / P99); wall-shear diagnostics.
-- **Passive-scalar mixing** — CV-based t95 and t99 mixing time.
-- **Resolved gas-liquid** via conservative Allen-Cahn phase field, with
-  surface tension, contact angle, and a sparger conservation ledger.
-- **Oxygen transport** with Henry-equilibrium interfacial flux; kLa QOI
-  from dynamic gassing.
-- **Cell / microcarrier trajectories** with shear-exposure integrals and
-  Schiller-Naumann validity enforcement.
-- **Point-bubble + PBM engineering mode** for aeration with d32 and
-  interfacial-area-based kLa.
-- **UQ / sweep runner** and **scale-up operating-window evaluator**.
-- **Evidence-tier gate** requiring calibration + holdout + UQ +
-  sensitivity records before any evidence claim can be labelled.
+Current supported tier: **Screening only**. The registry marks the landed
+single-phase stirred-tank, rotating-IBM, passive-scalar, and oxygen/kLa paths
+as `Experimental`: code exists, but the full bioprocess evidence package is
+not populated. No QOI is `EvidenceReady` in this release.
 
 The plan lives in [docs/PLAN.md](docs/PLAN.md) as tickets BCFD-000..110
 across milestones M0..M3.
+
+## Capability snapshot
+
+Generated from the current registry by manual mirror; drift is guarded by
+`crates/lbm-cli/tests/capabilities_drift_guard.rs`.
+
+| Capability id | Capability | Registry status | Tier ceiling | What that means in this release |
+|---|---|---|---|---|
+| `single_phase_stirred_tank` | Single-phase stirred tank | Experimental | Screening | BCFD-030 runner path exists; VB-01 reference artefacts and sensitivity records still block Engineering / Evidence claims. |
+| `rotating_ibm` | Rotating IBM impeller | Experimental | Screening | Impeller integration is available for screening; stirred-tank validation is not complete. |
+| `passive_scalar` | Passive scalar transport | Experimental | Screening | ADE path and reducer tests exist; product use remains screening until registry promotion. |
+| `phase_field_vof` | Phase-field VOF | Unsupported | Screening | Conservative Allen-Cahn production path is rejected until BCFD-040..048 are complete in the registry. |
+| `oxygen_kla` | Oxygen transport and kLa | Experimental | Screening | Oxygen scalar, Henry-flux hooks, dynamic-gassing fit, and OUR hooks exist; calibrated kL plus holdout data are absent. |
+| `point_bubbles` | Point bubbles | Unsupported | Screening | Point-bubble entity store is not available. |
+| `pbm` | Population balance model | Unsupported | Screening | PBM bins and kernels are not available. |
+| `cell_exposure` | Cell and microcarrier exposure | Unsupported | Screening | Cell tracer and exposure QOIs are rejected by the capability registry. |
+| `evidence_tier_report` | Evidence-tier report | Unsupported | Evidence | BCFD-091 exists as a gate, but no QOI has the validation, calibration, holdout, UQ, sensitivity, and limitation artefacts required for `EvidenceReady`. |
 
 ## Design principles
 
@@ -68,23 +76,24 @@ across milestones M0..M3.
 
 ## Getting started
 
-### CLI (bioprocess workflow — target surface, ticket-gated)
+### CLI (bioprocess workflow)
 
 ```bash
 cargo build --workspace --release
 ./target/release/lbm capabilities --json                # what is supported
 ./target/release/lbm schema --bioprocess                # bioprocess scenario JSON schema
-./target/release/lbm bioprocess validate my-tank.json   # unit feasibility + capability check
-./target/release/lbm bioprocess run my-tank.json        # run + QOI extraction
-./target/release/lbm bioprocess qoi out/my-tank/        # print qoi.json + provenance
-./target/release/lbm bioprocess report out/my-tank/     # human-readable report
-./target/release/lbm bioprocess sweep my-sweep.json     # UQ / parameter sweep
-./target/release/lbm bioprocess evidence-check out/     # evidence-gate result
+./target/release/lbm bioprocess validate my-tank.json       # unit feasibility + capability check
+./target/release/lbm bioprocess run my-tank.json --out out/tank
+./target/release/lbm bioprocess qoi out/tank                # print qoi.json + provenance
+./target/release/lbm bioprocess report out/tank             # write report.md
+./target/release/lbm bioprocess sweep my-sweep.json --out out/sweep
+./target/release/lbm bioprocess scaleup scaleup.json --out out/scaleup
+./target/release/lbm bioprocess evidence-check out/tank     # evidence-gate result
 ```
 
-The `bioprocess` subcommands land per BCFD-092. Until then the M0 subset
-(single-phase Np / P/V / mixing / shear) is what the CLI can actually
-produce.
+The `bioprocess` subcommands are the BCFD-092 surface. They emit structured
+JSON and respect the capability registry: unsupported product combinations
+are rejected rather than downgraded.
 
 ### CLI (legacy demos, still runnable)
 

@@ -87,6 +87,12 @@ Failure of any of these blocks evidence tier but not engineering tier.
 The gate is mechanical, not editorial: humans cannot override to `Ready`
 without adding the missing artefacts.
 
+Release status as of 2026-07-08: BCFD-091 is implemented, but no current
+QOI qualifies for `EvidenceReady`. The BCFD-002 registry keeps
+`evidence_tier_report` at `Unsupported` because validation-matrix pass,
+calibration/holdout separation, mesh/time-step sensitivity, QOI uncertainty
+interval, and limitation-report artefacts are not populated for any QOI.
+
 ## 6. Retraction and drift
 
 - When a model parameter is retuned (calibration data updated), all

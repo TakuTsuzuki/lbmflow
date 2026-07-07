@@ -55,8 +55,19 @@ Each capability, and each QOI derived from it, carries a tier:
   records; enforced by the evidence gate (BCFD-091). Suitable for external
   submissions where the tool's role must be defensible.
 
-Current status: **all bioprocess QOIs are pre-Tier-1** until their BCFD
-ticket lands with its validation entry.
+Current registry status as of 2026-07-08:
+
+- `Experimental`: `single_phase_stirred_tank`, `rotating_ibm`,
+  `passive_scalar`, `oxygen_kla`.
+- `Unsupported`: `phase_field_vof`, `point_bubbles`, `pbm`,
+  `cell_exposure`, `evidence_tier_report`.
+- `Engineering` / `EvidenceReady`: none in the BCFD-002 capability
+  registry.
+
+Some VB reducer tests are Engineering GREEN in
+[VALIDATION_BIOPROCESS.md](VALIDATION_BIOPROCESS.md), but product capability
+tier is the registry value. A report may not carry an evidence label unless
+BCFD-091 returns `EvidenceReady` for that specific QOI.
 
 ## 4. QOI catalog
 
