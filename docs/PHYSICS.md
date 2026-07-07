@@ -233,6 +233,16 @@ relaxation rate 0. The second-order deviatoric moments use the configured
 `omega_shear`, including the per-cell WALE/LES omega field when present. The
 second-order trace (bulk) relaxes at rate 1.0.
 
+On 2026-07-07 the central-moment transform was factored algebraically without
+changing the operator. The previous implementation built the shifted
+central-moment matrix `M(u)` and inverted it per cell. The live CPU and GPU
+paths now compute fixed raw moments `R f`, apply the binomial raw-to-central
+shift by `u`, keep the same relaxation/source schedule, inverse-shift
+central-to-raw moments, and multiply by the fixed `R^-1` matrix for the
+lattice. This is the identity
+`(c - u)^e = sum_{k <= e} binom(e, k) c^k (-u)^(e-k)` and its inverse; it
+adds no model term, limiter, calibration constant, or changed validity domain.
+
 The original stage-2 implementation also relaxed all third/higher central
 moments directly to continuous Maxwellian central moments. That was wrong for
 the implemented operator: the solver initializes and equilibrates with the
@@ -597,6 +607,22 @@ tight" chases physically impossible numbers.
     error `3.170276018e-3`; D3Q27 rate `9.299938977e-3`, analytic
     `9.252754126e-3`, relative error `5.099546655e-3`. D3Q19 is not an
     outlier against the D3Q27 error plus the T15 band (`2.509954666e-2`).
+- CORRECTION (2026-07-07 r2-c triage): the D3Q19 holdout numbers quoted in
+  the "Validation results" block above were measured on the PRE-removal tree
+  and were stale by the time this entry landed — the offset removal itself
+  shifts every D3Q19 central-moment decay observable by the nu_eff rescale
+  factor ≈1.0238 at nu=0.02 (≈1.0131 at nu=0.04). Post-removal holdout
+  measurements (6d55a50, same command): advected rates `{4.742352837e-3,
+  4.747148842e-3, 4.761124801e-3}` for `u_frame={0,0.05,0.1}`, relative
+  errors `{2.506837906e-2, 2.610504448e-2, 2.912597405e-2}`, frame spread
+  `3.951818763e-3` (FINDING unchanged in kind); off-calibration Re rate
+  `9.342134708e-3`, `nu_eff = 4.038639558e-2`, relative error
+  `9.659889417e-3` (T15 band green); cross-check D3Q19 `9.659889417e-3` vs
+  D3Q27 `5.099546655e-3` (D3Q27 bit-unchanged). The post-removal rest-frame
+  error `2.5e-2` IS the honest finite-N=32 D3Q19 viscosity defect the banned
+  offset was hiding; the resolution-independent accuracy claim stays with
+  the h² intercept (`a = 2.171836972e-5`). See the r2-c triage resolution
+  entry further below.
 - Corrected acceptance: the viscosity gate is resolution-aware h² intercept,
   not a single N=32 value. The finite-N smoke in
   `crates/lbm-core/tests/cumulant_acceptance.rs` is re-frozen to the
@@ -1131,6 +1157,40 @@ Routing: none.
   r2-c owner: intentional physics change to be recorded + holdout values
   re-frozen, or regression to be fixed). Do not rebuild the error model until
   the baseline is adjudicated.
+- RESOLVED (2026-07-07 triage): the cause is 3af4b3a (ANOM-P4-008 removal of
+  the banned D3Q19 `+0.0025` shear-relaxation offset), which rode the same
+  merge d35faf4 — NOT the scalar TRT collision seam and NOT the ANOM-P2-001
+  impulse fix. Elimination: the seam commit b28d88b rewrote only
+  `collide_row` (BGK/TRT); `CollisionKind::CentralMoment` dispatches to
+  `collide_row_central_moment`, untouched by it. The impulse fix fires only
+  in `set_gravity` / `set_body_force_field` / `clear_body_force_field`; the
+  holdout initializes via `init_with` only, and E0 is bit-identical across
+  the merge (`1.179648000e0`). Quantitative closure: at nu=0.02, deleting
+  `+0.0025` from `omega_eff` rescales `nu_eff` by 1.023830, predicting rest
+  rate `4.634861882e-3 * 1.023830 = 4.745309655e-3` vs measured
+  `4.742352837e-3` (residual 6.2e-4 relative, second-order `-0.16|u|^2`
+  interaction); at nu=0.04 the rescale 1.013053 predicts `9.343821e-3` vs
+  measured `9.342134708e-3`, including the error's sign flip
+  (`-3.170276018e-3` -> `+9.659889417e-3`). The offset was guarded by
+  `L::D == 3 && L::Q == 19`, hence the D3Q27 bit-identity.
+- Verdict: intentional, discipline-mandated physics correction; no code fix.
+  The new rest-frame rel_err `2.506837906e-2` is the honest finite-N=32
+  viscosity defect previously masked by the banned calibration (h²-intercept
+  audit `a = 2.171836972e-5` remains the accuracy claim). Post-removal
+  holdout values are recorded in the CORRECTION bullet of the ANOM-P4-008
+  entry above.
+- Band-vacuity fix: `cumulant_holdout.rs` now pins the rest-frame decay rate
+  to a frozen anchor `4.742352837e-3` (relative half-width 1e-5, runs in the
+  default suite, documented as a change-detector, not a physics band).
+  Firing => adjudicate + re-freeze with a PHYSICS.md entry; never widen.
+- Galilean round-2 UNBLOCKED: post-merge WITH-term anchors are re-measured
+  and recorded in docs/proposals/CUMULANT_GALILEAN_FIX.md (adjudication
+  note). The shift is a near-uniform multiplicative nu_eff rescale, so the
+  frame-growth structure survives (per-frame deltas vs u_frame=0:
+  pre `{1.074678841e-3, 4.210159412e-3}` -> post
+  `{1.036665420e-3, 4.057594990e-3}`), but STEP-0 gates (1)-(3) must use the
+  post-merge values and gate (4)'s kappa decomposition must be re-extracted
+  (requires the C=0 ablation rerun on the post-merge tree).
 
 ### 2026-07-07 W-VOF O1 counter-term interface-maintenance fix (`crates/lbm-core/src/phase_field.rs`, `Solver::phase_field_step_prescribed_velocity`)
 - Form: the D3Q19 conservative Allen-Cahn source remains the Fakhari
@@ -1339,3 +1399,29 @@ the audit F1–F3 are re-scoped as domain-boundary witnesses (#[ignore]'d,
 runnable), F5/F6 green, F4 thin-blade referee documented-red pending an
 acceptance criterion that states the short-horizon window. All rotor-audit
 items are mf-interim-gated and do not affect default landing gates.
+
+### 2026-07-07 triage — ANOM-DRY-002 G5 Bouzidi tau-sweep "wall drift" was a test-side root-selection bug (`crates/lbm-core/tests/accuracy_audit_bouzidi.rs`)
+The heavy audit test `g5_bouzidi_effective_wall_position_vs_tau_heavy`
+(pre-existing red back to 6475502) reported the Bouzidi effective wall
+drifting by "100.022% of h" where tau-independence is demanded. Triage per
+lbmflow-accuracy-audit P3 (derive before blaming the engine):
+- The quadratic-fit root formula `(-b - disc)/(2a)`, labeled "lower zero",
+  returns the LARGER root for a concave-down Poiseuille fit (a < 0). The
+  test compared the UPPER wall zero (fitted 40.694–40.709, nominal
+  wall_hi = 40.7) against wall_lo = 0.3, so dev ≈ h ≈ 100% by construction.
+- Operator check: the channel runs TRT with fixed magic Λ = 3/16. For TRT,
+  steady solutions depend on relaxation rates only through Λ, so
+  tau-independence IS the correct band for this operator — no loosening.
+  (Under BGK the band would be mis-derived: interpolated bounce-back slip
+  is Λ-dependent and BGK ties Λ to tau.) Derivation recorded in the test
+  doc-comment.
+- Engine behavior is healthy: effective wall within 0.009 lu (0.022% of h)
+  of nominal across tau ∈ [0.55, 2.0]; residual tau-variation of 0.015 lu
+  is consistent with incomplete transient decay at the smallest nu
+  (width²/nu ≈ 98k steps vs the 15k run), not a slip law.
+Disposition: S3 test-fix in-file (min-of-roots selection, sign-of-a
+robust); band 2% of h unchanged; no engine change. Logged as ANOM-DRY-002
+in docs/qa/anomaly-log.md (same file's dry run previously produced the
+ANOM-DRY-001 x-axis reversal — quadratic-fit plumbing in audit tests is
+now a twice-confirmed P3 rake; re-derive fit outputs before blaming the
+engine).

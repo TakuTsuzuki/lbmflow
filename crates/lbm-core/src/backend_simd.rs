@@ -71,7 +71,10 @@ use crate::backend::{
 };
 use crate::fields::{FusedScratch, LocalGeom, SoaFields};
 use crate::halo::HaloExchange;
-use crate::kernels::{central_basis, central_phi, for_face_cells, solve_moment_system, RawSlice};
+use crate::kernels::{
+    central_moment_transform, central_to_raw_moments, for_face_cells,
+    populations_to_central_moments, raw_moments_to_populations, RawSlice,
+};
 use crate::lattice::{Face, Lattice, Q_MAX};
 use crate::params::{
     KParams, Reduction, StepParams, CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION,
@@ -561,7 +564,8 @@ unsafe fn collide_span_central_moment<L: Lattice, T: Real>(
     uz: &[T],
     kp: &KParams<T>,
 ) {
-    let basis = central_basis::<L>();
+    let transform = central_moment_transform::<L>();
+    let basis = &transform.basis;
     for x in x0..x1 {
         let r_t = rho[x];
         let r = r_t.as_f64();
@@ -620,17 +624,9 @@ unsafe fn collide_span_central_moment<L: Lattice, T: Real>(
             }
             feq_phys[q] = L::W[q] * r * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq);
         }
-        let mut mom = [0.0f64; Q_MAX];
-        let mut src_mom = [0.0f64; Q_MAX];
-        let mut eq = [0.0f64; Q_MAX];
-        for m in 0..L::Q {
-            for q in 0..L::Q {
-                let phi = central_phi::<L>(q, basis[m], u);
-                mom[m] += phi * phys[q];
-                eq[m] += phi * feq_phys[q];
-                src_mom[m] += phi * src_pop[q];
-            }
-        }
+        let mom = populations_to_central_moments::<L>(transform, u, &phys);
+        let eq = populations_to_central_moments::<L>(transform, u, &feq_phys);
+        let src_mom = populations_to_central_moments::<L>(transform, u, &src_pop);
         let os_base = omega.map_or(kp.omega_shear.as_f64(), |v| v[x].as_f64());
         let velocity_correction = if CENTRAL_MOMENT_DISABLE_VELOCITY_CORRECTION_FOR_ABLATION {
             0.0
@@ -676,7 +672,8 @@ unsafe fn collide_span_central_moment<L: Lattice, T: Real>(
             post[idx] =
                 eq[idx] + (1.0 - os) * dev_neq + 0.5 * bulk_src + (1.0 - 0.5 * os) * dev_src;
         }
-        let out_phys = solve_moment_system::<L>(&basis, u, &post);
+        let raw_post = central_to_raw_moments::<L>(transform, u, &post);
+        let out_phys = raw_moments_to_populations::<L>(transform, &raw_post);
         for q in 0..L::Q {
             unsafe { dst.planes.set(dst.idx(q, x), T::r(out_phys[q] - L::W[q])) };
         }

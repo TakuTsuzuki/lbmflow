@@ -371,6 +371,29 @@ The falsification data (recorded verbatim in `docs/PHYSICS.md` 2026-07-07 falsif
 These are the **four measured numbers** any surviving model must reproduce before it may predict a
 post-fix spread.
 
+> **2026-07-07 r2-c ADJUDICATION — anchors above are PRE-r2-c only.** The merge d35faf4 carried
+> ANOM-P4-008 (removal of the banned D3Q19 `+0.0025` shear-relaxation offset), an intentional
+> physics correction that rescales D3Q19 `nu_eff` by ×1.023830 at `nu=0.02` (see the PHYSICS.md
+> r2-c triage resolution entry). Post-merge WITH-term (`C=0.16`, live code) re-measurement at
+> 6d55a50, same case (`N=32, nu=0.02, u0=0.012, 160 steps`):
+>
+> | quantity | post-merge value |
+> |---|---|
+> | frame spread **WITH** term | `3.951818763e-3` |
+> | per-frame rel. decay-rate error WITH term, `u_frame={0,0.05,0.1}` | `{2.506837906e-2, 2.610504448e-2, 2.912597405e-2}` |
+> | per-frame rates | `{4.742352837e-3, 4.747148842e-3, 4.761124801e-3}` |
+> | derived band (unchanged) | `1.156594266e-3` |
+>
+> The rescale is near-uniform across frames (per-frame deltas vs `u_frame=0`:
+> pre `{1.075e-3, 4.210e-3}` → post `{1.037e-3, 4.058e-3}`, ~3.6% relative shift), so the
+> qualitative defect picture (§0–§2) and the frame-growth mechanism survive. However, the R2.3.1
+> reproduction gates and STEP 0 must use POST-merge numbers: gates (1) and (3) as tabled above;
+> gate (2) WITHOUT-term spread and gate (4) `kappa_native`/`kappa_with` must be re-measured with
+> the `C=0` ablation run on the post-merge tree before the error model is re-fit. The rest-frame
+> rate is additionally pinned by the frozen anchor in `cumulant_holdout.rs`
+> (`tgv3d_u0_decay_rate_matches_frozen_anchor`); a shipped correction that changes it must
+> re-freeze that anchor in the same commit with its PHYSICS.md entry.
+
 ## R2.0 The observable the model must target (read from `cumulant_holdout.rs`)
 
 `measure_decay` computes, over `steps=160`:

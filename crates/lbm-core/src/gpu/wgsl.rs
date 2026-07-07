@@ -42,6 +42,7 @@
 //! reassociations that are exact). Remaining CPU↔GPU drift comes from the
 //! Metal compiler's FMA/reassociation, bounded by T14's tolerance.
 
+use crate::kernels::{central_moment_transform, MomentTransform};
 use crate::lattice::{Face, Lattice};
 use crate::params;
 use std::fmt::Write;
@@ -578,46 +579,92 @@ fn emit_step_entry<L: Lattice>(
     *s += "}\n\n";
 }
 
-fn central_basis_vec<L: Lattice>() -> Vec<[u8; 3]> {
-    let mut basis = Vec::with_capacity(L::Q);
-    for ax in 0..=2 {
-        for ay in 0..=2 {
-            for az in 0..=2 {
-                if L::D == 2 && az != 0 {
-                    continue;
+fn binom_upto2(n: u8, k: u8) -> f32 {
+    match (n, k) {
+        (_, 0) => 1.0,
+        (1, 1) => 1.0,
+        (2, 1) => 2.0,
+        (2, 2) => 1.0,
+        _ => unreachable!("central basis only uses powers 0..=2"),
+    }
+}
+
+fn weighted_array_sum(
+    n: usize,
+    name: impl Fn(usize) -> String,
+    coeff: impl Fn(usize) -> f32,
+) -> String {
+    let mut terms = Vec::new();
+    for i in 0..n {
+        let c = coeff(i);
+        if c == 0.0 {
+            continue;
+        }
+        let term = name(i);
+        if c == 1.0 {
+            terms.push(term);
+        } else if c == -1.0 {
+            terms.push(format!("-{term}"));
+        } else {
+            terms.push(format!("{} * {term}", lit(c)));
+        }
+    }
+    if terms.is_empty() {
+        "0.0f".to_string()
+    } else {
+        terms.join(" + ")
+    }
+}
+
+fn shifted_moment_expr(
+    transform: &MomentTransform,
+    input: &str,
+    e: [u8; 3],
+    raw_to_central: bool,
+) -> String {
+    let mut terms = Vec::new();
+    for kx in 0..=e[0] {
+        for ky in 0..=e[1] {
+            for kz in 0..=e[2] {
+                let idx = transform.exp_index[kx as usize][ky as usize][kz as usize];
+                debug_assert_ne!(idx, usize::MAX);
+                let mut coef =
+                    binom_upto2(e[0], kx) * binom_upto2(e[1], ky) * binom_upto2(e[2], kz);
+                let mut factors = Vec::new();
+                for (axis, (e_axis, k_axis)) in
+                    [e[0], e[1], e[2]].into_iter().zip([kx, ky, kz]).enumerate()
+                {
+                    let p = e_axis - k_axis;
+                    if raw_to_central && p % 2 == 1 {
+                        coef = -coef;
+                    }
+                    let v = ["ux", "uy", "uz"][axis];
+                    match p {
+                        0 => {}
+                        1 => factors.push(v.to_string()),
+                        2 => factors.push(format!("{v} * {v}")),
+                        _ => unreachable!("central basis only uses powers 0..=2"),
+                    }
                 }
-                if L::D == 3 && L::Q == 19 && ax > 0 && ay > 0 && az > 0 {
-                    continue;
-                }
-                if basis.len() < L::Q {
-                    basis.push([ax, ay, az]);
-                }
+                factors.push(format!("{input}[{idx}]"));
+                let term = if coef == 1.0 {
+                    factors.join(" * ")
+                } else if coef == -1.0 {
+                    format!("-{}", factors.join(" * "))
+                } else {
+                    format!("{} * {}", lit(coef), factors.join(" * "))
+                };
+                terms.push(term);
             }
         }
     }
-    basis
-}
-
-fn phi_expr(c: [i8; 3], exp: [u8; 3]) -> String {
-    let term = |axis: usize, name: &str| -> String {
-        let base = format!("({}.0f - {name})", c[axis]);
-        match exp[axis] {
-            0 => "1.0f".to_string(),
-            1 => base,
-            2 => format!("{base} * {base}"),
-            _ => unreachable!(),
-        }
-    };
-    let mut out = format!("{} * {}", term(0, "ux"), term(1, "uy"));
-    if exp[2] != 0 {
-        out = format!("{out} * {}", term(2, "uz"));
-    }
-    out
+    terms.join(" + ")
 }
 
 fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
     let n = L::Q;
-    let basis = central_basis_vec::<L>();
+    let transform = central_moment_transform::<L>();
+    let basis = &transform.basis;
     *s += "    var phys: array<f32, ";
     let _ = writeln!(s, "{n}>;");
     *s += "    var source: array<f32, ";
@@ -640,19 +687,39 @@ fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
             "    feq_phys[{q}] = {w} * rho * (1.0f + 3.0f * ({cu}) + 4.5f * ({cu}) * ({cu}) - 1.5f * usq);"
         );
     }
+    let _ = writeln!(s, "    var raw: array<f32, {n}>;");
+    let _ = writeln!(s, "    var src_raw: array<f32, {n}>;");
+    let _ = writeln!(s, "    var eq_raw: array<f32, {n}>;");
     let _ = writeln!(s, "    var mom: array<f32, {n}>;");
     let _ = writeln!(s, "    var src_mom: array<f32, {n}>;");
     let _ = writeln!(s, "    var eq: array<f32, {n}>;");
     for m in 0..n {
-        let _ = writeln!(s, "    mom[{m}] = 0.0f;");
-        let _ = writeln!(s, "    src_mom[{m}] = 0.0f;");
-        let _ = writeln!(s, "    eq[{m}] = 0.0f;");
-        for q in 0..n {
-            let phi = phi_expr(L::C[q], basis[m]);
-            let _ = writeln!(s, "    mom[{m}] += ({phi}) * phys[{q}];");
-            let _ = writeln!(s, "    src_mom[{m}] += ({phi}) * source[{q}];");
-            let _ = writeln!(s, "    eq[{m}] += ({phi}) * feq_phys[{q}];");
-        }
+        let raw = weighted_array_sum(
+            n,
+            |q| format!("phys[{q}]"),
+            |q| transform.raw_from_pop[m][q] as f32,
+        );
+        let src_raw = weighted_array_sum(
+            n,
+            |q| format!("source[{q}]"),
+            |q| transform.raw_from_pop[m][q] as f32,
+        );
+        let eq_raw = weighted_array_sum(
+            n,
+            |q| format!("feq_phys[{q}]"),
+            |q| transform.raw_from_pop[m][q] as f32,
+        );
+        let _ = writeln!(s, "    raw[{m}] = {raw};");
+        let _ = writeln!(s, "    src_raw[{m}] = {src_raw};");
+        let _ = writeln!(s, "    eq_raw[{m}] = {eq_raw};");
+    }
+    for (m, e) in basis.iter().take(n).enumerate() {
+        let mom = shifted_moment_expr(transform, "raw", *e, true);
+        let src_mom = shifted_moment_expr(transform, "src_raw", *e, true);
+        let eq = shifted_moment_expr(transform, "eq_raw", *e, true);
+        let _ = writeln!(s, "    mom[{m}] = {mom};");
+        let _ = writeln!(s, "    src_mom[{m}] = {src_mom};");
+        let _ = writeln!(s, "    eq[{m}] = {eq};");
     }
     if L::D == 3 {
         *s +=
@@ -670,7 +737,7 @@ fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
         "    let os = min(2.0f, os_base * (1.0f + {velocity_correction}));"
     );
     let _ = writeln!(s, "    var post: array<f32, {n}>;");
-    for (m, e) in basis.iter().enumerate() {
+    for (m, e) in basis.iter().take(n).enumerate() {
         let order = e[0] as usize + e[1] as usize + e[2] as usize;
         let rate = match order {
             0 | 1 => "0.0f",
@@ -713,51 +780,19 @@ fn emit_central_moment_collide<L: Lattice>(s: &mut String) {
             "    post[{idx}] = eq[{idx}] + (1.0f - os) * (mom[{idx}] - eq[{idx}] - bulk_neq) + 0.5f * bulk_src + (1.0f - 0.5f * os) * (src_mom[{idx}] - bulk_src);"
         );
     }
-    let cols = n + 1;
-    let _ = writeln!(s, "    var a: array<array<f32, {cols}>, {n}>;");
-    for m in 0..n {
-        for q in 0..n {
-            let phi = phi_expr(L::C[q], basis[m]);
-            let _ = writeln!(s, "    a[{m}][{q}] = {phi};");
-        }
-        let _ = writeln!(s, "    a[{m}][{n}] = post[{m}];");
+    let _ = writeln!(s, "    var post_raw: array<f32, {n}>;");
+    for (m, e) in basis.iter().take(n).enumerate() {
+        let raw = shifted_moment_expr(transform, "post", *e, false);
+        let _ = writeln!(s, "    post_raw[{m}] = {raw};");
     }
-    let _ = writeln!(
-        s,
-        "    for (var col: u32 = 0u; col < {n}u; col = col + 1u) {{"
-    );
-    *s += "        var pivot = col;\n";
-    let _ = writeln!(
-        s,
-        "        for (var row: u32 = col + 1u; row < {n}u; row = row + 1u) {{"
-    );
-    *s += "            if (abs(a[row][col]) > abs(a[pivot][col])) { pivot = row; }\n";
-    *s += "        }\n";
-    *s += "        if (pivot != col) {\n";
-    let _ = writeln!(
-        s,
-        "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{"
-    );
-    *s += "                let tmp = a[col][j]; a[col][j] = a[pivot][j]; a[pivot][j] = tmp;\n";
-    *s += "            }\n";
-    *s += "        }\n";
-    *s += "        let inv = 1.0f / a[col][col];\n";
-    let _ = writeln!(
-        s,
-        "        for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[col][j] = a[col][j] * inv; }}"
-    );
-    let _ = writeln!(
-        s,
-        "        for (var row: u32 = 0u; row < {n}u; row = row + 1u) {{"
-    );
-    *s += "            if (row == col) { continue; }\n";
-    *s += "            let factor = a[row][col];\n";
-    let _ = writeln!(s, "            for (var j: u32 = col; j <= {n}u; j = j + 1u) {{ a[row][j] = a[row][j] - factor * a[col][j]; }}");
-    *s += "        }\n";
-    *s += "    }\n";
     for q in 0..n {
         let w = lit(L::W[q] as f32);
-        let _ = writeln!(s, "    let fc{q} = a[{q}][{n}] - {w};");
+        let out = weighted_array_sum(
+            n,
+            |m| format!("post_raw[{m}]"),
+            |m| transform.pop_from_raw[q][m] as f32,
+        );
+        let _ = writeln!(s, "    let fc{q} = ({out}) - {w};");
     }
 }
 
