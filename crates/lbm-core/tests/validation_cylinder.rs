@@ -2,6 +2,9 @@
 // scripts/sync-tests.sh mechanical retarget); now the canonical facade tests.
 //! Validation T8: Schaefer-Turek channel flow past a circular cylinder.
 
+mod common;
+
+use common::gci::gci_from_series;
 use lbm_core::compat::prelude::*;
 
 const MAGIC: f64 = 3.0 / 16.0;
@@ -423,8 +426,14 @@ fn t8_bouzidi_2d1_drag_converges_at_second_order() {
     let d20_40 = (cd20 - cd40).abs();
     let observed_order = (d10_20 / d20_40).log2();
     let extrapolated_limit = cd40 + (cd40 - cd20) / (2.0f64.powf(observed_order) - 1.0);
+    let gci_result = gci_from_series([cd10, cd20, cd40], 2.0);
     println!(
-        "T8 Bouzidi convergence: D10 Cd={cd10:.8} Cl={cl10:.8} err_ref={e10:.8} samples={n10}; D20 Cd={cd20:.8} Cl={cl20:.8} err_ref={e20:.8} samples={n20}; D40 Cd={cd40:.8} Cl={cl40:.8} err_ref={e40:.8} samples={n40}; delta10_20={d10_20:.8}; delta20_40={d20_40:.8}; observed_order={observed_order:.4}; extrapolated_limit={extrapolated_limit:.8}"
+        "T8 Bouzidi convergence: D10 Cd={cd10:.8} Cl={cl10:.8} err_ref={e10:.8} samples={n10}; D20 Cd={cd20:.8} Cl={cl20:.8} err_ref={e20:.8} samples={n20}; D40 Cd={cd40:.8} Cl={cl40:.8} err_ref={e40:.8} samples={n40}; delta10_20={d10_20:.8}; delta20_40={d20_40:.8}; observed_order={observed_order:.4}; extrapolated_limit={extrapolated_limit:.8}; GCI observed_order={:.4}; Richardson_limit={:.8}; GCI_21_pct={:.6}; GCI_32_pct={:.6}; asymptotic_range_ratio={:.6}",
+        gci_result.observed_order,
+        gci_result.richardson_limit,
+        gci_result.gci_21_pct,
+        gci_result.gci_32_pct,
+        gci_result.asymptotic_ratio
     );
     assert!(
         (5.41..=5.75).contains(&cd20),
@@ -434,6 +443,16 @@ fn t8_bouzidi_2d1_drag_converges_at_second_order() {
     assert!(
         observed_order >= 1.7 && (5.41..=5.75).contains(&extrapolated_limit),
         "T8 Bouzidi convergence observed_order={observed_order:e}, extrapolated_limit={extrapolated_limit:e}; D10 Cd={cd10:e} err_ref={e10:e}, D20 Cd={cd20:e} err_ref={e20:e}, D40 Cd={cd40:e} err_ref={e40:e}, delta10_20={d10_20:e}, delta20_40={d20_40:e}, samples=({n10},{n20},{n40})"
+    );
+    assert!(
+        (1.5..=2.5).contains(&gci_result.observed_order)
+            && (0.9..=1.1).contains(&gci_result.asymptotic_ratio),
+        "T8 Bouzidi GCI asymptotic-regime gate failed: observed_order={:.6e}, Richardson_limit={:.6e}, GCI_21_pct={:.6e}, GCI_32_pct={:.6e}, asymptotic_range_ratio={:.6e}; required observed_order in [1.5,2.5] and asymptotic_range_ratio in [0.9,1.1]",
+        gci_result.observed_order,
+        gci_result.richardson_limit,
+        gci_result.gci_21_pct,
+        gci_result.gci_32_pct,
+        gci_result.asymptotic_ratio
     );
 }
 
