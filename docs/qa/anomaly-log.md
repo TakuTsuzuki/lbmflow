@@ -746,3 +746,35 @@ requested; this is a modeling limit.
 
 ### ANOM-P4-028 — SC Psi::eval lacks explicit rho positivity guard (S3, code-to-spec A22 confirmed)
 Direct code inspection (compat/multiphase.rs:61-65): `Psi::Classic => 1.0 - (-rho).exp()` is safe for any rho (bounded output, no division); `Psi::Exponential => psi0 * (-rho0 / rho).exp()` DIVIDES BY rho and would blow up as rho → 0. NO explicit rho.max() / clamp / debug_assert!(rho > 0) guard exists before eval. Empirically dynamic dynamics keep rho well above 0.05 in the supported T11 regime (measured G1 min=0.112, G2 aggressive min=0.043 — both above 0.01 hard-positivity floor), so the guard-absence has NOT bitten in-envelope. But an aggressive-user config with Psi::Exponential + strong forcing could reach rho → 0 and NaN silently. Route: PHYSICS.md note + optional debug_assert in Psi::eval Exponential branch. S3 (bounded impact — Psi::Exponential is optional non-default; Psi::Classic is the T11-frozen default and is safe). No urgent action.
+
+### P4-010 loop FULLY CLOSED (core doc + our verification agree)
+Core landed ANOM-P4-027 doc on PHYSICS.md (main a375ba2):
+"penalization validity domain = thin/porous AND short-transient" + coherent-
+solid/long-horizon routing to IBM/Bouzidi + Angot-Bruneau-Fabrie 20-40%
+cross-model difference literature reference. No further core fix; concur
+this is a modeling regime, not a defect.
+
+**Final V&V state (both ledgers agree)**:
+- Zero open S1/S2 core defects.
+- Six core fixes cycled through the loop: P4-008 / P4-001 / P4-021 /
+  P4-022 / P4-025 / P4-010 (sizing accepted + P4-027 characterized).
+- All remaining items are characterizations: P4-023 (SC σ referee closed
+  via γ_sl direct measurement), P4-024 (Taylor-Couette wavy-vortex regime),
+  P4-016 (Boussinesq spec draft, mp-hard rev-5 owns implementation),
+  P4-018/019 (SC dynamic wetting family), P4-026 (particle sampler wall
+  clamp), P4-027 (penalization long-horizon drift), P4-028 (Psi::Exponential
+  positivity guard).
+
+**Meta note from core**: acknowledged the six-cycle V&V loop delivered
+real physics corrections (bent-physics offset removed, force-consistent
+closures, correct force sizing) that VALIDATION.md bands alone would not
+have caught. This IS the point of the adversarial-audit + meta-V&V
+architecture — the standard bands are self-consistency checks; the audit
+lanes are external-truth checks.
+
+### ME-4a smoke: D3Q27 central-moment ~85x slower than TRT (CpuSimd) — TRACKED
+Cross-session FYI (bench_stirred, main 3c9ebd6): D3Q27 CentralMoment
+collision ~85x slower than D3Q27 TRT on CpuSimd, likely non-vectorized
+moment-transform path. Not a physics defect (V&V loop clean); speed-leg
+optimization target, queued for quiet-window characterization. Cross-
+tracks against MF-α cumulant coverage radar. No V&V action needed.
