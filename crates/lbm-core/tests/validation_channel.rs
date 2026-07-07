@@ -122,9 +122,10 @@ fn t2_poiseuille_rotated_90deg_matches_horizontal_profile() {
     let (sim, exact) = poiseuille_vertical(10);
     let got: Vec<f64> = (1..=(sim.nx() - 2)).map(|x| sim.uy(x, 0)).collect();
     let err = linf_rel(&got, &exact);
+    println!("T2 rotated TRT Linf_rel = {err:.3e}, got = {got:?}, exact = {exact:?}");
     assert!(
-        err <= 1.0e-10,
-        "T2 rotated TRT Linf_rel = {err:e}, got = {got:?}, exact = {exact:?}"
+        err <= 2.6e-13,
+        "T2 rotated TRT Linf_rel = {err:e}, band = 2.6e-13, got = {got:?}, exact = {exact:?}"
     );
 }
 

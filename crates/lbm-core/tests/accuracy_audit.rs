@@ -207,7 +207,11 @@ fn acoustic_sound_speed_and_damping_periodic_density_wave() {
         "ACC acoustics: c={c_measured:.9e}, rel={c_rel:.3e}, gamma={gamma_measured:.9e}, ref={gamma_ref:.9e}, rel={gamma_rel:.3e}"
     );
     assert!(c_rel <= 1.0e-3, "sound speed rel={c_rel:e}");
-    assert!(gamma_rel <= 3.0e-1, "acoustic damping rel={gamma_rel:e}");
+    // This compares a finite-k D2Q9 density wave against the leading continuum
+    // attenuation Gamma=(4/3)nu k^2. The residual is dominated by the missing
+    // finite-k acoustic damping correction, so keep a narrow physical-model
+    // margin above the measured 0.2505 instead of using a bare ratio band.
+    assert!(gamma_rel <= 2.7e-1, "acoustic damping rel={gamma_rel:e}");
 }
 
 fn tgv_sim(n: usize, nu: f64, u0: f64, u_adv: f64, collision: Collision) -> Simulation<f64> {
@@ -269,8 +273,12 @@ fn galilean_invariance_tgv_defect_bgk_and_trt() {
     let bgk = galilean_defect(Collision::Bgk);
     let trt = galilean_defect(TRT);
     println!("ACC Galilean TGV defect: BGK={bgk:.6e}, TRT={trt:.6e}");
-    assert!(bgk <= 1.5e-1, "BGK Galilean defect={bgk:e}");
-    assert!(trt <= 1.5e-1, "TRT Galilean defect={trt:e}");
+    // The remaining defect is the expected finite-Mach Galilean error of the
+    // weakly compressible TGV comparison at u_adv=0.05, not a conservation
+    // failure. A 5% cap keeps margin over the 0.6-0.9% measurement while
+    // rejecting the formerly vacuous 15% band.
+    assert!(bgk <= 5.0e-2, "BGK Galilean defect={bgk:e}");
+    assert!(trt <= 5.0e-2, "TRT Galilean defect={trt:e}");
 }
 
 fn cavity_profile(n: usize, u_lid: f64, nu: f64, steps: usize) -> Vec<f64> {
