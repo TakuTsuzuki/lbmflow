@@ -1,6 +1,6 @@
 # V&V Traceability Matrix
 
-Lifecycle: living — coverage matrix, updated in place as coverage changes (CSV companion: vv_traceability.csv).
+Lifecycle: snapshot (2026-07-06, base 4eac49e2) — generated coverage matrix; known-stale rows exist (T16 FP16 status, T18.4 example path). Live owners: [VALIDATION.md](../VALIDATION.md) (acceptance/status) and [anomaly-log.md](anomaly-log.md) (dispositions). Regenerate rather than edit in place. CSV companion: vv_traceability.csv.
 
 Generated for suborder B, V&V-TRACE, on 2026-07-06 from repository inspection only.
 

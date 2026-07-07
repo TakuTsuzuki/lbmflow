@@ -351,7 +351,7 @@ backend / pass-fail rule.
 | VR-STR-07 | Initialization independence | quasi-steady statistics match within threshold under varied run-up / stats start | window/threshold frozen after impl |
 | VR-STR-RELAX | Relaxation-mode equivalence | each relaxation vs its fidelity reference — MRF→IBM (Np, lines, torque) / point-bubble→resolved (ε_g, d_32, k_La, budget) / one-way→two-way (particle stats, mass-loading cap) / AMR→uniform (conserved, interface, coarse-fine budget) / aggressive f32→fidelity profile (drift, Ca_spurious, Np, curvature) | frozen when the relaxation extension lands |
 
-### T18. (D-track, dispersed-phase deposition) — **spec wired, P2 in progress**
+### T18. (D-track, dispersed-phase deposition) — **T18.1–.3 validated; T18.4 example-level; T18.5 stub**
 Source: [DISPERSED_DEPOSITION.md](DISPERSED_DEPOSITION.md) (frozen; T18.1–.3 public surface
 frozen in §5). Vocabulary stays domain-neutral (particle-laden multiphase flow). Tests are
 adversarial and dispatched separately from implementations.
