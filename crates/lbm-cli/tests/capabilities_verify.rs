@@ -44,19 +44,34 @@ fn capabilities_json_is_machine_readable() {
 }
 
 #[test]
-fn verify_quick_passes_on_cpu() {
+fn verify_quick_json_has_machine_readable_shape() {
     let output = Command::new(env!("CARGO_BIN_EXE_lbm"))
-        .args(["verify", "--tier", "quick"])
+        .args(["verify", "--tier", "quick", "--json"])
         .output()
-        .expect("run lbm verify --tier quick");
+        .expect("run lbm verify --tier quick --json");
     assert!(
         output.status.success(),
-        "lbm verify --tier quick failed: status={} stdout={} stderr={}",
+        "lbm verify --tier quick --json failed: status={} stdout={} stderr={}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("PASS: T1 Taylor-Green vortex decay (CPU)"));
-    assert!(stdout.contains("PASS: T2 body-force Poiseuille exactness (CPU)"));
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|e| panic!("verify output must be JSON ({e})"));
+    assert_eq!(value["tier"], "quick", "{value}");
+    assert!(value["tests_run"].as_u64().unwrap() >= 1, "{value}");
+    assert!(value["tests_skipped"].is_u64(), "{value}");
+    assert_eq!(value["validation_tier"], "screening", "{value}");
+    assert!(value["git_sha"].is_string() || value["git_sha"].is_null(), "{value}");
+    assert!(value["build_features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|feature| feature == "default"));
+    assert_eq!(
+        value["unsupported_capabilities"].as_array().unwrap().len(),
+        9,
+        "{value}"
+    );
+    assert!(value["failure"].is_null(), "{value}");
 }

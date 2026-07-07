@@ -39,6 +39,9 @@ enum Command {
         /// Verification tier to run
         #[arg(long, value_enum, default_value_t = verify::VerifyTier::Quick)]
         tier: verify::VerifyTier,
+        /// Emit stable machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Run a scenario JSON and write results to the output directory
     Run {
@@ -152,8 +155,8 @@ fn main() -> Result<()> {
         Command::Capabilities { json } => {
             capabilities::run(json)?;
         }
-        Command::Verify { tier } => {
-            let code = verify::run(tier)?;
+        Command::Verify { tier, json } => {
+            let code = verify::run(tier, json)?;
             std::process::exit(code);
         }
         Command::Run {
