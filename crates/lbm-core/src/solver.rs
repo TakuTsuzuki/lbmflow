@@ -2081,6 +2081,41 @@ where
         self.stage_in_if_dirty();
     }
 
+    /// Replace the current compact global solid mask and wall velocity field.
+    ///
+    /// This is the bulk counterpart of [`Solver::set_solid`] for generated
+    /// geometry. The arrays use global compact indexing:
+    /// `(z * ny + y) * nx + x`.
+    pub fn install_solid_mask_and_wall_velocity(&mut self, solid: &[bool], wall_u: &[[T; 3]]) {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        assert_eq!(solid.len(), n, "solid mask length must match solver dims");
+        assert_eq!(
+            wall_u.len(),
+            n,
+            "wall velocity length must match solver dims"
+        );
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let g = sub.geom;
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let pi = g.pidx(x, y, z);
+                        fields.solid[pi] = solid[gi];
+                        fields.wall_u[pi] = wall_u[gi];
+                    }
+                }
+            }
+        }
+        self.masks_dirty = true;
+        self.host_dirty = true;
+        self.sync_masks();
+        self.stage_in_if_dirty();
+    }
+
     /// Build analytic Bouzidi records for a circle. Solid cells must already
     /// be marked with the same geometry.
     pub fn set_bouzidi_circle(&mut self, cx: f64, cy: f64, r: f64) {

@@ -29,6 +29,7 @@ pub mod compat;
 #[cfg(feature = "mpi")]
 pub mod dist;
 pub mod fields;
+pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod halo;
@@ -43,6 +44,8 @@ pub mod real;
 pub mod rotating_ibm;
 pub mod solver;
 pub mod subdomain;
+#[cfg(feature = "geometry-import")]
+pub mod voxel_import;
 pub mod wall_model;
 
 /// Convenient glob import for the V2 API.
@@ -51,6 +54,12 @@ pub mod prelude {
     pub use crate::backend_simd::CpuSimd;
     pub use crate::bouzidi::{BouzidiLink, BouzidiLinks};
     pub use crate::fields::{DistributionKind, LocalGeom, ScalarDistribution, SoaFields};
+    pub use crate::geometry::{
+        build_stirred_tank_geometry, generate_impeller_marker_set, BaffleTemplate, GeometryError,
+        GridSpec, ImpellerKind as GeometryImpellerKind, ImpellerMarkerSet, ImpellerTemplate,
+        PipeAxis, SpargerTemplate, StirredTankGeometry, TankBottom, TankSpec,
+        SPARGER_ORIFICE_MIN_CELLS, STIRRED_TANK_MIN_CELLS,
+    };
     pub use crate::halo::{HaloExchange, InProcess, LocalPeriodic};
     pub use crate::lattice::{Face, Lattice, D2Q9, D3Q19, D3Q27};
     pub use crate::les::{WaleLes, WaleLesDiagnostics, WALE_CW};

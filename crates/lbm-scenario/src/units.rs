@@ -134,10 +134,18 @@ pub fn bioprocess_unit_report_unchecked(
 
     require_positive("reactor.vessel_diameter_m", *vessel_diameter_m)?;
     require_positive("reactor.liquid_height_m", *liquid_height_m)?;
-    require_positive("impeller.diameter_m", impeller.diameter_m)?;
+    let impeller_diameter_m = impeller.diameter_m().ok_or_else(|| {
+        BioprocessScenarioError::unsupported(
+            "unit mapping requires a parametric impeller diameter",
+            crate::UnsupportedReason::MissingDependency {
+                depends_on: "impeller.diameter_m".to_string(),
+            },
+        )
+    })?;
+    require_positive("impeller.diameter_m", impeller_diameter_m)?;
     require_positive(
         "impeller.rotational_speed_rpm",
-        impeller.rotational_speed_rpm,
+        impeller.rotational_speed_rpm(),
     )?;
     require_positive(
         "fluids.liquid_density_kg_m3",
@@ -157,8 +165,8 @@ pub fn bioprocess_unit_report_unchecked(
         ));
     }
 
-    let n_hz = impeller.rotational_speed_rpm / 60.0;
-    let u_ref_m_s = n_hz * impeller.diameter_m;
+    let n_hz = impeller.rotational_speed_rpm() / 60.0;
+    let u_ref_m_s = n_hz * impeller_diameter_m;
     let nu_m2_s = sc.fluids.liquid_viscosity_pa_s / sc.fluids.liquid_density_kg_m3;
     let dx_m = vessel_diameter_m / f64::from(sc.run.grid_nx);
     let u_ref_lu = u_ref_m_s * sc.run.dt_s / dx_m;
@@ -167,20 +175,20 @@ pub fn bioprocess_unit_report_unchecked(
     let cs_lu = LATTICE_CS2.sqrt();
     let mach_lattice = u_ref_lu / cs_lu;
 
-    let reynolds = sc.fluids.liquid_density_kg_m3 * n_hz * impeller.diameter_m.powi(2)
+    let reynolds = sc.fluids.liquid_density_kg_m3 * n_hz * impeller_diameter_m.powi(2)
         / sc.fluids.liquid_viscosity_pa_s;
     // SPEC_BIOPROCESS_CORE.md §6 defines Fr, Eo and Mo with gravitational acceleration g.
     let g_m_s2 = 9.80665;
-    let froude = n_hz.powi(2) * impeller.diameter_m / g_m_s2;
+    let froude = n_hz.powi(2) * impeller_diameter_m / g_m_s2;
     let delta_rho = sc
         .fluids
         .gas_density_kg_m3
         .map(|rho_gas| sc.fluids.liquid_density_kg_m3 - rho_gas);
     let weber = sc.fluids.surface_tension_n_m.map(|sigma| {
-        sc.fluids.liquid_density_kg_m3 * n_hz.powi(2) * impeller.diameter_m.powi(3) / sigma
+        sc.fluids.liquid_density_kg_m3 * n_hz.powi(2) * impeller_diameter_m.powi(3) / sigma
     });
     let eotvos = match (sc.fluids.surface_tension_n_m, delta_rho) {
-        (Some(sigma), Some(drho)) => Some(g_m_s2 * drho * impeller.diameter_m.powi(2) / sigma),
+        (Some(sigma), Some(drho)) => Some(g_m_s2 * drho * impeller_diameter_m.powi(2) / sigma),
         _ => None,
     };
     let morton = match (sc.fluids.surface_tension_n_m, delta_rho) {
@@ -384,8 +392,12 @@ fn sparger_diameters(spargers: &[SpargerSpec]) -> Vec<f64> {
             SpargerSpec::Ring {
                 orifice_diameter_m, ..
             } => Some(*orifice_diameter_m),
-            SpargerSpec::Pipe { diameter_m, .. } => Some(*diameter_m),
-            SpargerSpec::PointOrifices { .. } => None,
+            SpargerSpec::Pipe {
+                orifice_diameter_m, ..
+            } => Some(*orifice_diameter_m),
+            SpargerSpec::PointOrifices {
+                orifice_diameter_m, ..
+            } => Some(*orifice_diameter_m),
         })
         .collect()
 }
