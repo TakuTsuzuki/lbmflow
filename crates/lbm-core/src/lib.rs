@@ -37,10 +37,12 @@ pub mod lattice;
 pub mod les;
 pub mod params;
 pub mod particles;
+pub mod phase_field;
 pub mod real;
 pub mod rotating_ibm;
 pub mod solver;
 pub mod subdomain;
+pub mod wall_model;
 
 /// Convenient glob import for the V2 API.
 pub mod prelude {
@@ -55,6 +57,7 @@ pub mod prelude {
         CollisionKind, FaceBC, FacePatch, Reduction, SourceKind, SourceRegion, StepParams,
         VolumeSource,
     };
+    pub use crate::phase_field::{PhaseFieldDiagnostics, PhaseFieldError, PhaseFieldParams};
     pub use crate::real::Real;
     pub use crate::rotating_ibm::{DirectForcingConfig, IbmDiagnostics, IbmMarker, RotatingBody};
     pub use crate::solver::{
@@ -62,6 +65,7 @@ pub mod prelude {
         WallSpec,
     };
     pub use crate::subdomain::Subdomain;
+    pub use crate::wall_model::{WallCellMetric, WallMetricSource};
 
     #[cfg(feature = "gpu")]
     #[allow(deprecated)]

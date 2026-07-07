@@ -1,9 +1,10 @@
 //! V&V lane 5.1: feature-interaction conservation matrix.
 //!
 //! The target bug class is source-composition at feature pairs. The force
-//! contracts pinned here are the documented ones: Shan-Chen overwrites the
-//! per-cell force field, gravity adds `rho*g`, and rotor penalization adds
-//! after the caller has cleared/rebuilt the field (ANOM-P4-009/P4-010).
+//! contracts pinned here are the documented ones: Shan-Chen and rotor add into
+//! the caller-owned per-cell force field after the caller has cleared/rebuilt
+//! it, and gravity adds `rho*g` in the backend source path
+//! (ANOM-P4-009/P4-010/P4-022).
 
 use lbm_core::compat::multiphase::ShanChen;
 use lbm_core::compat::prelude::{Collision, SimConfig, Simulation};
@@ -272,11 +273,9 @@ fn apply_compat_dynamic(
     #[cfg(feature = "mf-interim")] rotor: &mut Option<Rotor<f64>>,
     #[cfg(not(feature = "mf-interim"))] _rotor: &mut Option<()>,
 ) {
-    if sc.is_none() {
-        sim.clear_force_field();
-    }
+    sim.force_field_mut().fill([0.0; 2]);
     if let Some(sc) = sc {
-        // Shan-Chen owns the per-cell field and overwrites it each step.
+        // Shan-Chen and rotor both add into the caller-owned field.
         sc.update_force(sim);
     }
     #[cfg(feature = "mf-interim")]
@@ -466,7 +465,7 @@ fn assert_compat_force_superposition(a: Feature, b: Feature) {
     // Guo forcing is linear in the force vector used at collision. At t=1 all
     // feature forces below are computed from the same initialized populations:
     // uniform force is in StepParams, gravity contributes rho*g, Shan-Chen
-    // overwrites the per-cell field, and rotor then adds into that same field.
+    // and rotor add into the caller-owned per-cell field.
     // Therefore the composed one-step momentum increment must equal the sum
     // of the two single-feature increments. ANOM-P2-001 makes the absolute
     // impulse path-dependent, so this deliberately compares composed-vs-parts

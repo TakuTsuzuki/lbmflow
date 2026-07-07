@@ -598,6 +598,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
 ) {
     let g = fields.geom;
     let np = g.n_padded();
+    let kp = KParams::new::<L>(p);
+    let ff = fields.force_field.as_deref();
     for face in Face::ALL {
         if !sub.touches_global_face(face) {
             continue;
@@ -640,6 +642,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                 np,
                 &g,
                 &fields.solid,
+                ff,
+                &kp,
                 face,
                 &ZhKind::Velocity([T::zero(); 3]),
                 None,
@@ -654,6 +658,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     np,
                     &g,
                     &fields.solid,
+                    ff,
+                    &kp,
                     face,
                     &ZhKind::Velocity(*u),
                     profiles[face.index()].as_deref(),
@@ -664,6 +670,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     np,
                     &g,
                     &fields.solid,
+                    ff,
+                    &kp,
                     face,
                     &ZhKind::Pressure(*rho),
                     None,
@@ -697,6 +705,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     np,
                     &g,
                     &fields.solid,
+                    ff,
+                    &kp,
                     face,
                     &ZhKind::Velocity([T::zero(); 3]),
                     None,
@@ -707,6 +717,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     np,
                     &g,
                     &fields.solid,
+                    ff,
+                    &kp,
                     face,
                     &ZhKind::Velocity(u),
                     None,
@@ -717,6 +729,8 @@ pub(crate) fn apply_open_faces_impl<L: Lattice, T: Real>(
                     np,
                     &g,
                     &fields.solid,
+                    ff,
+                    &kp,
                     face,
                     &ZhKind::Pressure(rho),
                     None,

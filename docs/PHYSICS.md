@@ -47,7 +47,9 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
   virtual wall density unlocks the full 0–180° range on the same solver.
 - **Open BC — Zou-He, single implementation** parameterized by face normal
   `(n, t)`. Handles velocity and pressure faces on all four (2D) / six (3D)
-  faces via one formula; see doc comments in `params.rs` / `kernels.rs`.
+  faces via one formula; with body force, it closes on the Guo raw momentum
+  `rho u - F/2` so velocity faces prescribe physical velocity. See doc
+  comments in `params.rs` / `kernels.rs`.
 - **Open BC — convective outflow with mass-drift correction** (`params.rs`,
   `kernels.rs::convective_outflow`). The naive `f = (f_prev + λ f_int)/(1+λ)`
   drifts to NaN; the live implementation re-pins edge density to the
@@ -98,6 +100,52 @@ Each item is grep-checked against `crates/lbm-core`. One-line "why" per item.
 ---
 
 ## 2. Load-bearing decisions
+
+### 2026-07-07 behavior review — `vv_sedim_2d` rev 2 attempt
+Pattern: with `d=6`, `|g|=1e-4`, and `30_000` steps, the run deposits all
+500 particles but reports `mean_deposition_x=5.005724e2`, outside the 128-cell
+basin; the histogram piles 444 counts into the final clamped bin.
+Mechanism: particles that pass the pressure outlet continue to be sampled from
+the clamped boundary state and later cross the deposition plane out of domain,
+so the deposition map is dominated by post-outlet transport rather than in-basin
+settling.
+Resolved vs closure: Stokes/SN particle settling remains the active validated
+closure (`v_s=1.2e-3`, `Re_p=4.32e-2`), but the headline spatial pattern is an
+example/domain bookkeeping artifact from combining an open outlet with clamped
+particle sampling.
+Artifacts checked: `out/vv_sedim_2d/density_00000.png`,
+`out/vv_sedim_2d/density_15000.png`,
+`out/vv_sedim_2d/density_30000.png`, and
+`out/vv_sedim_2d/deposition_map.png`.
+Verdict: ARTIFACT.
+Routing: PM/spec decision required before claiming the rev-2 behavior anchor:
+add a physically stated particle outlet/escape rule, revise the mean-x anchor,
+or change the protocol so particles deposit inside the basin without relying on
+post-outlet clamped sampling.
+
+### 2026-07-07 behavior review — `vv_sedim_2d` rev 3 closed basin
+Pattern: in the 128x64 all-bounce-back box, 500 particles seeded uniformly on
+the horizontal line `x=10..118, z=60` settle to the bottom without lateral drift:
+`deposition_fraction=1.000000e0`, `mean_deposition_x=6.400000e1`,
+raw `deposit_x_std=3.123933e1` from the seed-line span, and seed-relative
+`lateral_scatter_std=0.000000e0`.
+Mechanism: with no fluid crossflow and no pressure outlet, the sampled fluid
+velocity stays zero and the only active acceleration is vertical particle
+gravity, so each seed column follows the same low-Re settling trajectory.
+Resolved vs closure: the closed fluid box and zero velocity field are resolved
+LBM behavior; particle motion uses the existing one-way Schiller-Naumann/Stokes
+low-Re closure at `v_stokes=1.200000e-3` and `Re_p=4.320000e-2`.
+Artifacts checked: the rev-2 outlet/clamped-boundary artifact is removed by the
+closed box. The deposition counting plane remains `z=1.0`, the first fluid row,
+so floor crossings are recorded before the staircase solid-contact model pins a
+particle to the bottom rim; this affects event bookkeeping only, not lateral
+transport. Visual artifacts:
+`out/vv_sedim_2d/density_00000.png`,
+`out/vv_sedim_2d/density_30000.png`,
+`out/vv_sedim_2d/density_60000.png`, and
+`out/vv_sedim_2d/deposition_map.png`.
+Verdict: PHYSICAL.
+Routing: none.
 
 ### 2026-07-06 dispersed seeding closure removal (`examples/dispersed_seeding`)
 - Form: removed the example-local harshness switch, analytic jet/wall-jet
@@ -416,6 +464,40 @@ impinging-jet class of scenarios.
   D3Q19 keep their existing code paths. The D3Q27 outflow and convective
   closures remain unimplemented rather than inheriting a new model silently.
 
+### 2026-07-07 Guo-force-consistent Zou-He closure (`kernels.rs::zou_he_face_selected`)
+- Form: velocity and pressure Zou-He faces reconstruct unknown populations
+  from the raw boundary velocity
+  `v = u_phys - F/(2 rho)`, where `F = F0 + rho g` is the same composed Guo
+  force used by collision and `moments_row`. For velocity faces,
+  `rho (1 - v_n) = S0 + 2 S- + 1` gives
+  `rho = (S0 + 2 S- + 1 - F0_n/2) / (1 - u_n + g_n/2)`;
+  reconstruction then uses `rho v_n` and `rho v_t`. For pressure faces,
+  `rho` is prescribed, `v_n = 1 - (S0 + 2 S- + 1)/rho`, and zero physical
+  tangential velocity is enforced by `v_t = -F_t/(2 rho)`. This is the
+  pre-force-population form equivalent to adding the Guo source correction
+  to the NEBB closure, but it preserves the existing no-force arithmetic
+  exactly.
+- Source: resolved from the engine's Guo moment convention
+  `rho u = sum_q c_q f_q + F/2` and the existing Zou-He/Hecht-Harting
+  moment closure. No empirical coefficient is introduced.
+- Validity domain: planar axis-aligned D2Q9, D3Q19, and D3Q27 velocity and
+  pressure faces, including masked face patches, under the existing
+  one-open-axis and low-Mach prescribed-speed guards. The correction uses the
+  backend-composed single-phase force `F0 + rho g`; other closures must feed
+  the same Guo force path before this boundary pass.
+- Validation: `crates/lbm-core/tests/zou_he_force.rs` passes for D2Q9,
+  D3Q19, and D3Q27 with uniform force plus per-mass gravity
+  (max velocity-face error `1.388e-17` or lower). Kernel unit
+  `zou_he_d2q9_zero_force_matches_legacy_formula_bitwise` pins the zero-force
+  D2Q9 branch against the legacy formula. The interaction matrix
+  `feature_interaction_conservation_matrix` flips the uniform-force ×
+  face-patch and gravity × face-patch cells green while the other feature
+  pairs remain green/skip as documented.
+- Replaces / interacts with: fixes ANOM-P4-021. Whole-face Zou-He and T18.2
+  face patches share `zou_he_face_selected`, so both paths receive the same
+  correction. The generated GPU `bc` kernel mirrors the same raw-velocity
+  closure; the F32 collision byte-identity scope is unchanged.
+
 ### 2026-07-07 behavior review — D3Q27 open rectangular duct
 Pattern: the duct run is predominantly unidirectional in `x`; transverse
 velocity is negligible (`cross_rel = 3.588e-7`), mass flux is balanced
@@ -578,12 +660,34 @@ the exact cell-by-cell clipped-set assertion.
   `gravity.rs::closed_box_gravity_forms_stable_hydrostatic_stratification`,
   `gravity.rs::gravity_channel_is_bit_identical_to_raw_rho_g_force_field`,
   `gravity.rs::vr_str_06_static_stratification_quiescent_all_lattices_and_precisions`,
-  and `gravity.rs::shan_chen_gravity_composes_with_force_overwrite_and_creates_buoyancy`.
+  and `gravity.rs::shan_chen_gravity_composes_with_additive_force_field_and_creates_buoyancy`.
   `cargo test -p lbm-core --test backend_simd_equiv --release`,
   `cargo test -p lbm-core --test t13_split_invariance --release`,
   `cargo test -p lbm-core --test t13_adversarial --release`, and
   `cargo test --workspace --release` passed. GPU build gate
   `cargo build -p lbm-core --release --features gpu` passed. Runtime GPU
+
+### 2026-07-07 Shan-Chen additive force-field composition (`compat::multiphase`)
+- Form: `F_cell(x,t) <- F_cell(x,t) + F_SC(x,t)` for SCMP and
+  `F_cell_sigma(x,t) <- F_cell_sigma(x,t) + F_MCMP_sigma(x,t)` for MCMP.
+  Callers clear/reset the caller-owned per-cell field once per step before
+  composing transient sources; all composed sources enter the existing Guo
+  source point together.
+- Source: resolved from the existing Shan-Chen interaction force and Guo
+  forcing composition invariant. This changes staging from overwrite to
+  addition; it adds no new physical force term, closure, branch, or constant.
+- Validity domain: same as the existing SCMP and MCMP Shan-Chen closures and
+  the existing per-cell Guo force-field path. Repeated calls without a
+  per-step clear intentionally accumulate source terms and are caller error,
+  matching the rotor source contract.
+- Validation:
+  `validation_multiphase.rs::t11_shan_chen_adds_to_existing_force_field_anom_p4_022`
+  asserts cell-by-cell `gravity + SC` composition and checks the composed field
+  is neither contribution alone.
+- Replaces / interacts with: replaces the old `copy_from_slice` staging in
+  `ShanChen::update_force` and `MultiComponent::update_forces`; composes with
+  rotor, raw per-cell sources, gravity, and uniform force through the existing
+  Guo path.
   equivalence is covered by ignored T14 test
   `t14_backend_equiv::t14_gravity_body_force_device_resident` and is
   BENCH-PENDING on a native GPU adapter.
@@ -739,3 +843,365 @@ active must disclose that clipping was active and report the corresponding
   force-field path that collided step 1 from stale moments and lost the
   transient `1/(2 tau_minus) * F` contribution while steady slopes remained
   correct.
+
+### 2026-07-07 D3Q27 open-face completion (`kernels.rs::{outflow_face_selected,convective_face_selected}`, `gpu/wgsl.rs`)
+- Form: D3Q27 `Outflow` uses the existing zero-gradient open-face closure
+  `f_q(x_face) = f_q(x_face + n)` for every incoming link
+  `q in {c_q·n = 1}`. For D3Q27 this set has nine links, including the four
+  body-diagonal corner links; no special corner coefficient is introduced.
+  D3Q27 `Convective` uses the existing radiation update
+  `f_q^{new}(face) = (f_q^{prev}(face) + U_c f_q^{new}(interior)) / (1 + U_c)`
+  on the same incoming set, followed by the existing mass-consistency pin
+  `rho(face) := rho(interior)` with the density deficit distributed as
+  `Delta f_q = Delta rho * w_q / sum_{incoming} w_q`. The WGSL path now emits
+  the D3Q27 velocity/pressure NEBB branch from the lattice tables and applies
+  the same generic nine-slot outflow/convective loops.
+- Source: zero-gradient extrapolation and the convective/radiation outlet are
+  the same closures documented for the D2Q9/D3Q19 paths in this file,
+  including the 2026-07-05 convective mass-consistency pinning entry. The
+  D3Q27 change is only the direction-set extension: `L::unknowns(face)` is the
+  analytic incoming plane for the lattice, and the formulas are per-link
+  scalar extrapolation/advection equations, so corner links use the identical
+  equation as axial and face-diagonal links. Velocity/pressure GPU NEBB uses
+  the D3Q27 derivation recorded in the 2026-07-07 D3Q27 velocity/pressure
+  entry above.
+- Validity domain: planar axis-aligned D3Q27 open faces under the existing
+  one-open-axis rule, low-Mach velocity guard, positive outlet density guard,
+  and `0 < U_c <= 1` convective-speed guard. Zero-gradient and convective
+  outlets are extrapolating/radiation closures, not pressure-prescribing
+  outlets; wall-bounded duct tests therefore pin outlet-local distortion
+  against the inherited D3Q19-equivalent envelope rather than claiming the
+  pressure-outlet mass-flux behavior.
+- Validation: `crates/lbm-core/tests/d3q27_open_bc.rs`:
+  `d3q27_outflow_duct_matches_profile_and_d3q19` measured D3Q27-vs-D3Q19
+  L2rel `3.504e-4`, flux-scaled profile L2rel `9.844e-4`, outlet-local
+  flux envelope `2.301e-1`, cross-flow ratio `4.203e-3`, and monotone
+  pressure drop. `d3q27_convective_duct_matches_profile_and_d3q19` measured
+  D3Q27-vs-D3Q19 L2rel `4.152e-4`, flux-scaled profile L2rel `2.279e-3`,
+  outlet-local flux envelope `1.982`, cross-flow ratio `3.630e-2`, and
+  monotone pressure drop. `d3q27_open_outlets_balance_uniform_through_flow_mass_flux`
+  measured uniform-flow mass-flux imbalance `0.000e0` for Outflow and
+  `1.735e-16` for Convective. `t13_d3q27_open_duct_split_invariant_with_bc_seams`
+  now covers pressure, outflow, and convective outlets with seams crossing BC
+  cells. `crates/lbm-core/tests/d3q27_open_metamorphic.rs` converts the old
+  rejection pins to all-kind CPU acceptance and adds a T14-style D3Q27 GPU
+  CPU-vs-GPU duct equivalence test; the sandbox run compiled the GPU feature
+  path and skipped execution because no adapter was available
+  (PENDING-NATIVE-RUN).
+- Replaces / interacts with: removes the CPU `UnsupportedOpenFaceKind` guard
+  for D3Q27 `Outflow` and `Convective`, and removes the GPU
+  `UnsupportedOnGpu { feature: "D3Q27 open faces" }` guard for implemented
+  D3Q27 open faces. Unimplemented GPU localized features remain rejected.
+
+### 2026-07-07 behavior review — D3Q27 outflow/convective ducts
+Pattern: pressure-outlet D3Q27 remains a clean unidirectional rectangular
+duct; D3Q27 Outflow and Convective match D3Q19 closely but show larger
+outlet-local flux and transverse-velocity distortion in the wall-bounded duct.
+Mechanism: zero-gradient and radiation outlets extrapolate incoming
+populations rather than prescribing pressure, so the immediate outlet adjusts
+to evacuate the imposed inlet profile while the D3Q27 corner links follow the
+same per-link extrapolation/advection law as D3Q19's incoming set.
+Resolved vs closure: the duct core, wall friction, and NEBB inlet are resolved
+LBM behavior; the outlet-local distortion is closure-driven by the
+zero-gradient/radiation outlet model and the convective mass pin. Uniform
+through-flow confirms the closures balance mass when their extrapolation
+assumption is exactly satisfied.
+Artifacts checked: no clamps or case-identity branches were introduced;
+T13 seams crossing pressure/outflow/convective BC cells are bit-exact; the
+wall-bounded outlet artifact is pinned separately from the upstream profile
+and D3Q19 consistency metrics. Visual artifact for PM review:
+`crates/lbm-core/target/d3q27_pressure_duct_profile.csv`,
+`crates/lbm-core/target/d3q27_outflow_duct_profile.csv`, and
+`crates/lbm-core/target/d3q27_convective_duct_profile.csv`.
+Verdict: CLOSURE-DRIVEN (validated against inherited D3Q19-equivalent behavior
+and exact uniform-flow mass balance).
+Routing: none; native GPU execution of the new T14-style D3Q27 open-face
+equivalence test remains PENDING-NATIVE-RUN on a host with a GPU adapter.
+
+### 2026-07-07 W-VOF O1 conservative Allen-Cahn phase-field transport (`crates/lbm-core/src/phase_field.rs`)
+- Form: D3Q19 phase-field distribution `g_i` in ordinary q-major padded SoA
+  form, `phi = sum_i g_i`, prescribed-velocity equilibrium
+  `g_i^eq = phi w_i [1 + 3 c_i.u + 4.5(c_i.u)^2 - 1.5 u.u]`,
+  `tau_phi = 3M + 0.5`, and collision-stream transport recovering
+  `d_t phi + div(phi u) = div(M[grad(phi) - (4/W)phi(1-phi)n])`.
+  The shared interface-flux helper is
+  `J_phi = -M[grad(phi) - (4/W)phi(1-phi)n]`, with D3Q19 isotropic stencils
+  `grad(phi) = 3 sum_{i>0} w_i c_i phi(x+c_i)` and
+  `lap(phi) = 6 sum_{i>0} w_i [phi(x+c_i)-phi(x)]`.
+  O1 implements transport only: no density feedback, viscosity feedback,
+  surface-tension force, gravity edit, wetting boundary, sparger inlet, or
+  hydrodynamic momentum `J_rho` coupling is active.
+- Source: Chiu and Lin 2011 conservative Allen-Cahn counter-term, adopted via
+  the Fakhari, Mitchell, Leonardi and Bolster 2017 velocity-based LBE form
+  frozen in `docs/proposals/WVOF_IMPL_SPEC.md`. The source first moment is
+  mobility-scaled so the relaxation-provided diffusive flux and the
+  counter-flux share the same `M`, as required by the governing equation.
+  This resolves the spec Eq. (4)/(6) prefactor ambiguity by enforcing Eq. (1)
+  rather than introducing an extra fitted coefficient.
+- Validity domain: O1 enforces `W in [4,5]`, `M in (0,1/6]`
+  (`tau_phi in (0.5,1.0]`). Validation runs here used `W=4`, `M=0.04`,
+  `Ma_lattice=|u|=0.055` for diagonal advection, periodic D3Q19 domains,
+  and prescribed velocity only. Resolved droplet test uses `d/W=4`, the
+  W-VOF lower bound; smaller bubbles remain a point-bubble follow-up, not O1.
+- Validation: `crates/lbm-core/tests/wvof_o1_phase_field.rs`:
+  `flat_interface_at_rest_holds_tanh_profile` passed the stated
+  second-order `W=4` profile band (`L2_rel < 0.08`);
+  `diagonal_periodic_droplet_advection_conserves_mass_and_profile` measured
+  mass drift `1.9475e-14` over 1000 steps (band `<0.1%/1000 steps`),
+  returned-profile `L2_rel = 1.2477e-1` (band `<0.14`), and interface width
+  `7.193` (band `[0.5W,2W] = [2,8]`). `g_none_keeps_existing_hydrodynamic_path_bit_identical`
+  proved the disabled path leaves D3Q19 hydrodynamic fields and all `f`
+  planes bit-identical. Artifact:
+  `target/wvof_o1/droplet_profile_before_after.csv`.
+- Replaces / interacts with: adds the reserved optional `g`, `gtmp`, and
+  compact `phi` fields to `SoaFields`; all are `None` by default. Existing
+  hydrodynamic `f` pass order remains unchanged. Future O2 surface tension,
+  density/viscosity feedback, gravity composition, and `J_rho` momentum
+  correction must consume this same `J_phi` path.
+
+### 2026-07-07 behavior review — W-VOF O1 advected droplet
+Pattern: a diffuse spherical `phi=1` droplet translated diagonally by one
+period in a fully periodic D3Q19 box under uniform prescribed velocity and
+returned to its initial profile within the stated O1 profile band.
+Mechanism: periodic pull-streaming advects the `g` distribution while the
+conservative Allen-Cahn counter-flux balances relaxation diffusion at the
+interface.
+Resolved vs closure: the pattern comes from the resolved D3Q19 LBE transport
+plus the literature-backed conservative Allen-Cahn counter-term; no
+hydrodynamic coupling, surface-tension force, density feedback, or limiter was
+active.
+Artifacts checked: no position or `phi` clamp is present; periodic seams are
+handled through the same ordered halo-layer exchange as `f`; exported line
+profile before/after is `target/wvof_o1/droplet_profile_before_after.csv`.
+Verdict: PHYSICAL for the O1 prescribed-velocity, matched-density transport
+scope.
+
+### 2026-07-07 wall-metrics observable for y+ / u_tau (`crates/lbm-core/src/wall_model.rs`, `Solver::gather_wall_metrics`)
+- Form: read-only wall-adjacent diagnostics report `y_w`, tangential speed
+  `u_parallel`, `u_tau`, `y+ = y_w u_tau / nu`, and `tau_w / rho = u_tau^2`
+  in global compact cell order. Half-way rim walls use `y_w = 0.5 dx`;
+  Bouzidi records use `y_w = qd |c_q|`. The turbulent branch solves
+  `u_parallel / u_tau = ln(y_w u_tau / nu) / kappa + B` by Newton iteration
+  with `kappa = 0.41`, `B = 5.2`; if the resulting `y+ < 11.6`, the observable
+  reports the viscous branch `u_tau = sqrt(nu u_parallel / y_w)`.
+- Source: half-way wall placement is the existing LBM wall convention in this
+  codebase; Bouzidi `qd` is the geometric wall-link distance from
+  Bouzidi-Firdaouss-Lallemand (2001). The log-law constants and branch switch
+  are the standard smooth-wall equilibrium law used by the Malaspinas and
+  Sagaut LBM wall-model class, frozen in
+  `docs/proposals/LES_WALL_TREATMENT_SPEC.md` for W1/W2.
+- Validity domain: W1 is instrumentation only. The log-law diagnostic is
+  meaningful for attached smooth-wall equilibrium layers, with the future wall
+  model's intended log-region domain `30 <= y+ <= 300`; sub-buffer cells are
+  surfaced by the laminar branch and their reported `y+`, not hidden.
+- Validation: `crates/lbm-core/tests/wall_metrics.rs` checks the laminar
+  Poiseuille wall-shear band from the first-node one-sided discretization,
+  quiescent `u_tau = 0`, no metrics in a fully periodic box, and Bouzidi
+  distance-controlled y+ scaling for fixed `u_tau`. Focused gate:
+  `cargo test -p lbm-core --test wall_metrics --release` passed on
+  2026-07-07.
+- Replaces / interacts with: this adds no closure and does not call
+  `set_omega_field`; W2 may consume the observable, but W1 has zero effect on
+  computed density, velocity, populations, or collision rates.
+
+### 2026-07-07 behavior review — wall-metrics W1 code/test order
+Pattern: no flow field pattern was generated or modified; the order adds a
+read-only diagnostic over existing wall geometry and velocity moments.
+Mechanism: reported wall metrics follow directly from geometric wall distance,
+tangential velocity projection, and the specified wall-law/viscous formulas.
+Resolved vs closure: half-way/Bouzidi wall distance is resolved geometry;
+`kappa`, `B`, and the `y+ = 11.6` switch are diagnostic wall-law closure
+constants, not active simulation terms in W1.
+Artifacts checked: no clamps, outlets, seams, or wall-population writes are
+introduced; no field visualization artifact is expected for this code+test
+diagnostic-only order.
+Verdict: PHYSICAL for diagnostics; no computed-field behavior claim is made.
+Routing: none.
+
+### 2026-07-07 falsification record — cumulant |u|^2 term removal experiment
+- Experiment (branch cx/galilean-fix, not merged): removed the D3Q19
+  `omega_eff = omega_shear * (1 - 0.16 |u|^2)` factor per
+  docs/proposals/CUMULANT_GALILEAN_FIX.md path (c), which PREDICTED the
+  advected-TGV3D frame spread would drop below the derived band 1.156594266e-3.
+- Measured: spread WITH the term 4.195075506e-3 (prior holdout record);
+  spread WITHOUT the term 1.051034711e-2 — 2.5x WORSE. The falsifier fired;
+  the term was restored and no change was merged.
+- Interpretation: the scalar |u|^2 factor does compensate a real |u|^2-scaling
+  portion of the D3Q19 defect (presumably the isotropic/trace part); the
+  proposal's diagnosis that removal would land sub-band is falsified. The
+  residual anisotropic (tensorial) part remains uncorrected either way.
+- Standing state: the calibrated term is RETAINED with the narrowed claim
+  (valid for non-advected/weakly-framed decay; Galilean invariance at finite
+  frame velocity NOT established on D3Q19 — holdout test stays
+  `#[ignore = FINDING]` at its derived band). Any future fix must reproduce
+  BOTH measured spreads (with-term 4.20e-3, without-term 1.05e-2 at
+  u_frame <= 0.1, N=32, nu=0.02, u0=0.012) before its correction claim is
+  trusted.
+
+### 2026-07-07 addendum — Galilean-fix anchors invalidated by r2-c collision seam
+- PM bisect: the merge d35faf4 (r2-c scalar TRT collision seam + ANOM-P2-001
+  impulse fix) changed the D3Q19 cumulant TGV3D decay observable: advected
+  u_frame=0 rel_err 1.834009427e-3 (at c272909) -> 2.506837906e-2 (at d35faf4
+  and after). D3Q27 cross-check bit-unchanged -> D3Q19-specific. The default
+  bands did not catch the shift (off-Re band 2e-2-class; band vacuity).
+- Consequence: the falsification-record anchor numbers above and the
+  CUMULANT_GALILEAN_FIX round-2 error model are valid for the PRE-r2-c tree
+  only. The cubic-correction implementation order's STEP-0 anchor gate
+  correctly detected the mismatch and halted without touching code.
+- Status: cumulant Galilean work is BLOCKED on the r2-c triage (routed to the
+  r2-c owner: intentional physics change to be recorded + holdout values
+  re-frozen, or regression to be fixed). Do not rebuild the error model until
+  the baseline is adjudicated.
+
+### 2026-07-07 W-VOF O1 counter-term interface-maintenance fix (`crates/lbm-core/src/phase_field.rs`, `Solver::phase_field_step_prescribed_velocity`)
+- Form: the D3Q19 conservative Allen-Cahn source remains the Fakhari
+  velocity-form counter-term
+  `S_i = w_i (c_i . [(4/W) phi(1-phi)n]) / cs^2`, but the discrete collision
+  update now applies it as `(M/tau_phi) S_i = omega_phi M S_i`. Since the
+  recovered source flux carries the BGK factor `tau_phi`, this gives the
+  governing counter-flux `M(4/W) phi(1-phi)n` and balances the relaxation
+  diffusion `M grad(phi)` at the tanh profile. The D3Q19 gradient is still
+  `grad(phi) = 3 sum_i w_i c_i phi(x+c_i)`; its edge sums are evaluated in a
+  permutation-invariant order so coordinate rotations do not seed round-off
+  differences into the nonlinear normal.
+- Source: Chiu and Lin 2011 conservative Allen-Cahn equation as discretized by
+  Fakhari, Mitchell, Leonardi and Bolster 2017, PRE 96, 053301; equations and
+  validity domain frozen in `docs/proposals/WVOF_IMPL_SPEC.md` section 1. The
+  prior implementation multiplied `S_i` by `M` directly, leaving the recovered
+  counter-flux short by `1/tau_phi` and causing relaxation diffusion to broaden
+  the interface.
+- Validity domain: unchanged W-VOF O1 domain, `W in [4,5]`,
+  `M in (0,1/6]`, D3Q19 prescribed-velocity transport with no density,
+  surface-tension, wetting, or hydrodynamic momentum coupling.
+- Validation: `cargo test --release -p lbm-core --test wvof_o1_adversarial
+  -- --nocapture` passed all six tests after un-ignoring the four FINDING
+  gates. Measured gate values: width transit `u=0.02` final width
+  `4.116276031`, phi drift `5.35e-13`; width transit `u=0.08` final width
+  `4.103498626`, phi drift `2.00e-13`; two-droplet one-period
+  `L2rel=1.311946682e-2`, phi drift `2.38e-13`; rotation metamorphic
+  `Linf=8.881784197e-16`; counter-term sign anchor width
+  `5.000000000 -> 4.089462844`; mobility edges `M=1e-4` width
+  `4.177072435`, `M=1/6` width `4.105201912`.
+- Replaces / interacts with: replaces the O1 phase-field source coefficient
+  only. The public flux helper `J_phi = -M[grad(phi) -
+  (4/W)phi(1-phi)n]` is unchanged; `g=None` hydrodynamic behavior remains
+  bit-identical.
+
+### 2026-07-07 behavior review — W-VOF O1 counter-term sign anchor
+Pattern: a deliberately diffused `W=5` spherical interface at zero flow
+monotonically sharpened toward the configured `W=4` profile, with the fitted
+width decreasing from `5.000000000` to `4.089462844` over 500 phase-field
+steps and total `phi` conserved at round-off in the adversarial suite.
+Mechanism: with `u=0`, the conservative Allen-Cahn relaxation diffusion
+`M grad(phi)` is opposed by the recovered counter-flux
+`M(4/W)phi(1-phi)n`; because the initial interface is wider than the target,
+the anti-diffusive term dominates until the tanh balance is approached.
+Resolved vs closure: the pattern comes from the literature-backed CAC
+counter-term and D3Q19 isotropic stencil; no limiter, position clamp, tuned
+constant, surface-tension closure, density feedback, or hydrodynamic coupling
+was active.
+Artifacts checked: no boundary accumulation is present in the fully periodic
+box; the rotation gate confirms the source stencil follows the repo's
+orientation convention. Width-vs-time CSV:
+`target/wvof_o1/counter_term_width_vs_time.csv`; midplane PGM:
+`/tmp/lbmflow_wvof_o1_adversarial/counter_term_sharpening.pgm`.
+Verdict: PHYSICAL for W-VOF O1 prescribed-velocity, matched-density transport.
+Routing: none.
+
+---
+
+### 2026-07-07 direct-forcing IBM full-step impulse and overlap mobility (`crates/lbm-core/src/solver.rs:apply_rotating_ibm`)
+- Form: each IBM sweep solves the marker-space correction
+  `M q = U_marker - I[u]`, with marker impulse unknowns `q_k` spread as
+  `q_k W_k(x)` and mobility
+  `M_jk = sum_x W_j(x) W_k(x) / rho(x)`. The implemented Richardson sweep
+  uses the row-sum preconditioner
+  `G_j = sum_k M_jk = sum_x W_j(x) sum_k W_k(x) / rho(x)` and applies
+  `q_j += relaxation * slip_j / G_j`; the cell predictor and force field both
+  use the realized full Guo impulse `delta u = F / rho`.
+- Source: resolved Guo forcing contract after the R2-C force-field impulse
+  fix. The old IBM sizing targeted the half-force diagnostic increment
+  `sum_x W F/(2 rho) = slip`, which made the realized post-step impulse twice
+  the requested slip. For a single marker, `G_j = M_jj`, so the correction is
+  the exact full-step direct-forcing impulse. For overlapping markers,
+  `M` is the symmetric positive regularized-delta Gram matrix used in
+  Uhlmann/Wang multi-direct-forcing analyses; `G^-1 M` has eigenvalues in
+  `[0, 1]` under the row-sum bound, so relaxation `1.0` is non-amplifying for
+  the represented marker modes instead of exciting the dense-marker collective
+  gain.
+- Validity domain: marker-based rotating IBM with finite positive density,
+  kernel radius 1 or 2, and audited circular marker spacings `ds/h` in
+  `[0.39, 1.0]`. The row-sum preconditioner treats marker-overlap stability;
+  it is not a volume-penalization cure. Compat rotor penalization applies a
+  per-cell correction directly in every solid cell with no interpolation-
+  spreading Gram operator, so the coherent `chi=1` disc can still realize the
+  explicit reflection `u -> 2 U_target - u` and remains ANOM-P4-010 until it
+  gets its own implicit or derived relaxation treatment.
+- Validation: `crates/lbm-core/tests/accuracy_audit_ibm.rs` default audit
+  passed. Measured B1 torque ratio `1.06598` (relative error `6.598e-2`);
+  B2 sub-cell torque spread `1.641e-3`; B3 near-edge conservation diagnostic
+  `2.313e-5` on a near-zero net force; B4 slip refinement `5.802e-5 ->
+  1.112e-5`; B5 kernel/relaxation torques `3.685e-2`, `3.738e-2`,
+  `3.703e-2`; B6 `Omega -> -Omega` torque antisymmetry `1.041e-16` and
+  mapped field difference `9.015e-17`; B8 Taylor-Couette profile
+  `L2_rel=4.522e-2`, `Linf/U_i=3.542e-2`. `rotating_ibm.rs` now pins the
+  corrected unit profiles with Taylor-Couette `L2_rel=2.887e-2`,
+  `Linf/U_i=2.778e-2`, and torque within 10% of the annular-Couette value;
+  the one-cell-off-wall Couette case is marked as smoke-only and superseded by
+  the audit for quantitative IBM accuracy.
+- Replaces / interacts with: replaces the old `2 * slip / M_jj` half-force
+  sizing and immediate marker-order Gauss-Seidel update. Diagnostics now
+  accumulate all sweep impulses and report slip after the applied sweep; net
+  force conservation uses a `1e-12` relative-scale floor so a nearly zero net
+  force is not reported as an arbitrary huge relative error.
+
+### 2026-07-07 behavior review — ANOM-P4-001 IBM audit
+Pattern: the corrected rotating IBM runs remain finite at the default
+`relaxation=1.0`; torque is linear/stable, `Omega -> -Omega` produces the
+mirrored velocity field to round-off, and the Taylor-Couette profile has the
+expected annular monotone swirl between the rotating IBM circle and the outer
+stationary wall.
+Mechanism: Guo forcing supplies the full-step marker impulse, while the
+row-sum marker mobility damps the collective overlap mode that previously
+doubled and amplified the applied slip.
+Resolved vs closure: the Guo impulse, TRT collision, and half-way outer wall
+are resolved engine behavior; the IBM regularized-delta marker coupling is a
+documented direct-forcing discretization with the validity domain above.
+Artifacts checked: no clamps, ramps, or case-identity branches were added.
+The B8 audit no longer places a stationary Eulerian solid core inside the IBM
+kernel support, avoiding a separate half-way wall artifact in the profile
+gate. No visual artifact was generated in this coding session; the PM/V&V
+viewer pass should use the B8 velocity field if spatial inspection is needed.
+Verdict: PHYSICAL within the marker-IBM validity domain; ANOM-P4-010 remains
+separate for volume penalization.
+Routing: none for ANOM-P4-001; ANOM-P4-010 stays routed separately.
+
+---
+
+### 2026-07-07 behavior review — ANOM-P4-016 MCMP i3 RT cutoff canary
+Pattern: after the ANOM-P4-022 additive-force fix, the i3 canary still fails.
+Mode 3 develops large downward bulk momentum (`p_total_y=-1.44e2` at step 10,
+`-1.11e3` at step 100), then a lower-wall velocity/density failure
+(`max|u|=4.013e3` at `heavy:(10,12)`, `rho_min=-6.009` at
+`heavy:(160,10)` by step 400). Mode 7 remains finite through step 400 but
+shows the same bulk-momentum signature and lower-wall high-speed locus.
+Mechanism: the hard i3 protocol applies gravity to the heavy component only
+inside a closed box, injecting a large nonzero net vertical body force; the
+closed-wall return flow becomes wall-adjacent and violates the low-Mach/density
+stability envelope before the intended mid-height RT cutoff behavior is
+measurable.
+Resolved vs closure: SC/MCMP interaction forces and Guo force ingestion are
+the existing documented closures/source path; no new term was introduced. The
+failure is driven by the test's per-component body-force protocol interacting
+with closed walls, not by the ANOM-P4-022 staging bug.
+Artifacts checked: lower-wall loci in diagnostic output; density maps
+`target/vv_rt_i3/rt_mode3_step400_heavy.pgm`,
+`target/vv_rt_i3/rt_mode3_step400_light.pgm`,
+`target/vv_rt_i3/rt_mode7_step400_heavy.pgm`, and
+`target/vv_rt_i3/rt_mode7_step400_light.pgm`.
+Verdict: UNKNOWN/SPEC-COUPLING. A physical fix requires a derived MCMP
+buoyancy forcing protocol (for example, a validated pressure-balanced or
+zero-net-force formulation) and a validation update; no mean-force
+subtraction or tuning was applied in this order.
+Routing: PM/spec decision for ANOM-P4-016; core implementation only after the
+forcing model is derived and accepted.

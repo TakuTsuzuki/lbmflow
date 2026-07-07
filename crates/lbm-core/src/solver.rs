@@ -8,9 +8,9 @@
 
 use crate::backend::{Backend, HostMoments};
 use crate::fields::SoaFields;
-use crate::halo::{ExchangeScope, HaloExchange};
+use crate::halo::{exchange_g_generic, ExchangeScope, HaloExchange};
 use crate::kernels::equilibrium;
-use crate::lattice::{Face, Lattice};
+use crate::lattice::{Face, Lattice, D3Q19};
 use crate::params::{
     CollisionKind, FaceBC, FacePatch, KParams, Reduction, SourceKind, SourceRegion, StepParams,
     VolumeSource, MAX_SPEED,
@@ -20,6 +20,7 @@ use crate::rotating_ibm::{
     add3, cross, marker_stencil, norm, to_real3, DirectForcingConfig, IbmDiagnostics, RotatingBody,
 };
 use crate::subdomain::Subdomain;
+use crate::wall_model::{friction_velocity, WallCellMetric, WallMetricSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -619,32 +620,6 @@ impl<T: Real> GlobalSpec<T> {
                 });
             }
         }
-        if L::D == 3 && L::Q == 27 {
-            for face in Face::ALL {
-                match self.faces[face.index()] {
-                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
-                    FaceBC::Outflow | FaceBC::Convective { .. } => {
-                        return Err(SpecError::UnsupportedOpenFaceKind {
-                            lattice: lattice_name::<L>(),
-                            face: face.index(),
-                            kind: face_bc_name(self.faces[face.index()]),
-                        });
-                    }
-                }
-            }
-            for patch in &self.face_patches {
-                match patch.bc {
-                    FaceBC::Closed | FaceBC::Velocity { .. } | FaceBC::Pressure { .. } => {}
-                    FaceBC::Outflow | FaceBC::Convective { .. } => {
-                        return Err(SpecError::UnsupportedOpenFaceKind {
-                            lattice: lattice_name::<L>(),
-                            face: patch.face,
-                            kind: face_bc_name(patch.bc),
-                        });
-                    }
-                }
-            }
-        }
         Ok(())
     }
 
@@ -818,16 +793,6 @@ fn hash_face_bc<T: Real>(h: &mut u64, bc: FaceBC<T>) {
             hash_u64(h, 4);
             hash_real(h, u_conv);
         }
-    }
-}
-
-fn face_bc_name<T: Real>(bc: FaceBC<T>) -> &'static str {
-    match bc {
-        FaceBC::Closed => "Closed",
-        FaceBC::Velocity { .. } => "Velocity",
-        FaceBC::Pressure { .. } => "Pressure",
-        FaceBC::Outflow => "Outflow",
-        FaceBC::Convective { .. } => "Convective",
     }
 }
 
@@ -1300,6 +1265,17 @@ pub fn partition(
         }
     }
     subs
+}
+
+fn tangential_speed<T: Real>(u: [T; 3], wall_u: [T; 3], normal: [T; 3]) -> T {
+    let rel = [u[0] - wall_u[0], u[1] - wall_u[1], u[2] - wall_u[2]];
+    let un = rel[0] * normal[0] + rel[1] * normal[1] + rel[2] * normal[2];
+    let tan = [
+        rel[0] - un * normal[0],
+        rel[1] - un * normal[1],
+        rel[2] - un * normal[2],
+    ];
+    (tan[0] * tan[0] + tan[1] * tan[1] + tan[2] * tan[2]).sqrt()
 }
 
 /// Time-evolution driver over a decomposed grid.
@@ -2253,24 +2229,41 @@ where
         }
         let scale = max_target.max(1.0);
 
-        for iter in 0..cfg.max_iterations {
-            diag = IbmDiagnostics {
-                iterations: iter + 1,
-                ..IbmDiagnostics::default()
-            };
-            let mut slip_sq_weighted = 0.0;
-            let mut weight_sum = 0.0;
-
-            for marker in body.markers() {
+        let marker_stencils: Vec<_> = body
+            .markers()
+            .iter()
+            .map(|marker| {
                 let stencil = marker_stencil(marker.position, self.dims, L::D, cfg.kernel_radius);
                 assert!(
                     !stencil.is_empty(),
                     "IBM marker stencil is outside the domain"
                 );
+                stencil
+            })
+            .collect();
+        let mut cell_kernel_sum = vec![0.0f64; n];
+        for stencil in &marker_stencils {
+            for sp in stencil {
+                let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
+                if solid[gi] {
+                    continue;
+                }
+                cell_kernel_sum[gi] += sp.w;
+            }
+        }
+
+        for iter in 0..cfg.max_iterations {
+            let mut marker_impulses = vec![[0.0f64; 3]; body.markers().len()];
+            for (mi, (marker, stencil)) in body
+                .markers()
+                .iter()
+                .zip(marker_stencils.iter())
+                .enumerate()
+            {
                 let target = body.target_velocity(marker.position);
                 let mut um = [0.0f64; 3];
                 let mut mobility = 0.0f64;
-                for sp in &stencil {
+                for sp in stencil {
                     let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
                     if solid[gi] {
                         continue;
@@ -2279,42 +2272,66 @@ where
                     um[0] += sp.w * (u_now[gi][0] + du[gi][0]);
                     um[1] += sp.w * (u_now[gi][1] + du[gi][1]);
                     um[2] += sp.w * (u_now[gi][2] + du[gi][2]);
-                    mobility += marker.weight * sp.w * sp.w / rc.max(1.0e-30);
+                    mobility += sp.w * cell_kernel_sum[gi] / rc.max(1.0e-30);
                 }
                 if mobility == 0.0 {
                     continue;
                 }
                 let slip = [target[0] - um[0], target[1] - um[1], target[2] - um[2]];
-                let slip_mag = norm(slip, L::D);
-                diag.slip_max = diag.slip_max.max(slip_mag);
-                slip_sq_weighted += marker.weight * slip_mag * slip_mag;
-                weight_sum += marker.weight;
 
-                // Chosen so interpolation of the Guo half-force velocity
-                // increment, sum W * F_cell/(2 rho), equals this sweep's slip.
-                let f_marker = [
-                    cfg.relaxation * 2.0 * slip[0] / mobility,
-                    cfg.relaxation * 2.0 * slip[1] / mobility,
-                    cfg.relaxation * 2.0 * slip[2] / mobility,
+                // Direct-forcing IBM is the marker-space linear solve M f = s,
+                // where s = U_marker - I[u] and
+                // M_jk = sum_cells W_j(cell) W_k(cell) / rho(cell) for marker
+                // impulse unknowns q_k spread as q_k W_k. Before the post-R2-C
+                // force-field impulse fix this code targeted the Guo half-force
+                // predictor, sum W F/(2 rho), and therefore used 2*s/M_jj. The
+                // actual post-step momentum impulse of a Guo force field is
+                // F/rho, so an isolated marker is exactly corrected by s/M_jj.
+                //
+                // Dense markers have positive off-diagonal overlap. Using only
+                // M_jj then lets a collective mode receive roughly the sum of
+                // neighbouring marker corrections. The denominator used here is
+                // the row sum G_j = sum_k M_jk, computed as
+                // sum_cells W_j(cell) * sum_k W_k(cell) / rho(cell). Gershgorin
+                // gives every eigenvalue of G^-1 M in [0, 1] because M is a
+                // symmetric positive regularized-delta Gram matrix and G is its
+                // positive row-sum diagonal. Richardson sweeps with
+                // relaxation=1 therefore have spectral radius <= 1 for the
+                // residual operator I - G^-1 M, with the unit mobility mode
+                // corrected in one sweep and the remaining represented modes
+                // damped. This is the Uhlmann/Wang multi-direct-forcing overlap
+                // correction; for one marker G_j=M_jj, so the full-step
+                // correction remains exact.
+                marker_impulses[mi] = [
+                    cfg.relaxation * slip[0] / mobility,
+                    cfg.relaxation * slip[1] / mobility,
+                    cfg.relaxation * slip[2] / mobility,
                 ];
+            }
+            for ((marker, stencil), marker_impulse) in body
+                .markers()
+                .iter()
+                .zip(marker_stencils.iter())
+                .zip(marker_impulses.iter())
+            {
                 let mut represented_marker_force = [0.0f64; 3];
-                for sp in &stencil {
+                for sp in stencil {
                     let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
                     if solid[gi] {
                         continue;
                     }
                     let cell_force = [
-                        f_marker[0] * marker.weight * sp.w,
-                        f_marker[1] * marker.weight * sp.w,
-                        f_marker[2] * marker.weight * sp.w,
+                        marker_impulse[0] * sp.w,
+                        marker_impulse[1] * sp.w,
+                        marker_impulse[2] * sp.w,
                     ];
                     add3(&mut spread[gi], cell_force);
                     add3(&mut diag.fluid_force, cell_force);
                     add3(&mut represented_marker_force, cell_force);
-                    let inv_2rho = 0.5 / rho[gi].as_f64().max(1.0e-30);
-                    du[gi][0] += cell_force[0] * inv_2rho;
-                    du[gi][1] += cell_force[1] * inv_2rho;
-                    du[gi][2] += cell_force[2] * inv_2rho;
+                    let inv_rho = 1.0 / rho[gi].as_f64().max(1.0e-30);
+                    du[gi][0] += cell_force[0] * inv_rho;
+                    du[gi][1] += cell_force[1] * inv_rho;
+                    du[gi][2] += cell_force[2] * inv_rho;
                 }
                 add3(&mut diag.marker_force, represented_marker_force);
                 let r = [
@@ -2328,6 +2345,33 @@ where
                 diag.torque[2] -= tq_fluid[2];
             }
 
+            diag.iterations = iter + 1;
+            diag.slip_max = 0.0;
+            let mut slip_sq_weighted = 0.0;
+            let mut weight_sum = 0.0;
+            for (marker, stencil) in body.markers().iter().zip(marker_stencils.iter()) {
+                let target = body.target_velocity(marker.position);
+                let mut um = [0.0f64; 3];
+                let mut active_weight = false;
+                for sp in stencil {
+                    let gi = (sp.z * self.dims[1] + sp.y) * self.dims[0] + sp.x;
+                    if solid[gi] {
+                        continue;
+                    }
+                    active_weight = true;
+                    um[0] += sp.w * (u_now[gi][0] + du[gi][0]);
+                    um[1] += sp.w * (u_now[gi][1] + du[gi][1]);
+                    um[2] += sp.w * (u_now[gi][2] + du[gi][2]);
+                }
+                if !active_weight {
+                    continue;
+                }
+                let slip = [target[0] - um[0], target[1] - um[1], target[2] - um[2]];
+                let slip_mag = norm(slip, L::D);
+                diag.slip_max = diag.slip_max.max(slip_mag);
+                slip_sq_weighted += marker.weight * slip_mag * slip_mag;
+                weight_sum += marker.weight;
+            }
             diag.slip_rms = if weight_sum > 0.0 {
                 (slip_sq_weighted / weight_sum).sqrt()
             } else {
@@ -2340,7 +2384,7 @@ where
                 diag.fluid_force[1] - diag.marker_force[1],
                 diag.fluid_force[2] - diag.marker_force[2],
             ];
-            diag.momentum_error_rel = norm(err, L::D) / norm(diag.marker_force, L::D).max(1.0e-30);
+            diag.momentum_error_rel = norm(err, L::D) / norm(diag.marker_force, L::D).max(1.0e-12);
             if diag.slip_max_rel <= cfg.slip_tolerance {
                 break;
             }
@@ -2563,6 +2607,394 @@ where
             }
         }
         self.host_dirty = true;
+    }
+
+    // ------------------------------------------------------------------
+    // W-VOF O1 conservative Allen-Cahn phase-field transport
+    // ------------------------------------------------------------------
+
+    fn require_phase_field_lattice() -> Result<(), crate::phase_field::PhaseFieldError> {
+        if L::D != 3 || L::Q != D3Q19::Q {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: "W-VOF O1 phase-field transport is implemented only for D3Q19".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn fill_phase_planes(&mut self) -> Result<(), crate::phase_field::PhaseFieldError> {
+        for ((sub, fields), plane) in self
+            .subs
+            .iter()
+            .zip(self.host_parts.iter())
+            .zip(self.psi_planes.iter_mut())
+        {
+            let Some(phi) = fields.phi.as_ref() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase field is not enabled".to_string(),
+                });
+            };
+            let geo = sub.geom;
+            plane.fill(T::zero());
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        if !fields.solid[pi] {
+                            plane[pi] = phi[geo.cidx(x, y, z)];
+                        }
+                    }
+                }
+            }
+        }
+        if self.psi_planes.len() == 1 {
+            let mut plane = self.psi_planes[0].as_mut_slice();
+            self.exchange
+                .exchange_scalar(&self.subs, std::slice::from_mut(&mut plane));
+        } else {
+            let mut refs: Vec<&mut [T]> = self
+                .psi_planes
+                .iter_mut()
+                .map(|p| p.as_mut_slice())
+                .collect();
+            self.exchange.exchange_scalar(&self.subs, &mut refs);
+        }
+        Ok(())
+    }
+
+    fn diagnose_phase_field(&self) -> crate::phase_field::PhaseFieldDiagnostics {
+        let mut total_phi = 0.0;
+        let mut min_phi = f64::INFINITY;
+        let mut max_phi = f64::NEG_INFINITY;
+        let mut seen = false;
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let Some(phi) = fields.phi.as_ref() else {
+                continue;
+            };
+            let geo = sub.geom;
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        if fields.solid[geo.pidx(x, y, z)] {
+                            continue;
+                        }
+                        let v = phi[geo.cidx(x, y, z)].as_f64();
+                        total_phi += v;
+                        if v < min_phi {
+                            min_phi = v;
+                        }
+                        if v > max_phi {
+                            max_phi = v;
+                        }
+                        seen = true;
+                    }
+                }
+            }
+        }
+        if !seen {
+            min_phi = 0.0;
+            max_phi = 0.0;
+        }
+        crate::phase_field::PhaseFieldDiagnostics {
+            total_phi,
+            min_phi,
+            max_phi,
+        }
+    }
+
+    /// Enable the W-VOF O1 phase-field distribution from a compact global
+    /// `phi` field and a prescribed velocity used for the initial `g_eq`.
+    pub fn enable_phase_field_prescribed_velocity(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        phi: &[T],
+        velocity: impl Fn(usize, usize, usize) -> [T; 3],
+    ) -> Result<(), crate::phase_field::PhaseFieldError> {
+        Self::require_phase_field_lattice()?;
+        params.validate()?;
+        if H::SCOPE == ExchangeScope::Remote {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: "W-VOF O1 phase-field transport currently supports local CPU decompositions only"
+                    .to_string(),
+            });
+        }
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        if phi.len() != n {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: format!(
+                    "phase field length {} does not match cell count {n}",
+                    phi.len()
+                ),
+            });
+        }
+        self.stage_out_all();
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter_mut()) {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            let nc = geo.n_core();
+            let local_phi = fields.phi.get_or_insert_with(|| vec![T::zero(); nc]);
+            if local_phi.len() != nc {
+                local_phi.resize(nc, T::zero());
+            }
+            let gset = fields
+                .g
+                .get_or_insert_with(|| vec![T::zero(); D3Q19::Q * np]);
+            if gset.len() != D3Q19::Q * np {
+                gset.resize(D3Q19::Q * np, T::zero());
+            }
+            let gtmp = fields
+                .gtmp
+                .get_or_insert_with(|| vec![T::zero(); D3Q19::Q * np]);
+            if gtmp.len() != D3Q19::Q * np {
+                gtmp.resize(D3Q19::Q * np, T::zero());
+            }
+            gset.fill(T::zero());
+            gtmp.fill(T::zero());
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        let c = geo.cidx(x, y, z);
+                        let pi = geo.pidx(x, y, z);
+                        local_phi[c] = phi[gi];
+                        if fields.solid[pi] {
+                            continue;
+                        }
+                        let u = velocity(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
+                        let geq = crate::phase_field::equilibrium(phi[gi], u);
+                        for q in 0..D3Q19::Q {
+                            gset[q * np + pi] = geq[q];
+                        }
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        Ok(())
+    }
+
+    /// Advance only the W-VOF O1 phase-field distribution under a prescribed
+    /// velocity field. The hydrodynamic `f` step is not executed.
+    pub fn phase_field_step_prescribed_velocity(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        velocity: impl Fn(usize, usize, usize) -> [T; 3],
+    ) -> Result<crate::phase_field::PhaseFieldDiagnostics, crate::phase_field::PhaseFieldError>
+    {
+        Self::require_phase_field_lattice()?;
+        let params = params.validate()?;
+        if H::SCOPE == ExchangeScope::Remote {
+            return Err(crate::phase_field::PhaseFieldError {
+                message: "W-VOF O1 phase-field transport currently supports local CPU decompositions only"
+                    .to_string(),
+            });
+        }
+        self.stage_out_all();
+        self.fill_phase_planes()?;
+
+        let omega = params.omega();
+        for (part, (sub, fields)) in self.subs.iter().zip(self.host_parts.iter_mut()).enumerate() {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            let Some(gset) = fields.g.as_mut() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase-field g distribution is not enabled".to_string(),
+                });
+            };
+            let Some(phi) = fields.phi.as_ref() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase field is not enabled".to_string(),
+                });
+            };
+            let phi_plane = &self.psi_planes[part];
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        if fields.solid[pi] {
+                            continue;
+                        }
+                        let c = geo.cidx(x, y, z);
+                        let p = phi[c];
+                        let u = velocity(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
+                        let geq = crate::phase_field::equilibrium(p, u);
+                        let (grad, _) = crate::phase_field::grad_lap(geo, phi_plane, x, y, z);
+                        let mut source = [T::zero(); 19];
+                        let mut source_sum = T::zero();
+                        for q in 0..D3Q19::Q {
+                            source[q] = crate::phase_field::collide_source(params, p, grad, q);
+                            source_sum = source_sum + source[q];
+                        }
+                        source[D3Q19::REST] = source[D3Q19::REST] - source_sum;
+                        for q in 0..D3Q19::Q {
+                            let idx = q * np + pi;
+                            let old = gset[idx];
+                            // The source first moment is multiplied by
+                            // tau_phi in the recovered flux, so the discrete
+                            // update uses omega_phi*M to recover the
+                            // governing M(4/W)phi(1-phi)n_hat counter-flux.
+                            gset[idx] =
+                                old - omega * (old - geq[q]) + omega * params.mobility * source[q];
+                        }
+                    }
+                }
+            }
+        }
+
+        exchange_g_generic::<D3Q19, T>(&self.subs, &mut self.host_parts);
+
+        for (sub, fields) in self.subs.iter_mut().zip(self.host_parts.iter_mut()) {
+            let geo = sub.geom;
+            let np = geo.n_padded();
+            {
+                let gset = fields
+                    .g
+                    .as_ref()
+                    .expect("phase-field g distribution must be enabled");
+                let gout = fields
+                    .gtmp
+                    .as_mut()
+                    .expect("phase-field g ping-pong distribution must be enabled");
+                for z in 0..geo.core[2] {
+                    for y in 0..geo.core[1] {
+                        for x in 0..geo.core[0] {
+                            let dst = geo.pidx(x, y, z);
+                            if fields.solid[dst] {
+                                continue;
+                            }
+                            for q in 0..D3Q19::Q {
+                                let c = D3Q19::C[q];
+                                let src = geo.pidx_i(
+                                    x as isize - c[0] as isize,
+                                    y as isize - c[1] as isize,
+                                    z as isize - c[2] as isize,
+                                );
+                                gout[q * np + dst] = gset[q * np + src];
+                            }
+                        }
+                    }
+                }
+            }
+            std::mem::swap(
+                fields.g.as_mut().expect("phase-field g distribution"),
+                fields
+                    .gtmp
+                    .as_mut()
+                    .expect("phase-field g ping-pong distribution"),
+            );
+            let gset = fields.g.as_ref().expect("phase-field g distribution");
+            let phi = fields.phi.as_mut().expect("phase field");
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let pi = geo.pidx(x, y, z);
+                        let c = geo.cidx(x, y, z);
+                        if fields.solid[pi] {
+                            phi[c] = T::zero();
+                            continue;
+                        }
+                        let mut populations = [T::zero(); 19];
+                        for q in 0..D3Q19::Q {
+                            populations[q] = gset[q * np + pi];
+                        }
+                        phi[c] = crate::phase_field::sum_populations(populations);
+                    }
+                }
+            }
+        }
+        self.host_dirty = true;
+        Ok(self.diagnose_phase_field())
+    }
+
+    /// Run the phase-field prescribed-velocity pre-pass, then the existing
+    /// hydrodynamic step. The hydrodynamic pass order is unchanged.
+    pub fn step_with_phase_field_prescribed_velocity(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        velocity: impl Fn(usize, usize, usize) -> [T; 3],
+    ) -> Result<crate::phase_field::PhaseFieldDiagnostics, crate::phase_field::PhaseFieldError>
+    {
+        let diag = self.phase_field_step_prescribed_velocity(params, velocity)?;
+        self.step();
+        Ok(diag)
+    }
+
+    /// Compute the conservative Allen-Cahn interface flux `J_phi` at one
+    /// global cell from the current `phi` state.
+    pub fn phase_flux_jphi(
+        &mut self,
+        params: crate::phase_field::PhaseFieldParams<T>,
+        x: usize,
+        y: usize,
+        z: usize,
+    ) -> Result<[T; 3], crate::phase_field::PhaseFieldError> {
+        Self::require_phase_field_lattice()?;
+        let params = params.validate()?;
+        self.stage_out_all();
+        self.fill_phase_planes()?;
+        let (part, lx, ly, lz) = self.locate(x, y, z);
+        let fields = &self.host_parts[part];
+        let geo = fields.geom;
+        let phi = fields
+            .phi
+            .as_ref()
+            .ok_or_else(|| crate::phase_field::PhaseFieldError {
+                message: "phase field is not enabled".to_string(),
+            })?;
+        let (grad, _) = crate::phase_field::grad_lap(geo, &self.psi_planes[part], lx, ly, lz);
+        Ok(crate::phase_field::phase_flux_jphi(
+            params,
+            phi[geo.cidx(lx, ly, lz)],
+            grad,
+        ))
+    }
+
+    /// Gather the compact global `phi` field.
+    pub fn gather_phi(&mut self) -> Result<Vec<T>, crate::phase_field::PhaseFieldError> {
+        self.stage_out_all();
+        let mut out = vec![T::zero(); self.dims[0] * self.dims[1] * self.dims[2]];
+        for (sub, fields) in self.subs.iter().zip(self.host_parts.iter()) {
+            let Some(phi) = fields.phi.as_ref() else {
+                return Err(crate::phase_field::PhaseFieldError {
+                    message: "phase field is not enabled".to_string(),
+                });
+            };
+            let geo = sub.geom;
+            for z in 0..geo.core[2] {
+                for y in 0..geo.core[1] {
+                    for x in 0..geo.core[0] {
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+                        out[gi] = phi[geo.cidx(x, y, z)];
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Export `phi` along an x-directed line as CSV.
+    pub fn export_phi_x_profile_csv(
+        &mut self,
+        y: usize,
+        z: usize,
+        path: impl AsRef<Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let phi = self.gather_phi()?;
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(path)?;
+        writeln!(file, "x,phi")?;
+        for x in 0..self.dims[0] {
+            let gi = (z * self.dims[1] + y) * self.dims[0] + x;
+            writeln!(file, "{x},{}", phi[gi])?;
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -3414,6 +3846,141 @@ where
     /// Global z-velocity field.
     pub fn gather_uz(&self) -> Vec<T> {
         self.gather_moment(|m, c| m.uz[c])
+    }
+
+    /// Wall metrics for wall-adjacent fluid cells in global compact order.
+    ///
+    /// This is a read-only W1 diagnostic. It reads the current velocity moments
+    /// and wall geometry, but it does not write populations, moments, masks, or
+    /// per-cell relaxation fields. Half-way rim cells use `y_w = 0.5`; Bouzidi
+    /// cells use the shortest installed `qd * |c_q|` link for that fluid cell.
+    pub fn gather_wall_metrics(&self) -> Vec<WallCellMetric<T>> {
+        let mut out = Vec::new();
+        for ((sub, host), fields) in self
+            .subs
+            .iter()
+            .zip(self.host_parts.iter())
+            .zip(self.parts.iter())
+        {
+            let g = sub.geom;
+            let mut hm = HostMoments::default();
+            self.backend.read_moments(fields, &mut hm);
+
+            let mut bouzidi = vec![None; g.n_padded()];
+            if let Some(links) = &host.bouzidi {
+                for rec in &links.records {
+                    let q = rec.q as usize;
+                    assert!(q > 0 && q < L::Q, "invalid Bouzidi direction {q}");
+                    let cq = L::C[q];
+                    let len_sq = cq[0] as f64 * cq[0] as f64
+                        + cq[1] as f64 * cq[1] as f64
+                        + cq[2] as f64 * cq[2] as f64;
+                    assert!(len_sq > 0.0, "Bouzidi wall link must be non-rest");
+                    let len = T::r(len_sq).sqrt();
+                    let y_w = rec.qd * len;
+                    let inv_len = T::one() / len;
+                    let normal = [
+                        T::r(cq[0] as f64) * inv_len,
+                        T::r(cq[1] as f64) * inv_len,
+                        T::r(cq[2] as f64) * inv_len,
+                    ];
+                    let wall_u = host.wall_u[rec.wall_ref as usize];
+                    let cell = rec.cell as usize;
+                    let replace = match bouzidi[cell] {
+                        Some((prev_y_w, _, _)) => y_w < prev_y_w,
+                        None => true,
+                    };
+                    if replace {
+                        bouzidi[cell] = Some((y_w, normal, wall_u));
+                    }
+                }
+            }
+
+            for z in 0..g.core[2] {
+                for y in 0..g.core[1] {
+                    for x in 0..g.core[0] {
+                        let pi = g.pidx(x, y, z);
+                        if host.solid[pi] {
+                            continue;
+                        }
+                        let c = g.cidx(x, y, z);
+                        let u = [hm.ux[c], hm.uy[c], hm.uz[c]];
+                        let gi = ((sub.origin[2] + z) * self.dims[1] + (sub.origin[1] + y))
+                            * self.dims[0]
+                            + (sub.origin[0] + x);
+
+                        let metric_input = if let Some((y_w, normal, wall_u)) = bouzidi[pi] {
+                            Some((y_w, normal, wall_u, WallMetricSource::Bouzidi))
+                        } else {
+                            self.halfway_wall_metric_input(host, x, y, z)
+                                .map(|(normal, wall_u)| {
+                                    (T::r(0.5), normal, wall_u, WallMetricSource::HalfwayRim)
+                                })
+                        };
+
+                        let Some((y_w, normal, wall_u, source)) = metric_input else {
+                            continue;
+                        };
+                        let u_parallel = tangential_speed(u, wall_u, normal);
+                        let u_tau = friction_velocity(u_parallel, y_w, T::r(self.nu));
+                        out.push(WallCellMetric {
+                            cell_index: gi,
+                            y_w,
+                            u_parallel,
+                            u_tau,
+                            y_plus: y_w * u_tau / T::r(self.nu),
+                            tau_w: u_tau * u_tau,
+                            source,
+                        });
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|m| m.cell_index);
+        out
+    }
+
+    fn halfway_wall_metric_input(
+        &self,
+        fields: &SoaFields<T>,
+        x: usize,
+        y: usize,
+        z: usize,
+    ) -> Option<([T; 3], [T; 3])> {
+        let g = fields.geom;
+        let mut normal = [T::zero(); 3];
+        let mut wall_u = [T::zero(); 3];
+        let mut n = 0usize;
+        for q in 1..L::Q {
+            let cq = L::C[q];
+            let np = g.pidx_i(
+                x as isize + cq[0] as isize,
+                y as isize + cq[1] as isize,
+                z as isize + cq[2] as isize,
+            );
+            if fields.solid[np] {
+                for a in 0..3 {
+                    normal[a] = normal[a] + T::r(cq[a] as f64);
+                    wall_u[a] = wall_u[a] + fields.wall_u[np][a];
+                }
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        let norm_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
+        assert!(
+            norm_sq > T::zero(),
+            "half-way wall normal is undefined because solid-link directions cancel"
+        );
+        let inv_norm = T::one() / norm_sq.sqrt();
+        let inv_n = T::one() / T::r(n as f64);
+        for a in 0..3 {
+            normal[a] = normal[a] * inv_norm;
+            wall_u[a] = wall_u[a] * inv_n;
+        }
+        Some((normal, wall_u))
     }
 
     fn strain_rate_at(&self, fields: &SoaFields<T>, x: usize, y: usize, z: usize) -> [T; 6] {
@@ -4313,7 +4880,7 @@ mod tests {
     }
 
     #[test]
-    fn d3q27_rejects_unimplemented_open_face_kinds_before_build() {
+    fn d3q27_accepts_all_open_face_kinds_before_build() {
         let mut faces = [FaceBC::<f64>::Closed; 6];
         faces[Face::XNeg.index()] = FaceBC::Velocity {
             u: [0.02, 0.0, 0.0],
@@ -4325,26 +4892,16 @@ mod tests {
             faces,
             ..Default::default()
         };
-        assert!(matches!(
-            spec.validate_lattice::<D3Q27>(&[]),
-            Err(SpecError::UnsupportedOpenFaceKind {
-                lattice: "D3Q27",
-                face,
-                ..
-            })
-            if face == Face::XPos.index()
-        ));
-        assert!(matches!(
-            Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
-                &spec,
-                &[],
-                &[],
-                [1, 1, 1],
-                CpuScalar::default(),
-                LocalPeriodic,
-            ),
-            Err(SpecError::UnsupportedOpenFaceKind { .. })
-        ));
+        assert!(spec.validate_lattice::<D3Q27>(&[]).is_ok());
+        assert!(Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
+            &spec,
+            &[],
+            &[],
+            [1, 1, 1],
+            CpuScalar::default(),
+            LocalPeriodic,
+        )
+        .is_ok());
     }
 
     #[test]

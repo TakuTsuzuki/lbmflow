@@ -4,6 +4,12 @@ mod common;
 
 use common::run_to_steady;
 use lbm_core::compat::prelude::*;
+use lbm_core::prelude::{
+    build_wall_rims, CollisionKind, CpuScalar, Face, GlobalSpec, LocalPeriodic, Solver, WaleLes,
+    WallSpec, D2Q9, WALE_CW,
+};
+
+type CoreCouette = Solver<D2Q9, f64, CpuScalar, LocalPeriodic>;
 
 #[derive(Debug)]
 struct EpsilonMetrics {
@@ -75,6 +81,51 @@ fn compare_epsilon(
         mean_reference,
         max_abs_error,
     }
+}
+
+fn core_couette(nx: usize, ny: usize, nu: f64, top_u: f64) -> CoreCouette {
+    let spec = GlobalSpec {
+        dims: [nx, ny, 1],
+        nu,
+        collision: CollisionKind::Trt {
+            magic: CollisionKind::MAGIC_STD,
+        },
+        periodic: [true, false, false],
+        ..Default::default()
+    };
+    let mut walls = WallSpec::default();
+    walls.is_wall[Face::YNeg.index()] = true;
+    walls.is_wall[Face::YPos.index()] = true;
+    walls.u[Face::YPos.index()] = [top_u, 0.0, 0.0];
+    let (solid, wall_u) = build_wall_rims(2, spec.dims, &walls);
+    let mut solver = Solver::new(
+        &spec,
+        &solid,
+        &wall_u,
+        [1, 1, 1],
+        CpuScalar::default(),
+        LocalPeriodic,
+    );
+
+    let h = (ny - 2) as f64;
+    solver.init_with(|_, y, _| {
+        let ux = if y == 0 {
+            0.0
+        } else if y == ny - 1 {
+            top_u
+        } else {
+            top_u * (y as f64 - 0.5) / h
+        };
+        (1.0, [ux, 0.0, 0.0])
+    });
+    solver
+}
+
+fn max_abs_pair(a: &[f64], b: &[f64]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max)
 }
 
 #[test]
@@ -163,6 +214,79 @@ fn g2_forced_poiseuille_dissipation_profile_and_volume_mean_match_analytic() {
         metrics.linf_rel,
         metrics.mean_measured,
         metrics.mean_reference
+    );
+}
+
+#[test]
+fn wale_pure_shear_couette_has_zero_eddy_viscosity_and_identical_velocity() {
+    let nx = 32;
+    let ny = 34;
+    let nu = 0.02;
+    let top_u = 0.02;
+    let steps = 5_000;
+    assert_eq!(
+        WALE_CW.to_bits(),
+        0.325f64.to_bits(),
+        "P21 fixture requires Nicoud-Ducros WALE Cw=0.325"
+    );
+
+    let mut off = core_couette(nx, ny, nu, top_u);
+    let mut on = core_couette(nx, ny, nu, top_u);
+    let mut les = WaleLes::<f64>::new();
+    for _ in 0..steps {
+        les.update(&mut on);
+        on.run(1);
+        off.run(1);
+    }
+    les.update(&mut on);
+
+    let max_nu_t_interior = les
+        .nu_t()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, nu_t)| {
+            let y = (i / nx) % ny;
+            (2..ny - 2).contains(&y).then_some(nu_t.abs())
+        })
+        .fold(0.0_f64, f64::max);
+    let max_du = max_abs_pair(&off.gather_ux(), &on.gather_ux());
+    let max_dv = max_abs_pair(&off.gather_uy(), &on.gather_uy());
+    let velocity_band = 2.0 * f64::EPSILON * top_u;
+    let diagnostics = les.diagnostics();
+    eprintln!(
+        "P21 WALE pure-shear Couette: Cw={:.3}, steps={}, max|nu_t|_interior={:.12e}, \
+         max_raw_nu_t={:.12e}, clipped_cells={}, max|du|={:.12e}, max|dv|={:.12e}, \
+         velocity_band={:.12e}",
+        WALE_CW,
+        steps,
+        max_nu_t_interior,
+        diagnostics.max_nu_t_before_clipping,
+        diagnostics.clipped_cells,
+        max_du,
+        max_dv,
+        velocity_band
+    );
+
+    // WALE uses
+    //   nu_t = (Cw Delta)^2 (S^d:S^d)^(3/2)
+    //          / ((S:S)^(5/2) + (S^d:S^d)^(5/4)),
+    // where S is the symmetric velocity-gradient tensor and
+    //   S^d_ij = 0.5 * (g_ik g_kj + g_jk g_ki) - delta_ij tr(g^2)/3.
+    // For pure Couette shear, u=(a y,0,0), so the only non-zero gradient is
+    // g_xy=a. This nilpotent gradient has g^2=0, hence tr(g^2)=0 and every
+    // S^d_ij is exactly zero: no eigenvalue collision or limiting argument is
+    // involved. Therefore S^d:S^d=0 and WALE's defining property is
+    // nu_t=0 in pure shear. This is the reason to prefer WALE over
+    // Smagorinsky for wall-bounded shear (Nicoud-Ducros 1999); if eddy
+    // viscosity leaks into this field, the WALE closure is broken.
+    assert!(
+        max_nu_t_interior <= 1.0e-14,
+        "WALE pure-shear property failed: max|nu_t|_interior={max_nu_t_interior:e} > 1e-14"
+    );
+    assert!(
+        max_du <= velocity_band && max_dv <= velocity_band,
+        "WALE-on pure-shear velocity changed vs WALE-off: max|du|={max_du:e}, \
+         max|dv|={max_dv:e}, band={velocity_band:e}"
     );
 }
 

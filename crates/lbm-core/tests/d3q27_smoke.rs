@@ -1,5 +1,5 @@
 //! D3Q27 stage-1 smoke tests: closed-wall BGK/TRT kernels, wall rims,
-//! moving-wall bounce-back, and the explicit unimplemented-open-kind guard.
+//! moving-wall bounce-back, and open-face construction smoke coverage.
 
 use lbm_core::prelude::*;
 
@@ -71,7 +71,7 @@ fn d3q27_closed_box_stays_finite_and_conserves_mass() {
 }
 
 #[test]
-fn d3q27_outflow_still_returns_unsupported_kind_error() {
+fn d3q27_outflow_open_face_constructs_and_runs() {
     let mut faces = [FaceBC::Closed; 6];
     faces[Face::XNeg.index()] = FaceBC::Velocity {
         u: [0.02, 0.0, 0.0],
@@ -83,29 +83,16 @@ fn d3q27_outflow_still_returns_unsupported_kind_error() {
         faces,
         ..Default::default()
     };
-    let err = match Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::try_new(
+    let mut s = Solver::<D3Q27, f64, CpuScalar, LocalPeriodic>::new(
         &spec,
         &[],
         &[],
         [1, 1, 1],
         CpuScalar::default(),
         LocalPeriodic,
-    ) {
-        Ok(_) => panic!("D3Q27 open faces must be rejected during construction"),
-        Err(err) => err,
-    };
-    assert!(
-        matches!(
-            err,
-            SpecError::UnsupportedOpenFaceKind {
-                lattice: "D3Q27",
-                face,
-                ..
-            }
-            if face == Face::XPos.index()
-        ),
-        "expected UnsupportedOpenFaceKind(D3Q27, XPos Outflow), got {err:?}"
     );
+    s.run(20);
+    assert!(s.gather_rho().iter().all(|v| v.is_finite()));
 }
 
 #[test]

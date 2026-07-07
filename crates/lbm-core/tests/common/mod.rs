@@ -5,6 +5,7 @@
 
 use lbm_core::compat::prelude::*;
 
+pub mod gci;
 pub mod metrics;
 pub mod tgv_analysis;
 #[allow(unused_imports)]

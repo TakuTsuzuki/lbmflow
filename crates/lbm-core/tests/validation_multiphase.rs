@@ -50,6 +50,7 @@ fn run_flat_f64(steps: usize) -> FlatStats {
     let m0 = sim.total_mass();
     let sc = ShanChen::new(G);
     for _ in 0..steps {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }
@@ -91,6 +92,7 @@ fn run_flat_f32(steps: usize) -> (f64, f64, bool) {
     });
     let sc = ShanChen::new(G);
     for _ in 0..steps {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }
@@ -121,6 +123,7 @@ fn run_droplet(r0: f64, steps: usize) -> DropStats {
     });
     let sc = ShanChen::new(G);
     for _ in 0..steps {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }
@@ -137,6 +140,81 @@ fn run_droplet(r0: f64, steps: usize) -> DropStats {
         dp,
         sigma_local: dp * r_fit,
     }
+}
+
+#[test]
+fn t11_shan_chen_adds_to_existing_force_field_anom_p4_022() {
+    let (nx, ny) = (32, 32);
+    let build = || {
+        let mut sim: Simulation<f64> = SimConfig {
+            nx,
+            ny,
+            nu: NU_TAU_1,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        sim.init_with(|x, y| {
+            let kx = 2.0 * PI * x as f64 / nx as f64;
+            let ky = 2.0 * PI * y as f64 / ny as f64;
+            (1.0 + 0.10 * kx.cos() + 0.05 * ky.sin(), 0.0, 0.0)
+        });
+        sim
+    };
+    let gravity = [1.0e-6, -2.0e-6];
+    let gravity_force = |sim: &Simulation<f64>| {
+        sim.rho_field()
+            .iter()
+            .map(|&rho| [rho * gravity[0], rho * gravity[1]])
+            .collect::<Vec<_>>()
+    };
+
+    let sc = ShanChen::new(G);
+    let mut sc_only = build();
+    sc_only.force_field_mut().fill([0.0; 2]);
+    sc.update_force(&mut sc_only);
+    let sc_force = sc_only.force_field_mut().to_vec();
+
+    let mut gravity_only = build();
+    let g_force = gravity_force(&gravity_only);
+    gravity_only.force_field_mut().copy_from_slice(&g_force);
+
+    let mut composed = build();
+    composed.force_field_mut().copy_from_slice(&g_force);
+    sc.update_force(&mut composed);
+    let composed_force = composed.force_field_mut().to_vec();
+
+    let mut max_sum_err = 0.0f64;
+    let mut max_sc = 0.0f64;
+    let mut max_gravity = 0.0f64;
+    let mut max_delta_from_sc_only = 0.0f64;
+    let mut max_delta_from_gravity_only = 0.0f64;
+    for ((got, sc), g) in composed_force.iter().zip(&sc_force).zip(&g_force) {
+        for c in 0..2 {
+            max_sum_err = max_sum_err.max((got[c] - sc[c] - g[c]).abs());
+            max_sc = max_sc.max(sc[c].abs());
+            max_gravity = max_gravity.max(g[c].abs());
+            max_delta_from_sc_only = max_delta_from_sc_only.max((got[c] - sc[c]).abs());
+            max_delta_from_gravity_only = max_delta_from_gravity_only.max((got[c] - g[c]).abs());
+        }
+    }
+    assert!(max_sc > 1.0e-6, "SC contribution was too small: {max_sc:e}");
+    assert!(
+        max_gravity > 1.0e-6,
+        "gravity contribution was too small: {max_gravity:e}"
+    );
+    assert!(
+        max_sum_err < 1.0e-14,
+        "SC did not add into existing force field: max_sum_err={max_sum_err:e}"
+    );
+    assert!(
+        max_delta_from_sc_only > 0.5 * max_gravity,
+        "composed field collapsed to SC alone: delta={max_delta_from_sc_only:e}"
+    );
+    assert!(
+        max_delta_from_gravity_only > 0.5 * max_sc,
+        "composed field collapsed to gravity alone: delta={max_delta_from_gravity_only:e}"
+    );
 }
 
 fn fit_slope_r2(drops: &[DropStats]) -> (f64, f64) {

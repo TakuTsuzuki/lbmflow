@@ -347,8 +347,10 @@ impl<T: Real> Simulation<T> {
 
     /// Mutable access to the per-cell force field (`[fx, fy]` per cell,
     /// indexed `y*nx + x`), allocating it zero-filled on first use. The field
-    /// is *added* to the uniform `force` and is intended to be rewritten each
-    /// step by multiphase models (see `multiphase::ShanChen::update_force`).
+    /// is *added* to the uniform `force`. Additive sources such as
+    /// `multiphase::ShanChen::update_force` and `rotor::Rotor::update_force`
+    /// expect the caller to clear/reset the field once per step before
+    /// composing transient sources.
     pub fn force_field_mut(&mut self) -> &mut [[T; 2]] {
         let n = self.nx() * self.ny();
         self.force2.get_or_insert_with(|| vec![[T::zero(); 2]; n])

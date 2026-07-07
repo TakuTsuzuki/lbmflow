@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::halo::LocalPeriodic;
 use crate::lattice::{Face, Lattice, D2Q9};
 use crate::solver::{Diverged, GlobalSpec, Solver};
+use crate::wall_model::WallCellMetric;
 
 use super::backend::{GpuContext, GpuError, WgpuBackend};
 
@@ -209,6 +210,12 @@ impl<L: Lattice> GpuSolver<L> {
     pub fn gather_strain_rate(&mut self) -> Vec<[f32; 6]> {
         self.sync();
         self.inner.gather_strain_rate()
+    }
+
+    /// Wall metrics through the host staging mirror.
+    pub fn gather_wall_metrics(&mut self) -> Vec<WallCellMetric<f32>> {
+        self.sync();
+        self.inner.gather_wall_metrics()
     }
 
     /// Global shear-rate invariant through the host staging mirror.

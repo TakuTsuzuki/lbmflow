@@ -532,6 +532,7 @@ fn t13_shan_chen_wall_adhesion_native_matches_compat_and_split() {
             .collect();
 
         for t in 0..steps {
+            sim.force_field_mut().fill([0.0; 2]);
             sc.update_force(&mut sim);
             sim.step();
             mono.update_shan_chen_force_with_walls(g, g_wall, psi_wall, psi);

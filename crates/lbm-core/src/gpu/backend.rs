@@ -1193,8 +1193,8 @@ impl<L: Lattice> WgpuBackend<L> {
             };
             let unk = L::unknowns(face);
             assert!(
-                unk.len() == 3 || unk.len() == 5,
-                "GPU open face unknown count must be 3 or 5"
+                unk.len() == 3 || unk.len() == 5 || unk.len() == 9,
+                "GPU open face unknown count must be 3, 5, or 9"
             );
             let (kind, p0, p1) = match *bc {
                 FaceBC::Closed => unreachable!(),
@@ -1240,28 +1240,28 @@ impl<L: Lattice> WgpuBackend<L> {
             for (k, &q) in unk.iter().enumerate() {
                 w[26 + k] = q as u32;
             }
-            w[31] = unk.len() as u32;
+            w[35] = unk.len() as u32;
             let p2 = match *bc {
                 FaceBC::Velocity { u } => u[2],
                 _ => 0.0,
             };
-            w[32] = p0.to_bits();
-            w[33] = p1.to_bits();
-            w[34] = p2.to_bits();
-            w[35] = (n_in[0] as f32).to_bits();
-            w[36] = (n_in[1] as f32).to_bits();
-            w[37] = (n_in[2] as f32).to_bits();
-            w[38] = (unit(t1, 1)[0] as f32).to_bits();
-            w[39] = (unit(t1, 1)[1] as f32).to_bits();
-            w[40] = (unit(t1, 1)[2] as f32).to_bits();
-            w[41] = (unit(t2, 1)[0] as f32).to_bits();
-            w[42] = (unit(t2, 1)[1] as f32).to_bits();
-            w[43] = (unit(t2, 1)[2] as f32).to_bits();
+            w[36] = p0.to_bits();
+            w[37] = p1.to_bits();
+            w[38] = p2.to_bits();
+            w[39] = (n_in[0] as f32).to_bits();
+            w[40] = (n_in[1] as f32).to_bits();
+            w[41] = (n_in[2] as f32).to_bits();
+            w[42] = (unit(t1, 1)[0] as f32).to_bits();
+            w[43] = (unit(t1, 1)[1] as f32).to_bits();
+            w[44] = (unit(t1, 1)[2] as f32).to_bits();
+            w[45] = (unit(t2, 1)[0] as f32).to_bits();
+            w[46] = (unit(t2, 1)[1] as f32).to_bits();
+            w[47] = (unit(t2, 1)[2] as f32).to_bits();
             for (k, &q) in unk.iter().enumerate() {
-                w[44 + k] = (L::W[q] as f32).to_bits();
+                w[48 + k] = (L::W[q] as f32).to_bits();
             }
-            w[49] = (ws as f32).to_bits();
-            w[50] = cinv.to_bits();
+            w[57] = (ws as f32).to_bits();
+            w[58] = cinv.to_bits();
         }
         out
     }
@@ -1898,7 +1898,7 @@ impl<L: Lattice> Backend<L, f32> for WgpuBackend<L> {
     }
 
     fn supports_d3q27_open_faces(&self) -> bool {
-        false
+        true
     }
 
     fn supports_gravity_body_force(&self) -> bool {

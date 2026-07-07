@@ -6,7 +6,7 @@ use serde::Serialize;
 // Static product facts: keep in sync with docs/LIMITATIONS.md.
 pub const STATIC_FACTS: StaticFacts = StaticFacts {
     d3q27_open_face_restriction:
-        "D3Q27 supports periodic, closed-wall, velocity-inlet, and pressure-outlet cases on CPU (NEBB closure, landed 2026-07-07); outflow/convective faces and GPU open faces are rejected explicitly",
+        "D3Q27 supports CPU full boundary coverage including periodic, closed-wall, velocity-inlet, pressure-outlet, outflow, and convective open faces; GPU open faces are rejected explicitly; scenario JSON exposure landed 2026-07-07",
     checkpoint_scope: "multi-part and per-rank",
     particle_coupling: "one-way",
 };
@@ -161,9 +161,9 @@ fn scenario_collision_names() -> Vec<&'static str> {
     .map(|collision| match collision {
         CollisionSpec::Bgk => "bgk",
         CollisionSpec::Trt => "trt",
-        // Honored on the 3D D3Q19 CPU scenario path only; other paths
-        // reject it explicitly. `cumulant` is still accepted as a deprecated
-        // schema alias, so the capability output lists both accepted spellings.
+        // Honored on the 3D CPU scenario path only; other paths reject it
+        // explicitly. `cumulant` is still accepted as a deprecated schema
+        // alias, so the capability output lists both accepted spellings.
         CollisionSpec::CentralMoment => "central_moment",
         CollisionSpec::DeprecatedCumulantAlias => "cumulant",
     })

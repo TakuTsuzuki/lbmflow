@@ -11,19 +11,26 @@ context in commits 82946d3 / cd3999f / 20d0e10).
 
 ---
 
-## OPEN — core-engine fix pending
+## RESOLVED — fixed and regression-pinned
 
 ### ANOM-P4-001 — time-stepped direct-forcing IBM diverges in default config
 - Severity: **S1**.
-- Gate: `cx/audit-ibm` B1–B8 (currently RED / NaN).
-- Config: 80×80 periodic D2Q9 TRT Λ=3/16 nu=1/6, IBM circle r_i=10 Ω=1.5e-4
-  (Re_r=0.09), relaxation=1.0 (module DEFAULT). NaN at n_markers∈{63,160}.
-- Root cause (derived): marker force targets the Guo half-force velocity
-  (Σ W·F/(2ρ) = slip), but the full step realizes F/ρ — 2× overshoot per apply;
-  overlapping kernels (ds<h) amplify collectively. Same family as P4-010.
-- Positive control: at stable point (relax=0.25, n=160) T ratio 1.075 —
-  spatial discretization is right; the coupling loop is broken.
-- Disposition: core-engine routing.
+- Status: **RESOLVED 2026-07-07**.
+- Fix: marker force sizing now targets the realized full Guo force-field
+  impulse `F/rho` instead of the half-force diagnostic increment, and dense
+  marker overlap uses the row-sum mobility of the interpolation-spreading Gram
+  operator instead of the self-mobility `M_jj` alone.
+- Gate: `cargo test -p lbm-core --release --test accuracy_audit_ibm -- --nocapture`
+  passed with default `relaxation=1.0`; `rotating_ibm.rs` quantitative bands
+  were tightened or marked superseded by the audit. Measured highlights:
+  B1 torque ratio `1.06598`, B2 spread `1.641e-3`, B5 kernel/relaxation
+  torques mutually within 5%, B6 torque antisymmetry `1.041e-16`, B8
+  Taylor-Couette `L2_rel=4.522e-2`.
+- Follow-up boundary: ANOM-P4-010 remains open. Volume penalization has no
+  marker interpolation-spreading Gram operator and still needs its own derived
+  implicit/relaxation treatment.
+
+## OPEN — core-engine fix pending
 
 ### ANOM-P4-008 — cumulant D3Q19 "+0.0025 viscosity offset" is a resolution-point calibration (verdict C)
 - Severity: **S2** leaning S0 (silent tau-dependent bias at every N except
@@ -53,6 +60,35 @@ context in commits 82946d3 / cd3999f / 20d0e10).
 ---
 
 ## OPEN — audit-side revision
+
+### ANOM-P4-014 — Jurin SC coefficient is linear but high after wetted-wall audit
+- Severity: **S2 characterization**.
+- Gate: `validation_multiphase_hard.rs::val_mphard_i1_jurin_capillary_rise_zero_parameter`
+  rev 5 freezes linearity plus measured slope while the coefficient question
+  remains open.
+- Measured (2026-07-07, rev 5): `h` vs two-wetted-channel inverse-width
+  contrast has slope 1312.71105871, intercept -1.38619080, R² 0.99998340.
+  Flat-wall Jurin theory from T11/T11c constants gives 852.22687953, so the
+  measured coefficient is 1.54033050× theory.
+- Wetted-wall audit: `ShanChen::with_wall_rho` applies to all solid
+  neighbours, including the domain rim and the inserted slot walls, because
+  `compat::multiphase::ShanChen::update_force` branches on
+  `sim.solid_field()[j]` and adds `psi_wall`.
+- Gap-24 measured meniscus angles: slot 66.416148°, outside 65.505811°
+  (left 65.504972°, right 65.506650°), so rim and inserted walls do not show
+  a distinct wall-density class in this setup.
+- Behavior review: the slot rise/depression pattern is monotone with gap and
+  flips sign for the dry wall-density case. The dominant mechanism is
+  capillary rise in finite outside channels connected through the reservoir.
+  The unresolved part is coefficient magnitude, plausibly SC diffuse-meniscus
+  curvature vs flat-wall contact-angle calibration. Artifacts checked:
+  generated density maps at `target/vv_jurin/jurin_gap16_wallrho1.000.pgm`,
+  `target/vv_jurin/jurin_gap24_wallrho1.000.pgm`,
+  `target/vv_jurin/jurin_gap32_wallrho1.000.pgm`, and
+  `target/vv_jurin/jurin_gap24_wallrho0.600.pgm`; no disconnected liquid
+  column was observed by the connectivity diagnostic.
+- Disposition: keep as characterization until a curvature-aware SC capillary
+  coefficient or a matched meniscus/flat-wall calibration gate is derived.
 
 ### ANOM-P4-007 — cumulant viscosity-offset audit design confounded
 - Severity: audit design.
@@ -209,6 +245,31 @@ rho_min = −6.0) while T12's unstable orientation passes CI. Engine-finding
 candidate: MCMP + per-component gravity, stable stratification divergence.
 Routing package = the rev-3 test + printed trajectory (cx/mp-hard).
 
+2026-07-07 codex characterization after ANOM-P4-022 fix: Item 1 overwrite is
+not the P4-016 mechanism. `MultiComponent::update_forces` builds
+cross-repulsion and per-component gravity in the same local force array before
+adding it to each component's caller-owned field, so there is no prior gravity
+field for SC to clobber in the i3 path. Rerun command:
+`cargo test --release -p lbm-core --test validation_multiphase_hard val_mphard_i3_rayleigh_taylor_cutoff_light_sign_canary -- --nocapture`.
+Result remains red. Mode 3: `p_total_y=-1.44e2` by step 10,
+`-1.11e3` by step 100; max-speed locus moves wall-adjacent by step 350
+(`heavy:(85,9)`, `max|u|=4.51e-1`), then fails at step 400
+(`max|u|=4.013e3` at `heavy:(10,12)`, `rho_min=-6.009` at
+`heavy:(160,10)`). Mode 7 stays finite through step 400 but shows the same
+large negative bulk momentum and lower-wall high-speed locus by steps
+375-400 (`heavy:(1,9..10)`). Artifact density maps:
+`target/vv_rt_i3/rt_mode3_step400_heavy.pgm`,
+`target/vv_rt_i3/rt_mode3_step400_light.pgm`,
+`target/vv_rt_i3/rt_mode7_step400_heavy.pgm`,
+`target/vv_rt_i3/rt_mode7_step400_light.pgm`.
+Mechanism hypothesis: the hard i3 setup applies gravity to the heavy
+component only in a closed box, producing a large nonzero bulk body-force
+impulse. The resulting wall-mediated return flow, not the mid-height RT
+interface mode, reaches low-Mach-violating velocities and drives the
+wall-adjacent density failure. Fixing this requires a derived MCMP buoyancy
+forcing model or a spec change to the i3 body-force protocol; no ad-hoc
+mean-force subtraction was applied.
+
 ### ANOM-P4-008 RESOLVED (core merge 15adfdd; V&V gate verified 2026-07-07)
 Offset removed (CPU/SIMD/WGSL); Cumulant→CentralMoment rename; finite-N
 band re-frozen to uncorrected measurement; e2 h²-intercept canary flipped
@@ -259,18 +320,30 @@ the lane-1.7 SC pressure-tensor audit is promoted to the highest-value W2
 item; its job is to derive which σ the SC pressure tensor actually
 delivers on curved menisci vs flat interfaces vs retracting rims.
 
-### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — S2,
-core-engine routing (found by the interaction matrix, lane 5.1)
-Steady-state discriminator confirms the leak persists after hydrostatic
-equilibration: uniform-force × patch +2.47e-5 mass/step, gravity × patch
-−7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale ~ F·A_patch.
-Mechanism candidate (pitfall family #1): the Zou-He patch reconstruction
-of unknown populations ignores the Guo half-force contribution, so each
-step leaks O(F) mass per patch cell. Neither T18.2 (patches, no force) nor
-the gravity suite (force, no patches) could see it — a pure
-pair-interaction defect, exactly what lane 5.1 exists for. Gate =
-cx/interaction-matrix (2 documented-red cells, interpretation rule in the
-asserts). All other 18 pairs PASS (or SKIP with stated reasons).
+### ANOM-P4-021 — body force × Zou-He face patch: secular mass leak — FIXED
+in `cx/fix-p4-021`
+Original measurement: steady-state discriminator confirmed persistent leak
+after hydrostatic equilibration: uniform-force × patch +2.47e-5 mass/step,
+gravity × patch −7.42e-5/step (rel 2.2e-9 / 6.7e-9 vs band 1e-9), scale
+~F·A_patch. Root cause: the Zou-He patch reconstruction of unknown
+populations ignored the Guo half-force contribution, so it imposed raw
+momentum `rho*u_prescribed`; the subsequent `moments_row` half-force shift
+reported physical velocity `u_prescribed + F/(2 rho)` and created secular
+mass drift.
+
+Fix: D2Q9, D3Q19, D3Q27, and generated WGSL `bc` closures now reconstruct on
+raw Guo momentum `rho*u_phys - F/2` (implemented as the equivalent
+pre-force velocity `v = u_phys - F/(2 rho)`, with analytic handling for
+`F = F0 + rho*g`). Whole-face Zou-He and T18.2 face patches share this
+closure. Zero-force branch remains bit-identical to the legacy D2Q9 formula.
+
+Evidence: `zou_he_force.rs` passes for D2Q9/D3Q19/D3Q27 with uniform force
+plus gravity; `kernels::tests::zou_he_d2q9_zero_force_matches_legacy_formula_bitwise`
+passes; `feature_interaction_conservation_matrix` passes, flipping the two
+documented red cells green while preserving the other cells' PASS/SKIP
+status. GPU kernel text changed only in the `bc` reconstruction; F32
+collision byte-identity scope was not widened or narrowed. Native GPU suites
+remain PM-run.
 
 ### Lane 2.1 mutation-testing extension CLOSED (merge 8c26f14)
 10-mutant matrix all CAUGHT: Guo-source sign, moving-wall factor 2, D2Q9
@@ -282,26 +355,30 @@ net. Complements ANOM-P4-021 (interaction-matrix): the pair-only defect
 class is NOT reachable by single-mutation coverage — the two lanes are
 complementary and both are needed.
 
-### ANOM-P4-022 — Shan-Chen force-field OVERWRITE breaks additive composition — S2 (found by code-to-spec back-translation, lane 3.2)
+### ANOM-P4-022 — Shan-Chen force-field OVERWRITE breaks additive composition — RESOLVED 2026-07-07 (S2, found by code-to-spec back-translation, lane 3.2)
 `ShanChen::update_force` and `MultiComponent::update_forces`
 `copy_from_slice` into `force_field` (compat/multiphase.rs:387), silently
 discarding any prior rotor/gravity/user contribution — contradicts the
 W-GRAV additive composition-point invariant. Rotor + SC coexistence needs
 the caller to call SC FIRST then add rotor; the reverse order silently
 zeros the rotor force. This is invisible in the current lane-5.1 matrix
-(SC × rotor SKIPs by API-incompatibility). Fix candidate: change to
-add-into with a documented "SC contribution overwrites its own footprint"
-convention, or require callers to compose after SC in a single documented
-order.
+(SC × rotor SKIPs by API-incompatibility). Fix landed in this worktree:
+both SCMP and MCMP now add into the caller-owned per-cell force field, with
+the same "caller clears once per step" contract as rotor. Regression:
+`validation_multiphase.rs::t11_shan_chen_adds_to_existing_force_field_anom_p4_022`
+asserts cell-by-cell `gravity + SC` composition and rejects either
+contribution alone. Call-site audit: CLI scenario runner, WASM stepping,
+interaction matrix helper, T11/T11b/T12/T13/pressure-tensor/hard-multiphase
+tests now reset/zero-fill before composing transient SC/MCMP sources; MCMP's own
+per-component gravity was already built in the same local force array and was
+not a prior field overwritten by SC.
 
-### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec)
+### ANOM-P4-021 DERIVATION CONFIRMED (from lane 3.2 code-to-spec) — CLOSED
 Zou-He closures at kernels.rs:754-773 (D2Q9), 941-954 (D3Q19), 828-867
-(D3Q27) reconstruct unknowns from raw populations and use caller-passed u
-verbatim — NO (1−ω/2)·Guo-source term at the face. Applied macroscopic
-velocity is therefore u_prescribed + F/(2ρ), and mass leaks as F·A_patch
-per step — matches ANOM-P4-021 measurement exactly. The two lanes now
-converge on the same fix locus. Core routing package includes the
-derivation.
+(D3Q27) reconstructed unknowns from raw populations and used caller-passed u
+verbatim. Applied macroscopic velocity was therefore
+u_prescribed + F/(2ρ), and mass leaked as F·A_patch per step — matching the
+interaction-matrix measurement. Closed by the raw-Guo-momentum closure above.
 
 ### Documentation drift found (lane 3.2 residuals, S3)
 - PHYSICS.md T11 σ entry does not acknowledge P4-014/017 mechanical-σ
@@ -324,3 +401,85 @@ common/gci.rs helper is the cheapest fix); (2) no vocabulary crosswalk
 validation gates (label VALIDATION_GATE vs REGRESSION_PIN + add one
 external Maxwell-rule holdout for T11). No hidden calibration hack
 survived the +0.0025 cleanup — process risk only.
+
+## Pass 7 — 2026-07-07, SC pressure-tensor + band-retighten
+
+### ANOM-P4-023 — SC MECHANICAL σ is 6x below the Laplace σ (lane 1.7 flagship result)
+Direct pressure-tensor Kirkwood-Buff and Young-Laplace integrations
+FINALLY QUANTIFY the three-way referee (P4-014 Jurin, P4-017 TC, P4-018/019):
+- **P1 Young-Laplace σ**: 2.87e-2 at r=12 (rel error 13.5% vs T11), r=16
+  9.1%, r=20 6.1% — **converges to sigma_Laplace as R→∞** — the discrete
+  pressure-tensor IS the Laplace-consistent one. (Fails the ±10% band at
+  the smallest R by 3.5 pp — freeze as R-dependence characterization.)
+- **P2 SC pressure-tensor anisotropy**: 1.07% (well below the 15% band).
+- **P3 KB flat-interface**: sigma_KB = 3.64e-2, rel 9.5% vs Laplace (in band).
+- **P4 momentum-flux σ from Taylor-Culick rim**: **6.09e-3, rel 83% vs KB**.
+The SC pressure-tensor integrates to a Laplace-consistent σ on flat and
+curved interfaces (P1/P3 consistent within band), but the MOMENTUM
+delivered by a moving interface is 6x smaller (P4). Verdict candidate:
+**it is not σ that varies — it is the momentum coupling of the moving
+interface**. The Taylor-Culick rim deficit (P4-017 v/v_TC=0.49) is
+consistent with this — sqrt(0.49) is not 1/6, so the mapping is not
+trivial, but the direction matches: the moving interface transmits
+sub-nominal momentum. Related to P4-018 (near-wall shear artifact) and
+P4-019 (contact-line immobility) — same SC "static-vs-dynamic" limitation
+family. Rename Jurin 1.54× (P4-014) into this framework: static σ from a
+STATIC meniscus is 1.54× flat-wall theory, but the KB flat σ is
+Laplace-consistent, so P4-014's 1.54× may be the CURVATURE-dependent
+static σ, not a dynamic issue. Hypothesis for lane 1.7 rev 2: P4-023's
+r-dependent P1 (5.1e-3 shift over R∈{12,20}) IS the R-dependence that
+projects onto Jurin's meniscus geometry. Investigation: measure σ_YL(R)
+across a wider R range and cross-plot Jurin's h·w vs the theory using the
+R-dependent σ.
+- Documented-red gate: cx/sc-pressure-tensor.
+
+### Lane 2.2 band-retighten COMPLETED (cx/band-retighten 8374f9d, merged 62cdc4a)
+All 9 rows retightened using measured×20 (or physical-model caps with
+stated headroom). Full workspace gate green (EXIT:0). Prints every
+measured value in every retightened assert. Two-layer rule retrofit
+applied to D3Q19/D3Q27 lid smoke gates (added upper bounds + magnitude
+ratios). Zero tightened bands failed — the gates were purely vacuous.
+
+### Merge-queue completion (task #12)
+All 9 cx/vv-* branches merged into main (26137ae, 8d05b5a, 5b18a53,
+fcc1eea, 08cdaf1, 47b4e83, ecb247c, 2050e50, 62cdc4a). CI cron / traceability
+matrix / mutation runner / FSI safe-downgrade / multiphase anchors / GPU
+absolute physics D2Q9 / scenario hardening / visual plots / evidence
+templates all landed.
+
+### Axis 9.4 sedimentation experiment observation (main 23a876d)
+Harness LANDED and RUNS but its physics anchor was too loose: with the
+posted parameters (d=1.5, rho_p=2, nu=1/6, g=5e-5) v_stokes=3.75e-5 gives
+settling length 3.28e4 cells >> 128-cell basin, so 499/500 particles stay
+suspended after 10k steps and the "factor-of-3" anchor is trivially met.
+The visual (out/vv_sedim_2d/deposition_map.png) shows particles piled at
+the inlet column only — a valid honesty artifact, not a physics defect.
+Rev-2 needed: d=6+ (v_stokes scales as d²), longer run, or gravity ×10
+(state Reynolds-limit tradeoffs). Mass conservation exact (n_deposited +
+n_suspended = 500). Not filing an ANOM — this is an experiment-design
+issue on my side to be fixed in the next revision.
+
+### T9b convective outflow rev 1: rest-frame setup mismatch (self-triaged)
+`main adcadcb`: convective-outflow reflection-coefficient sweep in a REST
+CHANNEL measured baseline Outflow R = 0.26 vs ConvectiveOutflow R ≈ 0.998
+at every u_conv ∈ {0.05..1.0}. Root cause (physics-honest self-triage,
+not a defect): ConvectiveOutflow advects populations at u_conv; the
+incoming disturbance is an ACOUSTIC wave traveling at cs = 1/√3 ≈ 0.577,
+so any u_conv well below cs under-advects and reflects near-hard-wall.
+Convective is designed for MEAN-FLOW use (u_conv ≈ local flow speed).
+Rev 2 dispatches with the correct setup (uniform-inlet channel + u_conv
+centered on u_in). Rev-1 test lands #[ignore]'d with the rationale
+recorded in-code.
+
+### Axis 9.4 rev 2: STOP-RULE self-triage (main 69d4ef2 addendum)
+Rev-2 raised d=6 and g=1e-4: v_stokes=1.2e-3, deposition_fraction=1.0 —
+BUT mean_deposition_x = 500 (out-of-domain) because particles advect past
+the pressure outlet with the crossflow and keep sampling the clamped
+boundary state until they hit the floor. Verdict per behavior-validity
+review: ARTIFACT of an open-outlet + particle-domain-clamp interaction,
+not a physics defect. Rev-3 dispatches with PM option (c): CLOSED BASIN
+(all-BB, no crossflow, top-line seed, quiescent settling — the canonical
+Stokes settling geometry). Cross-tests: physics is unchanged; this is
+the third experiment-design pass on a single Axis-9.4 lane and each
+revision is producing a stronger physics anchor. Filed in PHYSICS.md
+(rev 2 dirty tree) — will fold into the rev-3 commit.

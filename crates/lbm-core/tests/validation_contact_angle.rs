@@ -60,6 +60,7 @@ fn run_wall_droplet(g_wall: f64, steps: usize) -> ContactStats {
     });
     let sc = ShanChen::new(G).with_wall(g_wall);
     for _ in 0..steps {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }
@@ -153,6 +154,7 @@ fn run_wall_rho_droplet(wall_rho: f64) -> WallRhoStats {
     });
     let sc = ShanChen::new(G).with_wall_rho(wall_rho);
     for _ in 0..WALL_RHO_STEPS {
+        sim.force_field_mut().fill([0.0; 2]);
         sc.update_force(&mut sim);
         sim.step();
     }

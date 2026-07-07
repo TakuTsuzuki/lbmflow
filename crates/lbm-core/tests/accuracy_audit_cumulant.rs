@@ -7,6 +7,7 @@
 
 mod common;
 
+use common::gci::{gci_result, GciResult, ASYMPTOTIC_THREE_GRID_SAFETY_FACTOR};
 use common::metrics::{linear_fit, LinFit};
 use common::tgv_analysis::{energy_decay_rate, ke3d, tgv_nu_eff};
 use lbm_core::prelude::*;
@@ -312,10 +313,58 @@ fn h2_extrapolated_offset<L: Lattice>(
     (fit.intercept, fit.slope, defects_by_n)
 }
 
+fn gci_from_ns_defects(ns: &[usize], defects_by_n: &[(usize, f64)]) -> Option<GciResult> {
+    if ns.len() != 3 || defects_by_n.len() != 3 {
+        return None;
+    }
+    let [(n_coarse, f_coarse), (n_medium, f_medium), (n_fine, f_fine)] =
+        [defects_by_n[0], defects_by_n[1], defects_by_n[2]];
+    if [n_coarse, n_medium, n_fine] != [ns[0], ns[1], ns[2]] {
+        return None;
+    }
+    let e32 = f_coarse - f_medium;
+    let e21 = f_medium - f_fine;
+    if e32 == 0.0 || e21 == 0.0 || e32.signum() != e21.signum() {
+        return None;
+    }
+    let r21 = n_fine as f64 / n_medium as f64;
+    let r32 = n_medium as f64 / n_coarse as f64;
+    Some(gci_result(
+        f_coarse,
+        f_medium,
+        f_fine,
+        r21,
+        r32,
+        ASYMPTOTIC_THREE_GRID_SAFETY_FACTOR,
+    ))
+}
+
+fn print_defect_gci(label: &str, ns: &[usize], defects_by_n: &[(usize, f64)]) {
+    if let Some(gci) = gci_from_ns_defects(ns, defects_by_n) {
+        println!(
+            "{label}: GCI observed_order={:.6e}; Richardson_limit={:.6e}; GCI_21_pct={:.6e}; GCI_32_pct={:.6e}; asymptotic_range_ratio={:.6e}",
+            gci.observed_order,
+            gci.richardson_limit,
+            gci.gci_21_pct,
+            gci.gci_32_pct,
+            gci.asymptotic_ratio
+        );
+    } else if ns.len() == 3 {
+        println!(
+            "{label}: GCI skipped because the three-grid defect series is not monotone or not ordered coarse->medium->fine; defects_by_N={defects_by_n:?}"
+        );
+    }
+}
+
 fn assert_e2_h2_extrapolated_d3q19_offset(ns: &[usize], band: f64, label: &str) -> f64 {
     let (a, b, defects_by_n) = h2_extrapolated_offset::<D3Q19>(ns, |nu| cumulant_for_nu(nu));
     println!(
         "ACC CUM E2 {label}: N={ns:?} defects_nu_eff_over_nu_minus_1={defects_by_n:?}; h2_intercept_a={a:e}; h2_slope_b={b:e}; band_abs={band:e}"
+    );
+    print_defect_gci(
+        &format!("ACC CUM E2 {label} D3Q19 defect"),
+        ns,
+        &defects_by_n,
     );
     assert!(
         a.abs() <= band,
@@ -358,6 +407,16 @@ fn assert_e3_h2_extrapolated_d3q27_bias(ns: &[usize], band: f64, label: &str) ->
     let (a19, b19, defects19_by_n) = h2_extrapolated_offset::<D3Q19>(ns, |nu| cumulant_for_nu(nu));
     println!(
         "ACC CUM E3 {label}: N={ns:?} D3Q27 defects_nu_eff_over_nu_minus_1={defects27_by_n:?}; a27={a27:e}; b27={b27:e}; D3Q19 control defects={defects19_by_n:?}; a19={a19:e}; b19={b19:e}; band_abs={band:e}"
+    );
+    print_defect_gci(
+        &format!("ACC CUM E3 {label} D3Q27 defect"),
+        ns,
+        &defects27_by_n,
+    );
+    print_defect_gci(
+        &format!("ACC CUM E3 {label} D3Q19 control defect"),
+        ns,
+        &defects19_by_n,
     );
     assert!(
         a27.abs() <= band,
