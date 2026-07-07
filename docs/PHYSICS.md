@@ -933,3 +933,18 @@ Routing: none.
   BOTH measured spreads (with-term 4.20e-3, without-term 1.05e-2 at
   u_frame <= 0.1, N=32, nu=0.02, u0=0.012) before its correction claim is
   trusted.
+
+### 2026-07-07 addendum — Galilean-fix anchors invalidated by r2-c collision seam
+- PM bisect: the merge d35faf4 (r2-c scalar TRT collision seam + ANOM-P2-001
+  impulse fix) changed the D3Q19 cumulant TGV3D decay observable: advected
+  u_frame=0 rel_err 1.834009427e-3 (at c272909) -> 2.506837906e-2 (at d35faf4
+  and after). D3Q27 cross-check bit-unchanged -> D3Q19-specific. The default
+  bands did not catch the shift (off-Re band 2e-2-class; band vacuity).
+- Consequence: the falsification-record anchor numbers above and the
+  CUMULANT_GALILEAN_FIX round-2 error model are valid for the PRE-r2-c tree
+  only. The cubic-correction implementation order's STEP-0 anchor gate
+  correctly detected the mismatch and halted without touching code.
+- Status: cumulant Galilean work is BLOCKED on the r2-c triage (routed to the
+  r2-c owner: intentional physics change to be recorded + holdout values
+  re-frozen, or regression to be fixed). Do not rebuild the error model until
+  the baseline is adjudicated.
