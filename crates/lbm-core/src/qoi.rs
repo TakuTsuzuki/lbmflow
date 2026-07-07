@@ -22,7 +22,7 @@ pub struct PowerQoiResult {
     pub nq: Option<f64>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkippedQoi {
     pub qoi: String,
     pub reason: String,
@@ -33,6 +33,36 @@ pub struct MixingTimeResult {
     pub cv0: f64,
     pub t95_s: Option<f64>,
     pub t99_s: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KlaFitWindow {
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KlaFitMethod {
+    DynamicGassingFit,
+    SteadyStateIntegral,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KlaDynamicFitResult {
+    pub kla_1_per_s: f64,
+    pub kla_1_per_hr: f64,
+    pub fit_r2: f64,
+    pub fitting_window_start_s: f64,
+    pub fitting_window_end_s: f64,
+    pub method: KlaFitMethod,
+    pub ci95_1_per_s: Option<[f64; 2]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KlaDynamicFitOutcome {
+    pub result: Option<KlaDynamicFitResult>,
+    pub skipped: Option<SkippedQoi>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +151,147 @@ pub fn mixing_time_from_cv(series: &[(f64, f64)]) -> Option<MixingTimeResult> {
         t95_s: t95,
         t99_s: t99,
     })
+}
+
+pub fn dynamic_gassing_window_default(series: &[(f64, f64)]) -> Option<KlaFitWindow> {
+    let first = series.first()?.0;
+    let last = series.last()?.0;
+    if !(first.is_finite() && last.is_finite() && last > first) {
+        return None;
+    }
+    Some(KlaFitWindow {
+        start_s: first + 0.4 * (last - first),
+        end_s: last,
+    })
+}
+
+pub fn dynamic_gassing_kla_fit(
+    series: &[(f64, f64)],
+    c_star: f64,
+    window: Option<KlaFitWindow>,
+    steady_epsilon: f64,
+) -> Result<KlaDynamicFitOutcome, &'static str> {
+    if !(c_star.is_finite() && steady_epsilon.is_finite() && steady_epsilon >= 0.0) {
+        return Err("kLa fit inputs must be finite; steady_epsilon must be >= 0");
+    }
+    if series.len() < 3 {
+        return Ok(kla_skipped(
+            "kLa",
+            "at least three concentration samples are required",
+        ));
+    }
+    let fit_window = match window.or_else(|| dynamic_gassing_window_default(series)) {
+        Some(w) => w,
+        None => return Ok(kla_skipped("kLa", "fitting window could not be inferred")),
+    };
+    if !(fit_window.start_s.is_finite()
+        && fit_window.end_s.is_finite()
+        && fit_window.end_s > fit_window.start_s)
+    {
+        return Ok(kla_skipped("kLa", "invalid fitting window"));
+    }
+
+    let mut points = Vec::new();
+    let mut max_abs_slope = 0.0;
+    let mut prev: Option<(f64, f64)> = None;
+    for &(t, c) in series {
+        if !(t.is_finite() && c.is_finite()) {
+            continue;
+        }
+        if let Some((pt, pc)) = prev {
+            let dt = t - pt;
+            if dt > 0.0 {
+                let slope = (c - pc).abs() / dt;
+                if slope > max_abs_slope {
+                    max_abs_slope = slope;
+                }
+            }
+        }
+        prev = Some((t, c));
+        if t < fit_window.start_s || t > fit_window.end_s {
+            continue;
+        }
+        let gap = c_star - c;
+        if gap <= 0.0 || !gap.is_finite() {
+            continue;
+        }
+        points.push((t, gap.ln()));
+    }
+    if max_abs_slope <= steady_epsilon {
+        return Ok(kla_skipped(
+            "kLa",
+            "oxygen concentration is steady within epsilon",
+        ));
+    }
+    if points.len() < 3 {
+        return Ok(kla_skipped(
+            "kLa",
+            "fitting window has fewer than three non-equilibrium samples",
+        ));
+    }
+    let n = points.len() as f64;
+    let mean_t = points.iter().map(|p| p.0).sum::<f64>() / n;
+    let mean_y = points.iter().map(|p| p.1).sum::<f64>() / n;
+    let mut sxx = 0.0;
+    let mut sxy = 0.0;
+    let mut syy = 0.0;
+    for &(t, y) in &points {
+        let dt = t - mean_t;
+        let dy = y - mean_y;
+        sxx += dt * dt;
+        sxy += dt * dy;
+        syy += dy * dy;
+    }
+    if sxx <= 0.0 || syy <= 0.0 {
+        return Ok(kla_skipped("kLa", "fitting window has no dynamic range"));
+    }
+    let slope = sxy / sxx;
+    let intercept = mean_y - slope * mean_t;
+    let kla = -slope;
+    if !(kla.is_finite() && kla >= 0.0) {
+        return Ok(kla_skipped("kLa", "fitted kLa is negative or non-finite"));
+    }
+    let mut sse = 0.0;
+    for &(t, y) in &points {
+        let residual = y - (intercept + slope * t);
+        sse += residual * residual;
+    }
+    let r2 = 1.0 - sse / syy;
+    if r2 < 0.9 {
+        return Ok(kla_skipped("kLa", "dynamic gassing fit R2 is below 0.9"));
+    }
+    let ci95 = if points.len() > 2 {
+        let sigma2 = sse / (points.len() as f64 - 2.0);
+        let se_slope = (sigma2 / sxx).sqrt();
+        let half = 1.96 * se_slope;
+        let lo = kla - half;
+        let lower = if lo < 0.0 { 0.0 } else { lo };
+        Some([lower, kla + half])
+    } else {
+        None
+    };
+    Ok(KlaDynamicFitOutcome {
+        result: Some(KlaDynamicFitResult {
+            kla_1_per_s: kla,
+            kla_1_per_hr: kla * 3600.0,
+            fit_r2: r2,
+            fitting_window_start_s: fit_window.start_s,
+            fitting_window_end_s: fit_window.end_s,
+            method: KlaFitMethod::DynamicGassingFit,
+            ci95_1_per_s: ci95,
+        }),
+        skipped: None,
+    })
+}
+
+fn kla_skipped(qoi: &str, reason: &str) -> KlaDynamicFitOutcome {
+    KlaDynamicFitOutcome {
+        result: None,
+        skipped: Some(SkippedQoi {
+            qoi: qoi.to_string(),
+            reason: reason.to_string(),
+        }),
+    }
 }
 
 pub fn compartment_cv(
@@ -237,6 +408,55 @@ mod tests {
         let mask = vec![true; 8];
         assert_eq!(scalar_cv(&values, &mask), Some(0.0));
         assert!(mixing_time_from_cv(&[(0.0, 0.0), (1.0, 0.0)]).is_none());
+    }
+
+    #[test]
+    fn synthetic_exponential_uptake_fit_recovers_kla_within_5_percent() {
+        let c_star = 1.0;
+        let kla = 0.04;
+        let series: Vec<_> = (0..=100)
+            .map(|i| {
+                let t = i as f64;
+                (t, c_star - (c_star - 0.1) * (-kla * t).exp())
+            })
+            .collect();
+        let fit = dynamic_gassing_kla_fit(&series, c_star, None, 1.0e-12)
+            .unwrap()
+            .result
+            .unwrap();
+        let rel = (fit.kla_1_per_s - kla).abs() / kla;
+        assert!(rel <= 0.05, "rel={rel}");
+        assert!(fit.fit_r2 > 0.999);
+        assert!((fit.kla_1_per_hr - kla * 3600.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn bad_kla_fit_window_is_rejected_with_skip_reason() {
+        let series = [(0.0, 0.0), (1.0, 0.1), (2.0, 0.2)];
+        let outcome = dynamic_gassing_kla_fit(
+            &series,
+            1.0,
+            Some(KlaFitWindow {
+                start_s: 2.0,
+                end_s: 1.0,
+            }),
+            0.0,
+        )
+        .unwrap();
+        assert!(outcome.result.is_none());
+        assert!(outcome
+            .skipped
+            .unwrap()
+            .reason
+            .contains("invalid fitting window"));
+    }
+
+    #[test]
+    fn equilibrium_kla_data_is_rejected() {
+        let series = [(0.0, 1.0), (1.0, 1.0), (2.0, 1.0), (3.0, 1.0)];
+        let outcome = dynamic_gassing_kla_fit(&series, 1.0, None, 1.0e-12).unwrap();
+        assert!(outcome.result.is_none());
+        assert!(outcome.skipped.unwrap().reason.contains("steady"));
     }
 
     #[test]
