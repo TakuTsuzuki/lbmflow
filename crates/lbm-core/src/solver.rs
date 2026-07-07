@@ -2714,6 +2714,29 @@ where
         diag
     }
 
+    /// Apply one generated bioprocess impeller marker set through the rotating
+    /// IBM direct-forcing path.
+    pub fn apply_impeller_marker_set(
+        &mut self,
+        impeller: &crate::geometry::ImpellerMarkerSet,
+        cfg: DirectForcingConfig,
+    ) -> IbmDiagnostics {
+        self.apply_rotating_ibm(&impeller.rotating_body(), cfg)
+    }
+
+    /// Apply all generated bioprocess impeller marker sets for the current
+    /// step and return one diagnostic record per impeller.
+    pub fn apply_impeller_marker_sets(
+        &mut self,
+        impellers: &[crate::geometry::ImpellerMarkerSet],
+        cfg: DirectForcingConfig,
+    ) -> Vec<IbmDiagnostics> {
+        impellers
+            .iter()
+            .map(|impeller| self.apply_impeller_marker_set(impeller, cfg))
+            .collect()
+    }
+
     /// Set per-mass gravity `g`; at the start of each step, `rho(x) * g` is
     /// added to the per-cell force on fluid cells only.
     pub fn set_gravity(&mut self, g: [T; 3]) {
