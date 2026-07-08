@@ -95,6 +95,128 @@ Exit criteria:
 - Do NOT claim evidence-grade until BCFD-091 passes.
 - Do NOT add model complexity without a QOI and a validation entry.
 
+### M4 — Screening-tier hardening (2026-07-08, post-BCFD-000..110 landing)
+
+**Rationale.** BCFD-000..110 landed as scaffolding (100% of the ledger),
+but the honest capability status after landing is:
+
+- Registry: 4 Experimental (screening only), 5 Unsupported.
+- VB validation: only VB-03 (shear reducer, synthetic Couette/Poiseuille)
+  is Engineering GREEN. VB-01/02 lack integrated runners; VB-04/05 are
+  Landed (quick smoke) but heavy validation gated `--include-ignored`;
+  VB-06/07/08 have impl-anomalies discovered by adversarial VB-verify.
+- End-to-end demo (2026-07-08) hit ANOM-DEMO-1: the single-phase
+  stirred-tank runner produces NaN at step 32-33 on a realistic
+  screening scenario (see `docs/qa/e2e_demo_2026-07-08.md`).
+- Physics-audit filed 5 ban-list findings (`docs/qa/physics_discipline_audit_2026-07-08.md`).
+
+M4 closes the gap between "code landed" and "screening-tier decisions
+possible with confidence". No new ambitious scope; only stabilise what
+BCFD-000..110 already promised.
+
+Tickets:
+
+**P0 blocker (nothing else can be Engineering-tier until this lands):**
+
+- **BCFD-200 — ANOM-DEMO-1 root-cause + fix.** Single-phase runner NaN at
+  step 32-33 for the realistic stirred-tank scenario (250 rpm, 2 L, 48³
+  D3Q19). Symptoms: `scalar_cv.csv:32` NaN, `torque_force.csv:33` NaN,
+  stress QOI aborts at `crates/lbm-cli/src/runner.rs:1659`. Suspects:
+  (a) Bundle Z's scalar step interacts with Bundle X's material fields
+  in a divergent way, (b) impeller IBM produces spurious velocity
+  outside the CFL / low-Ma limit, (c) geometry validation resolution
+  floor `STIRRED_TANK_SCREENING_MIN_CELLS = 12` is too coarse for the
+  scenario's actual physics.  DoD: E2E demo reruns to completion, VB-01
+  Np comparable to Rushton correlation ± 20%, PHYSICS.md entry records
+  the root cause and the fix.
+
+**VB impl-anomaly closures (BCFD-VV series, from `docs/qa/vb_verification_2026-07-08.md`):**
+
+- **BCFD-201 (VB-VV-001) — VB-06 equilibrium fit.** `dynamic_gassing_kla_fit`
+  returns `SkippedQoi` on the equilibrium case (C=C*); adversarial VB-06
+  expects `kLa ≈ 0` within tolerance. Decision: change the fit to accept
+  the equilibrium branch and emit `kLa=0` when the residual variance is
+  below the steady_epsilon floor; document the decision in
+  MODEL_RISK_MATRIX §4.
+- **BCFD-202 (VB-VV-002) — VB-07 percentile method freeze.**
+  `percentile_summary` uses linear interpolation between rank samples;
+  adversarial VB-07 asserts nearest-rank percentiles. Decision: expose
+  the method as a `PercentileMethod::{ Interpolated, NearestRank }` enum
+  on `PercentileSummary`, default to `NearestRank` for the shear/exposure
+  path (matches BCFD-032 spec §7 and canonical bioprocess reporting),
+  and update VB-07 to freeze against nearest-rank. PHYSICS.md entry
+  records the choice.
+- **BCFD-203 (VB-VV-003) — VB-08 constraint ranking + tip-speed field.**
+  `evaluate_operating_window` ranks conflicting constraints by violation
+  magnitude; adversarial VB-08 expects the documented priority order
+  (constant P/V → tip speed → kLa → mixing time). Also, the
+  `ConstraintSet` type lacks a `tip_speed_max_m_per_s` field entirely.
+  Decision: add the field, restore the documented priority order, and
+  put the "custom weighted" mode behind an explicit request.
+- **BCFD-204 (VB-VV-004) — VB-01 Np validation harness.** Add a public
+  integrated `bioprocess_np_validation_run(scenario_path)` API that
+  drives a stirred-tank scenario to steady state, extracts Np, and
+  returns a Result usable by VB-01. Reference Rushton correlation
+  Np ≈ 5.0 at Re > 10⁴ with T/D=3.
+- **BCFD-205 (VB-VV-005) — VB-02 mixing-time validation harness.** Same
+  shape as BCFD-204 for a point-pulse scalar. Reference published Nθ
+  correlation for the geometry family.
+
+**Physics-audit follow-ups (ANOM-PHY series, from `docs/qa/physics_discipline_audit_2026-07-08.md`):**
+
+- **BCFD-210 (ANOM-PHY-1) — QOI provenance completion.** CLI manifest
+  QOI provenance omits mandatory `method` and `averaging_region` for
+  several QOIs. Enforce serialisation failure per BCFD-012 §7 for every
+  QOI, retrofit missing fields, add a drift-guard test similar to
+  BCFD-110's capability drift guard.
+- **BCFD-211 (ANOM-PHY-3) — Checkpoint manifest particle/RNG flags.**
+  `Manifest.reserved.{rng, particles}` still `false` after BCFD-060
+  cell tracers and BCFD-070 point bubbles landed. Flip flags when
+  the corresponding data is actually serialised; add roundtrip test.
+- **BCFD-212 (ANOM-PHY-4) — MpiSolver::new_local scalar init.** The
+  closure argument is accepted but ignored, silently defaulting to
+  zero. Wire the closure through to the per-rank scalar allocation
+  path. Feature-gated test.
+- **BCFD-213 (ANOM-PHY-5) — Scale-up mode ranking + provenance.**
+  `ScaleUpEvaluation` currently ignores `ScaleUpMode` when ranking; also
+  lacks a PHYSICS.md entry for the decision rule. Bundled fix with
+  BCFD-203 (same file surface). Add PHYSICS.md entry citing the source
+  of the priority order.
+
+**M3 wire-up to product path (currently Unsupported in the registry
+despite Bundle T + U + partial S landed):**
+
+- **BCFD-220 — `point_bubbles` capability wire-up.** Extend
+  `BioprocessScenario.physics::PointBubble` to a runnable path
+  (currently only the entity store exists). DoD: registry moves
+  `point_bubbles` from Unsupported to Experimental; a screening scenario
+  with sparger + point bubbles runs end-to-end producing gas holdup and
+  d32 QOIs.
+- **BCFD-221 — `pbm` capability wire-up.** Bind the PBM bins to the
+  bioprocess runner's step; QOI outputs d32 with provenance.
+- **BCFD-222 — `cell_exposure` capability wire-up.** Bind `CellTracer`
+  and `ShearDamageModel` into the runner's step; emit exposure
+  distributions per BCFD-061.
+- **BCFD-223 — `phase_field_vof` capability wire-up.** Bind the landed
+  Allen-Cahn phase field (BCFD-040..048) as a runnable
+  `physics::ResolvedPhaseField` scenario path.
+
+**Milestone exit criteria.** M4 GREEN means:
+
+- ANOM-DEMO-1 closed. `lbm bioprocess run examples/bioprocess/stirred_tank_screening.json`
+  completes without NaN. QOI outputs land.
+- All VB-01..08 groups either Engineering GREEN or explicitly
+  Ignored-with-calibration-reason (Evidence gate blocked, not Impl-anomaly).
+- Registry: at least `single_phase_stirred_tank`, `rotating_ibm`,
+  `passive_scalar`, `oxygen_kla`, `phase_field_vof`, `cell_exposure`
+  all Experimental with an end-to-end runnable scenario.
+- Physics-audit re-run passes with zero MAJOR-VIOLATION.
+- End-to-end demo report.md generated for both `stirred_tank_screening`
+  and `aerated_stirred_tank_screening`.
+
+No M5/M6 declared in this document. Evidence-tier claims (Tier 2)
+remain calibration-dataset-blocked and are not scheduled here.
+
 ---
 
 ## 1. Ticket ledger (BCFD-000..110)
