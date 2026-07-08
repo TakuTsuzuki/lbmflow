@@ -777,6 +777,24 @@ fn validate_velocity<T: Real>(u: [T; 3]) -> Result<(), SpecError> {
     Ok(())
 }
 
+fn validate_active_velocity<T: Real>(u: [T; 3], d: usize) -> Result<(), SpecError> {
+    let mut sq = 0.0f64;
+    for (a, c) in u.iter().enumerate() {
+        let v = c.as_f64();
+        if !v.is_finite() {
+            return Err(SpecError::NonFiniteParameter { what: "velocity" });
+        }
+        if a < d {
+            sq += v * v;
+        }
+    }
+    let speed = sq.sqrt();
+    if !(speed <= MAX_SPEED) {
+        return Err(SpecError::VelocityTooHigh { speed });
+    }
+    Ok(())
+}
+
 fn regions_overlap(a: SourceRegion, b: SourceRegion) -> bool {
     (0..3).all(|i| a.lo[i] <= b.hi[i] && b.lo[i] <= a.hi[i])
 }
@@ -1754,6 +1772,9 @@ where
         // native `GlobalSpec` (uncovered face, ν = 0, periodic × open, …) into
         // a clear panic instead of silent non-physical output.
         spec.validate_lattice::<L>(solid)?;
+        for &u in wall_u {
+            validate_active_velocity(u, L::D)?;
+        }
         if (!spec.sources.is_empty() || !spec.face_patches.is_empty())
             && !backend.supports_localized_features()
         {
@@ -2443,6 +2464,13 @@ where
     /// values, and it works across subdomain boundaries without a moment
     /// halo. Solid neighbours (looked up in the exchanged halo masks) fall
     /// back one-sided exactly like V1.
+    ///
+    /// # Panics
+    /// Panics with the offending global coordinate if `init` returns a density
+    /// that is not strictly positive and finite, any non-finite velocity
+    /// component, or an active-dimensional speed exceeding [`MAX_SPEED`].
+    /// `init` must also be pure because the finite-difference stencil
+    /// re-evaluates it at neighbouring coordinates.
     pub fn init_with(&mut self, init: impl Fn(usize, usize, usize) -> (T, [T; 3])) {
         self.stage_out_all();
         self.sync_masks_if_dirty();
@@ -2459,7 +2487,31 @@ where
             for z in 0..g.core[2] {
                 for y in 0..g.core[1] {
                     for x in 0..g.core[0] {
-                        let (r, u) = init(sub.origin[0] + x, sub.origin[1] + y, sub.origin[2] + z);
+                        let gx = sub.origin[0] + x;
+                        let gy = sub.origin[1] + y;
+                        let gz = sub.origin[2] + z;
+                        let (r, u) = init(gx, gy, gz);
+                        let rho = r.as_f64();
+                        assert!(
+                            rho > 0.0 && rho.is_finite(),
+                            "init_with: density at ({gx},{gy},{gz}) must be > 0 and finite, got {rho}"
+                        );
+                        let mut sq = 0.0f64;
+                        for (a, comp) in u.iter().enumerate() {
+                            let v = comp.as_f64();
+                            assert!(
+                                v.is_finite(),
+                                "init_with: velocity component {a} at ({gx},{gy},{gz}) must be finite, got {v}"
+                            );
+                            if a < L::D {
+                                sq += v * v;
+                            }
+                        }
+                        let speed = sq.sqrt();
+                        assert!(
+                            speed <= MAX_SPEED,
+                            "init_with: speed {speed} at ({gx},{gy},{gz}) exceeds the low-Mach limit {MAX_SPEED}"
+                        );
                         let c = g.cidx(x, y, z);
                         fields.rho[c] = r;
                         fields.ux[c] = u[0];

@@ -53,7 +53,7 @@ Status terms used below:
 | Distribution storage | CPU: f32/f64 deviation storage matching arithmetic; GPU: f32 or f16 distribution buffers with f32 arithmetic (`GpuStorage`) |
 | Backend | CpuScalar, CpuSimd, Wgpu (`feature = "gpu"`) |
 | Partition / halo | LocalPeriodic, InProcess, MPI (`feature = "mpi"`) |
-| Open faces | D2Q9, D3Q19, and (since 2026-07-07) D3Q27 velocity-inlet / pressure-outlet closures are supported on CPU; D3Q27 outflow/convective and GPU open faces are rejected explicitly |
+| Open faces | D2Q9, D3Q19, and (since 2026-07-07) D3Q27 velocity-inlet / pressure-outlet / outflow / convective closures are all supported on CPU; only GPU-path D3Q27 open faces are rejected explicitly (`GPU_D3Q27_OPEN_FACES_UNSUPPORTED`) |
 
 WALE LES is implemented as a core solver-level relaxation-field driver. Scenario-level
 LES controls, Smagorinsky selection, and the Re_tau DNS acceptance line remain design
@@ -65,7 +65,7 @@ Scenario JSON currently exposes a narrower surface than the core:
 
 | Axis | Product-path exposure today |
 |---|---|
-| Dimension × lattice | `grid.nz <= 1` -> 2D D2Q9; `grid.nz > 1` -> 3D D3Q19. D3Q27 is not selectable from scenario JSON today. |
+| Dimension × lattice | `grid.nz <= 1` -> 2D D2Q9; `grid.nz > 1` -> 3D, with `grid.lattice: "d3q19" \| "d3q27"` (absent lattice defaults to D3Q19). D3Q27 scenario-JSON exposure landed 2026-07-07 (`LatticeSpec::D3q27`); D3Q27 open-face scenario dispatch is CPU-only. |
 | Collision | `physics.collision` accepts `bgk`, `trt`, or `cumulant` (landed 2026-07-07). Cumulant is honored on the 3D D3Q19 native CPU path only; 2D compat and GPU paths reject it with explicit errors. |
 | Precision / storage | `physics.precision` accepts `f32` or `f64`. `compute.storage` accepts `f32` or `f16` (landed 2026-07-07); `f16` is honored only for 2D D2Q9 GPU scenarios with a SHADER_F16 adapter, otherwise rejected with explicit errors. |
 | Backend | `compute.backend` accepts `auto`, `cpu`, or `gpu`; explicit GPU requests are honored or rejected. Current GPU scenario dispatch is constrained to f32 and rejects unsupported 3D combinations. |
@@ -92,9 +92,10 @@ pub struct D2Q9; pub struct D3Q19; pub struct D3Q27;
   into a trait and preserves it.
 - Face unknowns are derived from the lattice table as the directions where
   `c dot n_in > 0`: 3 per D2Q9 face, 5 per D3Q19 face, 9 per D3Q27 face.
-  Implemented open-face kernels currently accept only the 3-unknown and
-  5-unknown cases plus the D3Q27 9-unknown NEBB closure for velocity inlet /
-  pressure outlet (landed 2026-07-07); D3Q27 outflow/convective remain open.
+  Implemented open-face kernels accept the 3-unknown and 5-unknown cases plus
+  the D3Q27 9-unknown NEBB closure for velocity inlet / pressure outlet, and
+  the D3Q27 extrapolation closures for outflow / convective outlets (all landed
+  2026-07-07). GPU-path D3Q27 open faces remain rejected.
 
 ### 3.2 Storage (SoA fixed, for GPU coalescing)
 
